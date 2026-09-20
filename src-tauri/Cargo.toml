@@ -1,0 +1,27 @@
+[package]
+name = "lumapaint"
+version.workspace = true
+edition.workspace = true
+description = "Non-destructive illustration, comics, and animation workspace"
+
+[lib]
+name = "lumapaint_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "~2.11.6", features = [] }
+lumapaint-core = { path = "../crates/lumapaint-core" }
+serde.workspace = true
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+lumapaint-renderer = { path = "../crates/lumapaint-renderer" }
+pollster = "0.4"
+raw-window-handle = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder", "NSEvent"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject"] }
+rfd = "0.17.2"

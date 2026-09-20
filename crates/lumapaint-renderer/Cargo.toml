@@ -1,0 +1,10 @@
+[package]
+name = "lumapaint-renderer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumapaint-core = { path = "../lumapaint-core" }
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
+resvg = "0.45"

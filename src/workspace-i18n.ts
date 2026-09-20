@@ -1,0 +1,47 @@
+export const workspaceMessages = {
+  en: {
+    recoveryReady: 'Automatic recovery enabled',
+    recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
+    recoveryFailed: 'Recovery copy could not be updated. Save your project manually.', retryRecovery: 'Retry', recoveryDetails: 'Details',
+    recoveryFound: 'Recover unfinished work', recoveryHint: 'Restore a local recovery copy as an unsaved project. Your saved file stays unchanged.',
+    recoveryCopy: 'Recovery copy', restoreRecovery: 'Restore', recoveryLater: 'Later',
+
+    undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', foreground: 'Foreground',
+    sessionOnly: 'Unsaved changes', saved: 'Saved', empty: 'Ready to draw', open: 'Open', save: 'Save', saveAs: 'Save as', fileBusy: 'File operation…', untitled: 'Untitled-1', properties: 'Properties',
+    diameter: 'Diameter', document: 'Document', width: 'Width', height: 'Height', layers: 'Layers',
+    layer: 'Layer 1', oneLayer: '1 layer', layerUnit: 'layers', showLayer: 'Show layer', hideLayer: 'Hide layer',
+    panels: 'Panels', ready: 'Ready', paintHint: 'Draw on the canvas', strokes: 'strokes',
+    hiddenLayer: 'Layer is hidden', hex: 'Hex', invalidColor: 'Enter a six-digit hex color.',
+    roundBrush: 'Hard round', reorderPanel: 'Drag to reorder · Alt + arrow keys also move this tab', colors: ['Black', 'Gray', 'White', 'Coral', 'Ochre', 'Green', 'Blue', 'Violet'],
+  },
+  ja: {
+    recoveryReady: '復旧用コピーの自動保存が有効です',
+    recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
+    recoveryFailed: '復旧用コピーを更新できません。作品を手動で保存してください。', retryRecovery: '再試行', recoveryDetails: '詳細',
+    recoveryFound: '前回の作業を復旧', recoveryHint: '復旧用コピーを未保存の作品として開きます。保存済みファイルは変更しません。',
+    recoveryCopy: '復旧用コピー', restoreRecovery: '復旧する', recoveryLater: '後で',
+
+    undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', foreground: '描画色',
+    sessionOnly: '未保存の変更があります', saved: '保存済み', empty: '描画できます', open: '開く', save: '保存', saveAs: '別名で保存', fileBusy: 'ファイルを処理中…', untitled: '名称未設定-1', properties: 'プロパティ',
+    diameter: '直径', document: 'ドキュメント', width: '幅', height: '高さ', layers: 'レイヤー',
+    layer: 'レイヤー 1', oneLayer: '1 レイヤー', layerUnit: 'レイヤー', showLayer: 'レイヤーを表示', hideLayer: 'レイヤーを非表示',
+    panels: 'パネル', ready: '準備完了', paintHint: 'キャンバスに描画できます', strokes: 'ストローク',
+    hiddenLayer: 'レイヤーは非表示です', hex: 'Hex', invalidColor: '6桁のカラーコードを入力してください。',
+    roundBrush: 'ハード円ブラシ', reorderPanel: 'ドラッグで並べ替え · Alt＋矢印キーでも移動できます', colors: ['黒', 'グレー', '白', 'コーラル', 'オーカー', '緑', '青', '紫'],
+  },
+  'zh-CN': {
+    recoveryReady: '已启用自动恢复副本',
+    recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',
+    recoveryFailed: '无法更新恢复副本。请手动保存作品。', retryRecovery: '重试', recoveryDetails: '详情',
+    recoveryFound: '恢复上次的工作', recoveryHint: '将本地恢复副本作为未保存的作品打开，不会修改已保存的文件。',
+    recoveryCopy: '恢复副本', restoreRecovery: '恢复', recoveryLater: '稍后',
+
+    undo: '撤销', redo: '重做', brush: '画笔', size: '大小', foreground: '前景色',
+    sessionOnly: '有未保存的更改', saved: '已保存', empty: '可以开始绘画', open: '打开', save: '保存', saveAs: '另存为', fileBusy: '正在处理文件…', untitled: '未命名-1', properties: '属性',
+    diameter: '直径', document: '文档', width: '宽度', height: '高度', layers: '图层',
+    layer: '图层 1', oneLayer: '1 个图层', layerUnit: '个图层', showLayer: '显示图层', hideLayer: '隐藏图层',
+    panels: '面板', ready: '就绪', paintHint: '在画布上开始绘画', strokes: '笔画',
+    hiddenLayer: '图层已隐藏', hex: 'Hex', invalidColor: '请输入六位十六进制颜色代码。',
+    roundBrush: '硬圆画笔', reorderPanel: '拖动排序 · 也可按 Alt + 方向键移动', colors: ['黑色', '灰色', '白色', '珊瑚色', '赭色', '绿色', '蓝色', '紫色'],
+  },
+} as const;

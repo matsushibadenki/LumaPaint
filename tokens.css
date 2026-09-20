@@ -1,0 +1,39 @@
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', sans-serif;
+  --color-bg: oklch(94% 0 0);
+  --color-panel: oklch(97% 0 0);
+  --color-bar: oklch(91% 0 0);
+  --color-field: oklch(99% 0 0);
+  --color-canvas: oklch(73.8% 0 0);
+  --color-ink: oklch(24% 0 0);
+  --color-muted: oklch(46% 0 0);
+  --color-rule: oklch(81% 0 0);
+  --color-hover: oklch(86% 0 0);
+  --color-selected: oklch(89% .035 250);
+  --color-accent: oklch(52% .13 250);
+  --color-focus: oklch(56% .17 250);
+  --color-white: oklch(100% 0 0);
+  --color-error: oklch(45% .17 25);
+  --space-xs: 4px; --space-sm: 8px; --space-md: 12px; --space-lg: 16px; --space-xl: 24px;
+  --radius-control: 3px;
+  --text-ui: 12px; --text-small: 11px; --text-brand: 17px;
+}
+:root[data-theme='dark'] {
+  --color-bg: oklch(26% 0 0); --color-panel: oklch(30.8% 0 0); --color-bar: oklch(27.7% 0 0);
+  --color-field: oklch(27% 0 0); --color-canvas: oklch(24.1% 0 0);
+  --color-ink: oklch(92% 0 0); --color-muted: oklch(70% 0 0); --color-rule: oklch(37% 0 0);
+  --color-hover: oklch(36% 0 0); --color-selected: oklch(37% .03 250);
+  --color-accent: oklch(53% .13 250); --color-focus: oklch(73% .14 250); --color-error: oklch(79% .11 25);
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] {
+    --color-bg: oklch(26% 0 0); --color-panel: oklch(30.8% 0 0); --color-bar: oklch(27.7% 0 0);
+    --color-field: oklch(27% 0 0); --color-canvas: oklch(24.1% 0 0);
+    --color-ink: oklch(92% 0 0); --color-muted: oklch(70% 0 0); --color-rule: oklch(37% 0 0);
+    --color-hover: oklch(36% 0 0); --color-selected: oklch(37% .03 250);
+    --color-accent: oklch(53% .13 250); --color-focus: oklch(73% .14 250); --color-error: oklch(79% .11 25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme='light'] { color-scheme: light; }
