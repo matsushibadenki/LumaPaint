@@ -1,9 +1,39 @@
+# JavaScript / Vite
 node_modules/
 dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Rust / Tauri build output
 target/
-.DS_Store
 src-tauri/gen/
+*.rs.bk
+
+# Local environment files
 .env
 .env.*
 !.env.example
+
+# Logs and temporary files
 *.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Local project documents and recovery artifacts
+*.lumapaint
+*.lumapaint.tmp
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.code-workspace
