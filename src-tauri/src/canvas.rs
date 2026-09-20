@@ -63,6 +63,88 @@ impl CanvasInfo {
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTabSnapshot {
+    pub id: u64,
+    pub file_name: Option<String>,
+    pub dirty: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentWorkspaceSnapshot {
+    pub active_id: Option<u64>,
+    pub active: Option<DocumentSnapshot>,
+    pub documents: Vec<DocumentTabSnapshot>,
+}
+
+#[tauri::command]
+pub async fn document_workspace(
+    window: tauri::WebviewWindow,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, || Ok(platform::workspace_snapshot())).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(DocumentWorkspaceSnapshot {
+            active_id: None,
+            active: None,
+            documents: vec![],
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn new_document(
+    window: tauri::WebviewWindow,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::new_document).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn switch_document(
+    window: tauri::WebviewWindow,
+    id: u64,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::switch_document(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn close_document(
+    window: tauri::WebviewWindow,
+    id: u64,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::close_document(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
 #[tauri::command]
 pub async fn sync_canvas(
     window: tauri::WebviewWindow,
@@ -388,6 +470,35 @@ pub async fn restore_recovery(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, id);
+        Err("Recovery is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn delete_recovery(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<RecoveryInfo, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::delete_recovery(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Recovery is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn delete_all_recoveries(window: tauri::WebviewWindow) -> Result<RecoveryInfo, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::delete_all_recoveries).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
         Err("Recovery is not supported on this platform yet".into())
     }
 }

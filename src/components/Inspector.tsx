@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardE
 import type { Brush, DocumentSnapshot } from '../bridge';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
-import { HexInput, SizeInput, fromHex, toHex } from './BrushControls';
+import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput, fromHex, toHex } from './BrushControls';
 import { Icon } from './Icon';
 import { ColorPanel, colorPanelLabels } from './ColorPanel';
 
@@ -109,7 +109,8 @@ export function Inspector({ locale, brush, onBrush, document, onToggleLayer, ena
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
       <p className="muted small">{t.roundBrush}</p>
-      <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><input id="brush-size" type="range" min="1" max="128" value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
+      <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><input id="brush-size" type="range" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
+      <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><input id="brush-hardness" type="range" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
       <div className="swatches" aria-label={t.foreground}>{swatches.map((hex, index) => <button key={hex} className="swatch" title={t.colors[index]} aria-label={t.colors[index]} aria-pressed={toHex(brush.color) === hex} style={{ '--swatch': hex } as CSSProperties} onClick={() => onBrush({ ...brush, color: fromHex(hex) })} />)}</div>
       <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={color => onBrush({ ...brush, color })} />
     </section>}

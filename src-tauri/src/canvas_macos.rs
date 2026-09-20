@@ -1,5 +1,7 @@
 //! AppKit ownership is isolated here; no Apple types enter the renderer or document core.
-use super::{CanvasInfo, CanvasRequest, DocumentAction};
+use super::{
+    CanvasInfo, CanvasRequest, DocumentAction, DocumentTabSnapshot, DocumentWorkspaceSnapshot,
+};
 use lumapaint_core::document::{Brush, ColorMode, ColorProfile, Document, DocumentSnapshot};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
@@ -42,13 +44,23 @@ define_class!(
         fn mouse_up(&self, event: &NSEvent) { self.pointer(event, 2); }
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
-            if event.modifierFlags().contains(NSEventModifierFlags::Command) && [1, 31].contains(&event.keyCode()) {
+            let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
+            if command && event.keyCode() == 45 {
+                if let Err(error) = new_document() { emit_error(error); }
+                true
+            } else if command && event.keyCode() == 13 {
+                if DOCUMENT_OPEN.with(|open| open.get()) {
+                    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+                    if let Err(error) = close_document(id) { emit_error(error); }
+                }
+                true
+            } else if command && [1, 31].contains(&event.keyCode()) {
                 let action = if event.keyCode() == 31 { super::FileAction::Open }
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { super::FileAction::SaveAs }
                     else { super::FileAction::Save };
                 if let Err(error) = file_action(action) { emit_error(error); }
                 true
-            } else if event.modifierFlags().contains(NSEventModifierFlags::Command) && event.keyCode() == 6 {
+            } else if command && event.keyCode() == 6 {
                 let action = if event.modifierFlags().contains(NSEventModifierFlags::Shift) { DocumentAction::Redo } else { DocumentAction::Undo };
                 report_edit(action); true
             } else { unsafe { msg_send![super(self), performKeyEquivalent: event] } }
@@ -68,6 +80,9 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
+        if !DOCUMENT_OPEN.with(|open| open.get()) {
+            return;
+        }
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         let Some(viewport) = CANVAS.with(|slot| slot.borrow().as_ref().map(|c| c.viewport)) else {
             return;
@@ -109,6 +124,7 @@ fn emit_document() {
         let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
         let _ = app.emit_to("main", "document-changed", snapshot);
     }
+    emit_workspace();
 }
 fn report_edit(action: DocumentAction) {
     if let Err(error) = edit(action) {
@@ -117,6 +133,7 @@ fn report_edit(action: DocumentAction) {
 }
 
 pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     DOCUMENT.with(|doc| {
         let mut doc = doc.borrow_mut();
         match action {
@@ -131,6 +148,7 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
 }
 
 pub fn toggle_layer(id: String) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().toggle_layer(&id))?;
     redraw()?;
     emit_document();
@@ -138,24 +156,28 @@ pub fn toggle_layer(id: String) -> Result<DocumentSnapshot, String> {
 }
 
 pub fn set_color_mode(mode: ColorMode) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().set_color_mode(mode));
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
 pub fn set_bit_depth(depth: u8) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().set_bit_depth(depth))?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
 pub fn set_color_profile(profile: ColorProfile) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().set_color_profile(profile))?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
     let Some(path) = rfd::FileDialog::new()
         .add_filter("SVG", &["svg"])
         .pick_file()
@@ -207,6 +229,93 @@ thread_local! {
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
     static DOCUMENT: RefCell<Document> = RefCell::new(Document::default());
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
+    static DOCUMENT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static ACTIVE_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    static NEXT_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(2) };
+    static INACTIVE_DOCUMENTS: RefCell<Vec<OpenDocument>> = const { RefCell::new(Vec::new()) };
+}
+
+struct OpenDocument {
+    id: u64,
+    document: Document,
+    path: Option<std::path::PathBuf>,
+    fingerprint: Option<crate::project_file::FileFingerprint>,
+}
+
+fn next_document_id() -> u64 {
+    NEXT_DOCUMENT_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
+}
+
+fn park_active_document() {
+    if !DOCUMENT_OPEN.with(|open| open.get()) {
+        return;
+    }
+    let document = DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    let path = PROJECT_PATH.with(|slot| slot.borrow_mut().take());
+    let fingerprint = PROJECT_FINGERPRINT.with(|slot| slot.borrow_mut().take());
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    INACTIVE_DOCUMENTS.with(|documents| {
+        documents.borrow_mut().push(OpenDocument {
+            id,
+            document,
+            path,
+            fingerprint,
+        });
+    });
+}
+
+fn activate_document(entry: OpenDocument) {
+    DOCUMENT.with(|slot| *slot.borrow_mut() = entry.document);
+    PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
+    PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
+    ACTIVE_DOCUMENT_ID.with(|active| active.set(entry.id));
+    DOCUMENT_OPEN.with(|open| open.set(true));
+    CHECKPOINT_REVISION.with(|last| last.set(None));
+}
+
+fn document_tab(id: u64, document: &Document) -> DocumentTabSnapshot {
+    let snapshot = document.snapshot();
+    DocumentTabSnapshot {
+        id,
+        file_name: snapshot.file_name,
+        dirty: snapshot.dirty,
+    }
+}
+
+pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
+    let mut documents = INACTIVE_DOCUMENTS.with(|items| {
+        items
+            .borrow()
+            .iter()
+            .map(|entry| document_tab(entry.id, &entry.document))
+            .collect::<Vec<_>>()
+    });
+    let open = DOCUMENT_OPEN.with(|value| value.get());
+    let active_id = open.then(|| ACTIVE_DOCUMENT_ID.with(|value| value.get()));
+    let active = open.then(|| DOCUMENT.with(|doc| doc.borrow().snapshot()));
+    if let (Some(id), Some(document)) = (active_id, active.as_ref()) {
+        documents.push(DocumentTabSnapshot {
+            id,
+            file_name: document.file_name.clone(),
+            dirty: document.dirty,
+        });
+    }
+    documents.sort_by_key(|document| document.id);
+    DocumentWorkspaceSnapshot {
+        active_id,
+        active,
+        documents,
+    }
+}
+
+fn emit_workspace() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit_to("main", "documents-changed", workspace_snapshot());
+    }
 }
 
 pub fn destroy() {
@@ -307,7 +416,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             physical_width: viewport.width,
             physical_height: viewport.height,
             scale_factor: scale,
-            document: Some(DOCUMENT.with(|doc| doc.borrow().snapshot())),
+            document: DOCUMENT_OPEN
+                .with(|open| open.get())
+                .then(|| DOCUMENT.with(|doc| doc.borrow().snapshot())),
         })
     })
 }
@@ -400,12 +511,25 @@ mod tests {
 thread_local! {
     static SHUTTING_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PROJECT_PATH: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+    static PROJECT_FINGERPRINT: RefCell<Option<crate::project_file::FileFingerprint>> = const { RefCell::new(None) };
 }
 
 pub fn confirm_discard() -> bool {
-    if !DOCUMENT.with(|doc| doc.borrow().snapshot().dirty) {
+    let active_dirty =
+        DOCUMENT_OPEN.with(|open| open.get()) && DOCUMENT.with(|doc| doc.borrow().snapshot().dirty);
+    let inactive_dirty = INACTIVE_DOCUMENTS.with(|documents| {
+        documents
+            .borrow()
+            .iter()
+            .any(|entry| entry.document.snapshot().dirty)
+    });
+    if !active_dirty && !inactive_dirty {
         return true;
     }
+    confirm_unsaved_changes()
+}
+
+fn confirm_unsaved_changes() -> bool {
     let Some(window) = APP.get().and_then(|app| app.get_webview_window("main")) else {
         return false;
     };
@@ -416,6 +540,87 @@ pub fn confirm_discard() -> bool {
         .set_buttons(rfd::MessageButtons::OkCancel)
         .set_level(rfd::MessageLevel::Warning)
         .show() == rfd::MessageDialogResult::Ok
+}
+
+fn ensure_document_open() -> Result<(), String> {
+    DOCUMENT_OPEN
+        .with(|open| open.get())
+        .then_some(())
+        .ok_or_else(|| "No document is open".into())
+}
+
+pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
+    park_active_document();
+    activate_document(OpenDocument {
+        id: next_document_id(),
+        document: Document::default(),
+        path: None,
+        fingerprint: None,
+    });
+    redraw()?;
+    emit_document();
+    Ok(workspace_snapshot())
+}
+
+pub fn switch_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
+    if DOCUMENT_OPEN.with(|open| open.get()) && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id
+    {
+        return Ok(workspace_snapshot());
+    }
+    let entry = INACTIVE_DOCUMENTS.with(|documents| {
+        let mut documents = documents.borrow_mut();
+        documents
+            .iter()
+            .position(|entry| entry.id == id)
+            .map(|index| documents.remove(index))
+    });
+    let Some(entry) = entry else {
+        return Err("Document not found".into());
+    };
+    park_active_document();
+    activate_document(entry);
+    redraw()?;
+    emit_document();
+    Ok(workspace_snapshot())
+}
+
+pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
+    let is_active = DOCUMENT_OPEN.with(|open| open.get())
+        && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id;
+    if is_active {
+        let dirty = DOCUMENT.with(|doc| doc.borrow().snapshot().dirty);
+        if dirty && !confirm_unsaved_changes() {
+            return Ok(workspace_snapshot());
+        }
+        DOCUMENT.with(|doc| *doc.borrow_mut() = Document::default());
+        PROJECT_PATH.with(|path| *path.borrow_mut() = None);
+        PROJECT_FINGERPRINT.with(|fingerprint| *fingerprint.borrow_mut() = None);
+        let next = INACTIVE_DOCUMENTS.with(|documents| documents.borrow_mut().pop());
+        if let Some(next) = next {
+            activate_document(next);
+            redraw()?;
+            emit_document();
+        } else {
+            DOCUMENT_OPEN.with(|open| open.set(false));
+            CHECKPOINT_REVISION.with(|last| last.set(None));
+            redraw()?;
+            emit_workspace();
+        }
+    } else {
+        INACTIVE_DOCUMENTS.with(|documents| -> Result<(), String> {
+            let mut documents = documents.borrow_mut();
+            let Some(index) = documents.iter().position(|entry| entry.id == id) else {
+                return Err("Document not found".into());
+            };
+            if documents[index].document.snapshot().dirty && !confirm_unsaved_changes() {
+                return Ok(());
+            }
+            documents.remove(index);
+            Ok(())
+        })?;
+        emit_workspace();
+    }
+    Ok(workspace_snapshot())
 }
 
 pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String> {
@@ -429,24 +634,32 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
             };
             // Validate before replacing anything or asking to discard work.
-            let loaded = crate::project_file::read(&path)?;
+            let (loaded, fingerprint) = crate::project_file::read_with_fingerprint(&path)?;
             for layer in loaded.svg_layers() {
                 validate_svg(&layer.source)?;
             }
-            if confirm_discard() {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                DOCUMENT.with(|doc| doc.borrow_mut().replace_loaded(loaded, name));
-                PROJECT_PATH.with(|slot| *slot.borrow_mut() = Some(path));
-                if let Err(error) = redraw() {
-                    emit_error(error);
-                }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let mut loaded = loaded;
+            loaded.mark_saved(name);
+            park_active_document();
+            activate_document(OpenDocument {
+                id: next_document_id(),
+                document: loaded,
+                path: Some(path),
+                fingerprint: Some(fingerprint),
+            });
+            if let Err(error) = redraw() {
+                emit_error(error);
             }
         }
         FileAction::Save | FileAction::SaveAs => {
+            if !DOCUMENT_OPEN.with(|open| open.get()) {
+                return Err("No document is open".into());
+            }
             let existing = PROJECT_PATH.with(|slot| slot.borrow().clone());
             let path = if matches!(action, FileAction::Save) && existing.is_some() {
                 existing
@@ -464,8 +677,20 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 dialog.save_file()
             };
             if let Some(path) = path {
+                if matches!(action, FileAction::Save) {
+                    let expected = PROJECT_FINGERPRINT.with(|slot| *slot.borrow());
+                    if let Some(expected) = expected {
+                        let current = crate::project_file::fingerprint(&path).map_err(|_| {
+                            "The project file was moved or deleted outside LumaPaint. Use Save As to keep your changes.".to_string()
+                        })?;
+                        if current != expected {
+                            return Err("The project file changed outside LumaPaint. Use Save As to avoid overwriting those changes.".into());
+                        }
+                    }
+                }
                 let bytes = DOCUMENT.with(|doc| doc.borrow_mut().encode())?;
                 crate::project_file::write(&path, &bytes)?;
+                let fingerprint = crate::project_file::fingerprint(&path)?;
                 let name = path
                     .file_name()
                     .unwrap_or_default()
@@ -473,6 +698,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     .into_owned();
                 DOCUMENT.with(|doc| doc.borrow_mut().mark_saved(name));
                 PROJECT_PATH.with(|slot| *slot.borrow_mut() = Some(path));
+                PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = Some(fingerprint));
             }
         }
     }
@@ -554,6 +780,22 @@ pub fn retry_recovery() -> Result<(), String> {
     checkpoint();
     Ok(())
 }
+pub fn delete_recovery(id: String) -> Result<crate::recovery::Info, String> {
+    RECOVERY.with(|slot| {
+        let recovery = slot.borrow();
+        let recovery = recovery.as_ref().ok_or("Recovery is unavailable")?;
+        recovery.delete_candidate(&id)?;
+        recovery.info()
+    })
+}
+pub fn delete_all_recoveries() -> Result<crate::recovery::Info, String> {
+    RECOVERY.with(|slot| {
+        let recovery = slot.borrow();
+        let recovery = recovery.as_ref().ok_or("Recovery is unavailable")?;
+        recovery.delete_all_candidates()?;
+        recovery.info()
+    })
+}
 pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     let document = RECOVERY.with(|slot| {
         slot.borrow()
@@ -564,11 +806,15 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     for layer in document.svg_layers() {
         validate_svg(&layer.source)?;
     }
-    if !confirm_discard() {
-        return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
-    }
-    DOCUMENT.with(|doc| doc.borrow_mut().replace_recovered(document));
-    PROJECT_PATH.with(|path| *path.borrow_mut() = None);
+    let mut recovered = Document::default();
+    recovered.replace_recovered(document);
+    park_active_document();
+    activate_document(OpenDocument {
+        id: next_document_id(),
+        document: recovered,
+        path: None,
+        fingerprint: None,
+    });
     RECOVERY.with(|slot| {
         if let Some(recovery) = slot.borrow_mut().as_mut() {
             recovery.adopt(&id);

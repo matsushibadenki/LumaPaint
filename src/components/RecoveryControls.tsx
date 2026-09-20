@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getRecoveryInfo, restoreRecovery, retryRecovery, type DocumentSnapshot, type RecoveryInfo } from '../bridge';
+import { deleteAllRecoveries, deleteRecovery, getRecoveryInfo, restoreRecovery, retryRecovery, type DocumentSnapshot, type RecoveryInfo } from '../bridge';
 import type { Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 
@@ -35,6 +35,17 @@ export function RecoveryControls({ locale, document, onDocument }: {
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   };
+  const remove = async (all: boolean) => {
+    if (busy || (!all && !id)) return;
+    const message = all ? t.deleteAllRecoveriesConfirm : t.deleteRecoveryConfirm;
+    if (!window.confirm(message)) return;
+    setBusy(true); setError('');
+    try {
+      const next = all ? await deleteAllRecoveries() : await deleteRecovery(id!);
+      setInfo(next); setSelected('');
+    } catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  };
   const failure = error || info?.status.error;
   const protectedRevision = info?.status.savedRevision === document.revision;
   const statusText = document.dirty ? protectedRevision && !info?.status.pending ? t.recoverySaved : t.recoveryPending : t.recoveryReady;
@@ -48,6 +59,8 @@ export function RecoveryControls({ locale, document, onDocument }: {
         {candidates.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{index + 1} · {new Date(candidate.modifiedMs).toLocaleString(locale)}</option>)}
       </select>
       <button disabled={busy} onClick={() => void run(true)}>{t.restoreRecovery}</button>
+      <button disabled={busy} onClick={() => void remove(false)}>{t.deleteRecovery}</button>
+      {candidates.length > 1 && <button disabled={busy} onClick={() => void remove(true)}>{t.deleteAllRecoveries}</button>}
       <button disabled={busy} onClick={() => setDismissed(true)}>{t.recoveryLater}</button>
     </section>}
   </div>;

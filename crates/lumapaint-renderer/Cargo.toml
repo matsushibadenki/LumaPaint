@@ -8,3 +8,6 @@ lumapaint-core = { path = "../lumapaint-core" }
 wgpu = "27"
 bytemuck = { version = "1", features = ["derive"] }
 resvg = "0.45"
+
+[dev-dependencies]
+pollster = "0.4"

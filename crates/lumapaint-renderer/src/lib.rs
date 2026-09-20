@@ -1,5 +1,5 @@
 //! GPU rendering shared across desktop platforms; native view ownership lives in the host.
-use lumapaint_core::document::{Document, Point, HEIGHT, WIDTH};
+use lumapaint_core::document::{Document, Point, Stroke, HEIGHT, WIDTH};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 pub use wgpu;
@@ -63,31 +63,221 @@ struct Segment {
     ends: [f32; 4],
     color: [f32; 4],
     radius: f32,
-    padding: [f32; 3],
+    hardness: f32,
+    weight: f32,
+    padding: f32,
 }
 
-fn segments(document: &Document) -> Vec<Segment> {
+fn linear_color(color: [u8; 3]) -> [f32; 4] {
+    let rgb = color.map(|channel| {
+        let value = f32::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    [rgb[0], rgb[1], rgb[2], 1.0]
+}
+
+// Integrate a radial brush tip along arc length, independent of input event density.
+// The carry across polyline vertices is essential: restarting dabs at every
+// vertex would reintroduce dark knots. A partial final interval has less weight.
+fn segments(stroke: &Stroke) -> Vec<Segment> {
+    let points = smooth_points(&stroke.points);
+    dabs_along_path(&points, stroke.brush)
+}
+
+fn dabs_along_path(points: &[Point], brush: lumapaint_core::document::Brush) -> Vec<Segment> {
+    let radius = brush.size * 0.5;
+    // Soft tips tolerate wider sampling. Avoid thousands of tiny half-float
+    // additions on wide brushes; hard edges keep a one-pixel upper bound.
+    let spacing = (radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
+    let color = linear_color(brush.color);
     let mut result = Vec::new();
-    for stroke in document.visible_strokes() {
-        let rgb = stroke.brush.color.map(|channel| {
-            let value = f32::from(channel) / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
+    let mut emit = |p: Point, length: f32| {
+        result.push(Segment {
+            ends: [p.x, p.y, p.x, p.y],
+            color,
+            radius,
+            hardness: brush.hardness,
+            // Optical depth per unit arc length; the shader converts it to alpha.
+            weight: length / radius,
+            padding: 0.0,
+        })
+    };
+    let mut traversed = 0.0;
+    let mut next = spacing * 0.5;
+    for pair in points.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        let length = (b.x - a.x).hypot(b.y - a.y);
+        if length <= f32::EPSILON {
+            continue;
+        }
+        while next < traversed + length {
+            let t = (next - traversed) / length;
+            emit(
+                Point {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                },
+                spacing,
+            );
+            next += spacing;
+        }
+        traversed += length;
+    }
+    if let Some(last) = points.last() {
+        if traversed < spacing * 0.5 {
+            // A click still produces a round mark.
+            emit(*last, radius);
+        } else {
+            // Correct the last quadrature cell instead of adding a full end dab.
+            let covered = next - spacing * 0.5;
+            let remainder = traversed - covered;
+            if remainder > 0.0 {
+                emit(*last, remainder);
+            } else if let Some(last_dab) = result.last_mut() {
+                last_dab.weight += remainder / radius;
             }
-        });
-        for (index, point) in stroke.points.iter().enumerate() {
-            let previous = stroke.points[index.saturating_sub(1)];
-            result.push(Segment {
-                ends: [previous.x, previous.y, point.x, point.y],
-                color: [rgb[0], rgb[1], rgb[2], 1.0],
-                radius: stroke.brush.size * 0.5,
-                padding: [0.0; 3],
+        }
+    }
+    result
+}
+
+fn smooth_points(points: &[Point]) -> Vec<Point> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+
+    let mut result = vec![points[0]];
+    for index in 0..points.len() - 1 {
+        let p0 = points[index.saturating_sub(1)];
+        let p1 = points[index];
+        let p2 = points[index + 1];
+        let p3 = points[(index + 2).min(points.len() - 1)];
+        let distance = (p2.x - p1.x).hypot(p2.y - p1.y);
+        let subdivisions = (distance / 1.5).ceil().clamp(1.0, 64.0) as usize;
+        for step in 1..=subdivisions {
+            let t = step as f32 / subdivisions as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            result.push(Point {
+                x: 0.5
+                    * ((2.0 * p1.x)
+                        + (-p0.x + p2.x) * t
+                        + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                        + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3),
+                y: 0.5
+                    * ((2.0 * p1.y)
+                        + (-p0.y + p2.y) * t
+                        + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                        + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3),
             });
         }
     }
     result
+}
+
+const BRUSH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+fn create_brush_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::RenderPipeline {
+    let brush_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Round brush"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("brush.wgsl").into()),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Round brush pipeline"), layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32] }],
+            },
+            primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: BRUSH_FORMAT, blend: Some(wgpu::BlendState {
+color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max },
+alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+}), write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview: None, cache: None,
+        })
+}
+
+fn create_brush_composite(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Brush mask texture layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let brush_composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Brush composite layout"),
+        bind_group_layouts: &[&bind_layout],
+        push_constant_ranges: &[],
+    });
+    let brush_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Brush mask composite"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("brush_composite.wgsl").into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Brush composite pipeline"),
+        layout: Some(&brush_composite_layout),
+        vertex: wgpu::VertexState {
+            module: &brush_composite_shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &brush_composite_shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (bind_layout, pipeline)
 }
 
 fn rasterize_svg(source: &str) -> Result<Vec<u8>, String> {
@@ -127,6 +317,9 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     brush_pipeline: wgpu::RenderPipeline,
+    brush_composite_pipeline: wgpu::RenderPipeline,
+    brush_bind_layout: wgpu::BindGroupLayout,
+    brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
@@ -239,21 +432,12 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let brush_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Round brush"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("brush.wgsl").into()),
-        });
-        let brush_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Round brush pipeline"), layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32] }],
-            },
-            primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview: None, cache: None,
+        let brush_pipeline = create_brush_pipeline(&device, &layout);
+        let (brush_bind_layout, brush_composite_pipeline) = create_brush_composite(&device, format);
+        let brush_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
         });
         let svg_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SVG texture layout"),
@@ -350,6 +534,9 @@ impl Renderer {
             config,
             pipeline,
             brush_pipeline,
+            brush_composite_pipeline,
+            brush_bind_layout,
+            brush_sampler,
             svg_pipeline,
             svg_bind_layout,
             svg_sampler,
@@ -409,7 +596,7 @@ impl Renderer {
             bytemuck::bytes_of(&Self::uniforms(viewport)),
         );
         let view = frame.texture.create_view(&Default::default());
-        let segments = segments(document);
+        let stroke_segments: Vec<_> = document.visible_strokes().map(segments).collect();
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         for layer in document.visible_svg_layers() {
@@ -464,13 +651,49 @@ impl Renderer {
                 },
             );
         }
-        let brush_buffer = (!segments.is_empty()).then(|| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Stroke segments"),
-                    contents: bytemuck::cast_slice(&segments),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
+        let brush_buffers: Vec<_> = stroke_segments
+            .iter()
+            .map(|segments| {
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Brush dabs"),
+                        contents: bytemuck::cast_slice(segments),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            })
+            .collect();
+        let brush_mask = (!brush_buffers.is_empty()).then(|| {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Brush paint mask"),
+                size: wgpu::Extent3d {
+                    width: viewport.width,
+                    height: viewport.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: BRUSH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let mask_view = texture.create_view(&Default::default());
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Brush paint mask"),
+                layout: &self.brush_bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&mask_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.brush_sampler),
+                    },
+                ],
+            });
+            (texture, mask_view, bind_group)
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -490,11 +713,60 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
-            if let Some(buffer) = &brush_buffer {
-                pass.set_pipeline(&self.brush_pipeline);
-                pass.set_vertex_buffer(0, buffer.slice(..));
-                pass.draw(0..6, 0..segments.len() as u32);
+        }
+        if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
+            for (buffer, segments) in brush_buffers.iter().zip(stroke_segments.iter()) {
+                let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Brush paint pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: mask_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                mask_pass.set_pipeline(&self.brush_pipeline);
+                mask_pass.set_bind_group(0, &self.bind_group, &[]);
+                mask_pass.set_vertex_buffer(0, buffer.slice(..));
+                mask_pass.draw(0..6, 0..segments.len() as u32);
+                drop(mask_pass);
+
+                let mut composite_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Stroke composite pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                composite_pass.set_pipeline(&self.brush_composite_pipeline);
+                composite_pass.set_bind_group(0, mask_bind_group, &[]);
+                composite_pass.draw(0..6, 0..1);
             }
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SVG layer render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
             for layer in document.visible_svg_layers() {
                 let bind_group = &self.svg_cache[&layer.id].bind_group;
                 pass.set_pipeline(&self.svg_pipeline);
@@ -512,6 +784,22 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brush_curve_interpolation_preserves_endpoints_and_adds_smooth_samples() {
+        let points = [
+            Point { x: 0.0, y: 10.0 },
+            Point { x: 10.0, y: 0.0 },
+            Point { x: 20.0, y: 10.0 },
+        ];
+        let smoothed = smooth_points(&points);
+        assert!(smoothed.len() > points.len());
+        assert_eq!((smoothed[0].x, smoothed[0].y), (0.0, 10.0));
+        let last = smoothed.last().unwrap();
+        assert!((last.x - 20.0).abs() < 0.001);
+        assert!((last.y - 10.0).abs() < 0.001);
+        assert!(smoothed.iter().any(|point| point.y < 1.0));
+    }
 
     #[test]
     fn document_center_is_stable_at_retina_and_zoom() {
@@ -546,3 +834,6 @@ mod tests {
         assert!(validate_svg("not svg").is_err());
     }
 }
+
+#[cfg(test)]
+mod gpu_tests;

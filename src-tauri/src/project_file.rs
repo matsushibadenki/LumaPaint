@@ -1,17 +1,50 @@
 //! Bounded reads and same-directory atomic replacement. No path supplied by the WebView.
 use lumapaint_core::document::{Document, MAX_FILE_BYTES};
 use std::{
+    hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
     path::Path,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileFingerprint {
+    length: usize,
+    hash: u64,
+}
+
 pub fn read(path: &Path) -> Result<Document, String> {
+    read_with_fingerprint(path).map(|(document, _)| document)
+}
+
+pub fn read_with_fingerprint(path: &Path) -> Result<(Document, FileFingerprint), String> {
+    let bytes = read_bytes(path)?;
+    let fingerprint = fingerprint_bytes(&bytes);
+    Ok((Document::decode(&bytes)?, fingerprint))
+}
+
+pub fn fingerprint(path: &Path) -> Result<FileFingerprint, String> {
+    read_bytes(path).map(|bytes| fingerprint_bytes(&bytes))
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    Document::decode(&bytes)
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err("Project exceeds 8 MiB".into());
+    }
+    Ok(bytes)
+}
+
+fn fingerprint_bytes(bytes: &[u8]) -> FileFingerprint {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    FileFingerprint {
+        length: bytes.len(),
+        hash: hasher.finish(),
+    }
 }
 
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -46,5 +79,15 @@ mod tests {
         std::fs::write(destination.join("keep"), b"data").unwrap();
         assert!(write(&destination, b"new").is_err());
         assert_eq!(std::fs::read(destination.join("keep")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn fingerprint_detects_same_length_external_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.lumapaint");
+        std::fs::write(&path, b"first").unwrap();
+        let original = fingerprint(&path).unwrap();
+        std::fs::write(&path, b"other").unwrap();
+        assert_ne!(fingerprint(&path).unwrap(), original);
     }
 }

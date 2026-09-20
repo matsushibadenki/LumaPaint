@@ -1,15 +1,25 @@
 import { useEffect, useState } from 'react';
 import type { Brush } from '../bridge';
 
+export const MAX_BRUSH_SIZE = 512;
+
+export function PercentInput({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
+  const percent = Math.round(value * 100);
+  return <span className="number-field percent-field"><input aria-label={label} type="number" min="0" max="100" value={percent} onChange={event => {
+    const next = Number(event.target.value);
+    if (Number.isFinite(next)) onChange(Math.min(100, Math.max(0, next)) / 100);
+  }} /><span>%</span></span>;
+}
+
 export function SizeInput({ value, onChange, label, disabled = false }: { value: number; onChange: (value: number) => void; label: string; disabled?: boolean }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
   const commit = () => {
     const number = Number(draft);
-    const next = Number.isFinite(number) ? Math.min(128, Math.max(1, Math.round(number))) : value;
+    const next = Number.isFinite(number) ? Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(number))) : value;
     setDraft(String(next)); onChange(next);
   };
-  return <span className="number-field"><input aria-label={label} type="number" min="1" max="128" value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { commit(); event.currentTarget.blur(); } }} /><span>px</span></span>;
+  return <span className="number-field"><input aria-label={label} type="number" min="1" max={MAX_BRUSH_SIZE} value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { commit(); event.currentTarget.blur(); } }} /><span>px</span></span>;
 }
 
 export function toHex(color: Brush['color']): string { return '#' + color.map(value => value.toString(16).padStart(2, '0')).join(''); }

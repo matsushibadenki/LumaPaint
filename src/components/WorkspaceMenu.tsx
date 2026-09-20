@@ -18,8 +18,9 @@ type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | Pre
 const colorModes: { value: ColorMode; label: string }[] = [{ value: 'rgb', label: 'RGB' }, { value: 'cmyk', label: 'CMYK' }];
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
-  locale: Locale; document: DocumentSnapshot; canFile: boolean; canEdit: boolean;
+  locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
+  onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
   onEdit: (action: 'undo' | 'redo' | 'toggleLayer') => void; onZoom: (value: number) => void;
   onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void;
@@ -27,17 +28,18 @@ type Props = {
 };
 
 export function WorkspaceMenu(props: Props) {
-  const { locale, document: doc, canFile, canEdit, zoom, panels, onFile, onImportSvg, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
   const future = (label: string): Entry => ({ label, planned: true });
   const menus: Entry[][] = [
-    [future(t.new), { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
-      { label: t.importSvg, enabled: canFile, action: onImportSvg }, null,
-      { label: w.save, enabled: canFile, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
-      { label: w.saveAs + '…', enabled: canFile, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, future(t.export)],
+    [{ label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
+      { label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
+      { label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
+      { label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
+      { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, future(t.export)],
     [{ label: w.undo, enabled: canEdit && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
       { label: w.redo, enabled: canEdit && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
-      { label: t.colorSettings, action: onColorSettings }, null, future(t.cut), future(t.copy), future(t.paste)],
+      { label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, future(t.cut), future(t.copy), future(t.paste)],
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],

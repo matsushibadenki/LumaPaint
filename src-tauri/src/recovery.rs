@@ -214,6 +214,32 @@ impl Recovery {
         }
         project_file::read(&path)
     }
+    pub fn delete_candidate(&self, id: &str) -> Result<(), String> {
+        if !candidate_id(id) {
+            return Err("Invalid recovery identifier".into());
+        }
+        let path = self.directory.join(id);
+        if path == self.current {
+            return Err("The active recovery copy cannot be deleted".into());
+        }
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err("Invalid recovery file".into());
+        }
+        remove_if_present(&path)
+    }
+    pub fn delete_all_candidates(&self) -> Result<(), String> {
+        let ids = self
+            .info()?
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.delete_candidate(&id)?;
+        }
+        Ok(())
+    }
     pub fn adopt(&mut self, id: &str) {
         self.source = Some(self.directory.join(id));
     }
@@ -328,5 +354,19 @@ mod tests {
                 .stroke_count,
             1
         );
+    }
+
+    #[test]
+    fn candidates_can_be_deleted_individually_or_together() {
+        let directory = tempfile::tempdir().unwrap();
+        for id in ["session-one.lumapaint", "session-two.lumapaint"] {
+            project_file::write(&directory.path().join(id), &drawing().encode().unwrap()).unwrap();
+        }
+        let recovery = Recovery::start(directory.path().into()).unwrap();
+        recovery.delete_candidate("session-one.lumapaint").unwrap();
+        assert_eq!(recovery.info().unwrap().candidates.len(), 1);
+        recovery.delete_all_candidates().unwrap();
+        assert!(recovery.info().unwrap().candidates.is_empty());
+        assert!(recovery.delete_candidate("../writer.lock").is_err());
     }
 }

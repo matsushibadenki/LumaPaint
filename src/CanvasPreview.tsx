@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { onNativeScaleChange, syncCanvas, type Brush, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
 import { Icon } from './components/Icon';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, zoom, visible = true, onZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; zoom: number; onZoom: (zoom: number) => void;
-  visible?: boolean;
+  visible?: boolean; hasDocument?: boolean; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
   const t = messages[locale];
@@ -105,9 +105,9 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, onZo
   }, [attempt, onDocument, visible]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" role="img" aria-label={t.canvasNote}>
-      <div className="paper-preview" aria-hidden="true" />
-      {status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? t.canvasNote : undefined}>
+      {hasDocument && <div className="paper-preview" aria-hidden="true" />}
+      {hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
     </div>
     <div className="canvas-footer">
       <div className="zoom-controls">
@@ -116,6 +116,7 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, onZo
         <button type="button" className="icon-button" title={t.zoomIn} aria-label={t.zoomIn} disabled={status !== 'ready' || zoom >= 4} onClick={() => onZoom(Math.min(4, zoom * 1.25))}><Icon name="plus" /></button>
         <button type="button" disabled={status !== 'ready'} onClick={() => onZoom(1)}>{t.fit}</button>
       </div>
+      {footerAccessory}
       <span className="canvas-state" role="status" title={info ? `${info.backend} · ${info.adapterName} · ${info.physicalWidth} × ${info.physicalHeight} px · ${info.scaleFactor}×` : undefined}>{t.canvasStatus[status]}</span>
       {status === 'failed' && <button onClick={() => { setError(''); setStatus('loading'); setAttempt(value => value + 1); }}>{t.retry}</button>}
     </div>

@@ -52,6 +52,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_info,
             canvas::sync_canvas,
+            canvas::document_workspace,
+            canvas::new_document,
+            canvas::switch_document,
+            canvas::close_document,
             canvas::edit_document,
             canvas::toggle_layer,
             canvas::set_color_mode,
@@ -61,6 +65,8 @@ pub fn run() {
             canvas::import_svg_layer,
             canvas::recovery_info,
             canvas::restore_recovery,
+            canvas::delete_recovery,
+            canvas::delete_all_recoveries,
             canvas::retry_recovery
         ])
         .on_window_event(|window, event| {

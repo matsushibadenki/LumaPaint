@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const WIDTH: f32 = 960.0;
 pub const HEIGHT: f32 = 640.0;
 const MAX_POINTS: usize = 65_536;
+pub const MAX_BRUSH_SIZE: f32 = 512.0;
 const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SVG_TOTAL_BYTES: usize = 6 * 1024 * 1024;
 const MAX_SVG_LAYERS: usize = 16;
@@ -41,13 +42,20 @@ impl ColorProfile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
     pub size: f32,
+    #[serde(default = "default_hardness")]
+    pub hardness: f32,
     pub color: [u8; 3],
+}
+
+const fn default_hardness() -> f32 {
+    1.0
 }
 
 impl Default for Brush {
     fn default() -> Self {
         Self {
             size: 16.0,
+            hardness: default_hardness(),
             color: [32, 32, 32],
         }
     }
@@ -55,8 +63,11 @@ impl Default for Brush {
 
 impl Brush {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.size.is_finite() || !(1.0..=128.0).contains(&self.size) {
-            return Err("Brush size must be between 1 and 128 px".into());
+        if !self.size.is_finite() || !(1.0..=MAX_BRUSH_SIZE).contains(&self.size) {
+            return Err("Brush size must be between 1 and 512 px".into());
+        }
+        if !self.hardness.is_finite() || !(0.0..=1.0).contains(&self.hardness) {
+            return Err("Brush hardness must be between 0 and 1".into());
         }
         Ok(())
     }
@@ -484,6 +495,31 @@ mod tests {
         doc.finish();
         assert_eq!(doc.visible_strokes().next().unwrap().points.len(), 1);
     }
+
+    #[test]
+    fn brush_accepts_sizes_up_to_512_px() {
+        assert!(Brush {
+            size: 512.0,
+            hardness: 1.0,
+            color: [0, 0, 0]
+        }
+        .validate()
+        .is_ok());
+        assert!(Brush {
+            size: 513.0,
+            hardness: 1.0,
+            color: [0, 0, 0]
+        }
+        .validate()
+        .is_err());
+        assert!(Brush {
+            size: 16.0,
+            hardness: 1.01,
+            color: [0, 0, 0]
+        }
+        .validate()
+        .is_err());
+    }
 }
 
 /// v1 is a bounded, stroke-based exchange format, not the future tiled project container.
@@ -541,6 +577,7 @@ mod persistence_tests {
                 Point { x: 20.0, y: 40.0 },
                 Brush {
                     size: 37.0,
+                    hardness: 0.35,
                     color: [12, 34, 56],
                 },
             )
@@ -562,7 +599,23 @@ mod persistence_tests {
         let stroke = loaded.visible_strokes().next().unwrap();
         assert_eq!(stroke.brush.color, [12, 34, 56]);
         assert_eq!(stroke.brush.size, 37.0);
+        assert_eq!(stroke.brush.hardness, 0.35);
         assert_eq!(stroke.points[0].y, 40.0);
+    }
+
+    #[test]
+    fn old_strokes_default_to_full_hardness() {
+        let mut doc = Document::default();
+        doc.begin(Point { x: 1.0, y: 1.0 }, Brush::default())
+            .unwrap();
+        doc.finish();
+        let mut value: serde_json::Value = serde_json::from_slice(&doc.encode().unwrap()).unwrap();
+        value["strokes"][0]["brush"]
+            .as_object_mut()
+            .unwrap()
+            .remove("hardness");
+        let loaded = Document::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(loaded.visible_strokes().next().unwrap().brush.hardness, 1.0);
     }
     #[test]
     fn rejects_unknown_versions_invalid_brush_and_truncated_files() {

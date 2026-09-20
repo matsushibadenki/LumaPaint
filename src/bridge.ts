@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export interface Brush { size: number; color: [number, number, number] }
+export interface Brush { size: number; hardness: number; color: [number, number, number] }
 export interface DocumentSnapshot {
   width: number; height: number; layerId: string; layerVisible: boolean;
   colorMode: ColorMode;
@@ -11,6 +11,8 @@ export interface DocumentSnapshot {
   strokeCount: number; layers: LayerSnapshot[]; canUndo: boolean; canRedo: boolean; revision: number; dirty: boolean; fileName: string | null;
 }
 export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg'; visible: boolean; strokeCount: number }
+export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean }
+export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
 export type ColorMode = 'rgb' | 'cmyk';
 export type ColorProfile = 'srgb' | 'displayP3' | 'adobeRgb1998' | 'japanColor2001Coated';
 export type BitDepth = 8 | 16 | 32;
@@ -77,6 +79,26 @@ export async function subscribeDocument(onDocument: (value: DocumentSnapshot) =>
   } catch (error) { stopDocument(); throw error; }
 }
 
+export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceSnapshot) => void) {
+  if (!isTauri()) return () => {};
+  return listen<DocumentWorkspaceSnapshot>('documents-changed', event => onDocuments(event.payload));
+}
+
+export async function getDocumentWorkspace(): Promise<DocumentWorkspaceSnapshot> {
+  if (!isTauri()) return { activeId: 1, active: emptyDocument, documents: [{ id: 1, fileName: null, dirty: false }] };
+  return invoke<DocumentWorkspaceSnapshot>('document_workspace');
+}
+
+function documentCommand(command: 'new_document' | 'switch_document' | 'close_document', id?: number): Promise<DocumentWorkspaceSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentWorkspaceSnapshot>(command, id === undefined ? undefined : { id }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export const createDocument = () => documentCommand('new_document');
+export const switchDocument = (id: number) => documentCommand('switch_document', id);
+export const closeDocument = (id: number) => documentCommand('close_document', id);
+
 // Serialize view updates and teardown, including React StrictMode's setup/cleanup replay.
 let canvasQueue: Promise<void> = Promise.resolve();
 export function syncCanvas(request: CanvasRequest): Promise<CanvasInfo | null> {
@@ -121,3 +143,5 @@ export function restoreRecovery(id: string): Promise<DocumentSnapshot> {
   return result;
 }
 export async function retryRecovery(): Promise<void> { await invoke('retry_recovery'); }
+export async function deleteRecovery(id: string): Promise<RecoveryInfo> { return invoke<RecoveryInfo>('delete_recovery', { id }); }
+export async function deleteAllRecoveries(): Promise<RecoveryInfo> { return invoke<RecoveryInfo>('delete_all_recoveries'); }
