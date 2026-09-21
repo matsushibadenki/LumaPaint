@@ -31,6 +31,64 @@ pub enum VectorObjectKind {
     Path,
     Rectangle,
     Ellipse,
+    Text,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VectorText {
+    pub content: String,
+    pub font_family: String,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub bold: bool,
+}
+
+impl VectorText {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.content.trim().is_empty()
+            || self.content.chars().count() > 4096
+            || self.content.split('\n').count() > 64
+            || self
+                .content
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            || !["sans-serif", "serif", "monospace"].contains(&self.font_family.as_str())
+            || !self.font_size.is_finite()
+            || !(1.0..=512.0).contains(&self.font_size)
+            || !self.line_height.is_finite()
+            || !(0.8..=3.0).contains(&self.line_height)
+        {
+            return Err("Invalid text settings".into());
+        }
+        Ok(())
+    }
+
+    pub fn control_points(&self) -> Vec<[f32; 2]> {
+        // Conservative selection bounds; typography-specific glyph bounds can replace this later.
+        let width = self
+            .content
+            .split('\n')
+            .map(|line| {
+                line.chars()
+                    .map(|c| {
+                        if c == '\t' {
+                            2.8
+                        } else if c.is_ascii() {
+                            0.7
+                        } else {
+                            1.0
+                        }
+                    })
+                    .sum::<f32>()
+            })
+            .fold(1.0, f32::max)
+            * self.font_size;
+        let height =
+            (self.content.split('\n').count() as f32 - 1.0) * self.font_size * self.line_height
+                + self.font_size * 1.25;
+        vec![[0.0, 0.0], [width, height]]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -49,6 +107,8 @@ pub struct VectorObject {
     pub kind: VectorObjectKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub control_points: Vec<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<VectorText>,
 }
 
 impl VectorObject {
@@ -71,6 +131,13 @@ impl VectorObject {
                 .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
         {
             return Err("Invalid vector object".into());
+        }
+        match (&self.kind, &self.text) {
+            (VectorObjectKind::Text, Some(text)) => text.validate()?,
+            (VectorObjectKind::Text, None) | (_, Some(_)) => {
+                return Err("Invalid text object".into())
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -102,7 +169,7 @@ impl VectorObject {
             .map(|p| p[1])
             .fold(f32::NEG_INFINITY, f32::max);
         match self.kind {
-            VectorObjectKind::Rectangle => {
+            VectorObjectKind::Rectangle | VectorObjectKind::Text => {
                 point[0] >= min_x - tolerance
                     && point[0] <= max_x + tolerance
                     && point[1] >= min_y - tolerance

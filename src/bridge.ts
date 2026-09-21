@@ -16,11 +16,20 @@ export interface DocumentSnapshot {
   bitDepth: BitDepth;
   strokeCount: number; layers: LayerSnapshot[]; canUndo: boolean; canRedo: boolean; revision: number; dirty: boolean; fileName: string | null;
   selectedVectorObjects: string[];
+  textObjects: TextObjectSnapshot[];
 }
 export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
+export interface VectorText { content: string; fontFamily: 'sans-serif' | 'serif' | 'monospace'; fontSize: number; lineHeight: number; bold: boolean }
+export interface TextSettings { id: string | null; text: VectorText; position: [number, number]; color: [number, number, number] }
+export interface TextObjectSnapshot extends Omit<TextSettings, 'id'> { id: string; editable: boolean }
+export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_text_object', { settings: { id: settings.id, text: settings.text, position: settings.position, color: settings.color } }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
 export interface VectorPaint { color: [number, number, number, number] }
-export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'rectangle' | 'ellipse'; controlPoints: [number, number][] }
+export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
@@ -30,7 +39,7 @@ export type BitDepth = 8 | 16 | 32;
 export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
-export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -212,4 +221,14 @@ export async function deleteAllRecoveries(): Promise<RecoveryInfo> { return invo
 export async function subscribeCanvasTool(onTool: (tool: CanvasTool) => void) {
   if (!isTauri()) return () => {};
   return listen<CanvasTool>('canvas-tool-changed', event => onTool(event.payload));
+}
+
+export async function subscribeCanvasColorSwap(onSwap: () => void) {
+  if (!isTauri()) return () => {};
+  return listen('canvas-swap-colors', onSwap);
+}
+
+export async function subscribeCanvasText(onEdit: () => void) {
+  if (!isTauri()) return () => {};
+  return listen('canvas-text-edit', onEdit);
 }

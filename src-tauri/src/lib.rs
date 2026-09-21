@@ -85,7 +85,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             runtime_info,
-            tool_menu::selection_tool_menu,
+            tool_menu::icon_tool_menu,
             canvas::sync_canvas,
             canvas::reset_canvas_pan,
             canvas::document_workspace,
@@ -99,6 +99,7 @@ pub fn run() {
             canvas::add_paint_layer,
             canvas::add_vector_layer,
             canvas::upsert_vector_object,
+            canvas::set_text_object,
             canvas::select_vector_objects,
             canvas::reorder_layers,
             canvas::set_color_mode,

@@ -5,7 +5,7 @@ import { workspaceMessages } from '../workspace-i18n';
 import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput, fromHex, toHex } from './BrushControls';
 import { Icon } from './Icon';
 import { LayerList } from './LayerList';
-import { ColorPanel, colorPanelLabels } from './ColorPanel';
+import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
 
 const swatches = ['#202020', '#808080', '#ffffff', '#e5796b', '#d6a13e', '#6b9c76', '#538fd2', '#a875ce'];
 const panelIds = ['brush', 'color', 'document', 'layers'] as const;
@@ -50,13 +50,15 @@ function Grip() {
   return <svg className="tab-grip" viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1" /><circle cx="6" cy="2" r="1" /><circle cx="2" cy="6" r="1" /><circle cx="6" cy="6" r="1" /><circle cx="2" cy="10" r="1" /><circle cx="6" cy="10" r="1" /></svg>;
 }
 
-export function Inspector({ locale, brush, onBrush, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onReorderLayer, enabled }: {
+export function Inspector({ locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onReorderLayer, enabled }: {
   locale: Locale; brush: Brush; onBrush: (brush: Brush) => void; document: DocumentSnapshot; onToggleLayer: (id: string) => void; enabled: boolean;
+  backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; colorPanelRequest: number; onBackgroundChange: (color: Brush['color']) => void; onSwapColors: () => void;
   onDocumentSettings: (settings: DocumentSettings) => void; onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void; onColorProfile: (profile: ColorProfile) => void; onLayerSettings: (settings: LayerSettings) => void; onDeleteLayer: (id: string) => void; onAddLayer: () => void; onReorderLayer: (ids: string[]) => void;
 }) {
   const t = workspaceMessages[locale];
   const [order, setOrder] = useState<PanelId[]>(initialPanelOrder);
-  const [activePanel, setActivePanel] = useState<PanelId>(initialPanel);
+  const [activePanel, setActivePanel] = useState<PanelId>(() => colorPanelRequest > 0 ? 'color' : initialPanel());
+  useEffect(() => { if (colorPanelRequest > 0) setActivePanel('color'); }, [colorPanelRequest]);
   const [draggedPanel, setDraggedPanel] = useState<PanelId | null>(null);
   const [dropTarget, setDropTarget] = useState<PanelId | null>(null);
   const [settings, setSettings] = useState<DocumentSettings>(() => ({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio }));
@@ -150,7 +152,7 @@ export function Inspector({ locale, brush, onBrush, document, onDocumentSettings
     </div>
 
     {activePanel === 'color' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">
-      <ColorPanel locale={locale} color={brush.color} onChange={color => onBrush({ ...brush, color })} />
+      <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={color => onBrush({ ...brush, color })} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
       <p className="muted small">{t.roundBrush}</p>

@@ -1,17 +1,19 @@
 //! Borderless icon pickers stay above Metal without AppKit menu chrome.
-use crate::canvas::CanvasTool;
 
 #[derive(serde::Serialize)]
 pub struct ToolMenuResult {
     supported: bool,
-    tool: Option<CanvasTool>,
+    index: Option<usize>,
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolMenuRequest {
     x: f64,
     y: f64,
-    selected: CanvasTool,
+    selected: usize,
+    enabled: [bool; 2],
+    selection_shortcuts: bool,
     labels: [String; 2],
     images: ToolMenuImages,
 }
@@ -22,11 +24,13 @@ struct ToolMenuImages {
 }
 
 #[tauri::command]
-pub async fn selection_tool_menu(
+pub async fn icon_tool_menu(
     window: tauri::WebviewWindow,
     request: ToolMenuRequest,
 ) -> Result<ToolMenuResult, String> {
-    if window.label() != "main"
+    if request.selected > 1
+        || !request.enabled.iter().any(|enabled| *enabled)
+        || window.label() != "main"
         || !request.x.is_finite()
         || !request.y.is_finite()
         || request
@@ -52,17 +56,21 @@ pub async fn selection_tool_menu(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (request.selected, request.labels);
+        let _ = (
+            request.selected,
+            request.labels,
+            request.selection_shortcuts,
+        );
         Ok(ToolMenuResult {
             supported: false,
-            tool: None,
+            index: None,
         })
     }
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{CanvasTool, ToolMenuRequest, ToolMenuResult};
+    use super::{ToolMenuRequest, ToolMenuResult};
     use objc2::{
         define_class, msg_send, rc::Retained, sel, AnyThread, ClassType, DefinedClass,
         MainThreadMarker, MainThreadOnly,
@@ -93,7 +101,9 @@ mod macos {
         finished: Cell<bool>,
         buttons: [Retained<ToolButton>; 2],
         focused: Cell<usize>,
-        chosen: Cell<Option<CanvasTool>>,
+        chosen: Cell<Option<usize>>,
+        enabled: [bool; 2],
+        selection_shortcuts: bool,
     }
 
     pub struct ButtonImages {
@@ -130,7 +140,7 @@ mod macos {
 
             #[unsafe(method(choose:))]
             fn choose(&self, button: &NSButton) {
-                self.commit(button.tag() == 1);
+                self.commit(button.tag() as usize);
             }
 
             #[unsafe(method(keyDown:))]
@@ -141,9 +151,9 @@ mod macos {
                     123..=126 => self.focus(1 - focused),
                     115 => self.focus(0),
                     119 => self.focus(1),
-                    36 | 49 | 76 => self.commit(focused == 1),
-                    46 if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) => {
-                        self.commit(event.modifierFlags().contains(NSEventModifierFlags::Shift));
+                    36 | 49 | 76 => self.commit(focused),
+                    46 if self.ivars().selection_shortcuts && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) => {
+                        self.commit(usize::from(event.modifierFlags().contains(NSEventModifierFlags::Shift)));
                     }
                     _ => unsafe { msg_send![super(self), keyDown: event] },
                 }
@@ -153,6 +163,9 @@ mod macos {
 
     impl ToolPicker {
         fn focus(&self, index: usize) {
+            if !self.ivars().enabled[index] {
+                return;
+            }
             self.ivars().focused.set(index);
             for (i, button) in self.ivars().buttons.iter().enumerate() {
                 button.setState(isize::from(index == i));
@@ -160,12 +173,11 @@ mod macos {
             }
         }
 
-        fn commit(&self, ellipse: bool) {
-            self.ivars().chosen.set(Some(if ellipse {
-                CanvasTool::Ellipse
-            } else {
-                CanvasTool::Rectangle
-            }));
+        fn commit(&self, index: usize) {
+            if !self.ivars().enabled[index] {
+                return;
+            }
+            self.ivars().chosen.set(Some(index));
             self.ivars().finished.set(true);
         }
     }
@@ -198,9 +210,10 @@ mod macos {
             });
             // SAFETY: initialize this allocated NSButton once on the main thread.
             let button: Retained<ToolButton> = unsafe {
-                msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(index as f64 * 40.0, 0.0), NSSize::new(36.0, 36.0))]
+                msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(index as f64 * 36.0, 0.0), NSSize::new(36.0, 36.0))]
             };
             button.setButtonType(NSButtonType::Toggle);
+            button.setEnabled(request.enabled[index]);
             button.setBordered(false);
             button.setTitle(&label);
             button.setImage(Some(&normal));
@@ -214,10 +227,12 @@ mod macos {
             buttons,
             focused: Cell::new(0),
             chosen: Cell::new(None),
+            enabled: request.enabled,
+            selection_shortcuts: request.selection_shortcuts,
         });
         // SAFETY: initialize the allocated NSView once; targets stay alive through tracking.
         let picker: Retained<ToolPicker> = unsafe {
-            msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(76.0, 36.0))]
+            msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(72.0, 36.0))]
         };
         for button in &picker.ivars().buttons {
             picker.addSubview(button);
@@ -226,7 +241,11 @@ mod macos {
                 button.setAction(Some(sel!(choose:)));
             }
         }
-        picker.focus(usize::from(request.selected == CanvasTool::Ellipse));
+        picker.focus(if request.enabled[request.selected] {
+            request.selected
+        } else {
+            1 - request.selected
+        });
         // Anchor the row's center to the trigger's center, with no menu padding.
         let bounds = parent.bounds();
         let safe = parent.safeAreaInsets();
@@ -245,7 +264,7 @@ mod macos {
             let bounds = display.visibleFrame();
             origin.x = origin
                 .x
-                .clamp(bounds.origin.x, bounds.origin.x + bounds.size.width - 76.0);
+                .clamp(bounds.origin.x, bounds.origin.x + bounds.size.width - 72.0);
             origin.y = origin
                 .y
                 .clamp(bounds.origin.y, bounds.origin.y + bounds.size.height - 36.0);
@@ -253,7 +272,7 @@ mod macos {
         let allocated = PickerWindow::alloc(mtm).set_ivars(());
         // SAFETY: initialize once on the main thread; Rust owns the window's lifetime.
         let window: Retained<PickerWindow> = unsafe {
-            msg_send![super(allocated), initWithContentRect: NSRect::new(origin, NSSize::new(76.0, 36.0)), styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
+            msg_send![super(allocated), initWithContentRect: NSRect::new(origin, NSSize::new(72.0, 36.0)), styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
         };
         unsafe {
             window.setReleasedWhenClosed(false);
@@ -303,7 +322,7 @@ mod macos {
             }
             app.sendEvent(&event);
         }
-        let tool = picker.ivars().chosen.get();
+        let index = picker.ivars().chosen.get();
         owner.removeChildWindow(&window);
         window.orderOut(None);
         window.setContentView(None);
@@ -318,7 +337,7 @@ mod macos {
         }
         Ok(ToolMenuResult {
             supported: true,
-            tool,
+            index,
         })
     }
 }

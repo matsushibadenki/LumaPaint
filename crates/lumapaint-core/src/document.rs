@@ -4,7 +4,7 @@ use crate::selection::SelectionGesture;
 pub use crate::selection::{
     Selection, SelectionMode, SelectionOperation, SelectionRegion, SelectionShape,
 };
-use crate::vector::VectorObject;
+use crate::vector::{VectorObject, VectorObjectKind, VectorText};
 use serde::{Deserialize, Serialize};
 
 pub const WIDTH: f32 = 960.0;
@@ -212,6 +212,25 @@ pub struct LayerSnapshot {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TextObjectSnapshot {
+    pub id: String,
+    pub text: VectorText,
+    pub position: [f32; 2],
+    pub color: [u8; 3],
+    pub editable: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextSettings {
+    pub id: Option<String>,
+    pub text: VectorText,
+    pub position: [f32; 2],
+    pub color: [u8; 3],
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
     pub selection: Option<Selection>,
     pub name: String,
@@ -230,6 +249,7 @@ pub struct DocumentSnapshot {
     pub stroke_count: usize,
     pub layers: Vec<LayerSnapshot>,
     pub selected_vector_objects: Vec<String>,
+    pub text_objects: Vec<TextObjectSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
     pub revision: u64,
@@ -381,6 +401,25 @@ impl Document {
             bit_depth: self.bit_depth,
             stroke_count: self.strokes.len(),
             layers,
+            text_objects: self
+                .svg_layers
+                .iter()
+                .filter(|layer| layer.vector_layer)
+                .flat_map(|layer| {
+                    layer.vector_objects.iter().filter_map(move |object| {
+                        object.text.as_ref().map(|text| {
+                            let color = object.fill.map_or([0, 0, 0, 255], |fill| fill.color);
+                            TextObjectSnapshot {
+                                id: object.id.clone(),
+                                text: text.clone(),
+                                position: [object.transform[4], object.transform[5]],
+                                color: [color[0], color[1], color[2]],
+                                editable: !layer.locked,
+                            }
+                        })
+                    })
+                })
+                .collect(),
             selected_vector_objects: self.selected_vector_objects.clone(),
             can_undo: !self.undo_order.is_empty(),
             can_redo: !self.redo_order.is_empty(),
@@ -934,6 +973,114 @@ impl Document {
         self.revision += 1;
         Ok(id)
     }
+    pub fn set_text_object(&mut self, settings: TextSettings) -> Result<(), String> {
+        settings.text.validate()?;
+        if settings
+            .position
+            .iter()
+            .any(|v| !v.is_finite() || v.abs() >= 100_000.0)
+        {
+            return Err("Invalid text position".into());
+        }
+        let [r, g, b] = settings.color;
+        if let Some(id) = settings.id {
+            let (layer_id, mut object) = self
+                .svg_layers
+                .iter()
+                .filter(|layer| layer.vector_layer)
+                .find_map(|layer| {
+                    layer
+                        .vector_objects
+                        .iter()
+                        .find(|object| object.id == id && object.text.is_some())
+                        .map(|object| (layer.id.clone(), object.clone()))
+                })
+                .ok_or("Text object not found")?;
+            object.control_points = settings.text.control_points();
+            object.text = Some(settings.text);
+            object.transform[4] = settings.position[0];
+            object.transform[5] = settings.position[1];
+            object.fill = Some(crate::vector::VectorPaint {
+                color: [r, g, b, 255],
+            });
+            return self.upsert_vector_object(&layer_id, object);
+        }
+        if self.svg_layers.len() >= MAX_SVG_LAYERS {
+            return Err("A project can contain up to 17 layers".into());
+        }
+        let mut serial = 1;
+        while self.svg_layers.iter().any(|layer| {
+            layer.id == format!("text-layer-{serial}")
+                || layer
+                    .vector_objects
+                    .iter()
+                    .any(|object| object.id == format!("text-{serial}"))
+        }) {
+            serial += 1;
+        }
+        let id = format!("text-{serial}");
+        let object = VectorObject {
+            id: id.clone(),
+            name: format!("Text {serial}"),
+            path: crate::vector::VectorPath {
+                data: "M0 0".into(),
+                fill_rule: crate::vector::FillRule::NonZero,
+            },
+            transform: [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                settings.position[0],
+                settings.position[1],
+            ],
+            fill: Some(crate::vector::VectorPaint {
+                color: [r, g, b, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.0,
+            visible: true,
+            kind: VectorObjectKind::Text,
+            control_points: settings.text.control_points(),
+            text: Some(settings.text),
+        };
+        object.validate()?;
+        let source = vector_svg(self.width, self.height, std::slice::from_ref(&object));
+        if source.len()
+            + self
+                .svg_layers
+                .iter()
+                .map(|layer| layer.source.len())
+                .sum::<usize>()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much vector data".into());
+        }
+        let layer = SvgLayer {
+            id: format!("text-layer-{serial}"),
+            name: object.name.clone(),
+            visible: true,
+            opacity: 1.0,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.0,
+            source,
+            paint_layer: false,
+            vector_layer: true,
+            vector_objects: vec![object],
+        };
+        validate_svg_layer(&layer)?;
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers.push(layer);
+        self.selected_vector_objects = vec![id];
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn upsert_vector_object(
         &mut self,
         layer_id: &str,
@@ -1064,6 +1211,130 @@ impl Document {
             self.revision += 1;
         }
         Ok(changed)
+    }
+    pub fn vector_overlay_selections(&self) -> Vec<Selection> {
+        let selected = &self.selected_vector_objects;
+        let mut overlays = Vec::new();
+        for object in self
+            .svg_layers
+            .iter()
+            .filter(|layer| layer.vector_layer && layer.visible)
+            .flat_map(|layer| &layer.vector_objects)
+            .filter(|object| selected.contains(&object.id) && !object.control_points.is_empty())
+        {
+            let points = transformed_control_points(object);
+            let min_x = points
+                .iter()
+                .map(|point| point.x)
+                .fold(f32::INFINITY, f32::min);
+            let max_x = points
+                .iter()
+                .map(|point| point.x)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let min_y = points
+                .iter()
+                .map(|point| point.y)
+                .fold(f32::INFINITY, f32::min);
+            let max_y = points
+                .iter()
+                .map(|point| point.y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            overlays.push(Selection::new(
+                SelectionShape::Rectangle,
+                [
+                    min_x,
+                    min_y,
+                    (max_x - min_x).max(1.0),
+                    (max_y - min_y).max(1.0),
+                ],
+            ));
+            if object.kind == VectorObjectKind::Text {
+                continue;
+            }
+            for point in points {
+                if overlays.len() >= 128 {
+                    break;
+                }
+                overlays.push(Selection::new(
+                    SelectionShape::Ellipse,
+                    [point.x - 3.0, point.y - 3.0, 6.0, 6.0],
+                ));
+            }
+            if overlays.len() >= 128 {
+                break;
+            }
+        }
+        overlays
+    }
+    pub fn selected_control_at(&self, point: Point, tolerance: f32) -> Option<(String, usize)> {
+        self.svg_layers
+            .iter()
+            .rev()
+            .filter(|layer| layer.vector_layer && layer.visible && !layer.locked)
+            .flat_map(|layer| layer.vector_objects.iter().rev())
+            .filter(|object| {
+                self.selected_vector_objects.contains(&object.id)
+                    && object.kind != VectorObjectKind::Text
+            })
+            .find_map(|object| {
+                transformed_control_points(object)
+                    .iter()
+                    .enumerate()
+                    .find(|(_, control)| {
+                        (point.x - control.x).hypot(point.y - control.y) <= tolerance
+                    })
+                    .map(|(index, _)| (object.id.clone(), index))
+            })
+    }
+    pub fn move_vector_control(
+        &mut self,
+        id: &str,
+        index: usize,
+        point: Point,
+    ) -> Result<(), String> {
+        if !point.valid() {
+            return Err("Invalid control point".into());
+        }
+        let before = self.vector_history_state();
+        let layer_index = self
+            .svg_layers
+            .iter()
+            .position(|layer| {
+                layer.vector_layer
+                    && !layer.locked
+                    && layer.vector_objects.iter().any(|object| object.id == id)
+            })
+            .ok_or("Vector object not found")?;
+        let object_index = self.svg_layers[layer_index]
+            .vector_objects
+            .iter()
+            .position(|object| object.id == id)
+            .ok_or("Vector object not found")?;
+        let object = &mut self.svg_layers[layer_index].vector_objects[object_index];
+        let [a, b, c, d, e, f] = object.transform;
+        let determinant = a * d - b * c;
+        if determinant.abs() < 0.000_001 {
+            return Err("Vector transform is not invertible".into());
+        }
+        let px = point.x - e;
+        let py = point.y - f;
+        let local = [
+            (d * px - c * py) / determinant,
+            (-b * px + a * py) / determinant,
+        ];
+        let control = object
+            .control_points
+            .get_mut(index)
+            .ok_or("Control point not found")?;
+        *control = local;
+        rebuild_vector_path(object)?;
+        object.validate()?;
+        let layer = &mut self.svg_layers[layer_index];
+        layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+        validate_svg_layer(layer)?;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
@@ -1617,6 +1888,25 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
         let stroke = object
             .stroke
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
+        if let Some(text) = &object.text {
+            let _ = write!(
+                svg,
+                r#"<text transform="matrix({a} {b} {c} {d} {e} {f})" fill="{fill}" font-family="{}" font-size="{}" font-weight="{}" xml:space="preserve">"#,
+                match text.font_family.as_str() {
+                    "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, Noto Serif CJK SC, Times New Roman, serif",
+                    "monospace" => "Menlo, Consolas, Noto Sans Mono CJK JP, monospace",
+                    _ => "Hiragino Sans, PingFang SC, Microsoft YaHei, Noto Sans CJK JP, Noto Sans CJK SC, Arial, sans-serif",
+                },
+                text.font_size,
+                if text.bold { 700 } else { 400 }
+            );
+            for (index, line) in text.content.split('\n').enumerate() {
+                let y = text.font_size + index as f32 * text.font_size * text.line_height;
+                let _ = write!(svg, r#"<tspan x="0" y="{y}">{}</tspan>"#, escape_xml(line));
+            }
+            svg.push_str("</text>");
+            continue;
+        }
         let rule = match object.path.fill_rule {
             crate::vector::FillRule::NonZero => "nonzero",
             crate::vector::FillRule::EvenOdd => "evenodd",
@@ -1642,6 +1932,62 @@ fn escape_xml(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn transformed_control_points(object: &VectorObject) -> Vec<Point> {
+    let [a, b, c, d, e, f] = object.transform;
+    object
+        .control_points
+        .iter()
+        .map(|[x, y]| Point {
+            x: a * x + c * y + e,
+            y: b * x + d * y + f,
+        })
+        .collect()
+}
+
+fn rebuild_vector_path(object: &mut VectorObject) -> Result<(), String> {
+    use crate::vector::VectorObjectKind;
+    use std::fmt::Write;
+    object.path.data = match object.kind {
+        VectorObjectKind::Text => return Err("Edit text through text settings".into()),
+        VectorObjectKind::Path => {
+            let Some(first) = object.control_points.first() else {
+                return Err("Path has no control points".into());
+            };
+            let mut data = format!("M {} {}", first[0], first[1]);
+            for point in object.control_points.iter().skip(1) {
+                let _ = write!(data, " L {} {}", point[0], point[1]);
+            }
+            data
+        }
+        VectorObjectKind::Rectangle => {
+            let [first, second] = object.control_points.as_slice() else {
+                return Err("Rectangle requires two control points".into());
+            };
+            let x = first[0].min(second[0]);
+            let y = first[1].min(second[1]);
+            let width = (second[0] - first[0]).abs();
+            let height = (second[1] - first[1]).abs();
+            format!("M {x} {y} H {} V {} H {x} Z", x + width, y + height)
+        }
+        VectorObjectKind::Ellipse => {
+            let [first, second] = object.control_points.as_slice() else {
+                return Err("Ellipse requires two control points".into());
+            };
+            let cx = (first[0] + second[0]) * 0.5;
+            let cy = (first[1] + second[1]) * 0.5;
+            let rx = (second[0] - first[0]).abs() * 0.5;
+            let ry = (second[1] - first[1]).abs() * 0.5;
+            format!(
+                "M {} {cy} A {rx} {ry} 0 1 0 {} {cy} A {rx} {ry} 0 1 0 {} {cy} Z",
+                cx - rx,
+                cx + rx,
+                cx - rx
+            )
+        }
+    };
+    Ok(())
 }
 
 const fn default_bit_depth() -> u8 {
@@ -1702,6 +2048,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    text: None,
                     id: "shape-1".into(),
                     name: "Blue triangle".into(),
                     path: VectorPath {
@@ -1744,6 +2091,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    text: None,
                     id: "shape-1".into(),
                     name: "Shape".into(),
                     path: VectorPath {
@@ -1797,6 +2145,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    text: None,
                     id: "rectangle-1".into(),
                     name: "Rectangle".into(),
                     path: VectorPath {
@@ -1835,6 +2184,28 @@ mod persistence_tests {
             .vector_objects[0];
         assert_eq!(&restored.transform[4..], &[0.0, 0.0]);
         assert_eq!(document.snapshot().selected_vector_objects, ["rectangle-1"]);
+        assert_eq!(document.vector_overlay_selections().len(), 3);
+        assert_eq!(
+            document.selected_control_at(Point { x: 10.0, y: 10.0 }, 1.0),
+            Some(("rectangle-1".into(), 0))
+        );
+        document
+            .move_vector_control("rectangle-1", 0, Point { x: 5.0, y: 6.0 })
+            .unwrap();
+        let edited = &document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects[0];
+        assert_eq!(edited.control_points[0], [5.0, 6.0]);
+        assert!(edited.path.data.contains("M 5 6"));
+        document.undo();
+        let restored_control = &document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects[0];
+        assert_eq!(restored_control.control_points[0], [10.0, 10.0]);
     }
 
     #[test]
@@ -2088,5 +2459,81 @@ mod persistence_tests {
                 vec![a.clone(), b.clone(), c.clone()]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    fn settings() -> TextSettings {
+        TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語 & <标题>\nHello".into(),
+                font_family: "sans-serif".into(),
+                font_size: 36.0,
+                line_height: 1.5,
+                bold: true,
+            },
+            position: [40.0, 50.0],
+            color: [24, 80, 160],
+        }
+    }
+    #[test]
+    fn text_round_trip_edit_move_and_atomic_history() {
+        let mut doc = Document::default();
+        doc.set_text_object(settings()).unwrap();
+        let text = doc.snapshot().text_objects[0].clone();
+        assert!(doc.svg_layers[0].source.contains("&amp; &lt;标题&gt;"));
+        assert_eq!(
+            doc.select_vector_at(Point { x: 50.0, y: 70.0 }, 3.0, false),
+            Some(text.id.clone())
+        );
+        assert!(doc
+            .selected_control_at(Point { x: 40.0, y: 50.0 }, 3.0)
+            .is_none());
+        doc.move_selected_vectors(10.0, 15.0).unwrap();
+        assert_eq!(doc.snapshot().text_objects[0].position, [50.0, 65.0]);
+        doc.undo();
+        let mut edit = settings();
+        edit.id = Some(text.id);
+        edit.text.content = "Edited".into();
+        doc.set_text_object(edit).unwrap();
+        doc.undo();
+        assert_eq!(
+            doc.snapshot().text_objects[0].text.content,
+            settings().text.content
+        );
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects[0].text.content, "Edited");
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.snapshot().text_objects[0].text.content, "Edited");
+        doc.undo();
+        doc.undo();
+        assert!(doc.snapshot().text_objects.is_empty());
+        assert_eq!(doc.snapshot().layers.len(), 1);
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects.len(), 1);
+    }
+    #[test]
+    fn invalid_or_locked_text_edits_leave_document_unchanged() {
+        let mut doc = Document::default();
+        let mut invalid = settings();
+        invalid.text.font_size = f32::NAN;
+        assert!(doc.set_text_object(invalid).is_err());
+        assert_eq!(doc.snapshot().revision, 0);
+        doc.set_text_object(settings()).unwrap();
+        doc.svg_layers[0].locked = true;
+        let revision = doc.snapshot().revision;
+        let mut edit = settings();
+        edit.id = Some(doc.snapshot().text_objects[0].id.clone());
+        edit.text.content = "Rejected".into();
+        assert!(doc.set_text_object(edit).is_err());
+        assert_eq!(doc.snapshot().revision, revision);
+        assert_eq!(
+            doc.snapshot().text_objects[0].text.content,
+            settings().text.content
+        );
+        assert!(!doc.snapshot().text_objects[0].editable);
     }
 }

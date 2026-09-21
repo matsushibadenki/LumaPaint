@@ -1,5 +1,11 @@
-type Name = 'rectangle' | 'ellipse' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'zoomIn' | 'zoomOut' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 export const iconPaths: Record<Name, string> = {
+  zoomIn: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8 M10 6v8',
+  zoomOut: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8',
+  layout: 'M3 3h18v18H3z M3 9h18 M10 9v12',
+  animation: 'M3 4h18v16H3z M3 8h18 M7 4v4 M13 4v4 M19 4v4 M10 11l5 3-5 3z',
+  text: 'M4 4h16 M12 4v16 M8 20h8 M4 4v3 M20 4v3',
+  timeline: 'M4 4v16h17 M4 8h17 M4 14h17 M10 6v4 M16 12v4',
   rectangle: 'M3 3h4 M10 3h4 M17 3h4v4 M21 10v4 M21 17v4h-4 M14 21h-4 M7 21H3v-4 M3 14v-4 M3 7V3',
   ellipse: 'M10 3a9 9 0 0 1 4 0 M18 5a9 9 0 0 1 3 5 M21 14a9 9 0 0 1-3 5 M14 21a9 9 0 0 1-4 0 M6 19a9 9 0 0 1-3-5 M3 10a9 9 0 0 1 3-5',
   open: 'M3 7V4h6l3 3h9v3 M3 10h19l-3 10H3z',

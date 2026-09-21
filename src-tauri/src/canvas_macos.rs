@@ -5,7 +5,7 @@ use super::{
 };
 use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
-    SelectionMode, SelectionShape,
+    SelectionMode, SelectionShape, TextSettings,
 };
 use lumapaint_core::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
@@ -56,6 +56,16 @@ define_class!(
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
+            else if event.keyCode() == 7 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
+                if !event.isARepeat() {
+                    if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-swap-colors", ()); }
+                }
+            }
+            else if event.keyCode() == 17 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
+                if !event.isARepeat() {
+                    if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-text-edit", ()); }
+                }
+            }
             else if event.keyCode() == 53 {
                 if DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
                     if let Err(error) = redraw() { emit_error(error); }
@@ -356,6 +366,7 @@ fn vector_pointer(
     document.upsert_vector_object(
         &layer_id,
         VectorObject {
+            text: None,
             id: format!("vector-object-{serial}"),
             name: format!("{name} {serial}"),
             path: VectorPath {
@@ -380,6 +391,16 @@ fn vector_select_pointer(
     modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
     if phase == 0 {
+        VECTOR_CONTROL
+            .with(|control| *control.borrow_mut() = document.selected_control_at(point, 6.0));
+        if VECTOR_CONTROL.with(|control| control.borrow().is_some()) {
+            VECTOR_DRAFT.with(|draft| {
+                let mut draft = draft.borrow_mut();
+                draft.clear();
+                draft.push(point);
+            });
+            return Ok(());
+        }
         let hit =
             document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
         VECTOR_DRAFT.with(|draft| {
@@ -390,6 +411,10 @@ fn vector_select_pointer(
             }
         });
     } else if phase == 2 {
+        if let Some((id, index)) = VECTOR_CONTROL.with(|control| control.borrow_mut().take()) {
+            VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
+            return document.move_vector_control(&id, index, point);
+        }
         let start = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
         if let Some(start) = start.first() {
             document.move_selected_vectors(point.x - start.x, point.y - start.y)?;
@@ -479,6 +504,13 @@ pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
 pub fn add_vector_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer())?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn set_text_object(settings: TextSettings) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().set_text_object(settings))?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
@@ -607,6 +639,7 @@ thread_local! {
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
+    static VECTOR_CONTROL: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 

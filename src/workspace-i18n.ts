@@ -1,8 +1,8 @@
 export const workspaceMessages = {
   en: {
-    selectionTools: 'Selection tools',
+    selectionTools: 'Selection tools', zoomTools: 'Zoom tools',
     rectangle: 'Rectangular selection', ellipse: 'Elliptical selection', tools: 'Tools', deselect: 'Deselect', selectionHint: 'Shift: add · Option/Alt: subtract · Drag inside to move',
-    paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', vectorSelected: 'vector objects selected', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
+    layoutTools: 'Layout tools', animationTools: 'Animation tools', layoutHint: 'Arrange vector objects, shapes and editable text', animationHint: 'Drawing tools · Timeline and keyframes are planned', textTool: 'Text', timelineTool: 'Timeline', toolPlanned: 'Coming soon', paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', vectorSelected: 'vector objects selected', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
 
     recoveryReady: 'Automatic recovery enabled',
     recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
@@ -11,7 +11,7 @@ export const workspaceMessages = {
     recoveryCopy: 'Recovery copy', restoreRecovery: 'Restore', recoveryLater: 'Later', deleteRecovery: 'Delete', deleteAllRecoveries: 'Delete all',
     deleteRecoveryConfirm: 'Delete the selected recovery copy?', deleteAllRecoveriesConfirm: 'Delete all previous recovery copies?',
 
-    undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', hardness: 'Hardness', foreground: 'Foreground',
+    undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', hardness: 'Hardness', foreground: 'Foreground', background: 'Background', swapColors: 'Swap foreground and background colors',
     sessionOnly: 'Unsaved changes', saved: 'Saved', empty: 'Ready to draw', open: 'Open', save: 'Save', saveAs: 'Save as', fileBusy: 'File operation…', untitled: 'Untitled-1', untitledBase: 'Untitled', closeDocument: 'Close document', openDocuments: 'Open documents', noDocument: 'No document open', properties: 'Properties',
     diameter: 'Diameter', document: 'Document', width: 'Width', height: 'Height', layers: 'Layers',
     documentName: 'Name', unit: 'Unit', pixels: 'Pixels', inches: 'Inches', centimeters: 'Centimeters', millimeters: 'Millimeters', orientation: 'Orientation', portrait: 'Portrait', landscape: 'Landscape', artboards: 'Artboards', resolution: 'Resolution', pixelsPerInch: 'Pixels/inch', colorMode: 'Color mode', color: 'color', bitDepth: 'Bit depth', canvasColor: 'Canvas color', white: 'White', transparent: 'Transparent', advancedOptions: 'Advanced options', colorProfile: 'Color profile', pixelAspectRatio: 'Pixel aspect ratio', squarePixels: 'Square pixels', applyDocumentSettings: 'Apply',
@@ -21,9 +21,9 @@ export const workspaceMessages = {
     roundBrush: 'Hard round', reorderPanel: 'Drag to reorder · Alt + arrow keys also move this tab', colors: ['Black', 'Gray', 'White', 'Coral', 'Ochre', 'Green', 'Blue', 'Violet'],
   },
   ja: {
-    selectionTools: '選択ツール',
+    selectionTools: '選択ツール', zoomTools: '拡大・縮小ツール',
     rectangle: '長方形選択', ellipse: '楕円形選択', tools: 'ツール', deselect: '選択を解除', selectionHint: 'Shift：加算 · Option：減算 · 範囲内をドラッグして移動',
-    paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', vectorSelected: '個のベクターオブジェクトを選択中', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
+    layoutTools: 'レイアウト用ツール', animationTools: 'アニメーション用ツール', layoutHint: 'ベクター・図形・編集可能な文字を配置', animationHint: '作画用ツール · タイムラインとキーフレームは準備中', textTool: '文字', timelineTool: 'タイムライン', toolPlanned: '準備中', paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', vectorSelected: '個のベクターオブジェクトを選択中', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
 
     recoveryReady: '復旧用コピーの自動保存が有効です',
     recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
@@ -32,7 +32,7 @@ export const workspaceMessages = {
     recoveryCopy: '復旧用コピー', restoreRecovery: '復旧する', recoveryLater: '後で', deleteRecovery: '削除', deleteAllRecoveries: 'すべて削除',
     deleteRecoveryConfirm: '選択した復旧用コピーを削除しますか？', deleteAllRecoveriesConfirm: '過去の復旧用コピーをすべて削除しますか？',
 
-    undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', hardness: '硬さ', foreground: '描画色',
+    undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', hardness: '硬さ', foreground: '描画色', background: '背景色', swapColors: '描画色と背景色を入れ替え',
     sessionOnly: '未保存の変更があります', saved: '保存済み', empty: '描画できます', open: '開く', save: '保存', saveAs: '別名で保存', fileBusy: 'ファイルを処理中…', untitled: '名称未設定-1', untitledBase: '名称未設定', closeDocument: 'ドキュメントを閉じる', openDocuments: '開いているドキュメント', noDocument: 'ドキュメントは開かれていません', properties: 'プロパティ',
     diameter: '直径', document: 'ドキュメント', width: '幅', height: '高さ', layers: 'レイヤー',
     documentName: '名称', unit: '単位', pixels: 'ピクセル', inches: 'インチ', centimeters: 'センチメートル', millimeters: 'ミリメートル', orientation: '方向', portrait: '縦', landscape: '横', artboards: 'アートボード', resolution: '解像度', pixelsPerInch: 'ピクセル/インチ', colorMode: 'カラーモード', color: 'カラー', bitDepth: '階調', canvasColor: 'キャンバスカラー', white: '白', transparent: '透明', advancedOptions: '詳細オプション', colorProfile: 'カラープロファイル', pixelAspectRatio: 'ピクセル縦横比', squarePixels: '正方形ピクセル', applyDocumentSettings: '適用',
@@ -42,9 +42,9 @@ export const workspaceMessages = {
     roundBrush: 'ハード円ブラシ', reorderPanel: 'ドラッグで並べ替え · Alt＋矢印キーでも移動できます', colors: ['黒', 'グレー', '白', 'コーラル', 'オーカー', '緑', '青', '紫'],
   },
   'zh-CN': {
-    selectionTools: '选区工具',
+    selectionTools: '选区工具', zoomTools: '缩放工具',
     rectangle: '矩形选框', ellipse: '椭圆选框', tools: '工具', deselect: '取消选择', selectionHint: 'Shift：添加 · Option/Alt：减去 · 拖动选区内部以移动',
-    paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', vectorSelected: '个矢量对象已选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
+    layoutTools: '布局工具', animationTools: '动画工具', layoutHint: '排列矢量对象、形状和可编辑文字', animationHint: '绘图工具 · 时间轴和关键帧即将推出', textTool: '文字', timelineTool: '时间轴', toolPlanned: '即将推出', paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', vectorSelected: '个矢量对象已选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
 
     recoveryReady: '已启用自动恢复副本',
     recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',
@@ -53,7 +53,7 @@ export const workspaceMessages = {
     recoveryCopy: '恢复副本', restoreRecovery: '恢复', recoveryLater: '稍后', deleteRecovery: '删除', deleteAllRecoveries: '全部删除',
     deleteRecoveryConfirm: '要删除所选的恢复副本吗？', deleteAllRecoveriesConfirm: '要删除所有以前的恢复副本吗？',
 
-    undo: '撤销', redo: '重做', brush: '画笔', size: '大小', hardness: '硬度', foreground: '前景色',
+    undo: '撤销', redo: '重做', brush: '画笔', size: '大小', hardness: '硬度', foreground: '前景色', background: '背景色', swapColors: '交换前景色和背景色',
     sessionOnly: '有未保存的更改', saved: '已保存', empty: '可以开始绘画', open: '打开', save: '保存', saveAs: '另存为', fileBusy: '正在处理文件…', untitled: '未命名-1', untitledBase: '未命名', closeDocument: '关闭文档', openDocuments: '打开的文档', noDocument: '未打开文档', properties: '属性',
     diameter: '直径', document: '文档', width: '宽度', height: '高度', layers: '图层',
     documentName: '名称', unit: '单位', pixels: '像素', inches: '英寸', centimeters: '厘米', millimeters: '毫米', orientation: '方向', portrait: '纵向', landscape: '横向', artboards: '画板', resolution: '分辨率', pixelsPerInch: '像素/英寸', colorMode: '颜色模式', color: '颜色', bitDepth: '位深度', canvasColor: '画布颜色', white: '白色', transparent: '透明', advancedOptions: '高级选项', colorProfile: '颜色配置文件', pixelAspectRatio: '像素长宽比', squarePixels: '方形像素', applyDocumentSettings: '应用',

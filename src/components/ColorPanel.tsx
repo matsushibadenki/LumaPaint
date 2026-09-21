@@ -20,9 +20,25 @@ function rgb(h: number, s: number, v: number): Brush['color'] {
   const channels = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return channels.map(n => Math.round((n + m) * 255)) as Brush['color'];
 }
-export function ColorPanel({ locale, color, onChange }: { locale: Locale; color: Brush['color']; onChange: (color: Brush['color']) => void }) {
+export type ColorTarget = 'foreground' | 'background';
+
+export function ColorPairControl({ locale, foreground, background, compact = false, activeColor, onSelectColor, onSwap }: {
+  locale: Locale; foreground: Brush['color']; background: Brush['color']; compact?: boolean;
+  activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onSwap: () => void;
+}) {
+  const t = workspaceMessages[locale];
+  return <div className={`color-pair${compact ? ' compact' : ''}`} role="group" aria-label={`${t.foreground} · ${t.background}`}>
+    <button type="button" className="background-color" style={{ background: toHex(background) }} aria-label={t.background} aria-pressed={activeColor === 'background'} title={`${t.background}: ${toHex(background)}`} onClick={() => onSelectColor('background')} />
+    <button type="button" className="foreground-color" style={{ background: toHex(foreground) }} aria-label={t.foreground} aria-pressed={activeColor === 'foreground'} title={`${t.foreground}: ${toHex(foreground)}`} onClick={() => onSelectColor('foreground')} />
+    <button type="button" className="swap-colors" onClick={onSwap} title={`${t.swapColors} (X)`} aria-label={t.swapColors}>↔</button>
+  </div>;
+}
+
+export function ColorPanel({ locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap }: { locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
   const [rememberedHue, setRememberedHue] = useState(0);
+  const color = activeColor === 'background' ? backgroundColor : foregroundColor;
+  const onChange = activeColor === 'background' ? onBackgroundChange : onForegroundChange;
   const current = hsv(color);
   const h = current.s === 0 ? rememberedHue : current.h;
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -76,7 +92,7 @@ export function ColorPanel({ locale, color, onChange }: { locale: Locale; color:
   }
   return <div className="color-panel-controls">
     <div className="hsb-header">
-      <div className="color-chips" aria-label={w.foreground}><i /><span style={{ background: toHex(color) }} /></div>
+      <ColorPairControl locale={locale} foreground={foregroundColor} background={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={onSwap} />
       <div className="hsb-sliders">{channels.map(item => <div className="color-slider" key={item.key}>
         <span title={t[item.key]}>{item.short}</span><input aria-label={t[item.key]} type="range" min="0" max={item.max} value={Math.round(item.value)} style={{ background: item.background }} onChange={event => setChannel(item.key, Number(event.target.value))} />
         <input className="hsb-number" aria-label={t[item.key] + ' (' + item.short + ')'} type="number" min="0" max={item.max} value={Math.round(item.value)} onChange={event => setChannel(item.key, Number(event.target.value))} /><span>{item.key === 'hue' ? '°' : '%'}</span>
@@ -92,6 +108,6 @@ export function ColorPanel({ locale, color, onChange }: { locale: Locale; color:
       <span className="color-wheel-marker" style={{ left: (50 + 46 * Math.cos(h * Math.PI / 180)) + '%', top: (50 - 46 * Math.sin(h * Math.PI / 180)) + '%' }} />
       <span className="color-wheel-marker" style={{ left: (29 + 62 * c) + '%', top: (50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
-    <HexInput color={color} onChange={onChange} label={w.hex} invalid={w.invalidColor} />
+    <HexInput key={activeColor} color={color} onChange={onChange} label={`${w[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
   </div>;
 }

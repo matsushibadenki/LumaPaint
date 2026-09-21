@@ -770,9 +770,15 @@ impl Renderer {
             Err(error) => return Err(error.to_string()),
         };
         let uniforms = Self::uniforms(viewport);
-        let outline_selection = document.selection().map(|selection| {
-            selection_bind_group(&self.device, &self.selection_layout, Some(selection))
-        });
+        let vector_overlays = document.vector_overlay_selections();
+        let outline_selections = document
+            .selection()
+            .into_iter()
+            .chain(vector_overlays.iter())
+            .map(|selection| {
+                selection_bind_group(&self.device, &self.selection_layout, Some(selection))
+            })
+            .collect::<Vec<_>>();
         let stroke_selections: Vec<_> = document
             .visible_strokes()
             .map(|stroke| {
@@ -981,7 +987,7 @@ impl Renderer {
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
-            if let Some(selection_group) = &outline_selection {
+            for selection_group in &outline_selections {
                 pass.set_pipeline(&self.selection_pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_bind_group(1, selection_group, &[]);

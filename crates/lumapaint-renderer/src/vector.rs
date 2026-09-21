@@ -1,6 +1,18 @@
 //! CPU vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
 use resvg::{tiny_skia, usvg};
+use std::sync::{Arc, OnceLock};
+
+fn system_fonts() -> Arc<usvg::fontdb::Database> {
+    static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut fonts = usvg::fontdb::Database::new();
+            fonts.load_system_fonts();
+            Arc::new(fonts)
+        })
+        .clone()
+}
 
 #[cfg(feature = "skia")]
 pub mod skia_paths;
@@ -24,6 +36,7 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
         return Err("Invalid SVG source size or raster dimensions".into());
     }
     let options = usvg::Options {
+        fontdb: system_fonts(),
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
             resolve_string: Box::new(|_, _| None),
@@ -110,6 +123,28 @@ mod tests {
 
     fn pixel(image: &SvgRaster, width: usize, x: usize, y: usize) -> &[u8] {
         &image.pixels[(y * width + x) * 4..][..4]
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn text_uses_system_fonts_and_renders_multilingual_lines() {
+        for content in ["Hello", "日本語", "简体中文"] {
+            let source = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><text x="10" y="48" font-family="sans-serif" font-size="36" fill="blue">{content}</text></svg>"#
+            );
+            let raster = rasterize_svg(&source, 240, 80).unwrap();
+            assert!(
+                raster
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[3] > 0)
+                    .count()
+                    > 100,
+                "Missing rendered text: {content}"
+            );
+        }
     }
 
     #[test]

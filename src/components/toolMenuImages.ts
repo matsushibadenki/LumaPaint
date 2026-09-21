@@ -2,7 +2,7 @@ import { iconPaths } from './Icon';
 
 // Render the existing toolbar style into Retina assets for the AppKit overlay.
 // Keeping SVG paths and computed CSS here avoids a second platform-specific design.
-export async function toolMenuImages(trigger: HTMLButtonElement) {
+export async function toolMenuImages(trigger: HTMLButtonElement, icons: (keyof typeof iconPaths)[], enabled: boolean[]) {
   const sample = trigger.cloneNode(true) as HTMLButtonElement;
   sample.removeAttribute('id');
   sample.removeAttribute('aria-controls');
@@ -24,16 +24,18 @@ export async function toolMenuImages(trigger: HTMLButtonElement) {
   };
   try {
     const images: number[][][] = [];
-    for (const tool of ['rectangle', 'ellipse'] as const) {
+    for (const [index, tool] of icons.entries()) {
       const states: number[][] = [];
       for (const selected of [false, true]) {
         sample.className = `tool-button selection-tool-menu-item${selected ? ' selected' : ''}`;
+        sample.disabled = !enabled[index];
         const svg = sample.querySelector('svg')!;
         svg.querySelector('path')!.setAttribute('d', iconPaths[tool]);
         const style = getComputedStyle(sample);
         const rect = sample.getBoundingClientRect();
         const iconRect = svg.getBoundingClientRect();
         prepare(rect.width, rect.height);
+        context.globalAlpha = Number(style.opacity);
         context.fillStyle = style.backgroundColor;
         context.beginPath();
         context.roundRect(0, 0, rect.width, rect.height, parseFloat(style.borderRadius));
