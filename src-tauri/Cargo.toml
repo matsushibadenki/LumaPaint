@@ -18,10 +18,10 @@ serde.workspace = true
 tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-lumapaint-renderer = { path = "../crates/lumapaint-renderer" }
+lumapaint-renderer = { path = "../crates/lumapaint-renderer", features = ["skia"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder", "NSEvent"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSColor", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSButton", "NSButtonCell", "NSImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSData", "NSDate", "NSRunLoop"] }
 rfd = "0.17.2"

@@ -1,4 +1,6 @@
-use lumapaint_core::document::{Brush, ColorMode, ColorProfile, DocumentSnapshot};
+use lumapaint_core::document::{
+    Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
@@ -17,6 +19,18 @@ pub struct CanvasRequest {
     pub visible: bool,
     #[serde(default)]
     pub brush: Brush,
+    #[serde(default)]
+    pub tool: CanvasTool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CanvasTool {
+    #[default]
+    Brush,
+    Rectangle,
+    Ellipse,
+    Vector,
 }
 
 impl CanvasRequest {
@@ -176,6 +190,19 @@ pub async fn sync_canvas(
     }
 }
 
+#[tauri::command]
+pub async fn reset_canvas_pan(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::reset_pan).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(())
+    }
+}
+
 pub fn destroy() {
     #[cfg(target_os = "macos")]
     platform::destroy();
@@ -194,6 +221,9 @@ pub enum DocumentAction {
     Undo,
     Redo,
     ToggleLayer,
+    SelectAll,
+    Deselect,
+    InvertSelection,
 }
 
 #[tauri::command]
@@ -238,6 +268,65 @@ pub async fn toggle_layer(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn set_layer_settings(
+    window: tauri::WebviewWindow,
+    settings: LayerSettings,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_layer_settings(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn delete_layer(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::delete_layer(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn add_paint_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::add_paint_layer).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn reorder_layers(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::reorder_layers(ids)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
@@ -323,6 +412,22 @@ pub async fn set_color_profile(
     }
 }
 
+#[tauri::command]
+pub async fn set_document_settings(
+    window: tauri::WebviewWindow,
+    settings: DocumentSettings,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_document_settings(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,7 +443,10 @@ mod tests {
             dark: false,
             visible: true,
             brush: Brush::default(),
+            tool: CanvasTool::Brush,
         };
+        assert!(request.validate().is_ok());
+        request.tool = CanvasTool::Vector;
         assert!(request.validate().is_ok());
         request.x = f64::NAN;
         assert!(request.validate().is_err());

@@ -1,13 +1,17 @@
 //! AppKit ownership is isolated here; no Apple types enter the renderer or document core.
 use super::{
-    CanvasInfo, CanvasRequest, DocumentAction, DocumentTabSnapshot, DocumentWorkspaceSnapshot,
+    CanvasInfo, CanvasRequest, CanvasTool, DocumentAction, DocumentTabSnapshot,
+    DocumentWorkspaceSnapshot,
 };
-use lumapaint_core::document::{Brush, ColorMode, ColorProfile, Document, DocumentSnapshot};
+use lumapaint_core::document::{
+    Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
+    SelectionMode, SelectionShape,
+};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
 };
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSView};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventSubtype, NSView};
 use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -36,16 +40,49 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             if let Some(window) = self.window() { window.makeFirstResponder(Some(self)); }
-            self.pointer(event, 0);
+            if SPACE_DOWN.with(|space| space.get()) { self.begin_pan(event); } else { self.pointer(event, 0); }
         }
         #[unsafe(method(mouseDragged:))]
-        fn mouse_dragged(&self, event: &NSEvent) { self.pointer(event, 1); }
+        fn mouse_dragged(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); } else { self.pointer(event, 1); } }
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) { self.pointer(event, 2); }
+        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.replace(false)) { self.update_pan(event); } else { self.pointer(event, 2); } }
+        #[unsafe(method(otherMouseDown:))]
+        fn other_mouse_down(&self, event: &NSEvent) { self.begin_pan(event); }
+        #[unsafe(method(otherMouseDragged:))]
+        fn other_mouse_dragged(&self, event: &NSEvent) { self.update_pan(event); }
+        #[unsafe(method(otherMouseUp:))]
+        fn other_mouse_up(&self, event: &NSEvent) { self.update_pan(event); PANNING.with(|value| value.set(false)); }
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
+            else if event.keyCode() == 53 {
+                if DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
+                    if let Err(error) = redraw() { emit_error(error); }
+                    emit_document();
+                } else { report_edit(DocumentAction::Deselect); }
+            }
+            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [11, 46].contains(&event.keyCode()) {
+                let tool = if event.keyCode() == 11 { CanvasTool::Brush }
+                    else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
+                    else { CanvasTool::Rectangle };
+                TOOL.with(|value| value.set(tool));
+                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
+            }
+            else { unsafe { msg_send![super(self), keyDown: event] } }
+        }
+        #[unsafe(method(keyUp:))]
+        fn key_up(&self, event: &NSEvent) {
+            if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(false)); PANNING.with(|value| value.set(false)); }
+            else { unsafe { msg_send![super(self), keyUp: event] } }
+        }
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
-            if command && event.keyCode() == 45 {
+            if command && [0, 2].contains(&event.keyCode()) {
+                report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
+            } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+                report_edit(DocumentAction::InvertSelection); true
+            } else if command && event.keyCode() == 45 {
                 if let Err(error) = new_document() { emit_error(error); }
                 true
             } else if command && event.keyCode() == 13 {
@@ -88,15 +125,40 @@ impl PaintView {
             return;
         };
         let point = viewport.document_point(point.x as f32, point.y as f32);
+        let pressure = if event.subtype() == NSEventSubtype::TabletPoint {
+            event.pressure().clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         let result = DOCUMENT
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
+                let tool = TOOL.with(|value| value.get());
+                if tool == CanvasTool::Vector {
+                    return Ok(());
+                }
+                if matches!(tool, CanvasTool::Rectangle | CanvasTool::Ellipse) {
+                    if phase == 0 {
+                        doc.begin_selection_edit(
+                            point,
+                            if tool == CanvasTool::Rectangle {
+                                SelectionShape::Rectangle
+                            } else {
+                                SelectionShape::Ellipse
+                            },
+                            selection_mode(event.modifierFlags()),
+                        )?;
+                    } else {
+                        doc.extend_selection(point, phase == 2);
+                    }
+                    return Ok(());
+                }
                 let result = if phase == 0 {
                     BRUSH
-                        .with(|brush| doc.begin(point, *brush.borrow()))
+                        .with(|brush| doc.begin_with_pressure(point, *brush.borrow(), pressure))
                         .map(|_| ())
                 } else {
-                    doc.extend(point)
+                    doc.extend_with_pressure(point, pressure)
                 };
                 if phase == 2 || result.is_err() {
                     doc.finish();
@@ -110,6 +172,48 @@ impl PaintView {
         if phase == 2 {
             emit_document();
         }
+    }
+
+    fn begin_pan(&self, event: &NSEvent) {
+        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        LAST_PAN_POINT.with(|last| last.set((point.x as f32, point.y as f32)));
+        PANNING.with(|value| value.set(true));
+    }
+
+    fn update_pan(&self, event: &NSEvent) {
+        if !PANNING.with(|value| value.get()) {
+            return;
+        }
+        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        let current = (point.x as f32, point.y as f32);
+        let previous = LAST_PAN_POINT.with(|last| last.replace(current));
+        PAN.with(|pan| {
+            let (x, y) = pan.get();
+            pan.set((
+                (x + current.0 - previous.0).clamp(-8192.0, 8192.0),
+                (y + current.1 - previous.1).clamp(-8192.0, 8192.0),
+            ));
+        });
+        CANVAS.with(|slot| {
+            if let Some(canvas) = slot.borrow_mut().as_mut() {
+                let (x, y) = PAN.with(|pan| pan.get());
+                canvas.viewport.pan_x = x;
+                canvas.viewport.pan_y = y;
+            }
+        });
+        if let Err(error) = redraw() {
+            emit_error(error);
+        }
+    }
+}
+
+fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
+    if flags.contains(NSEventModifierFlags::Option) {
+        SelectionMode::Subtract
+    } else if flags.contains(NSEventModifierFlags::Shift) {
+        SelectionMode::Add
+    } else {
+        SelectionMode::Replace
     }
 }
 
@@ -140,8 +244,12 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             DocumentAction::Undo => doc.undo(),
             DocumentAction::Redo => doc.redo(),
             DocumentAction::ToggleLayer => doc.toggle_visibility(),
+            DocumentAction::SelectAll => doc.select_all(),
+            DocumentAction::Deselect => doc.deselect(),
+            DocumentAction::InvertSelection => doc.invert_selection()?,
         }
-    });
+        Ok::<(), String>(())
+    })?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
@@ -150,6 +258,36 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
 pub fn toggle_layer(id: String) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().toggle_layer(&id))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn set_layer_settings(settings: LayerSettings) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().set_layer_settings(settings))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn delete_layer(id: String) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().delete_layer(&id))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().add_paint_layer())?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn reorder_layers(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().reorder_layers(&ids))?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
@@ -174,6 +312,22 @@ pub fn set_color_profile(profile: ColorProfile) -> Result<DocumentSnapshot, Stri
     DOCUMENT.with(|doc| doc.borrow_mut().set_color_profile(profile))?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn set_document_settings(settings: DocumentSettings) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().set_document_settings(settings))?;
+    let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            canvas.viewport.document_width = snapshot.width as f32;
+            canvas.viewport.document_height = snapshot.height as f32;
+            canvas.viewport.canvas_color = snapshot.canvas_color;
+        }
+    });
+    reset_pan()?;
+    emit_document();
+    Ok(snapshot)
 }
 
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
@@ -229,10 +383,15 @@ thread_local! {
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
     static DOCUMENT: RefCell<Document> = RefCell::new(Document::default());
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
+    static TOOL: std::cell::Cell<CanvasTool> = const { std::cell::Cell::new(CanvasTool::Brush) };
     static DOCUMENT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     static ACTIVE_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
     static NEXT_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(2) };
     static INACTIVE_DOCUMENTS: RefCell<Vec<OpenDocument>> = const { RefCell::new(Vec::new()) };
+    static PAN: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
+    static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
+    static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 struct OpenDocument {
@@ -281,7 +440,7 @@ fn document_tab(id: u64, document: &Document) -> DocumentTabSnapshot {
     let snapshot = document.snapshot();
     DocumentTabSnapshot {
         id,
-        file_name: snapshot.file_name,
+        file_name: snapshot.file_name.or(Some(snapshot.name)),
         dirty: snapshot.dirty,
     }
 }
@@ -300,7 +459,7 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
     if let (Some(id), Some(document)) = (active_id, active.as_ref()) {
         documents.push(DocumentTabSnapshot {
             id,
-            file_name: document.file_name.clone(),
+            file_name: document.file_name.clone().or(Some(document.name.clone())),
             dirty: document.dirty,
         });
     }
@@ -326,6 +485,17 @@ pub fn destroy() {
     });
 }
 
+pub fn reset_pan() -> Result<(), String> {
+    PAN.with(|pan| pan.set((0.0, 0.0)));
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            canvas.viewport.pan_x = 0.0;
+            canvas.viewport.pan_y = 0.0;
+        }
+    });
+    redraw()
+}
+
 pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
     if SHUTTING_DOWN.with(|flag| flag.get()) {
         return Ok(CanvasInfo::inactive("hidden"));
@@ -339,6 +509,7 @@ pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, S
 
 fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
     BRUSH.with(|brush| *brush.borrow_mut() = request.brush);
+    TOOL.with(|tool| tool.set(request.tool));
     let mtm = MainThreadMarker::new().ok_or("Native canvas requires the main thread")?;
     if !request.visible || request.width < 1.0 || request.height < 1.0 {
         destroy();
@@ -360,13 +531,17 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         .window()
         .ok_or("Canvas window is not attached")?
         .backingScaleFactor();
+    let (pan_x, pan_y) = PAN.with(|pan| pan.get());
+    let document = DOCUMENT.with(|document| document.borrow().snapshot());
     let viewport = Viewport::new(
         frame.size.width,
         frame.size.height,
         scale,
         request.zoom,
         request.dark,
-    )?;
+    )?
+    .with_pan(pan_x, pan_y)?
+    .with_document(document.width, document.height, document.canvas_color)?;
 
     CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -456,6 +631,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selection_modifiers_route_native_drags() {
+        assert_eq!(
+            selection_mode(NSEventModifierFlags::empty()),
+            SelectionMode::Replace
+        );
+        assert_eq!(
+            selection_mode(NSEventModifierFlags::Shift),
+            SelectionMode::Add
+        );
+        assert_eq!(
+            selection_mode(NSEventModifierFlags::Option),
+            SelectionMode::Subtract
+        );
+        assert_eq!(
+            selection_mode(NSEventModifierFlags::Shift | NSEventModifierFlags::Option),
+            SelectionMode::Subtract
+        );
+    }
+
+    #[test]
     fn accounts_for_title_bar_in_both_coordinate_orientations() {
         let bounds = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1200.0, 800.0));
         let safe = NSEdgeInsets {
@@ -473,6 +668,7 @@ mod tests {
             dark: false,
             visible: true,
             brush: Brush::default(),
+            tool: CanvasTool::Brush,
         };
         let flipped = native_frame(bounds, safe, true, &request).unwrap();
         let unflipped = native_frame(bounds, safe, false, &request).unwrap();
@@ -499,6 +695,7 @@ mod tests {
             dark: false,
             visible: true,
             brush: Brush::default(),
+            tool: CanvasTool::Brush,
         };
         let frame = native_frame(bounds, safe, true, &request).unwrap();
         assert_eq!(frame.origin, NSPoint::new(0.0, 432.0));

@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 pub mod document;
+pub mod selection;
+pub mod vector;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

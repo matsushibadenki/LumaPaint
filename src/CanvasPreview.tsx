@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { onNativeScaleChange, syncCanvas, type Brush, type CanvasInfo, type DocumentSnapshot } from './bridge';
+import { onNativeScaleChange, resetCanvasPan, syncCanvas, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
+import { workspaceMessages } from './workspace-i18n';
 import { Icon } from './components/Icon';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
-  locale: Locale; theme: Theme; brush: Brush; zoom: number; onZoom: (zoom: number) => void;
+export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
+  locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
   visible?: boolean; hasDocument?: boolean; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
@@ -18,7 +19,7 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasD
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const dark = theme === 'dark' || (theme === 'system' && systemDark);
-  const settings = useRef({ zoom, dark, brush, visible });
+  const settings = useRef({ zoom, dark, brush, tool, visible });
   const schedule = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -29,9 +30,9 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasD
   }, []);
 
   useEffect(() => {
-    settings.current = { zoom, dark, brush, visible };
+    settings.current = { zoom, dark, brush, tool, visible };
     schedule.current();
-  }, [zoom, dark, brush, visible]);
+  }, [zoom, dark, brush, tool, visible]);
 
   useEffect(() => onReady(status === 'ready' || status === 'hidden'), [status, onReady]);
 
@@ -105,7 +106,7 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasD
   }, [attempt, onDocument, visible]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? t.canvasNote : undefined}>
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'brush' ? t.canvasNote : tool === 'vector' ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && <div className="paper-preview" aria-hidden="true" />}
       {hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
     </div>
@@ -114,7 +115,7 @@ export function CanvasPreview({ locale, theme, brush, zoom, visible = true, hasD
         <button type="button" className="icon-button" title={t.zoomOut} aria-label={t.zoomOut} disabled={status !== 'ready' || zoom <= 0.25} onClick={() => onZoom(Math.max(0.25, zoom / 1.25))}><Icon name="minus" /></button>
         <output aria-label={t.zoom}>{Math.round(zoom * 100)}%</output>
         <button type="button" className="icon-button" title={t.zoomIn} aria-label={t.zoomIn} disabled={status !== 'ready' || zoom >= 4} onClick={() => onZoom(Math.min(4, zoom * 1.25))}><Icon name="plus" /></button>
-        <button type="button" disabled={status !== 'ready'} onClick={() => onZoom(1)}>{t.fit}</button>
+        <button type="button" disabled={status !== 'ready'} onClick={() => { void resetCanvasPan().then(() => onZoom(1)); }}>{t.fit}</button>
       </div>
       {footerAccessory}
       <span className="canvas-state" role="status" title={info ? `${info.backend} · ${info.adapterName} · ${info.physicalWidth} × ${info.physicalHeight} px · ${info.scaleFactor}×` : undefined}>{t.canvasStatus[status]}</span>

@@ -1,6 +1,7 @@
 struct Uniforms {
     viewport: vec4<f32>, // physical width, height, backing scale, relative zoom
     appearance: vec4<f32>,
+    document: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -12,12 +13,15 @@ struct Uniforms {
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let size = u.viewport.xy / u.viewport.z;
     let pixel = position.xy / u.viewport.z;
-    let fit = max(0.01, min((size.x - 48.0) / 960.0, (size.y - 48.0) / 640.0));
-    let point = (pixel - size * 0.5) / (fit * u.viewport.w) + vec2(480.0, 320.0);
+    let fit = max(0.01, min((size.x - 48.0) / u.document.x, (size.y - 48.0) / u.document.y));
+    let point = (pixel - size * 0.5 - u.appearance.yz) / (fit * u.viewport.w) + u.document.xy * 0.5;
     let dark = u.appearance.x > 0.5;
     var color = select(vec3(0.40), vec3(0.014), dark);
-    if all(point >= vec2(0.0)) && all(point < vec2(960.0, 640.0)) {
-        color = vec3(1.0);
+    if all(point >= vec2(0.0)) && all(point < u.document.xy) {
+        if u.appearance.w > 0.5 {
+            let cell = vec2<i32>(floor(point / 12.0));
+            color = select(vec3(0.78), vec3(0.92), (cell.x + cell.y) % 2 == 0);
+        } else { color = vec3(1.0); }
     }
     return vec4(color, 1.0);
 }

@@ -1,7 +1,7 @@
 //! Exercise the production brush shaders on an offscreen GPU texture.
 //! Run explicitly with: cargo test -p lumapaint-renderer gpu_brush -- --ignored --nocapture
 use super::*;
-use lumapaint_core::document::Brush;
+use lumapaint_core::document::{Brush, SelectionRegion};
 
 const W: u32 = 1024;
 const H: u32 = 768;
@@ -13,6 +13,8 @@ struct Gpu {
     composite: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
+    selection_layout: wgpu::BindGroupLayout,
+    outline: wgpu::RenderPipeline,
 }
 
 impl Gpu {
@@ -45,6 +47,7 @@ impl Gpu {
                 contents: bytemuck::bytes_of(&Uniforms {
                     viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
                     appearance: [0.0; 4],
+                    document: [960.0, 640.0, 0.0, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -56,12 +59,15 @@ impl Gpu {
                     resource: buffer.as_entire_binding(),
                 }],
             });
+            let selection_layout = create_selection_layout(&device);
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&uniform_layout],
+                bind_group_layouts: &[&uniform_layout, &selection_layout],
                 push_constant_ranges: &[],
             });
             let brush = create_brush_pipeline(&device, &layout);
+            let outline =
+                create_selection_pipeline(&device, &layout, wgpu::TextureFormat::Rgba8UnormSrgb);
             let (texture_layout, composite) =
                 create_brush_composite(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
             Self {
@@ -71,13 +77,25 @@ impl Gpu {
                 composite,
                 uniforms,
                 texture_layout,
+                selection_layout,
+                outline,
             }
         })
     }
 
     fn render(&self, strokes: &[Stroke]) -> Vec<u8> {
-        let all: Vec<_> = strokes.iter().flat_map(segments).collect();
-        let lengths: Vec<_> = strokes.iter().map(|s| segments(s).len() as u32).collect();
+        self.render_with_outline(strokes, None)
+    }
+
+    fn render_with_outline(&self, strokes: &[Stroke], outline: Option<&Selection>) -> Vec<u8> {
+        let all: Vec<_> = strokes
+            .iter()
+            .flat_map(|stroke| segments(stroke, 1.0))
+            .collect();
+        let lengths: Vec<_> = strokes
+            .iter()
+            .map(|s| segments(s, 1.0).len() as u32)
+            .collect();
         let buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -130,6 +148,11 @@ impl Gpu {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut start = 0;
         for (index, count) in lengths.iter().enumerate() {
+            let selection = selection_bind_group(
+                &self.device,
+                &self.selection_layout,
+                strokes[index].selection.as_ref(),
+            );
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -145,6 +168,7 @@ impl Gpu {
                 });
                 pass.set_pipeline(&self.brush);
                 pass.set_bind_group(0, &self.uniforms, &[]);
+                pass.set_bind_group(1, &selection, &[]);
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..6, start..start + count);
                 start += count;
@@ -170,6 +194,25 @@ impl Gpu {
                 pass.set_bind_group(0, &group, &[]);
                 pass.draw(0..6, 0..1);
             }
+        }
+        if let Some(selection) = outline {
+            let group = selection_bind_group(&self.device, &self.selection_layout, Some(selection));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.outline);
+            pass.set_bind_group(0, &self.uniforms, &[]);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..3, 0..1);
         }
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -214,7 +257,12 @@ fn figure_eight(brush: Brush, count: usize) -> Stroke {
             }
         })
         .collect();
-    Stroke { brush, points }
+    Stroke {
+        brush,
+        points,
+        pressures: vec![],
+        selection: None,
+    }
 }
 
 fn save_image(name: &str, pixels: Vec<u8>) {
@@ -227,6 +275,176 @@ fn save_image(name: &str, pixels: Vec<u8>) {
         .unwrap()
         .save_png(std::path::Path::new(&dir).join(name))
         .unwrap();
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
+    let gpu = Gpu::new();
+    let mut selection = Selection::new(SelectionShape::Rectangle, [200.0, 180.0, 220.0, 220.0]);
+    selection.regions.extend([
+        SelectionRegion {
+            shape: SelectionShape::Ellipse,
+            bounds: [340.0, 140.0, 240.0, 260.0],
+            operation: SelectionOperation::Add,
+        },
+        SelectionRegion {
+            shape: SelectionShape::Rectangle,
+            bounds: [280.0, 240.0, 100.0, 60.0],
+            operation: SelectionOperation::Subtract,
+        },
+        SelectionRegion {
+            shape: SelectionShape::Rectangle,
+            bounds: [400.0, 0.0, 40.0, 640.0],
+            operation: SelectionOperation::Subtract,
+        },
+    ]);
+    for selection in [selection.clone(), selection.translated(60.0, 20.0)] {
+        for hardness in [0.0, 1.0] {
+            let mut stroke = Stroke {
+                brush: Brush {
+                    size: 512.0,
+                    hardness,
+                    color: [0, 0, 0],
+                },
+                points: vec![Point { x: 80.0, y: 300.0 }, Point { x: 880.0, y: 300.0 }],
+                pressures: vec![],
+                selection: None,
+            };
+            let baseline = gpu.render(&[stroke.clone()]);
+            stroke.selection = Some(selection.clone());
+            let pixels = gpu.render(&[stroke.clone()]);
+            for y in (150..440).step_by(3) {
+                for x in (180..700).step_by(3) {
+                    let offset = (((y + 64) * W + x + 32) * 4) as usize;
+                    let expected = if selection.contains(Point {
+                        x: x as f32 + 0.5,
+                        y: y as f32 + 0.5,
+                    }) {
+                        baseline[offset]
+                    } else {
+                        255
+                    };
+                    assert!(
+                        pixels[offset].abs_diff(expected) <= 1,
+                        "Composite selection mismatch at {x},{y}"
+                    );
+                }
+            }
+            save_image(
+                "composite-selection.png",
+                gpu.render_with_outline(&[stroke], Some(&selection)),
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
+    let gpu = Gpu::new();
+    let white = Stroke {
+        brush: Brush {
+            color: [255, 255, 255],
+            ..Brush::default()
+        },
+        points: vec![Point { x: 10.0, y: 10.0 }],
+        pressures: vec![],
+        selection: None,
+    };
+    let mut selection = Selection::new(SelectionShape::Rectangle, [100.5, 100.5, 100.0, 200.0]);
+    selection.regions.push(SelectionRegion {
+        shape: SelectionShape::Rectangle,
+        bounds: [200.5, 100.5, 100.0, 200.0],
+        operation: SelectionOperation::Add,
+    });
+    let pixels = gpu.render_with_outline(std::slice::from_ref(&white), Some(&selection));
+    for y in 180..300 {
+        for x in 230..235 {
+            assert_eq!(
+                pixels[((y * W + x) * 4) as usize],
+                255,
+                "Internal union seam"
+            );
+        }
+    }
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[0] < 180),
+        "Visible outline is missing"
+    );
+    selection.regions.push(SelectionRegion {
+        shape: SelectionShape::Rectangle,
+        bounds: [0.0, 0.0, 960.0, 640.0],
+        operation: SelectionOperation::Subtract,
+    });
+    let empty = gpu.render_with_outline(&[white], Some(&selection));
+    assert!(
+        empty.as_chunks::<4>().0.iter().all(|pixel| pixel[0] == 255),
+        "An empty selection must have no outline"
+    );
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_clips_brush_footprint_and_survives_reload() {
+    let gpu = Gpu::new();
+    for shape in [SelectionShape::Rectangle, SelectionShape::Ellipse] {
+        for inverted in [false, true] {
+            for hardness in [0.0, 1.0] {
+                let mut doc = Document::default();
+                doc.begin_selection(Point { x: 300.0, y: 200.0 }, shape);
+                doc.extend_selection(Point { x: 500.0, y: 400.0 }, true);
+                if inverted {
+                    doc.invert_selection().unwrap();
+                }
+                let selection = doc.selection().unwrap().clone();
+                doc.begin(
+                    Point { x: 80.0, y: 300.0 },
+                    Brush {
+                        size: 512.0,
+                        hardness,
+                        color: [0, 0, 0],
+                    },
+                )
+                .unwrap();
+                doc.extend(Point { x: 880.0, y: 300.0 }).unwrap();
+                doc.finish();
+                doc.deselect();
+                let strokes: Vec<_> = doc.visible_strokes().cloned().collect();
+                let pixels = gpu.render(&strokes);
+                let mut unrestricted = strokes.clone();
+                unrestricted[0].selection = None;
+                let baseline = gpu.render(&unrestricted);
+                for y in (180..420).step_by(3) {
+                    for x in (280..520).step_by(3) {
+                        let selected = selection.contains(Point {
+                            x: x as f32 + 0.5,
+                            y: y as f32 + 0.5,
+                        });
+                        let offset = (((y + 64) * W + x + 32) * 4) as usize;
+                        let value = pixels[offset];
+                        if selected {
+                            assert!(
+                                value.abs_diff(baseline[offset]) <= 1 && value < 240,
+                                "Missing paint: {shape:?}, inverted={inverted} at {x},{y}: {value}"
+                            );
+                        } else {
+                            assert!(value >= 254, "Paint leaked outside selection: {shape:?}, inverted={inverted} at {x},{y}: {value}");
+                        }
+                    }
+                }
+                let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+                assert_eq!(
+                    pixels,
+                    gpu.render(&loaded.visible_strokes().cloned().collect::<Vec<_>>())
+                );
+                save_image(
+                    &format!("selection-{shape:?}-{inverted}-{hardness}.png"),
+                    pixels,
+                );
+            }
+        }
     }
 }
 
@@ -277,6 +495,8 @@ fn gpu_brush_sampling_density_does_not_change_width() {
         let sparse = Stroke {
             brush,
             points: vec![Point { x: 80.0, y: 320.0 }, Point { x: 880.0, y: 320.0 }],
+            pressures: vec![],
+            selection: None,
         };
         let dense = Stroke {
             brush,
@@ -286,6 +506,8 @@ fn gpu_brush_sampling_density_does_not_change_width() {
                     y: 320.0,
                 })
                 .collect(),
+            pressures: vec![],
+            selection: None,
         };
         let a = gpu.render(&[sparse]);
         let b = gpu.render(&[dense]);
@@ -332,6 +554,8 @@ fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
                 }
             })
             .collect(),
+        pressures: vec![],
+        selection: None,
     };
     let a = line(false);
     let b = line(true);

@@ -9,7 +9,7 @@ import type { Locale } from '../i18n';
 import { messages } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { menuMessages } from '../menu-i18n';
-import type { BitDepth, ColorMode, DocumentSnapshot } from '../bridge';
+import type { BitDepth, ColorMode, DocumentEditAction, DocumentSnapshot } from '../bridge';
 
 type EntryItem = { label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
 type Entry = EntryItem | null;
@@ -22,7 +22,7 @@ type Props = {
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
-  onEdit: (action: 'undo' | 'redo' | 'toggleLayer') => void; onZoom: (value: number) => void;
+  onEdit: (action: DocumentEditAction) => void; onZoom: (value: number) => void;
   onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void;
   onColorSettings: () => void; onPanels: () => void; onReset: () => void; onError: (error: string) => void;
 };
@@ -46,7 +46,9 @@ export function WorkspaceMenu(props: Props) {
     [future(t.newLayer), future(t.duplicateLayer), future(t.deleteLayer), null,
       { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
     [future(t.font), future(t.fontSize), future(t.paragraph)],
-    [future(t.selectAll), future(t.deselect), future(t.invert)],
+    [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
+      { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+D', action: () => onEdit('deselect') },
+      { label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
     [{ label: common.zoomIn, enabled: canEdit && zoom < 4, action: () => onZoom(Math.min(4, zoom * 1.25)) },
       { label: common.zoomOut, enabled: canEdit && zoom > .25, action: () => onZoom(Math.max(.25, zoom / 1.25)) },

@@ -1,5 +1,9 @@
 export const workspaceMessages = {
   en: {
+    selectionTools: 'Selection tools',
+    rectangle: 'Rectangular selection', ellipse: 'Elliptical selection', tools: 'Tools', deselect: 'Deselect', selectionHint: 'Shift: add · Option/Alt: subtract · Drag inside to move',
+    paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vector: 'Vector selection', importVector: 'Import SVG as vector layer', vectorHint: 'Vector mode · imported SVG layers can be managed in Layers',
+
     recoveryReady: 'Automatic recovery enabled',
     recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
     recoveryFailed: 'Recovery copy could not be updated. Save your project manually.', retryRecovery: 'Retry', recoveryDetails: 'Details',
@@ -10,12 +14,17 @@ export const workspaceMessages = {
     undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', hardness: 'Hardness', foreground: 'Foreground',
     sessionOnly: 'Unsaved changes', saved: 'Saved', empty: 'Ready to draw', open: 'Open', save: 'Save', saveAs: 'Save as', fileBusy: 'File operation…', untitled: 'Untitled-1', untitledBase: 'Untitled', closeDocument: 'Close document', openDocuments: 'Open documents', noDocument: 'No document open', properties: 'Properties',
     diameter: 'Diameter', document: 'Document', width: 'Width', height: 'Height', layers: 'Layers',
-    layer: 'Layer 1', oneLayer: '1 layer', layerUnit: 'layers', showLayer: 'Show layer', hideLayer: 'Hide layer',
+    documentName: 'Name', unit: 'Unit', pixels: 'Pixels', inches: 'Inches', centimeters: 'Centimeters', millimeters: 'Millimeters', orientation: 'Orientation', portrait: 'Portrait', landscape: 'Landscape', artboards: 'Artboards', resolution: 'Resolution', pixelsPerInch: 'Pixels/inch', colorMode: 'Color mode', color: 'color', bitDepth: 'Bit depth', canvasColor: 'Canvas color', white: 'White', transparent: 'Transparent', advancedOptions: 'Advanced options', colorProfile: 'Color profile', pixelAspectRatio: 'Pixel aspect ratio', squarePixels: 'Square pixels', applyDocumentSettings: 'Apply',
+    reorderLayer: 'Drag to reorder · Alt + ↑/↓ · Double-click name to rename', fixedBaseLayer: 'Base paint layer · fixed at the bottom', layer: 'Layer 1', oneLayer: '1 layer', layerUnit: 'layers', showLayer: 'Show layer', hideLayer: 'Hide layer', layerBlendMode: 'Blend mode', normalBlend: 'Normal', layerOpacity: 'Opacity', layerFill: 'Fill', lockLayer: 'Lock layer', unlockLayer: 'Unlock layer', lockAlpha: 'Lock transparent pixels', renameLayer: 'Rename layer', deleteLayer: 'Delete layer', addLayer: 'Add layer', layerOptions: 'Layer options', channels: 'Channels', paths: 'Paths', addMask: 'Add layer mask', removeMask: 'Remove layer mask', invertMask: 'Invert mask', maskDensity: 'Mask density', compositeChannel: 'Composite', alphaChannel: 'Alpha',
     panels: 'Panels', ready: 'Ready', paintHint: 'Draw on the canvas', strokes: 'strokes',
     hiddenLayer: 'Layer is hidden', hex: 'Hex', invalidColor: 'Enter a six-digit hex color.',
     roundBrush: 'Hard round', reorderPanel: 'Drag to reorder · Alt + arrow keys also move this tab', colors: ['Black', 'Gray', 'White', 'Coral', 'Ochre', 'Green', 'Blue', 'Violet'],
   },
   ja: {
+    selectionTools: '選択ツール',
+    rectangle: '長方形選択', ellipse: '楕円形選択', tools: 'ツール', deselect: '選択を解除', selectionHint: 'Shift：加算 · Option：減算 · 範囲内をドラッグして移動',
+    paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vector: 'ベクター選択', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'ベクターモード · 読み込んだSVGはレイヤーパネルで管理できます',
+
     recoveryReady: '復旧用コピーの自動保存が有効です',
     recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
     recoveryFailed: '復旧用コピーを更新できません。作品を手動で保存してください。', retryRecovery: '再試行', recoveryDetails: '詳細',
@@ -26,12 +35,17 @@ export const workspaceMessages = {
     undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', hardness: '硬さ', foreground: '描画色',
     sessionOnly: '未保存の変更があります', saved: '保存済み', empty: '描画できます', open: '開く', save: '保存', saveAs: '別名で保存', fileBusy: 'ファイルを処理中…', untitled: '名称未設定-1', untitledBase: '名称未設定', closeDocument: 'ドキュメントを閉じる', openDocuments: '開いているドキュメント', noDocument: 'ドキュメントは開かれていません', properties: 'プロパティ',
     diameter: '直径', document: 'ドキュメント', width: '幅', height: '高さ', layers: 'レイヤー',
-    layer: 'レイヤー 1', oneLayer: '1 レイヤー', layerUnit: 'レイヤー', showLayer: 'レイヤーを表示', hideLayer: 'レイヤーを非表示',
+    documentName: '名称', unit: '単位', pixels: 'ピクセル', inches: 'インチ', centimeters: 'センチメートル', millimeters: 'ミリメートル', orientation: '方向', portrait: '縦', landscape: '横', artboards: 'アートボード', resolution: '解像度', pixelsPerInch: 'ピクセル/インチ', colorMode: 'カラーモード', color: 'カラー', bitDepth: '階調', canvasColor: 'キャンバスカラー', white: '白', transparent: '透明', advancedOptions: '詳細オプション', colorProfile: 'カラープロファイル', pixelAspectRatio: 'ピクセル縦横比', squarePixels: '正方形ピクセル', applyDocumentSettings: '適用',
+    reorderLayer: 'ドラッグで移動 · Alt＋↑/↓ · 名前をダブルクリックで変更', fixedBaseLayer: '基礎ペイントレイヤー · 最下層に固定', layer: 'レイヤー 1', oneLayer: '1 レイヤー', layerUnit: 'レイヤー', showLayer: 'レイヤーを表示', hideLayer: 'レイヤーを非表示', layerBlendMode: '描画モード', normalBlend: '通常', layerOpacity: '不透明度', layerFill: '塗り', lockLayer: 'レイヤーをロック', unlockLayer: 'ロックを解除', lockAlpha: '透明ピクセルをロック', renameLayer: 'レイヤー名を変更', deleteLayer: 'レイヤーを削除', addLayer: 'レイヤーを追加', layerOptions: 'レイヤーオプション', channels: 'チャンネル', paths: 'パス', addMask: 'レイヤーマスクを追加', removeMask: 'レイヤーマスクを削除', invertMask: 'マスクを反転', maskDensity: 'マスク濃度', compositeChannel: '合成チャンネル', alphaChannel: 'アルファ',
     panels: 'パネル', ready: '準備完了', paintHint: 'キャンバスに描画できます', strokes: 'ストローク',
     hiddenLayer: 'レイヤーは非表示です', hex: 'Hex', invalidColor: '6桁のカラーコードを入力してください。',
     roundBrush: 'ハード円ブラシ', reorderPanel: 'ドラッグで並べ替え · Alt＋矢印キーでも移動できます', colors: ['黒', 'グレー', '白', 'コーラル', 'オーカー', '緑', '青', '紫'],
   },
   'zh-CN': {
+    selectionTools: '选区工具',
+    rectangle: '矩形选框', ellipse: '椭圆选框', tools: '工具', deselect: '取消选择', selectionHint: 'Shift：添加 · Option/Alt：减去 · 拖动选区内部以移动',
+    paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vector: '矢量选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '矢量模式 · 可在图层面板管理导入的 SVG',
+
     recoveryReady: '已启用自动恢复副本',
     recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',
     recoveryFailed: '无法更新恢复副本。请手动保存作品。', retryRecovery: '重试', recoveryDetails: '详情',
@@ -42,7 +56,8 @@ export const workspaceMessages = {
     undo: '撤销', redo: '重做', brush: '画笔', size: '大小', hardness: '硬度', foreground: '前景色',
     sessionOnly: '有未保存的更改', saved: '已保存', empty: '可以开始绘画', open: '打开', save: '保存', saveAs: '另存为', fileBusy: '正在处理文件…', untitled: '未命名-1', untitledBase: '未命名', closeDocument: '关闭文档', openDocuments: '打开的文档', noDocument: '未打开文档', properties: '属性',
     diameter: '直径', document: '文档', width: '宽度', height: '高度', layers: '图层',
-    layer: '图层 1', oneLayer: '1 个图层', layerUnit: '个图层', showLayer: '显示图层', hideLayer: '隐藏图层',
+    documentName: '名称', unit: '单位', pixels: '像素', inches: '英寸', centimeters: '厘米', millimeters: '毫米', orientation: '方向', portrait: '纵向', landscape: '横向', artboards: '画板', resolution: '分辨率', pixelsPerInch: '像素/英寸', colorMode: '颜色模式', color: '颜色', bitDepth: '位深度', canvasColor: '画布颜色', white: '白色', transparent: '透明', advancedOptions: '高级选项', colorProfile: '颜色配置文件', pixelAspectRatio: '像素长宽比', squarePixels: '方形像素', applyDocumentSettings: '应用',
+    reorderLayer: '拖动排序 · Alt + ↑/↓ · 双击名称重命名', fixedBaseLayer: '基础绘画图层 · 固定在底部', layer: '图层 1', oneLayer: '1 个图层', layerUnit: '个图层', showLayer: '显示图层', hideLayer: '隐藏图层', layerBlendMode: '混合模式', normalBlend: '正常', layerOpacity: '不透明度', layerFill: '填充', lockLayer: '锁定图层', unlockLayer: '解锁图层', lockAlpha: '锁定透明像素', renameLayer: '重命名图层', deleteLayer: '删除图层', addLayer: '添加图层', layerOptions: '图层选项', channels: '通道', paths: '路径', addMask: '添加图层蒙版', removeMask: '删除图层蒙版', invertMask: '反相蒙版', maskDensity: '蒙版浓度', compositeChannel: '复合通道', alphaChannel: 'Alpha',
     panels: '面板', ready: '就绪', paintHint: '在画布上开始绘画', strokes: '笔画',
     hiddenLayer: '图层已隐藏', hex: 'Hex', invalidColor: '请输入六位十六进制颜色代码。',
     roundBrush: '硬圆画笔', reorderPanel: '拖动排序 · 也可按 Alt + 方向键移动', colors: ['黑色', '灰色', '白色', '珊瑚色', '赭色', '绿色', '蓝色', '紫色'],

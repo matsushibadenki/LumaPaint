@@ -32,7 +32,7 @@ pub struct Info {
 
 enum Job {
     Save {
-        document: Document,
+        document: Box<Document>,
         revision: u64,
         source: Option<PathBuf>,
     },
@@ -161,7 +161,7 @@ impl Recovery {
         let snapshot = document.snapshot();
         if snapshot.dirty {
             self.enqueue(Job::Save {
-                document,
+                document: Box::new(document),
                 revision: snapshot.revision,
                 source: self.source.clone(),
             });

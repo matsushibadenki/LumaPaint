@@ -1,5 +1,8 @@
 //! GPU rendering shared across desktop platforms; native view ownership lives in the host.
-use lumapaint_core::document::{Document, Point, Stroke, HEIGHT, WIDTH};
+use lumapaint_core::document::{
+    CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, HEIGHT,
+    WIDTH,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 pub use wgpu;
@@ -12,18 +15,23 @@ pub struct Viewport {
     pub scale: f32,
     pub zoom: f32,
     pub dark: bool,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub document_width: f32,
+    pub document_height: f32,
+    pub canvas_color: CanvasColor,
 }
 
 impl Viewport {
     pub fn document_point(&self, x: f32, y: f32) -> Point {
         let width = self.width as f32 / self.scale;
         let height = self.height as f32 / self.scale;
-        let fit = ((width - 48.0) / WIDTH)
-            .min((height - 48.0) / HEIGHT)
+        let fit = ((width - 48.0) / self.document_width)
+            .min((height - 48.0) / self.document_height)
             .max(0.01);
         Point {
-            x: (x - width * 0.5) / (fit * self.zoom) + WIDTH * 0.5,
-            y: (y - height * 0.5) / (fit * self.zoom) + HEIGHT * 0.5,
+            x: (x - width * 0.5 - self.pan_x) / (fit * self.zoom) + self.document_width * 0.5,
+            y: (y - height * 0.5 - self.pan_y) / (fit * self.zoom) + self.document_height * 0.5,
         }
     }
     pub fn new(width: f64, height: f64, scale: f64, zoom: f64, dark: bool) -> Result<Self, String> {
@@ -46,7 +54,36 @@ impl Viewport {
             scale: scale as f32,
             zoom: zoom as f32,
             dark,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            document_width: WIDTH,
+            document_height: HEIGHT,
+            canvas_color: CanvasColor::White,
         })
+    }
+
+    pub fn with_pan(mut self, x: f32, y: f32) -> Result<Self, String> {
+        if !x.is_finite() || !y.is_finite() || x.abs() > 8192.0 || y.abs() > 8192.0 {
+            return Err("Invalid canvas pan offset".into());
+        }
+        self.pan_x = x;
+        self.pan_y = y;
+        Ok(self)
+    }
+
+    pub fn with_document(
+        mut self,
+        width: u32,
+        height: u32,
+        canvas_color: CanvasColor,
+    ) -> Result<Self, String> {
+        if width == 0 || height == 0 || width > 8192 || height > 8192 {
+            return Err("Invalid document dimensions".into());
+        }
+        self.document_width = width as f32;
+        self.document_height = height as f32;
+        self.canvas_color = canvas_color;
+        Ok(self)
     }
 }
 
@@ -55,6 +92,7 @@ impl Viewport {
 struct Uniforms {
     viewport: [f32; 4],
     appearance: [f32; 4],
+    document: [f32; 4],
 }
 
 #[repr(C)]
@@ -66,6 +104,79 @@ struct Segment {
     hardness: f32,
     weight: f32,
     padding: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SelectionGpuRegion {
+    bounds: [f32; 4],
+    info: [f32; 4],
+}
+
+fn create_selection_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Selection regions"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
+fn selection_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    selection: Option<&Selection>,
+) -> wgpu::BindGroup {
+    let regions: Vec<_> = selection
+        .map(|selection| {
+            selection
+                .regions
+                .iter()
+                .map(|region| SelectionGpuRegion {
+                    bounds: region.bounds,
+                    info: [
+                        match region.operation {
+                            SelectionOperation::Replace => 0.0,
+                            SelectionOperation::Add => 1.0,
+                            SelectionOperation::Subtract => 2.0,
+                            SelectionOperation::Invert => 3.0,
+                        },
+                        if region.shape == SelectionShape::Ellipse {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        0.0,
+                        0.0,
+                    ],
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            vec![SelectionGpuRegion {
+                bounds: [0.0; 4],
+                info: [4.0, 0.0, 0.0, 0.0],
+            }]
+        });
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Selection regions"),
+        contents: bytemuck::cast_slice(&regions),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Selection regions"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
 }
 
 fn linear_color(color: [u8; 3]) -> [f32; 4] {
@@ -83,34 +194,39 @@ fn linear_color(color: [u8; 3]) -> [f32; 4] {
 // Integrate a radial brush tip along arc length, independent of input event density.
 // The carry across polyline vertices is essential: restarting dabs at every
 // vertex would reintroduce dark knots. A partial final interval has less weight.
-fn segments(stroke: &Stroke) -> Vec<Segment> {
-    let points = smooth_points(&stroke.points);
-    dabs_along_path(&points, stroke.brush)
+fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
+    let points = smooth_points(&stroke.points, &stroke.pressures);
+    dabs_along_path(&points, stroke.brush, opacity)
 }
 
-fn dabs_along_path(points: &[Point], brush: lumapaint_core::document::Brush) -> Vec<Segment> {
-    let radius = brush.size * 0.5;
+fn dabs_along_path(
+    points: &[(Point, f32)],
+    brush: lumapaint_core::document::Brush,
+    opacity: f32,
+) -> Vec<Segment> {
+    let base_radius = brush.size * 0.5;
     // Soft tips tolerate wider sampling. Avoid thousands of tiny half-float
     // additions on wide brushes; hard edges keep a one-pixel upper bound.
-    let spacing = (radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
+    let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
     let color = linear_color(brush.color);
     let mut result = Vec::new();
-    let mut emit = |p: Point, length: f32| {
+    let mut emit = |p: Point, pressure: f32, length: f32| {
+        let radius = base_radius * pressure.max(0.05);
         result.push(Segment {
             ends: [p.x, p.y, p.x, p.y],
             color,
             radius,
             hardness: brush.hardness,
             // Optical depth per unit arc length; the shader converts it to alpha.
-            weight: length / radius,
+            weight: length / radius * opacity,
             padding: 0.0,
         })
     };
     let mut traversed = 0.0;
     let mut next = spacing * 0.5;
     for pair in points.windows(2) {
-        let a = pair[0];
-        let b = pair[1];
+        let (a, pressure_a) = pair[0];
+        let (b, pressure_b) = pair[1];
         let length = (b.x - a.x).hypot(b.y - a.y);
         if length <= f32::EPSILON {
             continue;
@@ -122,36 +238,42 @@ fn dabs_along_path(points: &[Point], brush: lumapaint_core::document::Brush) -> 
                     x: a.x + (b.x - a.x) * t,
                     y: a.y + (b.y - a.y) * t,
                 },
+                pressure_a + (pressure_b - pressure_a) * t,
                 spacing,
             );
             next += spacing;
         }
         traversed += length;
     }
-    if let Some(last) = points.last() {
+    if let Some((last, pressure)) = points.last() {
         if traversed < spacing * 0.5 {
             // A click still produces a round mark.
-            emit(*last, radius);
+            emit(*last, *pressure, base_radius);
         } else {
             // Correct the last quadrature cell instead of adding a full end dab.
             let covered = next - spacing * 0.5;
             let remainder = traversed - covered;
             if remainder > 0.0 {
-                emit(*last, remainder);
+                emit(*last, *pressure, remainder);
             } else if let Some(last_dab) = result.last_mut() {
-                last_dab.weight += remainder / radius;
+                last_dab.weight += remainder / base_radius;
             }
         }
     }
     result
 }
 
-fn smooth_points(points: &[Point]) -> Vec<Point> {
+fn smooth_points(points: &[Point], pressures: &[f32]) -> Vec<(Point, f32)> {
+    let pressure_at = |index: usize| pressures.get(index).copied().unwrap_or(1.0);
     if points.len() <= 2 {
-        return points.to_vec();
+        return points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| (*point, pressure_at(index)))
+            .collect();
     }
 
-    let mut result = vec![points[0]];
+    let mut result = vec![(points[0], pressure_at(0))];
     for index in 0..points.len() - 1 {
         let p0 = points[index.saturating_sub(1)];
         let p1 = points[index];
@@ -163,18 +285,21 @@ fn smooth_points(points: &[Point]) -> Vec<Point> {
             let t = step as f32 / subdivisions as f32;
             let t2 = t * t;
             let t3 = t2 * t;
-            result.push(Point {
-                x: 0.5
-                    * ((2.0 * p1.x)
-                        + (-p0.x + p2.x) * t
-                        + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
-                        + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3),
-                y: 0.5
-                    * ((2.0 * p1.y)
-                        + (-p0.y + p2.y) * t
-                        + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
-                        + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3),
-            });
+            result.push((
+                Point {
+                    x: 0.5
+                        * ((2.0 * p1.x)
+                            + (-p0.x + p2.x) * t
+                            + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                            + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3),
+                    y: 0.5
+                        * ((2.0 * p1.y)
+                            + (-p0.y + p2.y) * t
+                            + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                            + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3),
+                },
+                pressure_at(index) + (pressure_at(index + 1) - pressure_at(index)) * t,
+            ));
         }
     }
     result
@@ -188,7 +313,14 @@ fn create_brush_pipeline(
 ) -> wgpu::RenderPipeline {
     let brush_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Round brush"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("brush.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "{}\n{}",
+                include_str!("selection_common.wgsl"),
+                include_str!("brush.wgsl")
+            )
+            .into(),
+        ),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Round brush pipeline"), layout: Some(layout),
@@ -205,6 +337,49 @@ alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wg
 }), write_mask: wgpu::ColorWrites::ALL })] }),
             multiview: None, cache: None,
         })
+}
+
+fn create_selection_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Selection outline"),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "{}\n{}",
+                include_str!("selection_common.wgsl"),
+                include_str!("selection.wgsl")
+            )
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Selection outline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 fn create_brush_composite(
@@ -280,33 +455,14 @@ fn create_brush_composite(
     (bind_layout, pipeline)
 }
 
-fn rasterize_svg(source: &str) -> Result<Vec<u8>, String> {
-    let options = resvg::usvg::Options {
-        image_href_resolver: resvg::usvg::ImageHrefResolver {
-            resolve_data: resvg::usvg::ImageHrefResolver::default_data_resolver(),
-            resolve_string: Box::new(|_, _| None),
-        },
-        ..Default::default()
-    };
-    let tree = resvg::usvg::Tree::from_str(source, &options).map_err(|error| error.to_string())?;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(WIDTH as u32, HEIGHT as u32)
-        .ok_or("SVG raster allocation failed")?;
-    let size = tree.size();
-    let scale = (WIDTH / size.width()).min(HEIGHT / size.height());
-    let transform = resvg::tiny_skia::Transform::from_row(
-        scale,
-        0.0,
-        0.0,
-        scale,
-        (WIDTH - size.width() * scale) * 0.5,
-        (HEIGHT - size.height() * scale) * 0.5,
-    );
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
-    Ok(pixmap.take())
+pub mod vector;
+
+fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    vector::rasterize_svg(source, width, height).map(|raster| raster.pixels)
 }
 
 pub fn validate_svg(source: &str) -> Result<(), String> {
-    rasterize_svg(source).map(|_| ())
+    rasterize_svg(source, WIDTH as u32, HEIGHT as u32).map(|_| ())
 }
 
 /// The host must keep the native surface target alive until this renderer is dropped.
@@ -316,6 +472,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    selection_pipeline: wgpu::RenderPipeline,
+    selection_layout: wgpu::BindGroupLayout,
     brush_pipeline: wgpu::RenderPipeline,
     brush_composite_pipeline: wgpu::RenderPipeline,
     brush_bind_layout: wgpu::BindGroupLayout,
@@ -333,6 +491,8 @@ pub struct Renderer {
 
 struct CachedSvg {
     source: String,
+    opacity: f32,
+    size: (u32, u32),
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
 }
@@ -432,7 +592,14 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let brush_pipeline = create_brush_pipeline(&device, &layout);
+        let selection_layout = create_selection_layout(&device);
+        let paint_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Selected paint layout"),
+            bind_group_layouts: &[&bind_layout, &selection_layout],
+            push_constant_ranges: &[],
+        });
+        let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
+        let selection_pipeline = create_selection_pipeline(&device, &paint_layout, format);
         let (brush_bind_layout, brush_composite_pipeline) = create_brush_composite(&device, format);
         let brush_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
@@ -533,6 +700,8 @@ impl Renderer {
             queue,
             config,
             pipeline,
+            selection_pipeline,
+            selection_layout,
             brush_pipeline,
             brush_composite_pipeline,
             brush_bind_layout,
@@ -557,7 +726,17 @@ impl Renderer {
                 viewport.scale,
                 viewport.zoom,
             ],
-            appearance: [if viewport.dark { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            appearance: [
+                if viewport.dark { 1.0 } else { 0.0 },
+                viewport.pan_x,
+                viewport.pan_y,
+                if viewport.canvas_color == CanvasColor::Transparent {
+                    1.0
+                } else {
+                    0.0
+                },
+            ],
+            document: [viewport.document_width, viewport.document_height, 0.0, 0.0],
         }
     }
 
@@ -590,31 +769,52 @@ impl Renderer {
             }
             Err(error) => return Err(error.to_string()),
         };
-        self.queue.write_buffer(
-            &self.uniforms,
-            0,
-            bytemuck::bytes_of(&Self::uniforms(viewport)),
-        );
+        let uniforms = Self::uniforms(viewport);
+        let outline_selection = document.selection().map(|selection| {
+            selection_bind_group(&self.device, &self.selection_layout, Some(selection))
+        });
+        let stroke_selections: Vec<_> = document
+            .visible_strokes()
+            .map(|stroke| {
+                selection_bind_group(
+                    &self.device,
+                    &self.selection_layout,
+                    stroke.selection.as_ref(),
+                )
+            })
+            .collect();
+        self.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let view = frame.texture.create_view(&Default::default());
-        let stroke_segments: Vec<_> = document.visible_strokes().map(segments).collect();
+        let stroke_segments: Vec<_> = document
+            .visible_strokes()
+            .map(|stroke| segments(stroke, document.paint_layer_opacity()))
+            .collect();
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         for layer in document.visible_svg_layers() {
-            if self
-                .svg_cache
-                .get(&layer.id)
-                .is_some_and(|cached| cached.source == layer.source)
-            {
+            if self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                cached.source == layer.source
+                    && cached.opacity == layer.effective_opacity()
+                    && cached.size == (document.snapshot().width, document.snapshot().height)
+            }) {
                 continue;
             }
-            let pixels = rasterize_svg(&layer.source)?;
+            let snapshot = document.snapshot();
+            let mut pixels = rasterize_svg(&layer.source, snapshot.width, snapshot.height)?;
+            let effective_opacity = layer.effective_opacity();
+            for channel in pixels.as_chunks_mut::<4>().0 {
+                for value in channel {
+                    *value = (f32::from(*value) * effective_opacity).round() as u8;
+                }
+            }
             let texture = self.device.create_texture_with_data(
                 &self.queue,
                 &wgpu::TextureDescriptor {
                     label: Some("SVG layer texture"),
                     size: wgpu::Extent3d {
-                        width: WIDTH as u32,
-                        height: HEIGHT as u32,
+                        width: snapshot.width,
+                        height: snapshot.height,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -646,6 +846,8 @@ impl Renderer {
                 layer.id.clone(),
                 CachedSvg {
                     source: layer.source.clone(),
+                    opacity: effective_opacity,
+                    size: (snapshot.width, snapshot.height),
                     _texture: texture,
                     bind_group,
                 },
@@ -715,7 +917,11 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
-            for (buffer, segments) in brush_buffers.iter().zip(stroke_segments.iter()) {
+            for ((buffer, segments), selection_group) in brush_buffers
+                .iter()
+                .zip(stroke_segments.iter())
+                .zip(&stroke_selections)
+            {
                 let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Brush paint pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -731,6 +937,7 @@ impl Renderer {
                 });
                 mask_pass.set_pipeline(&self.brush_pipeline);
                 mask_pass.set_bind_group(0, &self.bind_group, &[]);
+                mask_pass.set_bind_group(1, selection_group, &[]);
                 mask_pass.set_vertex_buffer(0, buffer.slice(..));
                 mask_pass.draw(0..6, 0..segments.len() as u32);
                 drop(mask_pass);
@@ -774,6 +981,12 @@ impl Renderer {
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
+            if let Some(selection_group) = &outline_selection {
+                pass.set_pipeline(&self.selection_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_bind_group(1, selection_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -792,13 +1005,31 @@ mod tests {
             Point { x: 10.0, y: 0.0 },
             Point { x: 20.0, y: 10.0 },
         ];
-        let smoothed = smooth_points(&points);
+        let smoothed = smooth_points(&points, &[0.25, 0.5, 1.0]);
         assert!(smoothed.len() > points.len());
-        assert_eq!((smoothed[0].x, smoothed[0].y), (0.0, 10.0));
+        assert_eq!((smoothed[0].0.x, smoothed[0].0.y), (0.0, 10.0));
+        assert_eq!(smoothed[0].1, 0.25);
         let last = smoothed.last().unwrap();
-        assert!((last.x - 20.0).abs() < 0.001);
-        assert!((last.y - 10.0).abs() < 0.001);
-        assert!(smoothed.iter().any(|point| point.y < 1.0));
+        assert!((last.0.x - 20.0).abs() < 0.001);
+        assert!((last.0.y - 10.0).abs() < 0.001);
+        assert!((last.1 - 1.0).abs() < 0.001);
+        assert!(smoothed.iter().any(|point| point.0.y < 1.0));
+    }
+
+    #[test]
+    fn pressure_changes_brush_radius_along_the_stroke() {
+        let stroke = Stroke {
+            brush: lumapaint_core::document::Brush {
+                size: 40.0,
+                ..Default::default()
+            },
+            points: vec![Point { x: 10.0, y: 10.0 }, Point { x: 110.0, y: 10.0 }],
+            pressures: vec![0.25, 1.0],
+            selection: None,
+        };
+        let dabs = segments(&stroke, 1.0);
+        assert!(dabs.first().unwrap().radius < 6.0);
+        assert!(dabs.last().unwrap().radius > 19.0);
     }
 
     #[test]
@@ -806,6 +1037,27 @@ mod tests {
         let viewport = Viewport::new(800.0, 500.0, 2.0, 2.0, true).unwrap();
         let point = viewport.document_point(400.0, 250.0);
         assert_eq!((point.x, point.y), (480.0, 320.0));
+    }
+
+    #[test]
+    fn pan_offset_moves_document_and_pointer_mapping_together() {
+        let viewport = Viewport::new(800.0, 500.0, 2.0, 2.0, true)
+            .unwrap()
+            .with_pan(40.0, -20.0)
+            .unwrap();
+        let point = viewport.document_point(440.0, 230.0);
+        assert!((point.x - WIDTH * 0.5).abs() < 0.001);
+        assert!((point.y - HEIGHT * 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn custom_document_size_controls_pointer_mapping() {
+        let viewport = Viewport::new(800.0, 500.0, 1.0, 1.0, false)
+            .unwrap()
+            .with_document(434, 418, CanvasColor::White)
+            .unwrap();
+        let point = viewport.document_point(400.0, 250.0);
+        assert_eq!((point.x, point.y), (217.0, 209.0));
     }
 
     #[test]
@@ -828,7 +1080,7 @@ mod tests {
     #[test]
     fn svg_validation_rasterizes_vector_content() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><circle cx="20" cy="10" r="8" fill="#538fd2"/></svg>"##;
-        let pixels = rasterize_svg(svg).unwrap();
+        let pixels = rasterize_svg(svg, WIDTH as u32, HEIGHT as u32).unwrap();
         assert_eq!(pixels.len(), WIDTH as usize * HEIGHT as usize * 4);
         assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
         assert!(validate_svg("not svg").is_err());
