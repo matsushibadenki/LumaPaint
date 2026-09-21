@@ -303,6 +303,12 @@ pub fn upsert_vector_object(
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn select_vector_objects(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().select_vector_objects(ids))?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
 pub fn reorder_layers(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().reorder_layers(&ids))?;

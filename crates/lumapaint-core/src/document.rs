@@ -229,11 +229,24 @@ pub struct DocumentSnapshot {
     pub bit_depth: u8,
     pub stroke_count: usize,
     pub layers: Vec<LayerSnapshot>,
+    pub selected_vector_objects: Vec<String>,
     pub can_undo: bool,
     pub can_redo: bool,
     pub revision: u64,
     pub dirty: bool,
     pub file_name: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum HistoryKind {
+    Stroke,
+    Vector,
+}
+
+#[derive(Clone)]
+struct VectorHistoryState {
+    layers: Vec<SvgLayer>,
+    selection: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -260,6 +273,11 @@ pub struct Document {
     layer_mask_inverted: bool,
     layer_mask_density: f32,
     svg_layers: Vec<SvgLayer>,
+    selected_vector_objects: Vec<String>,
+    vector_undo: Vec<VectorHistoryState>,
+    vector_redo: Vec<VectorHistoryState>,
+    undo_order: Vec<HistoryKind>,
+    redo_order: Vec<HistoryKind>,
     color_mode: ColorMode,
     color_profile: ColorProfile,
     bit_depth: u8,
@@ -294,6 +312,11 @@ impl Default for Document {
             layer_mask_inverted: false,
             layer_mask_density: 1.0,
             svg_layers: Vec::new(),
+            selected_vector_objects: Vec::new(),
+            vector_undo: Vec::new(),
+            vector_redo: Vec::new(),
+            undo_order: Vec::new(),
+            redo_order: Vec::new(),
             color_mode: ColorMode::default(),
             color_profile: ColorProfile::default(),
             bit_depth: DEFAULT_BIT_DEPTH,
@@ -358,8 +381,9 @@ impl Document {
             bit_depth: self.bit_depth,
             stroke_count: self.strokes.len(),
             layers,
-            can_undo: !self.strokes.is_empty(),
-            can_redo: !self.redo.is_empty(),
+            selected_vector_objects: self.selected_vector_objects.clone(),
+            can_undo: !self.undo_order.is_empty(),
+            can_redo: !self.redo_order.is_empty(),
             revision: self.revision,
             dirty: self.revision != self.saved_revision || self.active.is_some(),
             file_name: self.file_name.clone(),
@@ -465,6 +489,7 @@ impl Document {
         {
             return Err("Project contains too many SVG layers or SVG data".into());
         }
+        let stroke_count = file.strokes.len();
         Ok(Self {
             name: file.name.unwrap_or_else(|| "Untitled-1".into()),
             width: file.width,
@@ -488,6 +513,7 @@ impl Document {
             color_profile,
             bit_depth: file.bit_depth,
             point_count: count,
+            undo_order: vec![HistoryKind::Stroke; stroke_count],
             ..Self::default()
         })
     }
@@ -629,23 +655,54 @@ impl Document {
             self.point_count += stroke.points.len();
             self.strokes.push(stroke);
             self.redo.clear();
+            self.vector_redo.clear();
+            self.redo_order.clear();
+            self.undo_order.push(HistoryKind::Stroke);
             self.revision += 1;
         }
     }
     pub fn undo(&mut self) {
         self.finish();
-        if let Some(stroke) = self.strokes.pop() {
-            self.point_count -= stroke.points.len();
-            self.redo.push(stroke);
-            self.revision += 1;
+        match self.undo_order.pop() {
+            Some(HistoryKind::Stroke) => {
+                if let Some(stroke) = self.strokes.pop() {
+                    self.point_count -= stroke.points.len();
+                    self.redo.push(stroke);
+                    self.redo_order.push(HistoryKind::Stroke);
+                    self.revision += 1;
+                }
+            }
+            Some(HistoryKind::Vector) => {
+                if let Some(previous) = self.vector_undo.pop() {
+                    self.vector_redo.push(self.vector_history_state());
+                    self.restore_vector_history(previous);
+                    self.redo_order.push(HistoryKind::Vector);
+                    self.revision += 1;
+                }
+            }
+            None => {}
         }
     }
     pub fn redo(&mut self) {
         self.finish();
-        if let Some(stroke) = self.redo.pop() {
-            self.point_count += stroke.points.len();
-            self.strokes.push(stroke);
-            self.revision += 1;
+        match self.redo_order.pop() {
+            Some(HistoryKind::Stroke) => {
+                if let Some(stroke) = self.redo.pop() {
+                    self.point_count += stroke.points.len();
+                    self.strokes.push(stroke);
+                    self.undo_order.push(HistoryKind::Stroke);
+                    self.revision += 1;
+                }
+            }
+            Some(HistoryKind::Vector) => {
+                if let Some(next) = self.vector_redo.pop() {
+                    self.vector_undo.push(self.vector_history_state());
+                    self.restore_vector_history(next);
+                    self.undo_order.push(HistoryKind::Vector);
+                    self.revision += 1;
+                }
+            }
+            None => {}
         }
     }
     pub fn toggle_visibility(&mut self) {
@@ -708,10 +765,27 @@ impl Document {
         if id == "layer-1" {
             return Err("The paint layer cannot be deleted yet".into());
         }
+        let before_state = self.vector_history_state();
         let before = self.svg_layers.len();
+        let was_vector = self
+            .svg_layers
+            .iter()
+            .any(|layer| layer.id == id && layer.vector_layer);
         self.svg_layers.retain(|layer| layer.id != id);
         if self.svg_layers.len() == before {
             return Err("Layer not found".into());
+        }
+        if was_vector {
+            let layers = &self.svg_layers;
+            self.selected_vector_objects.retain(|selected| {
+                layers.iter().any(|layer| {
+                    layer
+                        .vector_objects
+                        .iter()
+                        .any(|object| &object.id == selected)
+                })
+            });
+            self.record_vector_edit(before_state);
         }
         self.revision += 1;
         Ok(())
@@ -840,6 +914,7 @@ impl Document {
             serial += 1;
         }
         let id = format!("vector-layer-{serial}");
+        let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
             id: id.clone(),
             name: format!("Vector Layer {serial}"),
@@ -855,6 +930,7 @@ impl Document {
             vector_layer: true,
             vector_objects: vec![],
         });
+        self.record_vector_edit(before);
         self.revision += 1;
         Ok(id)
     }
@@ -865,6 +941,7 @@ impl Document {
     ) -> Result<(), String> {
         self.finish();
         object.validate()?;
+        let before = self.vector_history_state();
         let layer_index = self
             .svg_layers
             .iter()
@@ -895,12 +972,50 @@ impl Document {
         if total_source_len > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
-        let layer = &mut self.svg_layers[layer_index];
-        layer.vector_objects = objects;
-        layer.source = source;
-        validate_svg_layer(layer)?;
+        let mut updated_layer = self.svg_layers[layer_index].clone();
+        updated_layer.vector_objects = objects;
+        updated_layer.source = source;
+        validate_svg_layer(&updated_layer)?;
+        self.svg_layers[layer_index] = updated_layer;
+        self.record_vector_edit(before);
         self.revision += 1;
         Ok(())
+    }
+    pub fn select_vector_objects(&mut self, ids: Vec<String>) -> Result<(), String> {
+        if ids.len() > 4096 {
+            return Err("Too many selected vector objects".into());
+        }
+        let mut unique = Vec::with_capacity(ids.len());
+        for id in ids {
+            let exists = self.svg_layers.iter().any(|layer| {
+                layer.vector_layer && layer.vector_objects.iter().any(|object| object.id == id)
+            });
+            if !exists {
+                return Err("Vector object not found".into());
+            }
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
+        self.selected_vector_objects = unique;
+        Ok(())
+    }
+    fn vector_history_state(&self) -> VectorHistoryState {
+        VectorHistoryState {
+            layers: self.svg_layers.clone(),
+            selection: self.selected_vector_objects.clone(),
+        }
+    }
+    fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.svg_layers = state.layers;
+        self.selected_vector_objects = state.selection;
+    }
+    fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        self.vector_undo.push(previous);
+        self.vector_redo.clear();
+        self.redo.clear();
+        self.redo_order.clear();
+        self.undo_order.push(HistoryKind::Vector);
     }
     pub fn visible_svg_layers(&self) -> impl Iterator<Item = &SvgLayer> {
         self.svg_layers.iter().filter(|layer| layer.visible)
@@ -1545,6 +1660,57 @@ mod persistence_tests {
         assert!(layer.source.contains("fill=\"#0a50dcff\""));
         assert!(layer.source.contains("fill-rule=\"evenodd\""));
         assert_eq!(decoded.snapshot().layers[1].kind, "vector");
+    }
+
+    #[test]
+    fn vector_edits_share_ordered_undo_redo_with_brush_strokes() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        document
+            .upsert_vector_object(
+                &layer_id,
+                VectorObject {
+                    id: "shape-1".into(),
+                    name: "Shape".into(),
+                    path: VectorPath {
+                        data: "M 0 0 L 20 0 L 20 20 Z".into(),
+                        fill_rule: FillRule::NonZero,
+                    },
+                    transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    fill: Some(VectorPaint {
+                        color: [255, 0, 0, 255],
+                    }),
+                    stroke: None,
+                    stroke_width: 0.0,
+                    visible: true,
+                },
+            )
+            .unwrap();
+        document
+            .select_vector_objects(vec!["shape-1".into(), "shape-1".into()])
+            .unwrap();
+        assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
+
+        document
+            .begin(Point { x: 2.0, y: 2.0 }, Brush::default())
+            .unwrap();
+        document.finish();
+        document.undo();
+        assert_eq!(document.snapshot().stroke_count, 0);
+        assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
+
+        document.undo();
+        let layer = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap();
+        assert!(layer.vector_objects.is_empty());
+        assert!(document.snapshot().selected_vector_objects.is_empty());
+
+        document.redo();
+        assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
+        document.redo();
+        assert_eq!(document.snapshot().stroke_count, 1);
     }
 
     #[test]

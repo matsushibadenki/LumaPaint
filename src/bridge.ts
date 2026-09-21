@@ -15,6 +15,7 @@ export interface DocumentSnapshot {
   colorProfile: ColorProfile;
   bitDepth: BitDepth;
   strokeCount: number; layers: LayerSnapshot[]; canUndo: boolean; canRedo: boolean; revision: number; dirty: boolean; fileName: string | null;
+  selectedVectorObjects: string[];
 }
 export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
@@ -29,7 +30,7 @@ export type BitDepth = 8 | 16 | 32;
 export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
-export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -87,6 +88,11 @@ export function addVectorLayer(): Promise<DocumentSnapshot> {
 }
 export function upsertVectorObject(layerId: string, object: VectorObject): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('upsert_vector_object', { layerId, object }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function selectVectorObjects(ids: string[]): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_vector_objects', { ids }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

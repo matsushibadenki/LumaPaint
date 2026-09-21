@@ -350,6 +350,21 @@ pub async fn upsert_vector_object(
     }
 }
 #[tauri::command]
+pub async fn select_vector_objects(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::select_vector_objects(ids)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
 pub async fn reorder_layers(
     window: tauri::WebviewWindow,
     ids: Vec<String>,

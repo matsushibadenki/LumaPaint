@@ -99,6 +99,7 @@ pub fn run() {
             canvas::add_paint_layer,
             canvas::add_vector_layer,
             canvas::upsert_vector_object,
+            canvas::select_vector_objects,
             canvas::reorder_layers,
             canvas::set_color_mode,
             canvas::set_bit_depth,
