@@ -2,7 +2,7 @@ export const workspaceMessages = {
   en: {
     selectionTools: 'Selection tools', zoomTools: 'Zoom tools',
     rectangle: 'Rectangular selection', ellipse: 'Elliptical selection', tools: 'Tools', deselect: 'Deselect', selectionHint: 'Shift: add · Option/Alt: subtract · Drag inside to move',
-    layoutTools: 'Layout tools', animationTools: 'Animation tools', layoutHint: 'Arrange vector objects, shapes and editable text', animationHint: 'Drawing tools · Timeline and keyframes are planned', textTool: 'Text', timelineTool: 'Timeline', toolPlanned: 'Coming soon', paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', vectorSelected: 'vector objects selected', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
+    layoutTools: 'Layout tools', animationTools: 'Animation tools', layoutHint: 'Arrange vector objects, shapes and editable text', animationHint: 'Drawing tools · Timeline and keyframes are planned', text: 'Text', textTool: 'Text', timelineTool: 'Timeline', toolPlanned: 'Coming soon', paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', vectorSelected: 'vector objects selected', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
 
     recoveryReady: 'Automatic recovery enabled',
     recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
@@ -23,7 +23,7 @@ export const workspaceMessages = {
   ja: {
     selectionTools: '選択ツール', zoomTools: '拡大・縮小ツール',
     rectangle: '長方形選択', ellipse: '楕円形選択', tools: 'ツール', deselect: '選択を解除', selectionHint: 'Shift：加算 · Option：減算 · 範囲内をドラッグして移動',
-    layoutTools: 'レイアウト用ツール', animationTools: 'アニメーション用ツール', layoutHint: 'ベクター・図形・編集可能な文字を配置', animationHint: '作画用ツール · タイムラインとキーフレームは準備中', textTool: '文字', timelineTool: 'タイムライン', toolPlanned: '準備中', paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', vectorSelected: '個のベクターオブジェクトを選択中', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
+    layoutTools: 'レイアウト用ツール', animationTools: 'アニメーション用ツール', layoutHint: 'ベクター・図形・編集可能な文字を配置', animationHint: '作画用ツール · タイムラインとキーフレームは準備中', text: '文字', textTool: '文字', timelineTool: 'タイムライン', toolPlanned: '準備中', paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', vectorSelected: '個のベクターオブジェクトを選択中', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
 
     recoveryReady: '復旧用コピーの自動保存が有効です',
     recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
@@ -44,7 +44,7 @@ export const workspaceMessages = {
   'zh-CN': {
     selectionTools: '选区工具', zoomTools: '缩放工具',
     rectangle: '矩形选框', ellipse: '椭圆选框', tools: '工具', deselect: '取消选择', selectionHint: 'Shift：添加 · Option/Alt：减去 · 拖动选区内部以移动',
-    layoutTools: '布局工具', animationTools: '动画工具', layoutHint: '排列矢量对象、形状和可编辑文字', animationHint: '绘图工具 · 时间轴和关键帧即将推出', textTool: '文字', timelineTool: '时间轴', toolPlanned: '即将推出', paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', vectorSelected: '个矢量对象已选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
+    layoutTools: '布局工具', animationTools: '动画工具', layoutHint: '排列矢量对象、形状和可编辑文字', animationHint: '绘图工具 · 时间轴和关键帧即将推出', text: '文字', textTool: '文字', timelineTool: '时间轴', toolPlanned: '即将推出', paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', vectorSelected: '个矢量对象已选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
 
     recoveryReady: '已启用自动恢复副本',
     recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',

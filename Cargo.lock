@@ -2220,6 +2220,7 @@ dependencies = [
  "pollster",
  "resvg",
  "skia-safe",
+ "ttf-parser",
  "wgpu",
 ]
 

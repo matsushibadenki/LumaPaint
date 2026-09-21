@@ -220,7 +220,7 @@ pub struct TextObjectSnapshot {
     pub editable: bool,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextSettings {
     pub id: Option<String>,
@@ -419,7 +419,7 @@ impl Document {
                                 text: text.clone(),
                                 position: [object.transform[4], object.transform[5]],
                                 color: [color[0], color[1], color[2]],
-                                editable: !layer.locked,
+                                editable: !layer.locked && layer.visible && object.visible,
                             }
                         })
                     })
@@ -978,6 +978,44 @@ impl Document {
         self.revision += 1;
         Ok(id)
     }
+    pub fn text_edit_preview(&self, id: Option<&str>) -> Result<Self, String> {
+        let mut preview = self.clone();
+        preview.selected_vector_objects.clear();
+        if let Some(id) = id {
+            let layer = preview
+                .svg_layers
+                .iter_mut()
+                .find(|layer| {
+                    layer
+                        .vector_objects
+                        .iter()
+                        .any(|object| object.id == id && object.text.is_some())
+                })
+                .ok_or("Text object not found")?;
+            let object = layer
+                .vector_objects
+                .iter_mut()
+                .find(|object| object.id == id)
+                .unwrap();
+            if layer.locked || !layer.visible || !object.visible {
+                return Err("Text layer is locked or hidden".into());
+            }
+            object.visible = false;
+            layer.source = vector_svg(preview.width, preview.height, &layer.vector_objects);
+        }
+        Ok(preview)
+    }
+
+    pub fn text_at(&self, point: [f32; 2]) -> Option<String> {
+        self.svg_layers
+            .iter()
+            .rev()
+            .filter(|layer| layer.visible)
+            .flat_map(|layer| layer.vector_objects.iter().rev())
+            .find(|object| object.text.is_some() && object.hit_test(point, 0.0))
+            .map(|object| object.id.clone())
+    }
+
     pub fn set_text_object(&mut self, settings: TextSettings) -> Result<(), String> {
         settings.text.validate()?;
         if settings
@@ -1001,6 +1039,15 @@ impl Document {
                         .map(|object| (layer.id.clone(), object.clone()))
                 })
                 .ok_or("Text object not found")?;
+            if object.text.as_ref() == Some(&settings.text)
+                && object.transform[4..] == settings.position
+                && object.fill
+                    == Some(crate::vector::VectorPaint {
+                        color: [r, g, b, 255],
+                    })
+            {
+                return Ok(());
+            }
             object.control_points = settings.text.control_points();
             object.text = Some(settings.text);
             object.transform[4] = settings.position[0];
@@ -1894,22 +1941,55 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             .stroke
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
         if let Some(text) = &object.text {
+            let family = match text.font_family.as_str() {
+                "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, serif",
+                "monospace" => "Menlo, Consolas, Noto Sans Mono CJK JP, monospace",
+                "sans-serif" => "Hiragino Sans, PingFang SC, Noto Sans CJK JP, Arial, sans-serif",
+                family => family,
+            };
+            let decoration = match (text.underline, text.strikethrough) {
+                (true, true) => "underline line-through",
+                (true, false) => "underline",
+                (false, true) => "line-through",
+                _ => "none",
+            };
+            let (anchor, x) = match text.alignment {
+                crate::vector::TextAlignment::Left => {
+                    ("start", text.indent_left + text.indent_first)
+                }
+                crate::vector::TextAlignment::Center => (
+                    "middle",
+                    (text.box_width + text.indent_left - text.indent_right) * 0.5
+                        + text.indent_first * 0.5,
+                ),
+                crate::vector::TextAlignment::Right => ("end", text.box_width - text.indent_right),
+            };
             let _ = write!(
                 svg,
-                r#"<text transform="matrix({a} {b} {c} {d} {e} {f})" fill="{fill}" font-family="{}" font-size="{}" font-weight="{}" xml:space="preserve">"#,
-                match text.font_family.as_str() {
-                    "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, Noto Serif CJK SC, Times New Roman, serif",
-                    "monospace" => "Menlo, Consolas, Noto Sans Mono CJK JP, monospace",
-                    _ => "Hiragino Sans, PingFang SC, Microsoft YaHei, Noto Sans CJK JP, Noto Sans CJK SC, Arial, sans-serif",
-                },
+                r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})"><text fill="{fill}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" text-anchor="{anchor}" text-decoration="{decoration}" xml:space="preserve">"#,
+                text.rotation,
+                text.scale_x,
+                text.scale_y,
+                escape_xml(family),
                 text.font_size,
-                if text.bold { 700 } else { 400 }
+                if text.bold { 700 } else { 400 },
+                if text.italic { "italic" } else { "normal" },
+                text.tracking * text.font_size / 1000.0
             );
             for (index, line) in text.content.split('\n').enumerate() {
-                let y = text.font_size + index as f32 * text.font_size * text.line_height;
-                let _ = write!(svg, r#"<tspan x="0" y="{y}">{}</tspan>"#, escape_xml(line));
+                let y = text.font_size - text.baseline_shift
+                    + text.space_before
+                    + index as f32
+                        * (text.font_size * text.line_height
+                            + text.space_before
+                            + text.space_after);
+                let _ = write!(
+                    svg,
+                    r#"<tspan x="{x}" y="{y}">{}</tspan>"#,
+                    escape_xml(line)
+                );
             }
-            svg.push_str("</text>");
+            svg.push_str("</text></g>");
             continue;
         }
         let rule = match object.path.fill_rule {
@@ -2479,11 +2559,72 @@ mod text_tests {
                 font_size: 36.0,
                 line_height: 1.5,
                 bold: true,
+                ..VectorText::default()
             },
             position: [40.0, 50.0],
             color: [24, 80, 160],
         }
     }
+    #[test]
+    fn inline_preview_preserves_original_and_commits_as_one_edit() {
+        let mut doc = Document::default();
+        doc.set_text_object(settings()).unwrap();
+        let original = doc.encode().unwrap();
+        let object = doc.snapshot().text_objects[0].clone();
+        let preview = doc.text_edit_preview(Some(&object.id)).unwrap();
+        assert!(!preview.svg_layers[0].source.contains("<text"));
+        assert_eq!(original, doc.encode().unwrap());
+        let mut next = settings();
+        next.id = Some(object.id);
+        let revision = doc.snapshot().revision;
+        doc.set_text_object(next.clone()).unwrap();
+        assert_eq!(revision, doc.snapshot().revision);
+        next.text.content = "Inline 日本語".into();
+        next.text.tracking = 80.0;
+        next.text.italic = true;
+        doc.set_text_object(next).unwrap();
+        doc.undo();
+        assert_eq!(original, doc.encode().unwrap());
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects[0].text.content, "Inline 日本語");
+    }
+
+    #[test]
+    fn typography_round_trip_legacy_defaults_and_invalid_values() {
+        let legacy: VectorText = serde_json::from_str(r#"{"content":"Legacy","fontFamily":"sans-serif","fontSize":24,"lineHeight":1.4,"bold":false}"#).unwrap();
+        assert_eq!(legacy.scale_x, 1.0);
+        assert_eq!(legacy.alignment, crate::vector::TextAlignment::Left);
+        legacy.validate().unwrap();
+        let mut next = settings();
+        next.text.font_family = "Font \"Name\" & More".into();
+        next.text.tracking = 120.0;
+        next.text.scale_x = 1.2;
+        next.text.rotation = 15.0;
+        next.text.alignment = crate::vector::TextAlignment::Right;
+        next.text.underline = true;
+        next.text.space_before = 8.0;
+        let mut doc = Document::default();
+        doc.set_text_object(next.clone()).unwrap();
+        let source = &doc.svg_layers[0].source;
+        assert!(source.contains("&quot;Name&quot; &amp; More"));
+        assert!(source.contains("text-anchor=\"end\""));
+        assert!(source.contains("text-decoration=\"underline\""));
+        let encoded = doc.encode().unwrap();
+        assert_eq!(
+            Document::decode(&encoded).unwrap().snapshot().text_objects[0].text,
+            next.text
+        );
+        next.id = Some(doc.snapshot().text_objects[0].id.clone());
+        for value in [f32::NAN, f32::INFINITY, -1.0, 5.0] {
+            let mut invalid = next.clone();
+            invalid.text.scale_x = value;
+            assert!(doc.set_text_object(invalid).is_err());
+            assert_eq!(encoded, doc.encode().unwrap());
+        }
+        next.text.indent_left = next.text.box_width;
+        assert!(doc.set_text_object(next).is_err());
+    }
+
     #[test]
     fn text_round_trip_edit_move_and_atomic_history() {
         let mut doc = Document::default();

@@ -12,6 +12,7 @@ lumapaint-core = { path = "../lumapaint-core" }
 wgpu = "27"
 bytemuck = { version = "1", features = ["derive"] }
 resvg = "0.45"
+ttf-parser = "0.25"
 # This CPU/SVG/WebP combination has upstream prebuilt binaries for Apple Silicon.
 skia-safe = { version = "=0.153.3", features = ["svg", "webp"], optional = true }
 

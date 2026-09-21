@@ -21,6 +21,9 @@ use std::sync::OnceLock;
 use std::{cell::RefCell, ffi::c_void, ptr::NonNull};
 use tauri::{Emitter, Manager};
 
+#[path = "text_editor_macos.rs"]
+mod text_editor;
+
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 pub fn initialize(app: tauri::AppHandle) {
     let _ = APP.set(app);
@@ -103,7 +106,7 @@ define_class!(
         }
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
-            if self.isHidden() { return false.into(); }
+            if self.isHidden() || text_editor::active() { return false.into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
             if command && [0, 2].contains(&event.keyCode()) {
                 report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
@@ -152,6 +155,33 @@ impl PaintView {
             return;
         };
         let point = viewport.document_point(point.x as f32, point.y as f32);
+        if phase == 0 {
+            if let Err(error) = text_editor::finish(true) {
+                emit_error(error);
+                return;
+            }
+            let tool = TOOL.with(|tool| tool.get());
+            if tool == CanvasTool::Text
+                || (tool == CanvasTool::VectorSelect && event.clickCount() == 2)
+            {
+                if point.x >= 0.0
+                    && point.y >= 0.0
+                    && point.x < viewport.document_width
+                    && point.y < viewport.document_height
+                {
+                    if let Err(error) =
+                        text_editor::begin_at([point.x, point.y], tool == CanvasTool::Text)
+                    {
+                        emit_error(error);
+                    }
+                }
+                return;
+            }
+        }
+        if TOOL.with(|tool| tool.get()) == CanvasTool::Text {
+            return;
+        }
+
         let pressure = if event.subtype() == NSEventSubtype::TabletPoint {
             event.pressure().clamp(0.0, 1.0)
         } else {
@@ -614,7 +644,7 @@ fn redraw() -> Result<(), String> {
             if canvas.view.isHidden() {
                 return Ok(());
             }
-            DOCUMENT.with(|doc| canvas.renderer.render(canvas.viewport, &doc.borrow()))
+            text_editor::render(canvas)
         } else {
             Ok(())
         }
@@ -737,6 +767,7 @@ fn emit_workspace() {
 }
 
 pub fn destroy() {
+    let _ = text_editor::finish(false);
     DOCUMENT.with(|doc| doc.borrow_mut().finish());
     checkpoint();
     CANVAS.with(|slot| {
@@ -791,6 +822,9 @@ pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, S
 }
 
 fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
+    if TOOL.with(|tool| tool.get()) != request.tool || !request.visible {
+        text_editor::finish(true)?;
+    }
     BRUSH.with(|brush| *brush.borrow_mut() = request.brush);
     TOOL.with(|tool| tool.set(request.tool));
     let mtm = MainThreadMarker::new().ok_or("Native canvas requires the main thread")?;
@@ -826,7 +860,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     .with_pan(pan_x, pan_y)?
     .with_document(document.width, document.height, document.canvas_color)?;
 
-    CANVAS.with(|slot| {
+    let result = CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
         // A replaced webview must not reuse a surface attached to the previous parent.
         if slot.as_ref().is_some_and(|canvas| {
@@ -876,7 +910,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
         canvas.view.setHidden(false);
-        DOCUMENT.with(|doc| canvas.renderer.render(viewport, &doc.borrow()))?;
+        text_editor::render(canvas)?;
         Ok(CanvasInfo {
             status: "ready",
             backend: canvas.renderer.backend.clone(),
@@ -888,7 +922,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                 .with(|open| open.get())
                 .then(|| DOCUMENT.with(|doc| doc.borrow().snapshot())),
         })
-    })
+    });
+    text_editor::layout()?;
+    result
 }
 
 fn native_frame(
@@ -1005,6 +1041,10 @@ thread_local! {
 }
 
 pub fn confirm_discard() -> bool {
+    if let Err(error) = text_editor::finish(true) {
+        emit_error(error);
+        return false;
+    }
     let active_dirty =
         DOCUMENT_OPEN.with(|open| open.get()) && DOCUMENT.with(|doc| doc.borrow().snapshot().dirty);
     let inactive_dirty = INACTIVE_DOCUMENTS.with(|documents| {
@@ -1033,6 +1073,7 @@ fn confirm_unsaved_changes() -> bool {
 }
 
 fn ensure_document_open() -> Result<(), String> {
+    text_editor::finish(true)?;
     DOCUMENT_OPEN
         .with(|open| open.get())
         .then_some(())
@@ -1040,6 +1081,7 @@ fn ensure_document_open() -> Result<(), String> {
 }
 
 pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
+    text_editor::finish(true)?;
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
@@ -1053,6 +1095,7 @@ pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
 }
 
 pub fn switch_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
+    text_editor::finish(true)?;
     if DOCUMENT_OPEN.with(|open| open.get()) && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id
     {
         return Ok(workspace_snapshot());
@@ -1075,6 +1118,7 @@ pub fn switch_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
 }
 
 pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
+    text_editor::finish(true)?;
     let is_active = DOCUMENT_OPEN.with(|open| open.get())
         && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id;
     if is_active {
@@ -1114,6 +1158,7 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
 }
 
 pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String> {
+    text_editor::finish(true)?;
     use super::FileAction;
     match action {
         FileAction::Open => {
@@ -1287,6 +1332,7 @@ pub fn delete_all_recoveries() -> Result<crate::recovery::Info, String> {
     })
 }
 pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
+    text_editor::finish(true)?;
     let document = RECOVERY.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -1314,5 +1360,24 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     if let Err(error) = redraw() {
         emit_error(error);
     }
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn text_fonts() -> Result<Vec<String>, String> {
+    text_editor::font_families()
+}
+pub fn begin_text_edit(settings: TextSettings) -> Result<(), String> {
+    text_editor::begin(settings)
+}
+pub fn update_text_edit(settings: TextSettings) -> Result<DocumentSnapshot, String> {
+    if text_editor::active() {
+        text_editor::update(settings)?;
+    } else {
+        set_text_object(settings)?;
+    }
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn finish_text_edit(commit: bool) -> Result<DocumentSnapshot, String> {
+    text_editor::finish(commit)?;
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }

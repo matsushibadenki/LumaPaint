@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse';
+export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'text';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface Brush { size: number; hardness: number; color: [number, number, number] }
@@ -19,7 +19,33 @@ export interface DocumentSnapshot {
   textObjects: TextObjectSnapshot[];
 }
 export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
-export interface VectorText { content: string; fontFamily: 'sans-serif' | 'serif' | 'monospace'; fontSize: number; lineHeight: number; bold: boolean }
+export interface VectorText {
+  content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
+  italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
+  rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
+  boxWidth: number; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
+}
+export const defaultVectorText: VectorText = {
+  content: 'Text', fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
+  italic: false, tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
+  underline: false, strikethrough: false, alignment: 'left', boxWidth: 480,
+  indentLeft: 0, indentRight: 0, indentFirst: 0, spaceBefore: 0, spaceAfter: 0,
+};
+export function textFonts(): Promise<string[]> { return isTauri() ? invoke('text_fonts') : Promise.resolve([]); }
+function textCommand<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  const result = canvasQueue.then(() => invoke<T>(command, args));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+function textPayload(settings: TextSettings) { return { id: settings.id, text: settings.text, position: settings.position, color: settings.color }; }
+export function beginTextEdit(settings: TextSettings) { return textCommand<void>('begin_text_edit', { settings: textPayload(settings) }); }
+export function updateTextEdit(settings: TextSettings) { return textCommand<DocumentSnapshot>('update_text_edit', { settings: textPayload(settings) }); }
+export function finishTextEdit(commit: boolean) { return textCommand<DocumentSnapshot>('finish_text_edit', { commit }); }
+export async function subscribeTextSession(onChange: (settings: TextSettings | null) => void) {
+  if (!isTauri()) return () => {};
+  return listen<TextSettings | null>('canvas-text-session', event => onChange(event.payload));
+}
+
 export interface TextSettings { id: string | null; text: VectorText; position: [number, number]; color: [number, number, number] }
 export interface TextObjectSnapshot extends Omit<TextSettings, 'id'> { id: string; editable: boolean }
 export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot> {

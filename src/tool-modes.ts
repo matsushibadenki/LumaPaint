@@ -6,7 +6,7 @@ export type ToolMode = typeof toolModes[number];
 export const modeTools: Record<ToolMode, readonly CanvasTool[]> = {
   paint: ['brush', 'rectangle', 'ellipse'],
   vector: ['vectorSelect', 'vectorPen', 'vectorRectangle', 'vectorEllipse'],
-  layout: ['vectorSelect', 'vectorRectangle', 'vectorEllipse'],
+  layout: ['vectorSelect', 'vectorRectangle', 'vectorEllipse', 'text'],
   animation: ['brush', 'rectangle', 'ellipse', 'vectorSelect'],
 };
 export const modeLabels = {
@@ -19,5 +19,6 @@ export const initialTools: Record<ToolMode, CanvasTool> = {
 
 export function modeForTool(mode: ToolMode, tool: CanvasTool): ToolMode {
   // Shared tools retain the current workspace; other shortcuts switch to their home mode.
+  if (tool === 'text') return 'layout';
   return modeTools[mode].includes(tool) ? mode : tool.startsWith('vector') ? 'vector' : 'paint';
 }

@@ -20,6 +20,59 @@ pub fn prepare_text_fonts() {
     let _ = system_fonts();
 }
 
+fn font_resolver() -> usvg::FontResolver<'static> {
+    let fallback = usvg::FontResolver::default_fallback_selector();
+    usvg::FontResolver {
+        select_font: usvg::FontResolver::default_font_selector(),
+        select_fallback: Box::new(move |character, excluded, database| {
+            // Database iteration order can otherwise choose a thin serif for bold CJK text.
+            // Prefer matching CJK families and weight, while retaining the standard fallback.
+            if let Some(base) = excluded.first().and_then(|id| database.face(*id)) {
+                let serif = base.families.iter().any(|(name, _)| {
+                    name.contains("Mincho") || name.contains("Songti") || name.contains("Serif")
+                });
+                let families = if serif {
+                    [
+                        "Songti SC",
+                        "Hiragino Mincho ProN",
+                        "Noto Serif CJK SC",
+                        "Noto Serif CJK JP",
+                    ]
+                } else {
+                    [
+                        "PingFang SC",
+                        "Hiragino Sans",
+                        "Noto Sans CJK SC",
+                        "Noto Sans CJK JP",
+                    ]
+                };
+                for family in families {
+                    let id = database.query(&usvg::fontdb::Query {
+                        families: &[usvg::fontdb::Family::Name(family)],
+                        weight: base.weight,
+                        stretch: base.stretch,
+                        style: base.style,
+                    });
+                    if let Some(id) = id.filter(|id| !excluded.contains(id)) {
+                        let supported = database
+                            .with_face_data(id, |data, index| {
+                                ttf_parser::Face::parse(data, index)
+                                    .ok()
+                                    .and_then(|face| face.glyph_index(character))
+                                    .is_some()
+                            })
+                            .unwrap_or(false);
+                        if supported {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+            fallback(character, excluded, database)
+        }),
+    }
+}
+
 #[cfg(feature = "skia")]
 pub mod skia_paths;
 
@@ -43,6 +96,7 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
     }
     let options = usvg::Options {
         fontdb: system_fonts(),
+        font_resolver: font_resolver(),
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
             resolve_string: Box::new(|_, _| None),
@@ -151,6 +205,58 @@ mod tests {
                 "Missing rendered text: {content}"
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn cjk_fallback_respects_weight_and_typography_moves_the_rendered_text() {
+        let svg = |weight| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><text x="10" y="48" font-family="Hiragino Sans" font-size="36" font-weight="{weight}">汉语</text></svg>"#
+            )
+        };
+        let regular = rasterize_svg(&svg(400), 240, 80).unwrap();
+        let bold = rasterize_svg(&svg(700), 240, 80).unwrap();
+        assert_ne!(
+            regular.pixels, bold.pixels,
+            "Fallback must retain the requested weight"
+        );
+
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{TextAlignment, VectorText},
+        };
+        let mut doc = Document::default();
+        let mut settings = TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Inline".into(),
+                font_family: "Arial".into(),
+                ..Default::default()
+            },
+            position: [0.0, 0.0],
+            color: [0, 0, 0],
+        };
+        doc.set_text_object(settings.clone()).unwrap();
+        let left = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        settings.id = Some(doc.snapshot().text_objects[0].id.clone());
+        settings.text.alignment = TextAlignment::Right;
+        settings.text.underline = true;
+        doc.set_text_object(settings).unwrap();
+        let right = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let first_x = |image: &SvgRaster| {
+            image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 0)
+                .map(|(index, _)| index % 960)
+                .min()
+                .unwrap()
+        };
+        assert!(first_x(&right) > first_x(&left) + 100);
     }
 
     #[test]

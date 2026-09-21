@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
-import { setTextObject, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings } from './bridge';
+import { beginTextEdit, updateTextEdit, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { RecoveryControls } from './components/RecoveryControls';
@@ -12,7 +12,8 @@ import { Inspector } from './components/Inspector';
 import { Icon } from './components/Icon';
 import { ZoomToolMenu } from './components/ZoomToolMenu';
 import { SelectionToolMenu, type SelectionTool } from './components/SelectionToolMenu';
-import { TextDialog } from './components/TextDialog';
+import { textPanelMessages } from './text-panel-i18n';
+import { textMessages } from './text-i18n';
 import { ToolModeSwitch } from './components/ToolModeSwitch';
 import { initialTools, modeForTool, modeLabels, modeTools, type ToolMode } from './tool-modes';
 import { PercentInput, SizeInput, fromHex, toHex } from './components/BrushControls';
@@ -71,8 +72,9 @@ export function Workspace() {
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
-  const [textOpen, setTextOpen] = useState(false);
-  const closeText = useCallback(() => setTextOpen(false), []);
+  const [inlineText, setInlineText] = useState<TextSettings | null>(null);
+  const [textPanelRequest, setTextPanelRequest] = useState(0);
+  const showTextPanel = useCallback(() => { setPanels(true); setTextPanelRequest(value => value + 1); }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
@@ -143,11 +145,32 @@ export function Workspace() {
     let active = true;
     let stop = () => {};
     subscribeCanvasText(() => {
-      if (active && documentAvailable && !fileBusy && !settingsOpen && !colorSettingsOpen) { setToolMode('layout'); setTextOpen(true); }
+      if (active && documentAvailable && !fileBusy && !settingsOpen && !colorSettingsOpen) { setTool('text'); showTextPanel(); }
     }).then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
-  }, [documentAvailable, fileBusy, settingsOpen, colorSettingsOpen, setToolMode]);
+  }, [documentAvailable, fileBusy, settingsOpen, colorSettingsOpen, setTool, showTextPanel]);
+
+  useEffect(() => {
+    let active = true; let stop = () => {}; let wasEditing = false;
+    subscribeTextSession(settings => {
+      if (!active) return;
+      setInlineText(settings);
+      if (settings && !wasEditing) showTextPanel();
+      wasEditing = settings !== null;
+    }).then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); }).catch(cause => setError(String(cause)));
+    return () => { active = false; stop(); };
+  }, [showTextPanel]);
+  const selectedText = documentState.textObjects.find(item => documentState.selectedVectorObjects.includes(item.id)) ?? null;
+  const activeText = inlineText ?? selectedText;
+  const changeText = useCallback(async (settings: TextSettings) => { updateDocument(await updateTextEdit(settings)); }, [updateDocument]);
+  const endText = useCallback((commit: boolean) => {
+    void finishTextEdit(commit).then(updateDocument).catch(cause => setError(String(cause)));
+  }, [updateDocument]);
+  const beginText = () => {
+    const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText, content: textMessages[locale].defaultText }, position: [48, 48], color: brush.color };
+    void beginTextEdit(settings).catch(cause => setError(String(cause)));
+  };
 
   const edit = useCallback(async (action: DocumentEditAction) => {
     if (!ready || busy) return;
@@ -243,7 +266,7 @@ export function Workspace() {
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
-      if (textOpen) return;
+
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
         const key = event.key.toLowerCase();
@@ -266,7 +289,7 @@ export function Workspace() {
             event.preventDefault();
             setTool(key === 'v' ? 'vectorSelect' : key === 'p' ? 'vectorPen' : event.shiftKey ? 'vectorEllipse' : 'vectorRectangle');
           }
-          if (key === 't') { event.preventDefault(); setToolMode('layout'); setTextOpen(true); }
+          if (key === 't') { event.preventDefault(); setTool('text'); showTextPanel(); }
           if (key === 'x' && !event.repeat && !event.isComposing) { event.preventDefault(); swapColors(); }
           if (key === 'escape') { event.preventDefault(); void edit('deselect'); }
         }
@@ -277,7 +300,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, textOpen, toolMode]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
@@ -299,7 +322,7 @@ export function Workspace() {
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><input type="color" value={toHex(brush.color)} onChange={event => setBrush(previous => ({ ...previous, color: fromHex(event.target.value) }))} aria-label={t.foreground} /></label>
-      </> : <span className="selection-hint">{t.selectionHint}</span>}
+      </> : <span className="selection-hint">{canvasTool === 'text' ? textPanelMessages[locale].hint : t.selectionHint}</span>}
       {toolMode === 'animation' && <span className="selection-hint animation-hint">{t.animationHint}</span>}
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
@@ -310,9 +333,8 @@ export function Workspace() {
         <span className="tool-mode-divider" aria-hidden="true" />
         {modeTools[toolMode].map(item => item === 'ellipse' ? null : item === 'rectangle' ?
           <SelectionToolMenu key="selection" locale={locale} selected={canvasTool === 'rectangle' || canvasTool === 'ellipse' ? canvasTool : lastSelectionTool} active={canvasTool === 'rectangle' || canvasTool === 'ellipse'} enabled={documentAvailable} onSelect={setTool} onError={setError} /> :
-          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'brush' ? 'B' : item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : item === 'vectorEllipse' ? 'Shift＋U' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentAvailable} onClick={() => setTool(item)}><Icon name={item} /></button>)}
+          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'text' ? 'T' : item === 'brush' ? 'B' : item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : item === 'vectorEllipse' ? 'Shift＋U' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentAvailable} onClick={() => { setTool(item); if (item === 'text') showTextPanel(); }}><Icon name={item} /></button>)}
         {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentAvailable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
-        {toolMode === 'layout' && <button className="tool-button" disabled={!documentAvailable || busy || fileBusy} aria-label={t.textTool} title={`${t.textTool} (T)`} onClick={() => setTextOpen(true)}><Icon name="text" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}
         <div className="common-tools">
         <ZoomToolMenu locale={locale} zoom={zoom} enabled={documentAvailable && ready} onZoom={setZoom} onError={setError} />
@@ -332,15 +354,15 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !textOpen}
+        <CanvasPreview locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen}
           footerAccessory={<RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
-      {panels && <Inspector locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentAvailable && ready && !busy}
+      {panels && <Inspector textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+        textEnabled={documentAvailable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentAvailable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onAddLayer={() => void createLayer()} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
-    {textOpen && <TextDialog locale={locale} document={documentState} color={brush.color} enabled={ready && documentAvailable} onClose={closeText} onApply={async settings => { updateDocument(await setTextObject(settings)); setTool('vectorSelect'); }} />}
     {settingsOpen && <SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} />}
     {colorSettingsOpen && <ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} />}
   </div>;

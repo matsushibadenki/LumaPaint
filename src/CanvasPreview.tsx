@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { onNativeScaleChange, resetCanvasPan, syncCanvas, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
+import { textPanelMessages } from './text-panel-i18n';
 import { Icon } from './components/Icon';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
@@ -106,7 +107,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   }, [attempt, onDocument]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'brush' ? t.canvasNote : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'text' ? textPanelMessages[locale].hint : tool === 'brush' ? t.canvasNote : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && <div className="paper-preview" aria-hidden="true" />}
       {hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
     </div>

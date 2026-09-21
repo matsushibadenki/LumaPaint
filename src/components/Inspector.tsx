@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
-import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings } from '../bridge';
+import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput, fromHex, toHex } from './BrushControls';
 import { Icon } from './Icon';
 import { LayerList } from './LayerList';
+import { TextPanel } from './TextPanel';
+import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
 
 const swatches = ['#202020', '#808080', '#ffffff', '#e5796b', '#d6a13e', '#6b9c76', '#538fd2', '#a875ce'];
-const panelIds = ['brush', 'color', 'document', 'layers'] as const;
+const panelIds = ['brush', 'color', 'document', 'layers', 'text'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -50,14 +52,17 @@ function Grip() {
   return <svg className="tab-grip" viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1" /><circle cx="6" cy="2" r="1" /><circle cx="2" cy="6" r="1" /><circle cx="6" cy="6" r="1" /><circle cx="2" cy="10" r="1" /><circle cx="6" cy="10" r="1" /></svg>;
 }
 
-export function Inspector({ locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onReorderLayer, enabled }: {
+export function Inspector({ textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onReorderLayer, enabled }: {
+  textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
+  onTextChange: (settings: TextSettings) => Promise<void>; onTextBegin: () => void; onTextFinish: (commit: boolean) => void;
   locale: Locale; brush: Brush; onBrush: (brush: Brush) => void; document: DocumentSnapshot; onToggleLayer: (id: string) => void; enabled: boolean;
   backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; colorPanelRequest: number; onBackgroundChange: (color: Brush['color']) => void; onSwapColors: () => void;
   onDocumentSettings: (settings: DocumentSettings) => void; onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void; onColorProfile: (profile: ColorProfile) => void; onLayerSettings: (settings: LayerSettings) => void; onDeleteLayer: (id: string) => void; onAddLayer: () => void; onReorderLayer: (ids: string[]) => void;
 }) {
   const t = workspaceMessages[locale];
   const [order, setOrder] = useState<PanelId[]>(initialPanelOrder);
-  const [activePanel, setActivePanel] = useState<PanelId>(() => colorPanelRequest > 0 ? 'color' : initialPanel());
+  const [activePanel, setActivePanel] = useState<PanelId>(() => textPanelRequest > 0 ? 'text' : colorPanelRequest > 0 ? 'color' : initialPanel());
+  useEffect(() => { if (textPanelRequest > 0) setActivePanel('text'); }, [textPanelRequest]);
   useEffect(() => { if (colorPanelRequest > 0) setActivePanel('color'); }, [colorPanelRequest]);
   const [draggedPanel, setDraggedPanel] = useState<PanelId | null>(null);
   const [dropTarget, setDropTarget] = useState<PanelId | null>(null);
@@ -66,7 +71,7 @@ export function Inspector({ locale, brush, backgroundColor, activeColor, onSelec
   const [selectedLayerId, setSelectedLayerId] = useState(document.layers.at(-1)?.id ?? 'layer-1');
   const previousLayerCount = useRef(document.layers.length);
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels'>('layers');
-  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers };
+  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title };
 
   useEffect(() => savePreference('inspectorOrder', JSON.stringify(order)), [order]);
   useEffect(() => savePreference('inspectorPanel', activePanel), [activePanel]);
@@ -150,6 +155,10 @@ export function Inspector({ locale, brush, backgroundColor, activeColor, onSelec
         onDragEnd={() => { setDraggedPanel(null); setDropTarget(null); }}
       ><Grip /><span>{labels[panel]}</span></button>)}
     </div>
+
+    {activePanel === 'text' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">
+      <TextPanel locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
+    </section>}
 
     {activePanel === 'color' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">
       <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={color => onBrush({ ...brush, color })} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />

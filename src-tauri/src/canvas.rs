@@ -35,6 +35,7 @@ pub enum CanvasTool {
     VectorPen,
     VectorRectangle,
     VectorEllipse,
+    Text,
 }
 
 impl CanvasRequest {
@@ -687,5 +688,63 @@ pub async fn retry_recovery(window: tauri::WebviewWindow) -> Result<(), String> 
     {
         let _ = window;
         Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn text_fonts(window: tauri::WebviewWindow) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::text_fonts).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(vec![])
+    }
+}
+#[tauri::command]
+pub async fn begin_text_edit(
+    window: tauri::WebviewWindow,
+    settings: TextSettings,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::begin_text_edit(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Inline editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn update_text_edit(
+    window: tauri::WebviewWindow,
+    settings: TextSettings,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::update_text_edit(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Inline editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn finish_text_edit(
+    window: tauri::WebviewWindow,
+    commit: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::finish_text_edit(commit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, commit);
+        Err("Inline editing is not supported on this platform yet".into())
     }
 }

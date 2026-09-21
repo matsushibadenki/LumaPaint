@@ -36,12 +36,64 @@ pub enum VectorObjectKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default)]
 pub struct VectorText {
     pub content: String,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: f32,
     pub bold: bool,
+    pub italic: bool,
+    pub tracking: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub baseline_shift: f32,
+    pub rotation: f32,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub alignment: TextAlignment,
+    pub box_width: f32,
+    pub indent_left: f32,
+    pub indent_right: f32,
+    pub indent_first: f32,
+    pub space_before: f32,
+    pub space_after: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl Default for VectorText {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            font_family: "sans-serif".into(),
+            font_size: 48.0,
+            line_height: 1.4,
+            bold: false,
+            italic: false,
+            tracking: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            baseline_shift: 0.0,
+            rotation: 0.0,
+            underline: false,
+            strikethrough: false,
+            alignment: TextAlignment::Left,
+            box_width: 480.0,
+            indent_left: 0.0,
+            indent_right: 0.0,
+            indent_first: 0.0,
+            space_before: 0.0,
+            space_after: 0.0,
+        }
+    }
 }
 
 impl VectorText {
@@ -53,7 +105,21 @@ impl VectorText {
                 .content
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t')
-            || !["sans-serif", "serif", "monospace"].contains(&self.font_family.as_str())
+            || self.font_family.trim().is_empty()
+            || self.font_family.chars().count() > 200
+            || self.font_family.chars().any(char::is_control)
+            || !(-100.0..=1000.0).contains(&self.tracking)
+            || !(0.1..=4.0).contains(&self.scale_x)
+            || !(0.1..=4.0).contains(&self.scale_y)
+            || !(-512.0..=512.0).contains(&self.baseline_shift)
+            || !(-180.0..=180.0).contains(&self.rotation)
+            || !(16.0..=8192.0).contains(&self.box_width)
+            || !(0.0..=4096.0).contains(&self.indent_left)
+            || !(0.0..=4096.0).contains(&self.indent_right)
+            || !(-4096.0..=4096.0).contains(&self.indent_first)
+            || self.indent_left + self.indent_right >= self.box_width
+            || !(0.0..=512.0).contains(&self.space_before)
+            || !(0.0..=512.0).contains(&self.space_after)
             || !self.font_size.is_finite()
             || !(1.0..=512.0).contains(&self.font_size)
             || !self.line_height.is_finite()
@@ -65,29 +131,26 @@ impl VectorText {
     }
 
     pub fn control_points(&self) -> Vec<[f32; 2]> {
-        // Conservative selection bounds; typography-specific glyph bounds can replace this later.
-        let width = self
-            .content
-            .split('\n')
-            .map(|line| {
-                line.chars()
-                    .map(|c| {
-                        if c == '\t' {
-                            2.8
-                        } else if c.is_ascii() {
-                            0.7
-                        } else {
-                            1.0
-                        }
-                    })
-                    .sum::<f32>()
-            })
-            .fold(1.0, f32::max)
-            * self.font_size;
-        let height =
-            (self.content.split('\n').count() as f32 - 1.0) * self.font_size * self.line_height
-                + self.font_size * 1.25;
-        vec![[0.0, 0.0], [width, height]]
+        // Point-text bounds are conservative; the frame also supplies paragraph alignment.
+        let height = self.content.split('\n').count() as f32
+            * (self.font_size * self.line_height + self.space_before + self.space_after);
+        let angle = self.rotation.to_radians();
+        [
+            [0.0, -self.baseline_shift],
+            [self.box_width, -self.baseline_shift],
+            [self.box_width, height - self.baseline_shift],
+            [0.0, height - self.baseline_shift],
+        ]
+        .into_iter()
+        .map(|[x, y]| {
+            let x = x * self.scale_x;
+            let y = y * self.scale_y;
+            [
+                x * angle.cos() - y * angle.sin(),
+                x * angle.sin() + y * angle.cos(),
+            ]
+        })
+        .collect()
     }
 }
 
