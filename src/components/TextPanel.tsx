@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { defaultVectorText, textFonts, type TextSettings, type VectorText } from '../bridge';
+import { defaultVectorText, textFonts, type TextSettings, type TextStyle, type VectorText } from '../bridge';
 import type { Locale } from '../i18n';
 import { textPanelMessages } from '../text-panel-i18n';
 import { textMessages } from '../text-i18n';
@@ -18,7 +18,15 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   // Do not reset fields for unrelated document/recovery updates.
   const signature = JSON.stringify(settings);
   useEffect(() => { setDraft(settings); setError(''); }, [signature]);
-  const text = draft?.text ?? defaultVectorText;
+  const base = draft?.text ?? defaultVectorText;
+  const style = draft?.selection?.style ?? (base.runs?.[0]?.start === 0 ? base.runs[0].style : undefined);
+  const text = { ...base, ...style, ...draft?.stylePatch };
+  const inherited = { ...base, color: draft?.color ?? [32, 32, 32] };
+  const wholeStyles = [base.runs?.[0]?.start === 0 ? base.runs[0].style : inherited, ...(base.runs ?? []).map(run => run.style)];
+  if ((base.runs ?? []).reduce((length, run) => length + run.end - run.start, 0) < base.content.length) wholeStyles.push(inherited);
+  const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
+  const characterKeys = ['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
+  const color = draft?.stylePatch?.color ?? style?.color ?? draft?.color ?? [32, 32, 32];
   const disabled = !enabled || !draft || pending;
   const pt = 72 / Math.max(1, resolution);
   async function apply(next: TextSettings) {
@@ -27,15 +35,19 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   }
   function change(patch: Partial<VectorText>, commit = true) {
     if (!draft) return;
-    const next = { ...draft, text: { ...draft.text, ...patch } };
+    const isCharacter = Object.keys(patch).every(key => (characterKeys as readonly string[]).includes(key));
+    const next = isCharacter
+      ? { ...draft, stylePatch: { ...draft.stylePatch, ...patch } as Partial<TextStyle> }
+      : { ...draft, stylePatch: undefined, text: { ...draft.text, ...patch } };
     if (commit) void apply(next); else setDraft(next);
   }
   function numeric(key: keyof VectorText, label: string, icon: string, unit: string, factor = 1, min = -4096, max = 4096, step = 0.1) {
-    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={unit === 'pt' ? 'any' : step} value={Number((Number(text[key]) * factor).toFixed(2))} onChange={event => change({ [key]: Number(event.target.value) / factor }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft) void apply(draft); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>{unit}</span></span></label>;
+    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={unit === 'pt' ? 'any' : step} placeholder={mixed.includes(key as keyof TextStyle) ? t.mixed : undefined} value={mixed.includes(key as keyof TextStyle) && !Object.prototype.hasOwnProperty.call(draft?.stylePatch ?? {}, key) ? '' : Number((Number(text[key]) * factor).toFixed(2))} onChange={event => change({ [key]: Number(event.target.value) / factor }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft && (draft.stylePatch || draft.text !== settings?.text)) void apply(draft); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>{unit}</span></span></label>;
   }
   return <div className="text-panel">
     <div className="type-panel-status">
       {editing && <p>{t.editing}</p>}
+      {settings && <p>{editing ? (draft?.selection?.length ? `${t.selection}: ${draft.selection.characters}` : t.insertion) : t.whole}{mixed.length > 0 ? ` · ${t.mixed}` : ''}</p>}
       <div className="type-actions">{editing ? <><button onClick={() => onFinish(true)}>{t.done}</button><button onClick={() => onFinish(false)}>{t.cancel}</button></> : <button disabled={!enabled} onClick={onBegin}>{settings ? t.edit : t.add}</button>}</div>
       {!settings && <p>{t.empty}</p>}
       {settings && !enabled && <p>{t.locked}</p>}
@@ -45,26 +57,26 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
       <section className="type-section">
         <h3>{t.title}<span aria-hidden="true">☰</span></h3>
         <div className="type-section-body">
-          <select aria-label={t.font} value={text.fontFamily} onChange={event => change({ fontFamily: event.target.value })}>
-            <option value="sans-serif">{textMessages[locale].sans}</option><option value="serif">{textMessages[locale].serif}</option><option value="monospace">{textMessages[locale].mono}</option>
+          <select aria-label={t.font} value={mixed.includes('fontFamily') && !draft?.stylePatch?.fontFamily ? '' : text.fontFamily} onChange={event => change({ fontFamily: event.target.value })}>
+            <option value="" disabled>{t.mixed}</option><option value="sans-serif">{textMessages[locale].sans}</option><option value="serif">{textMessages[locale].serif}</option><option value="monospace">{textMessages[locale].mono}</option>
             {!fonts.includes(text.fontFamily) && !['sans-serif', 'serif', 'monospace'].includes(text.fontFamily) && <option>{text.fontFamily}</option>}
             {fonts.map(font => <option key={font}>{font}</option>)}
           </select>
-          <select aria-label={t.style} value={`${Number(text.bold)}${Number(text.italic)}`} onChange={event => change({ bold: event.target.value[0] === '1', italic: event.target.value[1] === '1' })}>
-            <option value="00">{t.regular}</option><option value="10">{t.bold}</option><option value="01">{t.italic}</option><option value="11">{t.boldItalic}</option>
+          <select aria-label={t.style} value={mixed.includes('bold') || mixed.includes('italic') ? '' : `${Number(text.bold)}${Number(text.italic)}`} onChange={event => change({ bold: event.target.value[0] === '1', italic: event.target.value[1] === '1' })}>
+            <option value="" disabled>{t.mixed}</option><option value="00">{t.regular}</option><option value="10">{t.bold}</option><option value="01">{t.italic}</option><option value="11">{t.boldItalic}</option>
           </select>
           <div className="type-grid">
             {numeric('fontSize', t.size, 'T↕', 'pt', pt, pt, 512 * pt)}
-            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><span className="type-number"><input aria-label={t.leading} type="number" min={Number((text.fontSize * .8 * pt).toFixed(2))} max={Number((text.fontSize * 3 * pt).toFixed(2))} step="any" value={Number((text.fontSize * text.lineHeight * pt).toFixed(2))} onChange={event => change({ lineHeight: Number(event.target.value) / (text.fontSize * pt) }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft) void apply(draft); }} /><span>pt</span></span></label>
+            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><span className="type-number"><input aria-label={t.leading} type="number" min={Number((base.fontSize * .8 * pt).toFixed(2))} max={Number((base.fontSize * 3 * pt).toFixed(2))} step="any" value={Number((base.fontSize * base.lineHeight * pt).toFixed(2))} onChange={event => change({ lineHeight: Number(event.target.value) / (base.fontSize * pt) }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft && (draft.stylePatch || draft.text !== settings?.text)) void apply(draft); }} /><span>pt</span></span></label>
             {numeric('scaleY', t.vertical, 'T↕', '%', 100, 10, 400, 1)}
             {numeric('scaleX', t.horizontal, 'T↔', '%', 100, 10, 400, 1)}
             {numeric('tracking', t.tracking, 'VA', '', 1, -100, 1000, 1)}
-            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><input aria-label={t.color} type="color" value={toHex(draft?.color ?? [32,32,32])} onChange={event => { if (draft) void apply({ ...draft, color: fromHex(event.target.value) }); }} /></label>
+            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><input aria-label={t.color} type="color" value={toHex(color)} onChange={event => { if (draft) void apply({ ...draft, stylePatch: { color: fromHex(event.target.value) } }); }} /><input key={toHex(color)} aria-label={`${t.color} HEX`} type="text" defaultValue={toHex(color)} pattern="#[0-9a-fA-F]{6}" maxLength={7} spellCheck={false} onBlur={event => { if (draft && event.currentTarget.validity.valid && /^#[0-9a-fA-F]{6}$/.test(event.target.value) && event.target.value.toLowerCase() !== toHex(color)) void apply({ ...draft, stylePatch: { color: fromHex(event.target.value) } }); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></span></label>
             {numeric('baselineShift', t.baseline, 'A↟', 'pt', pt, -512 * pt, 512 * pt)}
             {numeric('rotation', t.rotation, 'T↻', '°', 1, -180, 180, 1)}
           </div>
           <div className="type-toggles">
-            {(['bold', 'italic', 'underline', 'strikethrough'] as const).map((key, index) => <button key={key} type="button" aria-label={key === 'strikethrough' ? t.strike : t[key]} title={key === 'strikethrough' ? t.strike : t[key]} aria-pressed={text[key]} className={`type-toggle type-${key}`} onClick={() => change({ [key]: !text[key] })}>{['B', 'I', 'T', 'T'][index]}</button>)}
+            {(['bold', 'italic', 'underline', 'strikethrough'] as const).map((key, index) => <button key={key} type="button" aria-label={key === 'strikethrough' ? t.strike : t[key]} title={key === 'strikethrough' ? t.strike : t[key]} aria-pressed={mixed.includes(key) ? 'mixed' : text[key]} className={`type-toggle type-${key}`} onClick={() => change({ [key]: !text[key] })}>{['B', 'I', 'T', 'T'][index]}</button>)}
           </div>
         </div>
       </section>

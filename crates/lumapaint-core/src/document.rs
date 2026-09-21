@@ -1264,17 +1264,79 @@ impl Document {
         }
         Ok(changed)
     }
+    /// Temporary layer content for a drag. The document and its undo history stay untouched.
+    pub fn translated_vector_layer(
+        &self,
+        layer: &SvgLayer,
+        dx: f32,
+        dy: f32,
+    ) -> Result<Option<SvgLayer>, String> {
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
+            return Err("Invalid vector translation".into());
+        }
+        if !layer.vector_layer
+            || layer.locked
+            || !layer.visible
+            || !layer
+                .vector_objects
+                .iter()
+                .any(|object| object.visible && self.selected_vector_objects.contains(&object.id))
+        {
+            return Ok(None);
+        }
+        let mut preview = layer.clone();
+        for object in &mut preview.vector_objects {
+            if object.visible && self.selected_vector_objects.contains(&object.id) {
+                object.transform[4] += dx;
+                object.transform[5] += dy;
+                object.validate()?;
+            }
+        }
+        preview.source = vector_svg(self.width, self.height, &preview.vector_objects);
+        validate_svg_layer(&preview)?;
+        Ok(Some(preview))
+    }
+
+    /// Whole selected layers can reuse their existing texture during a translation.
+    pub fn vector_layer_moves_as_unit(&self, layer: &SvgLayer) -> bool {
+        layer.vector_layer
+            && layer.visible
+            && !layer.locked
+            && layer.vector_objects.iter().any(|object| object.visible)
+            && layer
+                .vector_objects
+                .iter()
+                .filter(|object| object.visible)
+                .all(|object| self.selected_vector_objects.contains(&object.id))
+    }
+
     pub fn vector_overlay_selections(&self) -> Vec<Selection> {
+        self.vector_overlay_selections_at_offset(0.0, 0.0)
+    }
+    pub fn vector_overlay_selections_at_offset(&self, dx: f32, dy: f32) -> Vec<Selection> {
         let selected = &self.selected_vector_objects;
         let mut overlays = Vec::new();
-        for object in self
+        for (object, movable) in self
             .svg_layers
             .iter()
             .filter(|layer| layer.vector_layer && layer.visible)
-            .flat_map(|layer| &layer.vector_objects)
-            .filter(|object| selected.contains(&object.id) && !object.control_points.is_empty())
+            .flat_map(|layer| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .map(move |object| (object, !layer.locked))
+            })
+            .filter(|(object, _)| {
+                selected.contains(&object.id) && !object.control_points.is_empty()
+            })
         {
-            let points = transformed_control_points(object);
+            let mut points = transformed_control_points(object);
+            if movable {
+                for point in &mut points {
+                    point.x += dx;
+                    point.y += dy;
+                }
+            }
             let min_x = points
                 .iter()
                 .map(|point| point.x)
@@ -1941,18 +2003,6 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             .stroke
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
         if let Some(text) = &object.text {
-            let family = match text.font_family.as_str() {
-                "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, serif",
-                "monospace" => "Menlo, Consolas, Noto Sans Mono CJK JP, monospace",
-                "sans-serif" => "Hiragino Sans, PingFang SC, Noto Sans CJK JP, Arial, sans-serif",
-                family => family,
-            };
-            let decoration = match (text.underline, text.strikethrough) {
-                (true, true) => "underline line-through",
-                (true, false) => "underline",
-                (false, true) => "line-through",
-                _ => "none",
-            };
             let (anchor, x) = match text.alignment {
                 crate::vector::TextAlignment::Left => {
                     ("start", text.indent_left + text.indent_first)
@@ -1966,28 +2016,38 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             };
             let _ = write!(
                 svg,
-                r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})"><text fill="{fill}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" text-anchor="{anchor}" text-decoration="{decoration}" xml:space="preserve">"#,
-                text.rotation,
-                text.scale_x,
-                text.scale_y,
-                escape_xml(family),
-                text.font_size,
-                if text.bold { 700 } else { 400 },
-                if text.italic { "italic" } else { "normal" },
-                text.tracking * text.font_size / 1000.0
+                r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})"><text text-anchor="{anchor}" xml:space="preserve">"#,
+                text.rotation, text.scale_x, text.scale_y
             );
+            let color = object.fill.map_or([0, 0, 0], |paint| {
+                [paint.color[0], paint.color[1], paint.color[2]]
+            });
+            let mut offset = 0;
             for (index, line) in text.content.split('\n').enumerate() {
-                let y = text.font_size - text.baseline_shift
+                let y = text.font_size
                     + text.space_before
                     + index as f32
                         * (text.font_size * text.line_height
                             + text.space_before
                             + text.space_after);
-                let _ = write!(
-                    svg,
-                    r#"<tspan x="{x}" y="{y}">{}</tspan>"#,
-                    escape_xml(line)
-                );
+                let _ = write!(svg, r#"<tspan x="{x}" y="{y}">"#);
+                let mut segment = String::new();
+                let mut previous = None;
+                for c in line.chars() {
+                    let style = text.style_at(offset, color);
+                    if previous.as_ref().is_some_and(|old| old != &style) {
+                        write_text_segment(&mut svg, previous.as_ref().unwrap(), &segment);
+                        segment.clear();
+                    }
+                    segment.push(c);
+                    previous = Some(style);
+                    offset += c.len_utf16();
+                }
+                if let Some(style) = previous {
+                    write_text_segment(&mut svg, &style, &segment);
+                }
+                svg.push_str("</tspan>");
+                offset += 1;
             }
             svg.push_str("</text></g>");
             continue;
@@ -2005,6 +2065,34 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn write_text_segment(svg: &mut String, style: &crate::vector::TextStyle, content: &str) {
+    use std::fmt::Write;
+    let family = match style.font_family.as_str() {
+        "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, serif",
+        "monospace" => "Menlo, Consolas, Noto Sans Mono CJK JP, monospace",
+        "sans-serif" => "Hiragino Sans, PingFang SC, Noto Sans CJK JP, Arial, sans-serif",
+        family => family,
+    };
+    let decoration = match (style.underline, style.strikethrough) {
+        (true, true) => "underline line-through",
+        (true, false) => "underline",
+        (false, true) => "line-through",
+        _ => "none",
+    };
+    let [r, g, b] = style.color;
+    let _ = write!(
+        svg,
+        r##"<tspan fill="#{r:02x}{g:02x}{b:02x}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
+        escape_xml(family),
+        style.font_size,
+        if style.bold { 700 } else { 400 },
+        if style.italic { "italic" } else { "normal" },
+        style.tracking * style.font_size / 1000.0,
+        style.baseline_shift,
+        escape_xml(content)
+    );
 }
 
 fn rgba_hex([r, g, b, a]: [u8; 4]) -> String {
@@ -2660,6 +2748,106 @@ mod text_tests {
         assert_eq!(doc.snapshot().layers.len(), 1);
         doc.redo();
         assert_eq!(doc.snapshot().text_objects.len(), 1);
+    }
+    #[test]
+    fn translated_text_preview_preserves_document_styles_history_and_other_objects() {
+        let mut doc = Document::default();
+        let mut input = settings();
+        input
+            .text
+            .apply_style(
+                0,
+                1,
+                &crate::vector::TextStylePatch {
+                    bold: Some(true),
+                    ..Default::default()
+                },
+                input.color,
+            )
+            .unwrap();
+        doc.set_text_object(input.clone()).unwrap();
+        let selected = doc.snapshot().text_objects[0].id.clone();
+        input.position = [500.0, 300.0];
+        doc.set_text_object(input).unwrap();
+        doc.select_vector_objects(vec![selected]).unwrap();
+        let before = doc.encode().unwrap();
+        let revision = doc.snapshot().revision;
+        let layer = doc.svg_layers[0].clone();
+        assert!(doc.vector_layer_moves_as_unit(&layer));
+        let preview = doc
+            .translated_vector_layer(&layer, 25.0, -10.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            preview.vector_objects[0].transform[4],
+            layer.vector_objects[0].transform[4] + 25.0
+        );
+        assert_eq!(
+            preview.vector_objects[0].transform[5],
+            layer.vector_objects[0].transform[5] - 10.0
+        );
+        assert_eq!(preview.vector_objects[0].text, layer.vector_objects[0].text);
+        assert_ne!(preview.source, layer.source);
+        assert!(!doc.vector_layer_moves_as_unit(&doc.svg_layers[1]));
+        assert!(doc
+            .translated_vector_layer(&doc.svg_layers[1], 25.0, -10.0)
+            .unwrap()
+            .is_none());
+        assert_eq!(doc.encode().unwrap(), before);
+        assert_eq!(doc.snapshot().revision, revision);
+        let overlay = doc.vector_overlay_selections()[0].regions[0].bounds;
+        let moved = doc.vector_overlay_selections_at_offset(25.0, -10.0)[0].regions[0].bounds;
+        assert_eq!(
+            moved,
+            [overlay[0] + 25.0, overlay[1] - 10.0, overlay[2], overlay[3]]
+        );
+        let mut locked = layer.clone();
+        locked.locked = true;
+        assert!(!doc.vector_layer_moves_as_unit(&locked));
+        assert!(doc
+            .translated_vector_layer(&locked, 25.0, -10.0)
+            .unwrap()
+            .is_none());
+        assert!(doc.translated_vector_layer(&layer, f32::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn character_styles_round_trip_svg_and_atomic_document_history() {
+        let mut doc = Document::default();
+        let mut edit = settings();
+        edit.text.content = "A日😀&<B".into();
+        doc.set_text_object(edit.clone()).unwrap();
+        edit.id = Some(doc.snapshot().text_objects[0].id.clone());
+        edit.text
+            .apply_style(
+                1,
+                4,
+                &crate::vector::TextStylePatch {
+                    font_size: Some(80.0),
+                    bold: Some(true),
+                    color: Some([255, 0, 0]),
+                    underline: Some(true),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        doc.set_text_object(edit.clone()).unwrap();
+        let styled = doc.snapshot().text_objects[0].text.clone();
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.snapshot().text_objects[0].text, styled);
+        let svg = vector_svg(960, 640, &doc.svg_layers[0].vector_objects);
+        assert!(svg.contains("font-size=\"80\""));
+        assert!(svg.contains("fill=\"#ff0000\""));
+        assert!(svg.contains("日😀</tspan>"));
+        assert!(svg.contains("&amp;&lt;B</tspan>"));
+        let revision = doc.snapshot().revision;
+        doc.set_text_object(edit).unwrap();
+        assert_eq!(doc.snapshot().revision, revision);
+        doc.undo();
+        assert!(doc.snapshot().text_objects[0].text.runs.is_empty());
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects[0].text, styled);
     }
     #[test]
     fn invalid_or_locked_text_edits_leave_document_unchanged() {

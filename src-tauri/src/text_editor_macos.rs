@@ -1,20 +1,32 @@
 //! Native inline input: IME and selection stay in AppKit, one commit enters document history.
 use super::*;
-use lumapaint_core::vector::{TextAlignment, VectorText};
-use objc2::runtime::AnyObject;
+use lumapaint_core::vector::{TextAlignment, TextRun, TextStyle, TextStylePatch, VectorText};
+use objc2::{runtime::AnyObject, DefinedClass};
 use objc2_app_kit::{
     NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName, NSFontManager,
     NSFontTraitMask, NSForegroundColorAttributeName, NSKernAttributeName, NSLineBreakMode,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStrikethroughStyleAttributeName,
-    NSTextAlignment, NSTextInputClient, NSTextView, NSUnderlineStyleAttributeName,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSSelectionAffinity,
+    NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient, NSTextView,
+    NSUnderlineStyleAttributeName,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSRange, NSString};
+use objc2_foundation::{NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
+
+struct EditorState {
+    undo: Retained<NSUndoManager>,
+}
 
 define_class!(
     #[unsafe(super(NSTextView))]
-    #[ivars = ()]
+    #[ivars = EditorState]
     struct InlineEditor;
     impl InlineEditor {
+        #[unsafe(method_id(undoManager))]
+        fn undo_manager(&self) -> Retained<NSUndoManager> { self.ivars().undo.clone() }
+        #[unsafe(method(undo:))]
+        fn undo_action(&self, _sender: Option<&AnyObject>) { history(false); }
+        #[unsafe(method(redo:))]
+        fn redo_action(&self, _sender: Option<&AnyObject>) { history(true); }
+
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             unsafe { msg_send![super(self), didChangeText] }
@@ -26,7 +38,22 @@ define_class!(
             if !self.hasMarkedText() && (event.keyCode() == 53 ||
                 event.keyCode() == 36 && event.modifierFlags().contains(NSEventModifierFlags::Command)) {
                 if let Err(error) = finish(event.keyCode() != 53) { emit_error(error); }
-            } else { unsafe { msg_send![super(self), keyDown: event] } }
+            } else { unsafe { msg_send![super(self), keyDown: event] } publish(); }
+        }
+        #[unsafe(method(setSelectedRange:affinity:stillSelecting:))]
+        fn select_range(&self, range: NSRange, affinity: NSSelectionAffinity, selecting: bool) {
+            unsafe { msg_send![super(self), setSelectedRange: range, affinity: affinity, stillSelecting: selecting] }
+            if !selecting { publish(); }
+        }
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            unsafe { msg_send![super(self), mouseUp: event] }
+            publish();
+        }
+        // Imported rich text may contain attachments or attributes outside our portable model.
+        #[unsafe(method(paste:))]
+        fn paste_plain(&self, sender: Option<&AnyObject>) {
+            unsafe { self.pasteAsPlainText(sender) }
         }
         // Keep Cmd+A/C/V/Z in the text editor instead of the canvas responder.
         #[unsafe(method(performKeyEquivalent:))]
@@ -67,20 +94,138 @@ pub fn render(canvas: &mut Canvas) -> Result<(), String> {
         if let Some(session) = slot.borrow().as_ref() {
             canvas.renderer.render(canvas.viewport, &session.preview)
         } else {
-            DOCUMENT.with(|doc| canvas.renderer.render(canvas.viewport, &doc.borrow()))
+            DOCUMENT.with(|doc| {
+                canvas.renderer.render_vector_drag(
+                    canvas.viewport,
+                    &doc.borrow(),
+                    VECTOR_MOVE.with(|offset| offset.get()),
+                )
+            })
         }
     })
 }
 
+const STYLE_KEY: &str = "LumaPaintCharacterStyle";
+
+fn decode_style(value: Option<Retained<AnyObject>>) -> Option<TextStyle> {
+    let value = value?.downcast::<NSString>().ok()?;
+    serde_json::from_str(&value.to_string()).ok()
+}
 fn current(session: &Session) -> TextSettings {
     let mut settings = session.settings.clone();
     settings.text.content = session.view.string().to_string();
+    settings.text.runs.clear();
+    if let Some(storage) = unsafe { session.view.textStorage() } {
+        let key = NSString::from_str(STYLE_KEY);
+        let mut at = 0;
+        while at < storage.length() {
+            let mut range = NSRange::new(at, 1);
+            let value = unsafe { storage.attribute_atIndex_effectiveRange(&key, at, &mut range) };
+            let style =
+                decode_style(value).unwrap_or_else(|| settings.text.base_style(settings.color));
+            let end = (range.location + range.length)
+                .min(storage.length())
+                .max(at + 1);
+            if let Some(last) = settings
+                .text
+                .runs
+                .last_mut()
+                .filter(|run| run.style == style)
+            {
+                last.end = end;
+            } else {
+                settings.text.runs.push(TextRun {
+                    start: at,
+                    end,
+                    style,
+                });
+            }
+            at = end;
+        }
+    }
     settings
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionStyle {
+    start: usize,
+    length: usize,
+    characters: usize,
+    style: TextStyle,
+    mixed: Vec<String>,
+}
+#[derive(Clone, serde::Serialize)]
+struct SessionEvent {
+    #[serde(flatten)]
+    settings: TextSettings,
+    selection: SelectionStyle,
+}
+fn selection_style(session: &Session, settings: &TextSettings) -> SelectionStyle {
+    let range = session.view.selectedRange();
+    let style = if range.length == 0 {
+        decode_style(
+            session
+                .view
+                .typingAttributes()
+                .objectForKey(&NSString::from_str(STYLE_KEY)),
+        )
+        .unwrap_or_else(|| {
+            settings
+                .text
+                .style_at(range.location.saturating_sub(1), settings.color)
+        })
+    } else {
+        settings.text.style_at(range.location, settings.color)
+    };
+    let first = serde_json::to_value(&style).unwrap_or_default();
+    let mut mixed = Vec::new();
+    for run in &settings.text.runs {
+        if range.length > 0 && run.start < range.location + range.length && run.end > range.location
+        {
+            if let Some(map) = serde_json::to_value(&run.style)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+            {
+                for (key, value) in map {
+                    if first.get(&key) != Some(&value) && !mixed.contains(&key) {
+                        mixed.push(key);
+                    }
+                }
+            }
+        }
+    }
+    let selected: Vec<u16> = settings
+        .text
+        .content
+        .encode_utf16()
+        .skip(range.location)
+        .take(range.length)
+        .collect();
+    SelectionStyle {
+        start: range.location,
+        length: range.length,
+        characters: String::from_utf16_lossy(&selected).chars().count(),
+        style,
+        mixed,
+    }
+}
 fn publish() {
-    let settings = SESSION.with(|slot| slot.borrow().as_ref().map(current));
-    if let Some(app) = APP.get() {
+    // AppKit can notify selection changes while layout or session teardown holds the slot.
+    let settings = SESSION.with(|slot| {
+        let Ok(slot) = slot.try_borrow() else {
+            return None;
+        };
+        Some(slot.as_ref().map(|session| {
+            let settings = current(session);
+            let selection = selection_style(session, &settings);
+            SessionEvent {
+                settings,
+                selection,
+            }
+        }))
+    });
+    if let (Some(app), Some(settings)) = (APP.get(), settings) {
         let _ = app.emit_to("main", "canvas-text-session", settings);
     }
 }
@@ -135,9 +280,12 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     let preview = DOCUMENT.with(|doc| doc.borrow().text_edit_preview(settings.id.as_deref()))?;
     let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
-    let allocated = InlineEditor::alloc(mtm).set_ivars(());
+    let allocated = InlineEditor::alloc(mtm).set_ivars(EditorState {
+        undo: NSUndoManager::new(mtm),
+    });
     let view: Retained<InlineEditor> = unsafe { msg_send![super(allocated), initWithFrame: frame] };
-    view.setRichText(false);
+    view.setRichText(true);
+    view.setImportsGraphics(false);
     if let Some(manager) = unsafe { view.layoutManager() } {
         manager.setUsesFontLeading(false);
     }
@@ -164,6 +312,7 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             preview,
         })
     });
+    apply_all_attributes()?;
     layout()?;
     redraw()?;
     if let Some(window) = view.window() {
@@ -174,21 +323,35 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     Ok(())
 }
 
-pub fn update(settings: TextSettings) -> Result<(), String> {
-    let updated = SESSION.with(|slot| -> Result<bool, String> {
-        let mut slot = slot.borrow_mut();
-        let Some(session) = slot.as_mut() else {
-            return Ok(false);
+pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(), String> {
+    let prepared = SESSION.with(|slot| -> Result<_, String> {
+        let slot = slot.borrow();
+        let Some(session) = slot.as_ref() else {
+            return Ok(None);
         };
         if session.settings.id != settings.id {
             return Err("A different text object is being edited".into());
         }
+        let current = current(session);
+        let selection = selection_style(session, &current);
         let mut next = settings;
-        next.text.content = session.view.string().to_string();
-        // Empty text is allowed as an input draft; finish cancels an empty draft.
+        next.text.content = current.text.content;
+        next.text.runs = current.text.runs;
+        let mut typing = selection.style;
+        if let Some(patch) = &patch {
+            next.text.apply_style(
+                selection.start,
+                selection.start + selection.length,
+                patch,
+                next.color,
+            )?;
+            typing.apply(patch);
+            typing.validate()?;
+        }
         let mut validation = next.text.clone();
         if validation.content.trim().is_empty() {
             validation.content = "Text".into();
+            validation.runs.clear();
         }
         validation.validate()?;
         if next
@@ -198,13 +361,43 @@ pub fn update(settings: TextSettings) -> Result<(), String> {
         {
             return Err("Invalid text position".into());
         }
-        session.settings = next;
-        Ok(true)
+        Ok(Some((
+            session.view.clone(),
+            next,
+            typing,
+            NSRange::new(selection.start, selection.length),
+        )))
     })?;
-    if updated {
-        layout()?;
-        publish();
+    let Some((view, next, typing, range)) = prepared else {
+        return Ok(());
+    };
+    if patch.is_some()
+        && range.length > 0
+        && !view.shouldChangeTextInRange_replacementString(range, None)
+    {
+        return Ok(());
     }
+    SESSION.with(|slot| {
+        if let Some(session) = slot.borrow_mut().as_mut() {
+            session.settings = next;
+        }
+    });
+    apply_all_attributes()?;
+    let text = SESSION.with(|slot| slot.borrow().as_ref().unwrap().settings.text.clone());
+    let attributes = attributes(&text, &typing)?;
+    if patch.is_some() {
+        if let Some(window) = view.window() {
+            window.makeFirstResponder(Some(&view));
+        }
+    }
+    unsafe {
+        view.setTypingAttributes(&attributes);
+    }
+    if patch.is_some() && range.length > 0 {
+        view.didChangeText();
+    }
+    layout()?;
+    publish();
     Ok(())
 }
 
@@ -217,7 +410,9 @@ pub fn finish(commit: bool) -> Result<(), String> {
         let Some(session) = slot.as_ref() else {
             return Ok(None);
         };
-        let settings = current(session);
+        let mut settings = current(session);
+        let base = settings.text.base_style(settings.color);
+        settings.text.runs.retain(|run| run.style != base);
         if commit && !settings.text.content.trim().is_empty() {
             DOCUMENT.with(|doc| doc.borrow_mut().set_text_object(settings))?;
         }
@@ -230,6 +425,7 @@ pub fn finish(commit: bool) -> Result<(), String> {
                 CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.view.clone()));
             window.makeFirstResponder(canvas.as_deref().map(|view| &***view));
         }
+        session.view.ivars().undo.removeAllActions();
         session.view.removeFromSuperview();
     }
     publish();
@@ -273,79 +469,6 @@ pub fn layout() -> Result<(), String> {
         ));
         view.setBoundsSize(NSSize::new(text.box_width.into(), logical_height.into()));
         view.setFrameRotation(f64::from(text.rotation));
-        let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
-        let family = match text.font_family.as_str() {
-            "sans-serif" => "Hiragino Sans",
-            "serif" => "Hiragino Mincho ProN",
-            "monospace" => "Menlo",
-            family => family,
-        };
-        let mut traits = NSFontTraitMask::empty();
-        if text.bold {
-            traits |= NSFontTraitMask::BoldFontMask;
-        }
-        if text.italic {
-            traits |= NSFontTraitMask::ItalicFontMask;
-        }
-        let font = NSFontManager::sharedFontManager(mtm)
-            .fontWithFamily_traits_weight_size(
-                &NSString::from_str(family),
-                traits,
-                if text.bold { 9 } else { 5 },
-                text.font_size.into(),
-            )
-            .unwrap_or_else(|| NSFont::systemFontOfSize(text.font_size.into()));
-        let [r, g, b] = session.settings.color;
-        let color = NSColor::colorWithSRGBRed_green_blue_alpha(
-            r as f64 / 255.0,
-            g as f64 / 255.0,
-            b as f64 / 255.0,
-            1.0,
-        );
-        let paragraph = NSMutableParagraphStyle::new();
-        paragraph.setAlignment(match text.alignment {
-            TextAlignment::Left => NSTextAlignment::Left,
-            TextAlignment::Center => NSTextAlignment::Center,
-            TextAlignment::Right => NSTextAlignment::Right,
-        });
-        paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
-        paragraph.setMaximumLineHeight((text.font_size * text.line_height).into());
-        paragraph.setHeadIndent(text.indent_left.into());
-        paragraph.setFirstLineHeadIndent((text.indent_left + text.indent_first).into());
-        paragraph.setTailIndent((-text.indent_right).into());
-        paragraph.setParagraphSpacingBefore(text.space_before.into());
-        paragraph.setParagraphSpacing(text.space_after.into());
-        paragraph.setLineBreakMode(NSLineBreakMode::ByClipping);
-        let kern = NSNumber::new_f64((text.tracking * text.font_size / 1000.0).into());
-        let baseline = NSNumber::new_f64(text.baseline_shift.into());
-        let underline = NSNumber::new_i32(i32::from(text.underline));
-        let strike = NSNumber::new_i32(i32::from(text.strikethrough));
-        // SAFETY: AppKit attribute names map to their documented font, color, style and number values.
-        unsafe {
-            let values: [&AnyObject; 7] = [
-                &font, &color, &paragraph, &kern, &baseline, &underline, &strike,
-            ];
-            let attributes = NSDictionary::from_slices(
-                &[
-                    NSFontAttributeName,
-                    NSForegroundColorAttributeName,
-                    NSParagraphStyleAttributeName,
-                    NSKernAttributeName,
-                    NSBaselineOffsetAttributeName,
-                    NSUnderlineStyleAttributeName,
-                    NSStrikethroughStyleAttributeName,
-                ],
-                &values,
-            );
-            if let Some(storage) = view.textStorage() {
-                storage.setAttributes_range(
-                    Some(&attributes),
-                    NSRange::new(0, view.string().length()),
-                );
-            }
-            view.setTypingAttributes(&attributes);
-        }
-        view.setDefaultParagraphStyle(Some(&paragraph));
         // AppKit centers a font's baseline within the requested line height. SVG uses the
         // explicit baseline font_size + space_before. Align the editor's first baseline
         // without changing glyph attributes, selection, or document coordinates.
@@ -358,8 +481,7 @@ pub fn layout() -> Result<(), String> {
                     let natural = fragment.origin.y
                         + manager.locationForGlyphAtIndex(0).y
                         + view.textContainerOrigin().y;
-                    let expected =
-                        f64::from(text.font_size - text.baseline_shift + text.space_before);
+                    let expected = f64::from(text.font_size + text.space_before);
                     let correction = (natural - expected) * f64::from(fit * text.scale_y);
                     let angle = f64::from(text.rotation).to_radians();
                     view.setFrameOrigin(NSPoint::new(
@@ -371,4 +493,144 @@ pub fn layout() -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+pub fn history(redo: bool) {
+    let view = SESSION.with(|slot| slot.borrow().as_ref().map(|session| session.view.clone()));
+    if let Some(view) = view {
+        if redo {
+            view.ivars().undo.redo();
+        } else {
+            view.ivars().undo.undo();
+        }
+        if let Err(error) = layout() {
+            emit_error(error);
+        }
+        publish();
+    }
+}
+
+pub fn select_all() {
+    let view = SESSION.with(|slot| slot.borrow().as_ref().map(|session| session.view.clone()));
+    if let Some(view) = view {
+        view.setSelectedRange(NSRange::new(0, view.string().length()));
+        if let Some(window) = view.window() {
+            window.makeFirstResponder(Some(&view));
+        }
+        publish();
+    }
+}
+
+fn attributes(
+    text: &VectorText,
+    style: &TextStyle,
+) -> Result<Retained<NSDictionary<NSString, AnyObject>>, String> {
+    let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
+    let family = match style.font_family.as_str() {
+        "sans-serif" => "Hiragino Sans",
+        "serif" => "Hiragino Mincho ProN",
+        "monospace" => "Menlo",
+        family => family,
+    };
+    let mut traits = NSFontTraitMask::empty();
+    if style.bold {
+        traits |= NSFontTraitMask::BoldFontMask;
+    }
+    if style.italic {
+        traits |= NSFontTraitMask::ItalicFontMask;
+    }
+    let font = NSFontManager::sharedFontManager(mtm)
+        .fontWithFamily_traits_weight_size(
+            &NSString::from_str(family),
+            traits,
+            if style.bold { 9 } else { 5 },
+            style.font_size.into(),
+        )
+        .or_else(|| {
+            NSFontManager::sharedFontManager(mtm).fontWithFamily_traits_weight_size(
+                &NSString::from_str("Arial"),
+                traits,
+                if style.bold { 9 } else { 5 },
+                style.font_size.into(),
+            )
+        })
+        .unwrap_or_else(|| NSFont::systemFontOfSize(style.font_size.into()));
+    let [r, g, b] = style.color;
+    let color = NSColor::colorWithSRGBRed_green_blue_alpha(
+        r as f64 / 255.0,
+        g as f64 / 255.0,
+        b as f64 / 255.0,
+        1.0,
+    );
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(match text.alignment {
+        TextAlignment::Left => NSTextAlignment::Left,
+        TextAlignment::Center => NSTextAlignment::Center,
+        TextAlignment::Right => NSTextAlignment::Right,
+    });
+    paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
+    paragraph.setMaximumLineHeight((text.font_size * text.line_height).into());
+    paragraph.setHeadIndent(text.indent_left.into());
+    paragraph.setFirstLineHeadIndent((text.indent_left + text.indent_first).into());
+    paragraph.setTailIndent((-text.indent_right).into());
+    paragraph.setParagraphSpacingBefore(text.space_before.into());
+    paragraph.setParagraphSpacing(text.space_after.into());
+    paragraph.setLineBreakMode(NSLineBreakMode::ByClipping);
+    let kern = NSNumber::new_f64((style.tracking * style.font_size / 1000.0).into());
+    let baseline = NSNumber::new_f64(style.baseline_shift.into());
+    let underline = NSNumber::new_i32(i32::from(style.underline));
+    let strike = NSNumber::new_i32(i32::from(style.strikethrough));
+    let metadata =
+        NSString::from_str(&serde_json::to_string(style).map_err(|error| error.to_string())?);
+    let metadata_key = NSString::from_str(STYLE_KEY);
+    // SAFETY: AppKit attribute names map to their documented font, color, style and number values.
+    unsafe {
+        let values: [&AnyObject; 8] = [
+            &font, &color, &paragraph, &kern, &baseline, &underline, &strike, &metadata,
+        ];
+        let attributes = NSDictionary::from_slices(
+            &[
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSParagraphStyleAttributeName,
+                NSKernAttributeName,
+                NSBaselineOffsetAttributeName,
+                NSUnderlineStyleAttributeName,
+                NSStrikethroughStyleAttributeName,
+                &metadata_key,
+            ],
+            &values,
+        );
+        Ok(attributes)
+    }
+}
+
+fn apply_all_attributes() -> Result<(), String> {
+    let state = SESSION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|session| (session.view.clone(), session.settings.clone()))
+    });
+    let Some((view, settings)) = state else {
+        return Ok(());
+    };
+    if let Some(storage) = unsafe { view.textStorage() } {
+        let base = attributes(&settings.text, &settings.text.base_style(settings.color))?;
+        unsafe {
+            storage.setAttributes_range(Some(&base), NSRange::new(0, storage.length()));
+        }
+        for run in &settings.text.runs {
+            let style = attributes(&settings.text, &run.style)?;
+            unsafe {
+                storage.setAttributes_range(
+                    Some(&style),
+                    NSRange::new(run.start, run.end - run.start),
+                );
+            }
+        }
+        unsafe {
+            view.setTypingAttributes(&base);
+        }
+    }
+    Ok(())
 }

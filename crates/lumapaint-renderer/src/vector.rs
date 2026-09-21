@@ -86,6 +86,8 @@ pub struct SvgRaster {
     /// Packed, top-to-bottom RGBA8, premultiplied in sRGB encoding. Exactly width*height*4 bytes.
     pub pixels: Vec<u8>,
     pub backend: SvgBackend,
+    /// True only when the uncropped geometry (including strokes) fits in the texture.
+    pub fully_contained: bool,
 }
 
 /// Fit and center SVG in document pixels. Never resolve external files or network URLs.
@@ -108,6 +110,13 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
     let scale = (width as f32 / size.width()).min(height as f32 / size.height());
     let x = (width as f32 - size.width() * scale) * 0.5;
     let y = (height as f32 - size.height() * scale) * 0.5;
+
+    let bounds = tree.root().abs_layer_bounding_box();
+    // One pixel of padding prevents reusing a texture whose antialiasing was clipped.
+    let fully_contained = bounds.left() * scale + x >= 1.0
+        && bounds.top() * scale + y >= 1.0
+        && bounds.right() * scale + x <= width as f32 - 1.0
+        && bounds.bottom() * scale + y <= height as f32 - 1.0;
 
     #[cfg(feature = "skia")]
     if supports_skia(tree.root()) {
@@ -135,6 +144,7 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
         return Ok(SvgRaster {
             pixels,
             backend: SvgBackend::Skia,
+            fully_contained,
         });
     }
 
@@ -147,6 +157,7 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
     Ok(SvgRaster {
         pixels: pixmap.take(),
         backend: SvgBackend::Resvg,
+        fully_contained,
     })
 }
 
@@ -183,6 +194,85 @@ mod tests {
 
     fn pixel(image: &SvgRaster, width: usize, x: usize, y: usize) -> &[u8] {
         &image.pixels[(y * width + x) * 4..][..4]
+    }
+
+    #[test]
+    fn drag_texture_reuse_requires_uncropped_geometry() {
+        for (x, expected) in [(20, true), (-10, false), (300, false)] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><rect x="{x}" y="20" width="30" height="30" fill="red"/></svg>"#
+            );
+            assert_eq!(
+                rasterize_svg(&svg, 240, 80).unwrap().fully_contained,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn per_character_size_and_color_reach_the_raster() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{TextStylePatch, VectorText},
+        };
+        let mut text = VectorText {
+            content: "ABCD".into(),
+            font_family: "Arial".into(),
+            font_size: 24.0,
+            ..Default::default()
+        };
+        text.apply_style(
+            1,
+            2,
+            &TextStylePatch {
+                font_size: Some(72.0),
+                color: Some([255, 0, 0]),
+                bold: Some(true),
+                ..Default::default()
+            },
+            [0, 0, 255],
+        )
+        .unwrap();
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text,
+            position: [16.0, 100.0],
+            color: [0, 0, 255],
+        })
+        .unwrap();
+        let raster = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let bounds = |channel: usize| {
+            let points: Vec<_> = raster
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| {
+                    pixel[channel] > 128 && pixel[3] > 128 && pixel[2 - channel] < 10
+                })
+                .map(|(i, _)| (i % 960, i / 960))
+                .collect();
+            assert!(!points.is_empty());
+            (
+                points.iter().map(|p| p.0).min().unwrap(),
+                points.iter().map(|p| p.0).max().unwrap(),
+                points.iter().map(|p| p.1).max().unwrap()
+                    - points.iter().map(|p| p.1).min().unwrap(),
+            )
+        };
+        let red = bounds(0);
+        let blue = bounds(2);
+        assert!(
+            blue.0 < red.0 && red.1 < blue.1,
+            "Only the middle character changes color"
+        );
+        assert!(
+            red.2 > blue.2 * 2,
+            "Only the selected character changes size"
+        );
     }
 
     #[test]

@@ -722,14 +722,15 @@ pub async fn begin_text_edit(
 pub async fn update_text_edit(
     window: tauri::WebviewWindow,
     settings: TextSettings,
+    patch: Option<lumapaint_core::vector::TextStylePatch>,
 ) -> Result<DocumentSnapshot, String> {
     #[cfg(target_os = "macos")]
     {
-        on_main(window, move || platform::update_text_edit(settings)).await
+        on_main(window, move || platform::update_text_edit(settings, patch)).await
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, settings);
+        let _ = (window, settings, patch);
         Err("Inline editing is not supported on this platform yet".into())
     }
 }

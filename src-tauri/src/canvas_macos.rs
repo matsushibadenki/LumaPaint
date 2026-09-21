@@ -75,7 +75,7 @@ define_class!(
                 }
             }
             else if event.keyCode() == 53 {
-                if DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
+                if cancel_vector_drag() || DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
                     if let Err(error) = redraw() { emit_error(error); }
                     emit_document();
                 } else { report_edit(DocumentAction::Deselect); }
@@ -84,6 +84,7 @@ define_class!(
                 let tool = if event.keyCode() == 11 { CanvasTool::Brush }
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
                     else { CanvasTool::Rectangle };
+                cancel_vector_drag();
                 TOOL.with(|value| value.set(tool));
                 if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
             }
@@ -94,6 +95,7 @@ define_class!(
                     _ if event.modifierFlags().contains(NSEventModifierFlags::Shift) => CanvasTool::VectorEllipse,
                     _ => CanvasTool::VectorRectangle,
                 };
+                cancel_vector_drag();
                 TOOL.with(|value| value.set(tool));
                 if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
             }
@@ -230,6 +232,8 @@ impl PaintView {
             })
             .and_then(|_| redraw());
         if let Err(error) = result {
+            cancel_vector_drag();
+            let _ = redraw();
             emit_error(error);
         }
         if phase == 2 {
@@ -427,6 +431,7 @@ fn vector_select_pointer(
     modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
     if phase == 0 {
+        cancel_vector_drag();
         VECTOR_CONTROL
             .with(|control| *control.borrow_mut() = document.selected_control_at(point, 6.0));
         if VECTOR_CONTROL.with(|control| control.borrow().is_some()) {
@@ -446,7 +451,15 @@ fn vector_select_pointer(
                 draft.push(point);
             }
         });
+    } else if phase == 1 {
+        if VECTOR_CONTROL.with(|control| control.borrow().is_none()) {
+            let start = VECTOR_DRAFT.with(|draft| draft.borrow().first().copied());
+            if let Some(start) = start {
+                VECTOR_MOVE.with(|offset| offset.set([point.x - start.x, point.y - start.y]));
+            }
+        }
     } else if phase == 2 {
+        VECTOR_MOVE.with(|offset| offset.set([0.0, 0.0]));
         if let Some((id, index)) = VECTOR_CONTROL.with(|control| control.borrow_mut().take()) {
             VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
             return document.move_vector_control(&id, index, point);
@@ -457,6 +470,13 @@ fn vector_select_pointer(
         }
     }
     Ok(())
+}
+
+fn cancel_vector_drag() -> bool {
+    let moving = VECTOR_MOVE.with(|offset| offset.replace([0.0, 0.0]) != [0.0, 0.0]);
+    VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
+    VECTOR_CONTROL.with(|control| control.borrow_mut().take());
+    moving
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -489,6 +509,18 @@ fn report_edit(action: DocumentAction) {
 }
 
 pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
+    if text_editor::active() {
+        match action {
+            DocumentAction::Undo => text_editor::history(false),
+            DocumentAction::Redo => text_editor::history(true),
+            DocumentAction::SelectAll => text_editor::select_all(),
+            _ => {
+                text_editor::finish(true)?;
+                return edit(action);
+            }
+        }
+        return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+    }
     ensure_document_open()?;
     DOCUMENT.with(|doc| {
         let mut doc = doc.borrow_mut();
@@ -678,6 +710,7 @@ thread_local! {
     static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static VECTOR_MOVE: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([0.0, 0.0]) };
     static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
     static VECTOR_CONTROL: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
@@ -717,6 +750,7 @@ fn park_active_document() {
 }
 
 fn activate_document(entry: OpenDocument) {
+    cancel_vector_drag();
     DOCUMENT.with(|slot| *slot.borrow_mut() = entry.document);
     PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
     PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
@@ -767,6 +801,7 @@ fn emit_workspace() {
 }
 
 pub fn destroy() {
+    cancel_vector_drag();
     let _ = text_editor::finish(false);
     DOCUMENT.with(|doc| doc.borrow_mut().finish());
     checkpoint();
@@ -776,6 +811,7 @@ pub fn destroy() {
 }
 
 fn suspend() {
+    cancel_vector_drag();
     DOCUMENT.with(|doc| doc.borrow_mut().finish());
     checkpoint();
     SPACE_DOWN.with(|value| value.set(false));
@@ -823,6 +859,7 @@ pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, S
 
 fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
     if TOOL.with(|tool| tool.get()) != request.tool || !request.visible {
+        cancel_vector_drag();
         text_editor::finish(true)?;
     }
     BRUSH.with(|brush| *brush.borrow_mut() = request.brush);
@@ -960,6 +997,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn text_drag_updates_before_mouse_up_and_commits_once() {
+        use lumapaint_core::{document::Point, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Follow".into(),
+                ..Default::default()
+            },
+            position: [100.0, 100.0],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let revision = doc.snapshot().revision;
+        let flags = NSEventModifierFlags::empty();
+        vector_select_pointer(&mut doc, Point { x: 110.0, y: 110.0 }, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, Point { x: 140.0, y: 125.0 }, 1, flags).unwrap();
+        assert_eq!(VECTOR_MOVE.with(|offset| offset.get()), [30.0, 15.0]);
+        assert_eq!(doc.snapshot().text_objects[0].position, [100.0, 100.0]);
+        vector_select_pointer(&mut doc, Point { x: 160.0, y: 95.0 }, 1, flags).unwrap();
+        assert_eq!(VECTOR_MOVE.with(|offset| offset.get()), [50.0, -15.0]);
+        assert_eq!(doc.snapshot().revision, revision);
+        vector_select_pointer(&mut doc, Point { x: 160.0, y: 95.0 }, 2, flags).unwrap();
+        assert_eq!(VECTOR_MOVE.with(|offset| offset.get()), [0.0, 0.0]);
+        assert_eq!(doc.snapshot().text_objects[0].position, [150.0, 85.0]);
+        assert_eq!(doc.snapshot().revision, revision + 1);
+        doc.undo();
+        assert_eq!(doc.snapshot().text_objects[0].position, [100.0, 100.0]);
+        vector_select_pointer(&mut doc, Point { x: 110.0, y: 110.0 }, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, Point { x: 190.0, y: 180.0 }, 1, flags).unwrap();
+        assert!(cancel_vector_drag());
+        vector_select_pointer(&mut doc, Point { x: 190.0, y: 180.0 }, 2, flags).unwrap();
+        assert_eq!(doc.snapshot().text_objects[0].position, [100.0, 100.0]);
+    }
+
+    #[test]
     fn selection_modifiers_route_native_drags() {
         assert_eq!(
             selection_mode(NSEventModifierFlags::empty()),
@@ -1073,6 +1146,7 @@ fn confirm_unsaved_changes() -> bool {
 }
 
 fn ensure_document_open() -> Result<(), String> {
+    cancel_vector_drag();
     text_editor::finish(true)?;
     DOCUMENT_OPEN
         .with(|open| open.get())
@@ -1369,10 +1443,21 @@ pub fn text_fonts() -> Result<Vec<String>, String> {
 pub fn begin_text_edit(settings: TextSettings) -> Result<(), String> {
     text_editor::begin(settings)
 }
-pub fn update_text_edit(settings: TextSettings) -> Result<DocumentSnapshot, String> {
+pub fn update_text_edit(
+    mut settings: TextSettings,
+    patch: Option<lumapaint_core::vector::TextStylePatch>,
+) -> Result<DocumentSnapshot, String> {
     if text_editor::active() {
-        text_editor::update(settings)?;
+        text_editor::update(settings, patch)?;
     } else {
+        if let Some(patch) = patch {
+            settings.text.apply_style(
+                0,
+                settings.text.content.encode_utf16().count(),
+                &patch,
+                settings.color,
+            )?;
+        }
         set_text_object(settings)?;
     }
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))

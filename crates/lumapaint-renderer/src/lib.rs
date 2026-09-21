@@ -482,6 +482,7 @@ pub struct Renderer {
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
     svg_cache: HashMap<String, CachedSvg>,
+    uniform_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     device_error: Arc<Mutex<Option<String>>>,
@@ -489,7 +490,82 @@ pub struct Renderer {
     pub backend: String,
 }
 
+fn create_svg_pipeline(
+    device: &wgpu::Device,
+    bind_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let svg_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("SVG texture layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let svg_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("SVG layer layout"),
+        bind_group_layouts: &[bind_layout, &svg_bind_layout],
+        push_constant_ranges: &[],
+    });
+    let svg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("SVG layer"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("svg.wgsl").into()),
+    });
+    let svg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("SVG layer pipeline"),
+        layout: Some(&svg_layout),
+        vertex: wgpu::VertexState {
+            module: &svg_shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &svg_shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (svg_bind_layout, svg_pipeline)
+}
+
 struct CachedSvg {
+    fully_contained: bool,
     source: String,
     opacity: f32,
     size: (u32, u32),
@@ -606,72 +682,7 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let svg_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("SVG texture layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let svg_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("SVG layer layout"),
-            bind_group_layouts: &[&bind_layout, &svg_bind_layout],
-            push_constant_ranges: &[],
-        });
-        let svg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SVG layer"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("svg.wgsl").into()),
-        });
-        let svg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("SVG layer pipeline"),
-            layout: Some(&svg_layout),
-            vertex: wgpu::VertexState {
-                module: &svg_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &svg_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
+        let (svg_bind_layout, svg_pipeline) = create_svg_pipeline(&device, &bind_layout, format);
         let svg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -710,6 +721,7 @@ impl Renderer {
             svg_bind_layout,
             svg_sampler,
             svg_cache: HashMap::new(),
+            uniform_layout: bind_layout,
             uniforms,
             bind_group,
             device_error,
@@ -741,6 +753,23 @@ impl Renderer {
     }
 
     pub fn render(&mut self, viewport: Viewport, document: &Document) -> Result<(), String> {
+        self.render_vector_drag(viewport, document, [0.0, 0.0])
+    }
+
+    /// Transient drag offset in document pixels; no document edit or text shaping per frame
+    /// is needed when the selected layer's full content already fits in its cached texture.
+    pub fn render_vector_drag(
+        &mut self,
+        viewport: Viewport,
+        document: &Document,
+        offset: [f32; 2],
+    ) -> Result<(), String> {
+        if offset
+            .iter()
+            .any(|v| !v.is_finite() || v.abs() >= 100_000.0)
+        {
+            return Err("Invalid vector drag offset".into());
+        }
         if let Some(error) = self
             .device_error
             .lock()
@@ -770,7 +799,7 @@ impl Renderer {
             Err(error) => return Err(error.to_string()),
         };
         let uniforms = Self::uniforms(viewport);
-        let vector_overlays = document.vector_overlay_selections();
+        let vector_overlays = document.vector_overlay_selections_at_offset(offset[0], offset[1]);
         let outline_selections = document
             .selection()
             .into_iter()
@@ -799,7 +828,27 @@ impl Renderer {
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
-        for layer in document.visible_svg_layers() {
+        let mut translated_layers = std::collections::HashSet::new();
+        for original in document.visible_svg_layers() {
+            let dragging = offset != [0.0, 0.0];
+            if dragging
+                && document.vector_layer_moves_as_unit(original)
+                && self.svg_cache.get(&original.id).is_some_and(|cached| {
+                    cached.fully_contained
+                        && cached.source == original.source
+                        && cached.opacity == original.effective_opacity()
+                        && cached.size == (width, height)
+                })
+            {
+                translated_layers.insert(original.id.as_str());
+                continue;
+            }
+            let preview = if dragging {
+                document.translated_vector_layer(original, offset[0], offset[1])?
+            } else {
+                None
+            };
+            let layer = preview.as_ref().unwrap_or(original);
             if self.svg_cache.get(&layer.id).is_some_and(|cached| {
                 cached.source == layer.source
                     && cached.opacity == layer.effective_opacity()
@@ -807,7 +856,8 @@ impl Renderer {
             }) {
                 continue;
             }
-            let mut pixels = rasterize_svg(&layer.source, width, height)?;
+            let raster = vector::rasterize_svg(&layer.source, width, height)?;
+            let mut pixels = raster.pixels;
             let effective_opacity = layer.effective_opacity();
             if effective_opacity != 1.0 {
                 for value in &mut pixels {
@@ -851,6 +901,7 @@ impl Renderer {
             self.svg_cache.insert(
                 layer.id.clone(),
                 CachedSvg {
+                    fully_contained: raster.fully_contained,
                     source: layer.source.clone(),
                     opacity: effective_opacity,
                     size: (width, height),
@@ -859,6 +910,28 @@ impl Renderer {
                 },
             );
         }
+        let translated_uniforms = if translated_layers.is_empty() {
+            None
+        } else {
+            let mut moved = uniforms;
+            moved.document[2] = offset[0];
+            moved.document[3] = offset[1];
+            let buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Vector drag offset"),
+                    contents: bytemuck::bytes_of(&moved),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Vector drag uniforms"),
+                layout: &self.uniform_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            }))
+        };
         let brush_buffers: Vec<_> = stroke_segments
             .iter()
             .map(|segments| {
@@ -983,7 +1056,12 @@ impl Renderer {
             for layer in document.visible_svg_layers() {
                 let bind_group = &self.svg_cache[&layer.id].bind_group;
                 pass.set_pipeline(&self.svg_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
+                let uniforms = if translated_layers.contains(layer.id.as_str()) {
+                    translated_uniforms.as_ref().unwrap_or(&self.bind_group)
+                } else {
+                    &self.bind_group
+                };
+                pass.set_bind_group(0, uniforms, &[]);
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }

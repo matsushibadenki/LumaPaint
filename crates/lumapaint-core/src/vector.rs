@@ -34,11 +34,93 @@ pub enum VectorObjectKind {
     Text,
 }
 
+/// Character formatting, independent of paragraph and text-frame layout.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextStyle {
+    pub font_family: String,
+    pub font_size: f32,
+    pub bold: bool,
+    pub italic: bool,
+    pub tracking: f32,
+    pub baseline_shift: f32,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub color: [u8; 3],
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextStylePatch {
+    pub font_family: Option<String>,
+    pub font_size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub tracking: Option<f32>,
+    pub baseline_shift: Option<f32>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    pub color: Option<[u8; 3]>,
+}
+impl TextStyle {
+    pub fn apply(&mut self, patch: &TextStylePatch) {
+        if let Some(value) = &patch.font_family {
+            self.font_family = value.clone();
+        }
+        if let Some(value) = patch.font_size {
+            self.font_size = value;
+        }
+        if let Some(value) = patch.bold {
+            self.bold = value;
+        }
+        if let Some(value) = patch.italic {
+            self.italic = value;
+        }
+        if let Some(value) = patch.tracking {
+            self.tracking = value;
+        }
+        if let Some(value) = patch.baseline_shift {
+            self.baseline_shift = value;
+        }
+        if let Some(value) = patch.underline {
+            self.underline = value;
+        }
+        if let Some(value) = patch.strikethrough {
+            self.strikethrough = value;
+        }
+        if let Some(value) = patch.color {
+            self.color = value;
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.font_family.trim().is_empty()
+            || self.font_family.chars().count() > 200
+            || self.font_family.chars().any(char::is_control)
+            || !(1.0..=512.0).contains(&self.font_size)
+            || !(-100.0..=1000.0).contains(&self.tracking)
+            || !(-512.0..=512.0).contains(&self.baseline_shift)
+        {
+            return Err("Invalid character style".into());
+        }
+        Ok(())
+    }
+}
+/// Half-open UTF-16 offsets, matching native text selection and JavaScript strings.
+/// Boundaries must not split surrogate pairs. Gaps inherit the object's base style.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextRun {
+    pub start: usize,
+    pub end: usize,
+    pub style: TextStyle,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<TextRun>,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: f32,
@@ -73,6 +155,7 @@ impl Default for VectorText {
     fn default() -> Self {
         Self {
             content: String::new(),
+            runs: Vec::new(),
             font_family: "sans-serif".into(),
             font_size: 48.0,
             line_height: 1.4,
@@ -97,6 +180,72 @@ impl Default for VectorText {
 }
 
 impl VectorText {
+    pub fn base_style(&self, color: [u8; 3]) -> TextStyle {
+        TextStyle {
+            font_family: self.font_family.clone(),
+            font_size: self.font_size,
+            bold: self.bold,
+            italic: self.italic,
+            tracking: self.tracking,
+            baseline_shift: self.baseline_shift,
+            underline: self.underline,
+            strikethrough: self.strikethrough,
+            color,
+        }
+    }
+    pub fn style_at(&self, offset: usize, color: [u8; 3]) -> TextStyle {
+        self.runs
+            .iter()
+            .find(|run| run.start <= offset && offset < run.end)
+            .map(|run| run.style.clone())
+            .unwrap_or_else(|| self.base_style(color))
+    }
+    pub fn utf16_boundary(&self, offset: usize) -> bool {
+        let mut at = 0;
+        for c in self.content.chars() {
+            if at == offset {
+                return true;
+            }
+            at += c.len_utf16();
+        }
+        at == offset
+    }
+    /// Patch only specified properties, preserving other formatting in the selected range.
+    pub fn apply_style(
+        &mut self,
+        start: usize,
+        end: usize,
+        patch: &TextStylePatch,
+        color: [u8; 3],
+    ) -> Result<(), String> {
+        if start > end || !self.utf16_boundary(start) || !self.utf16_boundary(end) {
+            return Err("Invalid character range".into());
+        }
+        let mut runs: Vec<TextRun> = Vec::new();
+        let mut at = 0;
+        for c in self.content.chars() {
+            let mut style = self.style_at(at, color);
+            if at >= start && at < end {
+                style.apply(patch);
+            }
+            style.validate()?;
+            let next = at + c.len_utf16();
+            if let Some(last) = runs.last_mut().filter(|run| run.style == style) {
+                last.end = next;
+            } else {
+                runs.push(TextRun {
+                    start: at,
+                    end: next,
+                    style,
+                });
+            }
+            at = next;
+        }
+        let base = self.base_style(color);
+        runs.retain(|run| run.style != base);
+        self.runs = runs;
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.content.trim().is_empty()
             || self.content.chars().count() > 4096
@@ -127,19 +276,51 @@ impl VectorText {
         {
             return Err("Invalid text settings".into());
         }
+        if self.runs.len() > 4096 {
+            return Err("Too many character runs".into());
+        }
+        let mut previous_end = 0;
+        for run in &self.runs {
+            if run.start < previous_end
+                || run.start >= run.end
+                || !self.utf16_boundary(run.start)
+                || !self.utf16_boundary(run.end)
+            {
+                return Err("Invalid character runs".into());
+            }
+            run.style.validate()?;
+            previous_end = run.end;
+        }
         Ok(())
     }
 
     pub fn control_points(&self) -> Vec<[f32; 2]> {
         // Point-text bounds are conservative; the frame also supplies paragraph alignment.
+        let max_size = self
+            .runs
+            .iter()
+            .map(|run| run.style.font_size)
+            .fold(self.font_size, f32::max);
         let height = self.content.split('\n').count() as f32
             * (self.font_size * self.line_height + self.space_before + self.space_after);
+        let highest_shift = self
+            .runs
+            .iter()
+            .map(|run| run.style.baseline_shift)
+            .fold(self.baseline_shift, f32::max);
+        let lowest_shift = self
+            .runs
+            .iter()
+            .map(|run| run.style.baseline_shift)
+            .fold(self.baseline_shift, f32::min);
+        let top = -highest_shift - (max_size - self.font_size).max(0.0);
+        let bottom = height - lowest_shift + (max_size - self.font_size).max(0.0);
         let angle = self.rotation.to_radians();
         [
-            [0.0, -self.baseline_shift],
-            [self.box_width, -self.baseline_shift],
-            [self.box_width, height - self.baseline_shift],
-            [0.0, height - self.baseline_shift],
+            [0.0, top],
+            [self.box_width, top],
+            [self.box_width, bottom],
+            [0.0, bottom],
         ]
         .into_iter()
         .map(|[x, y]| {
@@ -285,4 +466,130 @@ pub trait VectorPathEngine {
         operation: PathOperation,
     ) -> Result<VectorPath, String>;
     fn contains(&self, path: &VectorPath, point: [f32; 2]) -> Result<bool, String>;
+}
+
+#[cfg(test)]
+mod text_style_tests {
+    use super::*;
+    #[test]
+    fn selected_character_patches_preserve_other_properties_and_unicode_boundaries() {
+        let mut text = VectorText {
+            content: "A日😀BC".into(),
+            ..Default::default()
+        };
+        let color = [20, 30, 40];
+        text.apply_style(
+            1,
+            4,
+            &TextStylePatch {
+                bold: Some(true),
+                color: Some([240, 10, 20]),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        text.apply_style(
+            2,
+            5,
+            &TextStylePatch {
+                font_size: Some(72.0),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert!(!text.style_at(0, color).bold);
+        assert_eq!(text.style_at(1, color).font_size, 48.0);
+        assert!(text.style_at(2, color).bold);
+        assert_eq!(text.style_at(2, color).color, [240, 10, 20]);
+        assert_eq!(text.style_at(2, color).font_size, 72.0);
+        assert!(!text.style_at(4, color).bold);
+        assert_eq!(text.style_at(4, color).font_size, 72.0);
+        assert_eq!(text.style_at(5, color).font_size, 48.0);
+        text.validate().unwrap();
+        let before = text.clone();
+        assert!(text
+            .apply_style(3, 4, &TextStylePatch::default(), color)
+            .is_err());
+        assert_eq!(text, before, "Do not split an emoji's surrogate pair");
+        assert!(text
+            .apply_style(0, usize::MAX, &TextStylePatch::default(), color)
+            .is_err());
+        assert_eq!(text, before);
+        text.apply_style(
+            0,
+            6,
+            &TextStylePatch {
+                underline: Some(true),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert!(text.runs.iter().all(|run| run.style.underline));
+        assert!(text.style_at(2, color).bold);
+        assert_eq!(text.style_at(4, color).font_size, 72.0);
+    }
+    #[test]
+    fn rejects_overlapping_out_of_bounds_and_invalid_character_styles() {
+        let mut text = VectorText {
+            content: "a😀b".into(),
+            ..Default::default()
+        };
+        let style = text.base_style([0, 0, 0]);
+        for (start, end) in [(2, 3), (0, 5), (1, 1), (4, 3)] {
+            text.runs = vec![TextRun {
+                start,
+                end,
+                style: style.clone(),
+            }];
+            assert!(text.validate().is_err());
+        }
+        text.runs = vec![
+            TextRun {
+                start: 0,
+                end: 3,
+                style: style.clone(),
+            },
+            TextRun {
+                start: 1,
+                end: 4,
+                style: style.clone(),
+            },
+        ];
+        assert!(text.validate().is_err());
+        text.runs = vec![TextRun {
+            start: 0,
+            end: 1,
+            style: TextStyle {
+                font_size: f32::NAN,
+                ..style
+            },
+        }];
+        assert!(text.validate().is_err());
+    }
+    #[test]
+    fn equal_adjacent_styles_merge_and_legacy_text_defaults_to_no_runs() {
+        let mut text: VectorText = serde_json::from_str(r#"{"content":"abc"}"#).unwrap();
+        assert!(text.runs.is_empty());
+        for offset in 0..3 {
+            text.apply_style(
+                offset,
+                offset + 1,
+                &TextStylePatch {
+                    italic: Some(true),
+                    ..Default::default()
+                },
+                [0, 0, 0],
+            )
+            .unwrap();
+        }
+        assert_eq!(text.runs.len(), 1);
+        assert_eq!((text.runs[0].start, text.runs[0].end), (0, 3));
+        assert_eq!(
+            serde_json::from_str::<VectorText>(&serde_json::to_string(&text).unwrap()).unwrap(),
+            text
+        );
+    }
 }

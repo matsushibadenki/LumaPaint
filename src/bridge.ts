@@ -19,7 +19,11 @@ export interface DocumentSnapshot {
   textObjects: TextObjectSnapshot[];
 }
 export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
+export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
+export interface TextRun { start: number; end: number; style: TextStyle }
+export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
+  runs?: TextRun[];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
@@ -39,14 +43,14 @@ function textCommand<T>(command: string, args: Record<string, unknown>): Promise
 }
 function textPayload(settings: TextSettings) { return { id: settings.id, text: settings.text, position: settings.position, color: settings.color }; }
 export function beginTextEdit(settings: TextSettings) { return textCommand<void>('begin_text_edit', { settings: textPayload(settings) }); }
-export function updateTextEdit(settings: TextSettings) { return textCommand<DocumentSnapshot>('update_text_edit', { settings: textPayload(settings) }); }
+export function updateTextEdit(settings: TextSettings) { return textCommand<DocumentSnapshot>('update_text_edit', { settings: textPayload(settings), patch: settings.stylePatch ?? null }); }
 export function finishTextEdit(commit: boolean) { return textCommand<DocumentSnapshot>('finish_text_edit', { commit }); }
 export async function subscribeTextSession(onChange: (settings: TextSettings | null) => void) {
   if (!isTauri()) return () => {};
   return listen<TextSettings | null>('canvas-text-session', event => onChange(event.payload));
 }
 
-export interface TextSettings { id: string | null; text: VectorText; position: [number, number]; color: [number, number, number] }
+export interface TextSettings { id: string | null; text: VectorText; position: [number, number]; color: [number, number, number]; selection?: TextSelection; stylePatch?: Partial<TextStyle> }
 export interface TextObjectSnapshot extends Omit<TextSettings, 'id'> { id: string; editable: boolean }
 export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_text_object', { settings: { id: settings.id, text: settings.text, position: settings.position, color: settings.color } }));

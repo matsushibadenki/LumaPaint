@@ -8,6 +8,7 @@ const H: u32 = 768;
 
 struct Gpu {
     device: wgpu::Device,
+    uniform_layout: wgpu::BindGroupLayout,
     queue: wgpu::Queue,
     brush: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -72,6 +73,7 @@ impl Gpu {
                 create_brush_composite(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
             Self {
                 device,
+                uniform_layout,
                 queue,
                 brush,
                 composite,
@@ -610,4 +612,153 @@ fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
         max_self_diff <= 4,
         "Pen lifts must not change the crossing profile"
     );
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
+    let gpu = Gpu::new();
+    let (layout, pipeline) = create_svg_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="20" y="20" width="20" height="20" fill="red"/></svg>"#;
+    let raster = vector::rasterize_svg(source, 960, 640).unwrap();
+    assert!(raster.fully_contained);
+    let texture = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 960,
+                height: 640,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &raster.pixels,
+    );
+    let view = texture.create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&Default::default());
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let render = |offset: [f32; 2]| {
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&Uniforms {
+                    viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
+                    appearance: [0.0; 4],
+                    document: [960.0, 640.0, offset[0], offset[1]],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniforms = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let size = wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        };
+        let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = output.create_view(&Default::default());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniforms, &[]);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (W * H * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: Some(H),
+                },
+            },
+            size,
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    };
+    let alpha = |image: &[u8], x: u32, y: u32| image[((y * W + x) * 4 + 3) as usize];
+    let original = render([0.0, 0.0]);
+    let moved = render([100.0, 50.0]);
+    assert_eq!(alpha(&original, 62, 94), 255);
+    assert_eq!(alpha(&moved, 62, 94), 0);
+    assert_eq!(alpha(&moved, 162, 144), 255);
+    let clipped = render([-30.0, 0.0]);
+    assert_eq!(
+        alpha(&clipped, 27, 94),
+        0,
+        "Do not paint onto the gray workspace"
+    );
+    assert_eq!(alpha(&clipped, 37, 94), 255);
 }

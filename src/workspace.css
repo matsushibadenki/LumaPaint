@@ -137,6 +137,10 @@ h1, h2, h3 { font-style: normal; }
 .type-number input { width: 100%; min-width: 0; height: 25px; padding: 2px 3px; border: 0; background: transparent; color: inherit; font-variant-numeric: tabular-nums; }
 .type-number > span { font-size: 10px; opacity: .7; flex-shrink: 0; }
 .type-field input[type=color] { height: 27px; min-width: 0; width: 100%; padding: 2px; }
+.type-color { display: flex; flex: 1; min-width: 0; gap: 3px; }
+.type-color input[type=color] { width: 24px; flex-shrink: 0; }
+.type-color input[type=text] { width: 100%; min-width: 0; height: 27px; padding: 2px 3px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.type-toggles > button[aria-pressed=mixed] { border-color: var(--color-rule); text-decoration: underline dotted; }
 .type-toggles, .type-alignments { display: flex; align-items: center; gap: 5px; }
 .type-toggles > button, .type-alignments > button { display: grid; place-items: center; min-width: 30px; height: 28px; padding: 2px 5px; border: 1px solid transparent; background: transparent; color: inherit; border-radius: 3px; }
 .type-toggles > button[aria-pressed=true], .type-alignments > button[aria-pressed=true] { background: var(--color-bar); border-color: var(--color-rule); color: var(--color-accent); }

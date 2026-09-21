@@ -2198,6 +2198,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tempfile",
