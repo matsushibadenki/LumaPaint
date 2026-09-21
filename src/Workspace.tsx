@@ -250,7 +250,7 @@ export function Workspace() {
     </header>
     <div className="options-bar" aria-label={t[canvasTool]}>
       <span className="current-tool"><Icon name={canvasTool} />{t[canvasTool]}</span>
-      {toolMode === 'vector' ? <span className="selection-hint">{t.vectorHint}</span> : tool === 'brush' ? <>
+      {toolMode === 'vector' ? <span className="selection-hint">{vectorTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : t.vectorHint}</span> : tool === 'brush' ? <>
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><input type="color" value={toHex(brush.color)} onChange={event => setBrush(previous => ({ ...previous, color: fromHex(event.target.value) }))} aria-label={t.foreground} /></label>

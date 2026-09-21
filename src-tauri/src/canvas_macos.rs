@@ -7,7 +7,7 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     SelectionMode, SelectionShape,
 };
-use lumapaint_core::vector::{FillRule, VectorObject, VectorPaint, VectorPath};
+use lumapaint_core::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -145,14 +145,14 @@ impl PaintView {
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
                 let tool = TOOL.with(|value| value.get());
-                if tool == CanvasTool::VectorSelect {
-                    return Ok(());
-                }
                 if matches!(
                     tool,
-                    CanvasTool::VectorPen | CanvasTool::VectorRectangle | CanvasTool::VectorEllipse
+                    CanvasTool::VectorSelect
+                        | CanvasTool::VectorPen
+                        | CanvasTool::VectorRectangle
+                        | CanvasTool::VectorEllipse
                 ) {
-                    return vector_pointer(&mut doc, tool, point, phase);
+                    return vector_pointer(&mut doc, tool, point, phase, event.modifierFlags());
                 }
                 if matches!(tool, CanvasTool::Rectangle | CanvasTool::Ellipse) {
                     if phase == 0 {
@@ -229,7 +229,11 @@ fn vector_pointer(
     tool: CanvasTool,
     point: lumapaint_core::document::Point,
     phase: u8,
+    modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
+    if tool == CanvasTool::VectorSelect {
+        return vector_select_pointer(document, point, phase, modifiers);
+    }
     if phase == 0 {
         VECTOR_DRAFT.with(|draft| {
             let mut draft = draft.borrow_mut();
@@ -276,7 +280,7 @@ fn vector_pointer(
         return Ok(());
     }
 
-    let (name, path, fill, stroke, stroke_width) = match tool {
+    let (name, path, fill, stroke, stroke_width, kind, control_points) = match tool {
         CanvasTool::VectorPen => {
             let mut data = format!("M {} {}", points[0].x, points[0].y);
             for point in points.iter().skip(1) {
@@ -293,6 +297,8 @@ fn vector_pointer(
                     color: [color[0], color[1], color[2], 255],
                 }),
                 size,
+                VectorObjectKind::Path,
+                points.iter().map(|point| [point.x, point.y]).collect(),
             )
         }
         CanvasTool::VectorRectangle => {
@@ -308,6 +314,8 @@ fn vector_pointer(
                 }),
                 None,
                 0.0,
+                VectorObjectKind::Rectangle,
+                vec![[x, y], [x + width, y + height]],
             )
         }
         CanvasTool::VectorEllipse => {
@@ -330,6 +338,8 @@ fn vector_pointer(
                 }),
                 None,
                 0.0,
+                VectorObjectKind::Ellipse,
+                vec![[cx - rx, cy - ry], [cx + rx, cy + ry]],
             )
         }
         _ => return Ok(()),
@@ -357,8 +367,35 @@ fn vector_pointer(
             stroke,
             stroke_width,
             visible: true,
+            kind,
+            control_points,
         },
     )
+}
+
+fn vector_select_pointer(
+    document: &mut Document,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+    modifiers: NSEventModifierFlags,
+) -> Result<(), String> {
+    if phase == 0 {
+        let hit =
+            document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
+        VECTOR_DRAFT.with(|draft| {
+            let mut draft = draft.borrow_mut();
+            draft.clear();
+            if hit.is_some() {
+                draft.push(point);
+            }
+        });
+    } else if phase == 2 {
+        let start = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
+        if let Some(start) = start.first() {
+            document.move_selected_vectors(point.x - start.x, point.y - start.y)?;
+        }
+    }
+    Ok(())
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {

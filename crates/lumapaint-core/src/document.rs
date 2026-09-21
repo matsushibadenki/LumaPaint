@@ -1000,6 +1000,71 @@ impl Document {
         self.selected_vector_objects = unique;
         Ok(())
     }
+    pub fn select_vector_at(
+        &mut self,
+        point: Point,
+        tolerance: f32,
+        additive: bool,
+    ) -> Option<String> {
+        if !point.valid() || !tolerance.is_finite() || !(0.0..=256.0).contains(&tolerance) {
+            return None;
+        }
+        let hit = self
+            .svg_layers
+            .iter()
+            .rev()
+            .filter(|layer| layer.vector_layer && layer.visible && !layer.locked)
+            .flat_map(|layer| layer.vector_objects.iter().rev())
+            .find(|object| object.hit_test([point.x, point.y], tolerance))
+            .map(|object| object.id.clone());
+        if let Some(id) = hit.as_ref() {
+            if !additive {
+                self.selected_vector_objects.clear();
+            }
+            if !self.selected_vector_objects.contains(id) {
+                self.selected_vector_objects.push(id.clone());
+            }
+        } else if !additive {
+            self.selected_vector_objects.clear();
+        }
+        hit
+    }
+    pub fn move_selected_vectors(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
+            return Err("Invalid vector translation".into());
+        }
+        if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+            return Ok(false);
+        }
+        let before = self.vector_history_state();
+        let selected = self.selected_vector_objects.clone();
+        let mut changed = false;
+        for layer in self
+            .svg_layers
+            .iter_mut()
+            .filter(|layer| layer.vector_layer && !layer.locked)
+        {
+            let mut layer_changed = false;
+            for object in &mut layer.vector_objects {
+                if selected.contains(&object.id) {
+                    object.transform[4] += dx;
+                    object.transform[5] += dy;
+                    object.validate()?;
+                    layer_changed = true;
+                    changed = true;
+                }
+            }
+            if layer_changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if changed {
+            self.record_vector_edit(before);
+            self.revision += 1;
+        }
+        Ok(changed)
+    }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
             layers: self.svg_layers.clone(),
@@ -1652,6 +1717,8 @@ mod persistence_tests {
                     }),
                     stroke_width: 2.0,
                     visible: true,
+                    kind: crate::vector::VectorObjectKind::Path,
+                    control_points: vec![[10.0, 10.0], [80.0, 10.0], [40.0, 70.0]],
                 },
             )
             .unwrap();
@@ -1690,6 +1757,8 @@ mod persistence_tests {
                     stroke: None,
                     stroke_width: 0.0,
                     visible: true,
+                    kind: crate::vector::VectorObjectKind::Path,
+                    control_points: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0]],
                 },
             )
             .unwrap();
@@ -1718,6 +1787,54 @@ mod persistence_tests {
         assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
         document.redo();
         assert_eq!(document.snapshot().stroke_count, 1);
+    }
+
+    #[test]
+    fn vector_hit_testing_selects_front_object_and_move_is_undoable() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        document
+            .upsert_vector_object(
+                &layer_id,
+                VectorObject {
+                    id: "rectangle-1".into(),
+                    name: "Rectangle".into(),
+                    path: VectorPath {
+                        data: "M 10 10 H 30 V 40 H 10 Z".into(),
+                        fill_rule: FillRule::NonZero,
+                    },
+                    transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    fill: Some(VectorPaint {
+                        color: [0, 0, 0, 255],
+                    }),
+                    stroke: None,
+                    stroke_width: 0.0,
+                    visible: true,
+                    kind: crate::vector::VectorObjectKind::Rectangle,
+                    control_points: vec![[10.0, 10.0], [30.0, 40.0]],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            document.select_vector_at(Point { x: 20.0, y: 20.0 }, 2.0, false),
+            Some("rectangle-1".into())
+        );
+        assert!(document.move_selected_vectors(12.0, -4.0).unwrap());
+        let moved = &document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects[0];
+        assert_eq!(&moved.transform[4..], &[12.0, -4.0]);
+
+        document.undo();
+        let restored = &document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects[0];
+        assert_eq!(&restored.transform[4..], &[0.0, 0.0]);
+        assert_eq!(document.snapshot().selected_vector_objects, ["rectangle-1"]);
     }
 
     #[test]
