@@ -65,7 +65,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
       try {
         const result = await syncCanvas({
           x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-          ...settings.current, visible: visible && !document.hidden,
+          ...settings.current, visible: settings.current.visible && !document.hidden,
         });
         if (!active || failed) return;
         setInfo(result);
@@ -103,7 +103,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
       document.removeEventListener('visibilitychange', requestRender);
       void syncCanvas({ x: 0, y: 0, width: 0, height: 0, ...settings.current, visible: false }).catch(() => {});
     };
-  }, [attempt, onDocument, visible]);
+  }, [attempt, onDocument]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
     <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'brush' ? t.canvasNote : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>

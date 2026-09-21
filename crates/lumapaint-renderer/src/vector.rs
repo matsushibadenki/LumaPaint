@@ -14,6 +14,12 @@ fn system_fonts() -> Arc<usvg::fontdb::Database> {
         .clone()
 }
 
+/// May run on a worker at startup so the first text edit avoids a system font scan.
+/// The same OnceLock is used by rendering, including when prewarming is still in progress.
+pub fn prepare_text_fonts() {
+    let _ = system_fonts();
+}
+
 #[cfg(feature = "skia")]
 pub mod skia_paths;
 

@@ -25,6 +25,10 @@ static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 pub fn initialize(app: tauri::AppHandle) {
     let _ = APP.set(app);
     start_recovery();
+    // Optional prewarming: rendering still initializes fonts if the worker cannot start.
+    let _ = std::thread::Builder::new()
+        .name("text-fonts".into())
+        .spawn(lumapaint_renderer::vector::prepare_text_fonts);
 }
 
 define_class!(
@@ -55,6 +59,7 @@ define_class!(
         fn other_mouse_up(&self, event: &NSEvent) { self.update_pan(event); PANNING.with(|value| value.set(false)); }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            if self.isHidden() { return; }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
             else if event.keyCode() == 7 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if !event.isARepeat() {
@@ -98,6 +103,7 @@ define_class!(
         }
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
+            if self.isHidden() { return false.into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
             if command && [0, 2].contains(&event.keyCode()) {
                 report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
@@ -138,7 +144,7 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
-        if !DOCUMENT_OPEN.with(|open| open.get()) {
+        if self.isHidden() || !DOCUMENT_OPEN.with(|open| open.get()) {
             return;
         }
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
@@ -604,6 +610,10 @@ pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
 fn redraw() -> Result<(), String> {
     CANVAS.with(|slot| {
         if let Some(canvas) = slot.borrow_mut().as_mut() {
+            // Modal edits are rendered once, with their final state, when the view resumes.
+            if canvas.view.isHidden() {
+                return Ok(());
+            }
             DOCUMENT.with(|doc| canvas.renderer.render(canvas.viewport, &doc.borrow()))
         } else {
             Ok(())
@@ -734,6 +744,30 @@ pub fn destroy() {
     });
 }
 
+fn suspend() {
+    DOCUMENT.with(|doc| doc.borrow_mut().finish());
+    checkpoint();
+    SPACE_DOWN.with(|value| value.set(false));
+    PANNING.with(|value| value.set(false));
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow().as_ref() {
+            // Keep the Metal surface, pipelines and layer textures across modal dialogs.
+            if let Some(window) = canvas.view.window() {
+                let focused = window.firstResponder().is_some_and(|responder| {
+                    Retained::as_ptr(&responder).cast::<c_void>()
+                        == Retained::as_ptr(&canvas.view).cast::<c_void>()
+                });
+                if focused {
+                    // SAFETY: the retained view and its parent are accessed on the main thread.
+                    let parent = unsafe { canvas.view.superview() };
+                    window.makeFirstResponder(parent.as_deref().map(|view| &**view));
+                }
+            }
+            canvas.view.setHidden(true);
+        }
+    });
+}
+
 pub fn reset_pan() -> Result<(), String> {
     PAN.with(|pan| pan.set((0.0, 0.0)));
     CANVAS.with(|slot| {
@@ -761,7 +795,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     TOOL.with(|tool| tool.set(request.tool));
     let mtm = MainThreadMarker::new().ok_or("Native canvas requires the main thread")?;
     if !request.visible || request.width < 1.0 || request.height < 1.0 {
-        destroy();
+        suspend();
         return Ok(CanvasInfo::inactive("hidden"));
     }
     // SAFETY: Tauri provides a live WKWebView (an NSView subclass) inside with_webview,
@@ -773,7 +807,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         parent.isFlipped(),
         &request,
     ) else {
-        destroy();
+        suspend();
         return Ok(CanvasInfo::inactive("hidden"));
     };
     let scale = parent
@@ -794,6 +828,15 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
 
     CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
+        // A replaced webview must not reuse a surface attached to the previous parent.
+        if slot.as_ref().is_some_and(|canvas| {
+            // SAFETY: both native views are live and accessed on the main thread.
+            unsafe { canvas.view.superview() }
+                .as_deref()
+                .is_none_or(|view| !std::ptr::eq(view, parent))
+        }) {
+            slot.take();
+        }
         if slot.is_none() {
             let view = PaintView::new(mtm, frame);
             parent.addSubview(&view);
@@ -832,6 +875,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         let canvas = slot.as_mut().ok_or("Canvas initialization failed")?;
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
+        canvas.view.setHidden(false);
         DOCUMENT.with(|doc| canvas.renderer.render(viewport, &doc.borrow()))?;
         Ok(CanvasInfo {
             status: "ready",

@@ -798,19 +798,19 @@ impl Renderer {
             .collect();
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
+        let (width, height) = document.dimensions();
         for layer in document.visible_svg_layers() {
             if self.svg_cache.get(&layer.id).is_some_and(|cached| {
                 cached.source == layer.source
                     && cached.opacity == layer.effective_opacity()
-                    && cached.size == (document.snapshot().width, document.snapshot().height)
+                    && cached.size == (width, height)
             }) {
                 continue;
             }
-            let snapshot = document.snapshot();
-            let mut pixels = rasterize_svg(&layer.source, snapshot.width, snapshot.height)?;
+            let mut pixels = rasterize_svg(&layer.source, width, height)?;
             let effective_opacity = layer.effective_opacity();
-            for channel in pixels.as_chunks_mut::<4>().0 {
-                for value in channel {
+            if effective_opacity != 1.0 {
+                for value in &mut pixels {
                     *value = (f32::from(*value) * effective_opacity).round() as u8;
                 }
             }
@@ -819,8 +819,8 @@ impl Renderer {
                 &wgpu::TextureDescriptor {
                     label: Some("SVG layer texture"),
                     size: wgpu::Extent3d {
-                        width: snapshot.width,
-                        height: snapshot.height,
+                        width,
+                        height,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -853,7 +853,7 @@ impl Renderer {
                 CachedSvg {
                     source: layer.source.clone(),
                     opacity: effective_opacity,
-                    size: (snapshot.width, snapshot.height),
+                    size: (width, height),
                     _texture: texture,
                     bind_group,
                 },

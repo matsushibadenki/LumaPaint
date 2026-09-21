@@ -349,6 +349,11 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Pixel dimensions without allocating a UI snapshot or cloning text/layer metadata.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
             id: "layer-1".into(),
