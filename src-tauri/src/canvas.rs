@@ -31,7 +31,10 @@ pub enum CanvasTool {
     Brush,
     Rectangle,
     Ellipse,
-    Vector,
+    VectorSelect,
+    VectorPen,
+    VectorRectangle,
+    VectorEllipse,
 }
 
 impl CanvasRequest {
@@ -495,7 +498,7 @@ mod tests {
             tool: CanvasTool::Brush,
         };
         assert!(request.validate().is_ok());
-        request.tool = CanvasTool::Vector;
+        request.tool = CanvasTool::VectorSelect;
         assert!(request.validate().is_ok());
         request.x = f64::NAN;
         assert!(request.validate().is_err());

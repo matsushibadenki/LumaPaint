@@ -1023,6 +1023,13 @@ impl Document {
     pub fn svg_layers(&self) -> impl Iterator<Item = &SvgLayer> {
         self.svg_layers.iter()
     }
+    pub fn editable_vector_layer_id(&self) -> Option<String> {
+        self.svg_layers
+            .iter()
+            .rev()
+            .find(|layer| layer.vector_layer && !layer.locked && layer.visible)
+            .map(|layer| layer.id.clone())
+    }
     pub fn paint_layer_opacity(&self) -> f32 {
         self.layer_opacity
             * mask_factor(

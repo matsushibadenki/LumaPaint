@@ -7,7 +7,7 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     SelectionMode, SelectionShape,
 };
-use lumapaint_core::vector::VectorObject;
+use lumapaint_core::vector::{FillRule, VectorObject, VectorPaint, VectorPath};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -66,6 +66,16 @@ define_class!(
                 let tool = if event.keyCode() == 11 { CanvasTool::Brush }
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
                     else { CanvasTool::Rectangle };
+                TOOL.with(|value| value.set(tool));
+                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
+            }
+            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [9, 32, 35].contains(&event.keyCode()) {
+                let tool = match event.keyCode() {
+                    9 => CanvasTool::VectorSelect,
+                    35 => CanvasTool::VectorPen,
+                    _ if event.modifierFlags().contains(NSEventModifierFlags::Shift) => CanvasTool::VectorEllipse,
+                    _ => CanvasTool::VectorRectangle,
+                };
                 TOOL.with(|value| value.set(tool));
                 if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
             }
@@ -135,8 +145,14 @@ impl PaintView {
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
                 let tool = TOOL.with(|value| value.get());
-                if tool == CanvasTool::Vector {
+                if tool == CanvasTool::VectorSelect {
                     return Ok(());
+                }
+                if matches!(
+                    tool,
+                    CanvasTool::VectorPen | CanvasTool::VectorRectangle | CanvasTool::VectorEllipse
+                ) {
+                    return vector_pointer(&mut doc, tool, point, phase);
                 }
                 if matches!(tool, CanvasTool::Rectangle | CanvasTool::Ellipse) {
                     if phase == 0 {
@@ -206,6 +222,143 @@ impl PaintView {
             emit_error(error);
         }
     }
+}
+
+fn vector_pointer(
+    document: &mut Document,
+    tool: CanvasTool,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+) -> Result<(), String> {
+    if phase == 0 {
+        VECTOR_DRAFT.with(|draft| {
+            let mut draft = draft.borrow_mut();
+            draft.clear();
+            draft.push(point);
+        });
+        return Ok(());
+    }
+    if tool == CanvasTool::VectorPen && phase == 1 {
+        VECTOR_DRAFT.with(|draft| {
+            let mut draft = draft.borrow_mut();
+            if draft
+                .last()
+                .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= 1.0)
+            {
+                draft.push(point);
+            }
+        });
+        return Ok(());
+    }
+    if phase != 2 {
+        return Ok(());
+    }
+
+    let mut points = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
+    if tool == CanvasTool::VectorPen {
+        if points
+            .last()
+            .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= 1.0)
+        {
+            points.push(point);
+        }
+    } else {
+        points.push(point);
+    }
+    if points.len() < 2 {
+        return Ok(());
+    }
+    let start = points[0];
+    let end = *points.last().unwrap_or(&start);
+    let width = (end.x - start.x).abs();
+    let height = (end.y - start.y).abs();
+    if tool != CanvasTool::VectorPen && (width < 1.0 || height < 1.0) {
+        return Ok(());
+    }
+
+    let (name, path, fill, stroke, stroke_width) = match tool {
+        CanvasTool::VectorPen => {
+            let mut data = format!("M {} {}", points[0].x, points[0].y);
+            for point in points.iter().skip(1) {
+                use std::fmt::Write;
+                let _ = write!(data, " L {} {}", point.x, point.y);
+            }
+            let color = BRUSH.with(|brush| brush.borrow().color);
+            let size = BRUSH.with(|brush| brush.borrow().size);
+            (
+                "Path",
+                data,
+                None,
+                Some(VectorPaint {
+                    color: [color[0], color[1], color[2], 255],
+                }),
+                size,
+            )
+        }
+        CanvasTool::VectorRectangle => {
+            let x = start.x.min(end.x);
+            let y = start.y.min(end.y);
+            let data = format!("M {x} {y} H {} V {} H {x} Z", x + width, y + height);
+            let color = BRUSH.with(|brush| brush.borrow().color);
+            (
+                "Rectangle",
+                data,
+                Some(VectorPaint {
+                    color: [color[0], color[1], color[2], 255],
+                }),
+                None,
+                0.0,
+            )
+        }
+        CanvasTool::VectorEllipse => {
+            let cx = (start.x + end.x) * 0.5;
+            let cy = (start.y + end.y) * 0.5;
+            let rx = width * 0.5;
+            let ry = height * 0.5;
+            let data = format!(
+                "M {} {cy} A {rx} {ry} 0 1 0 {} {cy} A {rx} {ry} 0 1 0 {} {cy} Z",
+                cx - rx,
+                cx + rx,
+                cx - rx
+            );
+            let color = BRUSH.with(|brush| brush.borrow().color);
+            (
+                "Ellipse",
+                data,
+                Some(VectorPaint {
+                    color: [color[0], color[1], color[2], 255],
+                }),
+                None,
+                0.0,
+            )
+        }
+        _ => return Ok(()),
+    };
+    let layer_id = match document.editable_vector_layer_id() {
+        Some(id) => id,
+        None => document.add_vector_layer()?,
+    };
+    let serial = NEXT_VECTOR_OBJECT_ID.with(|next| {
+        let value = next.get();
+        next.set(value + 1);
+        value
+    });
+    document.upsert_vector_object(
+        &layer_id,
+        VectorObject {
+            id: format!("vector-object-{serial}"),
+            name: format!("{name} {serial}"),
+            path: VectorPath {
+                data: path,
+                fill_rule: FillRule::NonZero,
+            },
+            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill,
+            stroke,
+            stroke_width,
+            visible: true,
+        },
+    )
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -416,6 +569,8 @@ thread_local! {
     static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
+    static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
 struct OpenDocument {

@@ -18,14 +18,15 @@ export function Workspace() {
   const [locale, setLocale] = useState<Locale>(initialLocale);
   const [theme, setTheme] = useState<Theme>(() => readPreference('theme') ? initialTheme() : 'dark');
   const [toolMode, setToolMode] = useState<ToolMode>('paint');
-  const [tool, updateTool] = useState<Exclude<CanvasTool, 'vector'>>('brush');
+  const [tool, updateTool] = useState<'brush' | 'rectangle' | 'ellipse'>('brush');
+  const [vectorTool, setVectorTool] = useState<'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse'>('vectorSelect');
   const [lastSelectionTool, setLastSelectionTool] = useState<SelectionTool>('rectangle');
-  const setTool = useCallback((next: Exclude<CanvasTool, 'vector'>) => {
+  const setTool = useCallback((next: 'brush' | 'rectangle' | 'ellipse') => {
     setToolMode('paint');
     updateTool(next);
     if (next !== 'brush') setLastSelectionTool(next);
   }, []);
-  const canvasTool: CanvasTool = toolMode === 'vector' ? 'vector' : tool;
+  const canvasTool: CanvasTool = toolMode === 'vector' ? vectorTool : tool;
   const [brush, setBrush] = useState<Brush>({ size: 16, hardness: 1, color: [32, 32, 32] });
   const [documentState, setDocumentState] = useState(emptyDocument);
   const [documents, setDocuments] = useState<DocumentTabSnapshot[]>([]);
@@ -97,8 +98,8 @@ export function Workspace() {
     let stop = () => {};
     subscribeCanvasTool(next => {
       if (!active) return;
-      if (next === 'vector') setToolMode('vector');
-      else setTool(next);
+      if (next.startsWith('vector')) { setToolMode('vector'); setVectorTool(next as typeof vectorTool); }
+      else setTool(next as typeof tool);
     })
       .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });
@@ -217,6 +218,11 @@ export function Workspace() {
         }
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
           if (key === 'b' || key === 'm') { event.preventDefault(); setTool(key === 'b' ? 'brush' : event.shiftKey ? 'ellipse' : 'rectangle'); }
+          if (key === 'v' || key === 'p' || key === 'u') {
+            event.preventDefault();
+            setToolMode('vector');
+            setVectorTool(key === 'v' ? 'vectorSelect' : key === 'p' ? 'vectorPen' : event.shiftKey ? 'vectorEllipse' : 'vectorRectangle');
+          }
           if (key === 'escape') { event.preventDefault(); void edit('deselect'); }
         }
       }
@@ -260,7 +266,8 @@ export function Workspace() {
         <button className={`tool-button${tool === 'brush' ? ' selected' : ''}`} aria-label={t.brush} title={`${t.brush} (B)`} aria-pressed={tool === 'brush'} disabled={!documentAvailable} onClick={() => setTool('brush')}><Icon name="brush" /></button>
         <SelectionToolMenu locale={locale} selected={lastSelectionTool} active={tool !== 'brush'} enabled={documentAvailable} onSelect={setTool} onError={setError} />
         </> : <>
-        <button className="tool-button selected" aria-label={t.vector} title={t.vector} aria-pressed="true" disabled={!documentAvailable} onClick={() => setToolMode('vector')}><Icon name="vector" /></button>
+        {(['vectorSelect', 'vectorPen', 'vectorRectangle', 'vectorEllipse'] as const).map(item =>
+          <button key={item} className={`tool-button${vectorTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : 'U'})`} aria-pressed={vectorTool === item} disabled={!documentAvailable} onClick={() => setVectorTool(item)}><Icon name={item} /></button>)}
         <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentAvailable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>
         </>}
         <button className="tool-button" aria-label={common.zoomIn} title={common.zoomIn} disabled={!ready || zoom >= 4} onClick={() => setZoom(value => Math.min(4, value * 1.25))}><Icon name="zoom" /></button>

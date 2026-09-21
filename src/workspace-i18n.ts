@@ -2,7 +2,7 @@ export const workspaceMessages = {
   en: {
     selectionTools: 'Selection tools',
     rectangle: 'Rectangular selection', ellipse: 'Elliptical selection', tools: 'Tools', deselect: 'Deselect', selectionHint: 'Shift: add · Option/Alt: subtract · Drag inside to move',
-    paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vector: 'Vector selection', importVector: 'Import SVG as vector layer', vectorHint: 'Vector mode · imported SVG layers can be managed in Layers',
+    paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
 
     recoveryReady: 'Automatic recovery enabled',
     recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
@@ -23,7 +23,7 @@ export const workspaceMessages = {
   ja: {
     selectionTools: '選択ツール',
     rectangle: '長方形選択', ellipse: '楕円形選択', tools: 'ツール', deselect: '選択を解除', selectionHint: 'Shift：加算 · Option：減算 · 範囲内をドラッグして移動',
-    paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vector: 'ベクター選択', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'ベクターモード · 読み込んだSVGはレイヤーパネルで管理できます',
+    paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
 
     recoveryReady: '復旧用コピーの自動保存が有効です',
     recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
@@ -44,7 +44,7 @@ export const workspaceMessages = {
   'zh-CN': {
     selectionTools: '选区工具',
     rectangle: '矩形选框', ellipse: '椭圆选框', tools: '工具', deselect: '取消选择', selectionHint: 'Shift：添加 · Option/Alt：减去 · 拖动选区内部以移动',
-    paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vector: '矢量选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '矢量模式 · 可在图层面板管理导入的 SVG',
+    paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
 
     recoveryReady: '已启用自动恢复副本',
     recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',

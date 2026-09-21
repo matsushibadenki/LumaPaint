@@ -132,7 +132,7 @@ export function LayerList({ layers, selectedId, enabled, locale, onSelect, onTog
       }}>
       <button className="icon-button" disabled={!enabled} onClick={() => onToggle(layer.id)} title={layer.visible ? t.hideLayer : t.showLayer}
         aria-label={`${layer.visible ? t.hideLayer : t.showLayer}: ${layer.name}`} aria-pressed={layer.visible}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
-      <span className={`layer-thumb ${layer.kind}`} aria-hidden="true">{layer.kind === 'svg' ? 'SVG' : ''}</span>
+      <span className={`layer-thumb ${layer.kind}`} aria-hidden="true">{layer.kind === 'svg' ? 'SVG' : layer.kind === 'vector' ? 'V' : ''}</span>
       {layer.maskEnabled && <span className={`mask-thumb${layer.maskInverted ? ' inverted' : ''}`} aria-hidden="true" />}
       {editingId === layer.id ? <input className="layer-name" autoFocus maxLength={120} aria-label={t.renameLayer} value={name}
         onFocus={event => event.currentTarget.select()} onChange={event => setName(event.target.value)}

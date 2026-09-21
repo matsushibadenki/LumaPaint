@@ -106,7 +106,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   }, [attempt, onDocument, visible]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'brush' ? t.canvasNote : tool === 'vector' ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'brush' ? t.canvasNote : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && <div className="paper-preview" aria-hidden="true" />}
       {hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
     </div>
