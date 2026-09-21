@@ -185,7 +185,9 @@ pub async fn sync_canvas(
     #[cfg(not(target_os = "macos"))]
     {
         // Keep the IPC contract buildable while native hosts are implemented separately.
-        let _ = (request.dark, request.visible);
+        // The native host is not implemented yet, but consume platform-only fields so
+        // Windows/Linux CI still validates the complete IPC request without dead code.
+        let _ = (request.dark, request.visible, request.tool);
         Ok(CanvasInfo::inactive("unsupported"))
     }
 }
