@@ -7,6 +7,7 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     SelectionMode, SelectionShape,
 };
+use lumapaint_core::vector::VectorObject;
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -281,6 +282,23 @@ pub fn delete_layer(id: String) -> Result<DocumentSnapshot, String> {
 pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().add_paint_layer())?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn add_vector_layer() -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer())?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn upsert_vector_object(
+    layer_id: String,
+    object: VectorObject,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().upsert_vector_object(&layer_id, object))?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))

@@ -1,6 +1,7 @@
 use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings,
 };
+use lumapaint_core::vector::VectorObject;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
@@ -314,6 +315,37 @@ pub async fn add_paint_layer(window: tauri::WebviewWindow) -> Result<DocumentSna
     #[cfg(not(target_os = "macos"))]
     {
         let _ = window;
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn add_vector_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::add_vector_layer).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn upsert_vector_object(
+    window: tauri::WebviewWindow,
+    layer_id: String,
+    object: VectorObject,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::upsert_vector_object(layer_id, object)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, layer_id, object);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }

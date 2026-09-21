@@ -4,6 +4,7 @@ use crate::selection::SelectionGesture;
 pub use crate::selection::{
     Selection, SelectionMode, SelectionOperation, SelectionRegion, SelectionShape,
 };
+use crate::vector::VectorObject;
 use serde::{Deserialize, Serialize};
 
 pub const WIDTH: f32 = 960.0;
@@ -160,6 +161,10 @@ pub struct SvgLayer {
     pub source: String,
     #[serde(default)]
     pub paint_layer: bool,
+    #[serde(default)]
+    pub vector_layer: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector_objects: Vec<VectorObject>,
 }
 impl SvgLayer {
     pub fn effective_opacity(&self) -> f32 {
@@ -319,7 +324,13 @@ impl Document {
         layers.extend(self.svg_layers.iter().map(|layer| LayerSnapshot {
             id: layer.id.clone(),
             name: layer.name.clone(),
-            kind: if layer.paint_layer { "paint" } else { "svg" },
+            kind: if layer.paint_layer {
+                "paint"
+            } else if layer.vector_layer {
+                "vector"
+            } else {
+                "svg"
+            },
             visible: layer.visible,
             opacity: layer.opacity,
             locked: layer.locked,
@@ -737,6 +748,8 @@ impl Document {
             mask_density: 1.0,
             source: r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#.into(),
             paint_layer: true,
+            vector_layer: false,
+            vector_objects: vec![],
         });
         self.revision += 1;
         Ok(id)
@@ -789,6 +802,8 @@ impl Document {
             mask_density: 1.0,
             source,
             paint_layer: false,
+            vector_layer: false,
+            vector_objects: vec![],
         };
         validate_svg_layer(&layer)?;
         if self.svg_layers.len() >= MAX_SVG_LAYERS
@@ -803,6 +818,87 @@ impl Document {
             return Err("A project can contain up to 16 SVG layers and 6 MiB of SVG data".into());
         }
         self.svg_layers.push(layer);
+        self.revision += 1;
+        Ok(())
+    }
+    pub fn add_vector_layer(&mut self) -> Result<String, String> {
+        self.finish();
+        if self.svg_layers.len() >= MAX_SVG_LAYERS {
+            return Err("A project can contain up to 17 layers".into());
+        }
+        let mut serial = self
+            .svg_layers
+            .iter()
+            .filter(|layer| layer.vector_layer)
+            .count()
+            + 1;
+        while self
+            .svg_layers
+            .iter()
+            .any(|layer| layer.id == format!("vector-layer-{serial}"))
+        {
+            serial += 1;
+        }
+        let id = format!("vector-layer-{serial}");
+        self.svg_layers.push(SvgLayer {
+            id: id.clone(),
+            name: format!("Vector Layer {serial}"),
+            visible: true,
+            opacity: 1.0,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.0,
+            source: empty_vector_svg(self.width, self.height),
+            paint_layer: false,
+            vector_layer: true,
+            vector_objects: vec![],
+        });
+        self.revision += 1;
+        Ok(id)
+    }
+    pub fn upsert_vector_object(
+        &mut self,
+        layer_id: &str,
+        object: VectorObject,
+    ) -> Result<(), String> {
+        self.finish();
+        object.validate()?;
+        let layer_index = self
+            .svg_layers
+            .iter()
+            .position(|layer| layer.id == layer_id && layer.vector_layer)
+            .ok_or("Vector layer not found")?;
+        let layer = &self.svg_layers[layer_index];
+        if layer.locked {
+            return Err("Vector layer is locked".into());
+        }
+        let mut objects = layer.vector_objects.clone();
+        if let Some(existing) = objects.iter_mut().find(|item| item.id == object.id) {
+            *existing = object;
+        } else {
+            if objects.len() >= 4096 {
+                return Err("A vector layer can contain up to 4096 objects".into());
+            }
+            objects.push(object);
+        }
+        let source = vector_svg(self.width, self.height, &objects);
+        let total_source_len = source.len()
+            + self
+                .svg_layers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != layer_index)
+                .map(|(_, item)| item.source.len())
+                .sum::<usize>();
+        if total_source_len > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        let layer = &mut self.svg_layers[layer_index];
+        layer.vector_objects = objects;
+        layer.source = source;
+        validate_svg_layer(layer)?;
         self.revision += 1;
         Ok(())
     }
@@ -1303,7 +1399,62 @@ fn validate_svg_layer(layer: &SvgLayer) -> Result<(), String> {
     if layer.source.len() > MAX_SVG_BYTES || !layer.source.contains("<svg") {
         return Err("SVG must contain an <svg> root and be no larger than 4 MiB".into());
     }
+    if layer.paint_layer && layer.vector_layer {
+        return Err("A layer cannot be both paint and vector".into());
+    }
+    if !layer.vector_layer && !layer.vector_objects.is_empty() {
+        return Err("Only vector layers can contain vector objects".into());
+    }
+    for object in &layer.vector_objects {
+        object.validate()?;
+    }
     Ok(())
+}
+
+fn empty_vector_svg(width: u32, height: u32) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"/>"#
+    )
+}
+
+fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
+    use std::fmt::Write;
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
+    );
+    for object in objects.iter().filter(|object| object.visible) {
+        let [a, b, c, d, e, f] = object.transform;
+        let fill = object
+            .fill
+            .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
+        let stroke = object
+            .stroke
+            .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
+        let rule = match object.path.fill_rule {
+            crate::vector::FillRule::NonZero => "nonzero",
+            crate::vector::FillRule::EvenOdd => "evenodd",
+        };
+        let _ = write!(
+            svg,
+            r#"<path d="{}" transform="matrix({a} {b} {c} {d} {e} {f})" fill="{fill}" stroke="{stroke}" stroke-width="{}" fill-rule="{rule}"/>"#,
+            escape_xml(&object.path.data),
+            object.stroke_width
+        );
+    }
+    svg.push_str("</svg>");
+    svg
+}
+
+fn rgba_hex([r, g, b, a]: [u8; 4]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 const fn default_bit_depth() -> u8 {
@@ -1321,6 +1472,7 @@ fn validate_bit_depth(depth: u8) -> Result<(), String> {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+    use crate::vector::{FillRule, VectorObject, VectorPaint, VectorPath};
     #[test]
     fn round_trip_preserves_hidden_strokes_and_brush() {
         let mut source = Document::default();
@@ -1353,6 +1505,46 @@ mod persistence_tests {
         assert_eq!(stroke.brush.size, 37.0);
         assert_eq!(stroke.brush.hardness, 0.35);
         assert_eq!(stroke.points[0].y, 40.0);
+    }
+
+    #[test]
+    fn editable_vector_layer_round_trips_and_updates_render_source() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        document
+            .upsert_vector_object(
+                &layer_id,
+                VectorObject {
+                    id: "shape-1".into(),
+                    name: "Blue triangle".into(),
+                    path: VectorPath {
+                        data: "M 10 10 L 80 10 L 40 70 Z".into(),
+                        fill_rule: FillRule::EvenOdd,
+                    },
+                    transform: [1.0, 0.0, 0.0, 1.0, 5.0, 6.0],
+                    fill: Some(VectorPaint {
+                        color: [10, 80, 220, 255],
+                    }),
+                    stroke: Some(VectorPaint {
+                        color: [0, 0, 0, 128],
+                    }),
+                    stroke_width: 2.0,
+                    visible: true,
+                },
+            )
+            .unwrap();
+
+        let bytes = document.encode().unwrap();
+        let decoded = Document::decode(&bytes).unwrap();
+        let layer = decoded
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap();
+        assert!(layer.vector_layer);
+        assert_eq!(layer.vector_objects.len(), 1);
+        assert!(layer.source.contains("fill=\"#0a50dcff\""));
+        assert!(layer.source.contains("fill-rule=\"evenodd\""));
+        assert_eq!(decoded.snapshot().layers[1].kind, "vector");
     }
 
     #[test]
