@@ -217,12 +217,9 @@ fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
 }
 
 /// Use the same curve and arc-length sampler as the current GPU brush for a
-/// tile-backed stroke. Selection clipping remains on the existing GPU path.
+/// tile-backed stroke.
 pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     stroke.brush.validate()?;
-    if stroke.selection.is_some() {
-        return Err("Selection-clipped strokes are not supported by the tile painter".into());
-    }
     if stroke.points.is_empty()
         || stroke.points.len() > 65_536
         || stroke.points.iter().any(|point| {
@@ -270,7 +267,12 @@ pub fn paint_stroke_into_tiles(
     layer_id: &str,
     stroke: &Stroke,
 ) -> Result<Option<TileInvalidation>, String> {
-    document.paint_dabs(layer_id, &sampled_raster_dabs(stroke)?, stroke.brush.color)
+    document.paint_dabs_clipped(
+        layer_id,
+        &sampled_raster_dabs(stroke)?,
+        stroke.brush.color,
+        stroke.selection.as_ref(),
+    )
 }
 
 fn dabs_along_path(

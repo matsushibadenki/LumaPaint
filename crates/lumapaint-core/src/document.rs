@@ -1829,7 +1829,7 @@ impl Document {
     }
 }
 
-fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
+pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
     if !enabled {
         1.0
     } else if inverted {
