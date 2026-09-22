@@ -7,7 +7,8 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
 };
-use lumapaint_core::tiles::TiledRasterDocument;
+use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
+use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
@@ -179,10 +180,20 @@ pub fn initialize(app: tauri::AppHandle) {
                             job.key.scale,
                         )
                         .and_then(|changed| {
-                            let uploads =
-                                changed.as_ref().map_or(Ok(Vec::new()), |invalidation| {
-                                    cache.tiles.prepare_uploads(invalidation)
-                                })?;
+                            let uploads = if let Some(invalidation) = changed {
+                                let graph = ProcessingGraph::project_raster(&cache.tiles)?;
+                                let output = graph.affected_output_tiles(
+                                    &invalidation,
+                                    ChangeTarget::Source,
+                                    cache.tiles.dimensions(),
+                                )?;
+                                cache.tiles.prepare_uploads(&TileInvalidation {
+                                    layer_id: invalidation.layer_id,
+                                    coords: output,
+                                })?
+                            } else {
+                                Vec::new()
+                            };
                             Ok((cache.tiles, uploads, true))
                         })
                     }
@@ -205,6 +216,17 @@ pub fn initialize(app: tauri::AppHandle) {
                                         job.key.scale,
                                     )
                                     .ok()
+                                })
+                                .and_then(|coords| {
+                                    let layer_id = tiles.layers().first()?.id.clone();
+                                    let graph = ProcessingGraph::project_raster(&tiles).ok()?;
+                                    graph
+                                        .affected_output_tiles(
+                                            &TileInvalidation { layer_id, coords },
+                                            ChangeTarget::Source,
+                                            tiles.dimensions(),
+                                        )
+                                        .ok()
                                 })
                                 .map_or_else(
                                     || tiles.prepare_changed_uploads(&cache.tiles),
@@ -1308,6 +1330,7 @@ fn finish_tile_job(
     let mut failure = None;
     let mut incremental = false;
     let mut changed_tiles = 0;
+    let mut write_calls = 0;
     let upload_started = Instant::now();
     CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1329,6 +1352,7 @@ fn finish_tile_job(
             Ok(prepared) => {
                 incremental = prepared.incremental;
                 changed_tiles = prepared.uploads.len();
+                write_calls = prepared.uploads.write_count();
                 let upload = if prepared.incremental {
                     canvas
                         .renderer
@@ -1364,10 +1388,11 @@ fn finish_tile_job(
     });
     if render_metrics_enabled() {
         eprintln!(
-            "LumaPaint tile {} scale={} changed_tiles={} queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2}{}",
+            "LumaPaint tile {} scale={} changed_tiles={} write_calls={} queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2}{}",
             if incremental { "incremental" } else { "projection" },
             key.scale,
             changed_tiles,
+            write_calls,
             queued_for.as_secs_f64() * 1000.0,
             cpu_time.as_secs_f64() * 1000.0,
             upload_started.elapsed().as_secs_f64() * 1000.0,

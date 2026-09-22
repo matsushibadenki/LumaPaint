@@ -581,9 +581,10 @@ fn gpu_tile_upload_updates_edge_and_clears_hidden_content() {
         .write_rect("paint", [255, 2, 2, 1], &[200, 0, 0, 255, 0, 0, 200, 255])
         .unwrap()
         .unwrap();
-    texture
-        .upload(&gpu.queue, &document.prepare_uploads(&changed).unwrap())
-        .unwrap();
+    let batch =
+        ValidatedTileUploads::new((257, 3), document.prepare_uploads(&changed).unwrap()).unwrap();
+    assert_eq!(batch.write_count(), 1);
+    texture.upload_validated(&gpu.queue, &batch).unwrap();
 
     let read = |gpu: &Gpu| {
         let row_pitch = 1280;

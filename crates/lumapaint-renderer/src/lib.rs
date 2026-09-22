@@ -3,6 +3,7 @@ use lumapaint_core::document::{
     CanvasColor, Document, PaintProjectionState, Point, Selection, SelectionOperation,
     SelectionShape, Stroke, SvgLayer, HEIGHT, WIDTH,
 };
+use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
 use lumapaint_core::tiles::{
     RasterDab, TileCoord, TileInvalidation, TileUpload, TiledRasterDocument, TILE_SIZE,
 };
@@ -486,9 +487,18 @@ pub fn update_projected_paint_appearance(
         .layers()
         .first()
         .ok_or("Missing projected paint layer")?;
-    let invalidation = TileInvalidation {
+    let changed = TileInvalidation {
         layer_id: layer.id.clone(),
         coords: layer.tiles.allocated_coords().collect(),
+    };
+    let graph = ProcessingGraph::project_raster(projected)?;
+    let invalidation = TileInvalidation {
+        layer_id: changed.layer_id.clone(),
+        coords: graph.affected_output_tiles(
+            &changed,
+            ChangeTarget::Source,
+            projected.dimensions(),
+        )?,
     };
     let before = projected.prepare_uploads(&invalidation)?;
     let (visible, opacity, mask_enabled, mask_inverted, mask_density) = state.tile_appearance();
@@ -522,25 +532,97 @@ pub struct TileTexture {
 /// checked before it reached the UI thread.
 pub struct ValidatedTileUploads {
     dimensions: (u32, u32),
-    uploads: Vec<TileUpload>,
+    tile_count: usize,
+    writes: Vec<PreparedTileWrite>,
+}
+
+struct PreparedTileWrite {
+    origin: [u32; 2],
+    extent: [u32; 2],
+    bytes_per_row: u32,
+    pixels: Vec<u8>,
 }
 
 impl ValidatedTileUploads {
     pub fn new(dimensions: (u32, u32), uploads: Vec<TileUpload>) -> Result<Self, String> {
         validate_tile_uploads(dimensions.0, dimensions.1, &uploads)?;
+        let tile_count = uploads.len();
+        let mut uploads = uploads;
+        uploads.sort_unstable_by_key(|upload| (upload.coord.y, upload.coord.x));
+        if uploads
+            .windows(2)
+            .any(|pair| pair[0].coord == pair[1].coord)
+        {
+            return Err("Duplicate tile upload".into());
+        }
+        let mut writes = Vec::new();
+        let mut pending = Vec::new();
+        for upload in uploads {
+            if pending.last().is_some_and(|last: &TileUpload| {
+                last.coord.y != upload.coord.y
+                    || last.coord.x.checked_add(1) != Some(upload.coord.x)
+            }) {
+                writes.push(prepare_tile_write(std::mem::take(&mut pending))?);
+            }
+            pending.push(upload);
+        }
+        if !pending.is_empty() {
+            writes.push(prepare_tile_write(pending)?);
+        }
         Ok(Self {
             dimensions,
-            uploads,
+            tile_count,
+            writes,
         })
     }
 
     pub fn len(&self) -> usize {
-        self.uploads.len()
+        self.tile_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.uploads.is_empty()
+        self.tile_count == 0
     }
+
+    pub fn write_count(&self) -> usize {
+        self.writes.len()
+    }
+}
+
+fn prepare_tile_write(mut uploads: Vec<TileUpload>) -> Result<PreparedTileWrite, String> {
+    if uploads.len() == 1 {
+        let upload = uploads.pop().unwrap();
+        return Ok(PreparedTileWrite {
+            origin: upload.origin,
+            extent: upload.extent,
+            bytes_per_row: upload.bytes_per_row,
+            pixels: upload.pixels,
+        });
+    }
+    let width = uploads.iter().try_fold(0u32, |sum, upload| {
+        sum.checked_add(upload.extent[0])
+            .ok_or("Tile write width overflow")
+    })?;
+    let height = uploads[0].extent[1];
+    let row_bytes = width.checked_mul(4).ok_or("Tile row overflow")?;
+    let bytes_per_row = row_bytes.checked_add(255).ok_or("Tile row overflow")? / 256 * 256;
+    let mut pixels = vec![0; (bytes_per_row as usize) * (height as usize)];
+    for row in 0..height as usize {
+        let mut destination = row * bytes_per_row as usize;
+        for upload in &uploads {
+            let count = upload.extent[0] as usize * 4;
+            let source = row * upload.bytes_per_row as usize;
+            pixels[destination..destination + count]
+                .copy_from_slice(&upload.pixels[source..source + count]);
+            destination += count;
+        }
+    }
+    Ok(PreparedTileWrite {
+        origin: uploads[0].origin,
+        extent: [width, height],
+        bytes_per_row,
+        pixels,
+    })
 }
 
 enum TileUploadSource<'a> {
@@ -626,7 +708,31 @@ impl TileTexture {
         if batch.dimensions != (self.width, self.height) {
             return Err("Tile upload dimensions changed".into());
         }
-        self.upload_unchecked(queue, &batch.uploads);
+        for write in &batch.writes {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: write.origin[0],
+                        y: write.origin[1],
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &write.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(write.bytes_per_row),
+                    rows_per_image: Some(write.extent[1]),
+                },
+                wgpu::Extent3d {
+                    width: write.extent[0],
+                    height: write.extent[1],
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -2106,11 +2212,16 @@ mod tests {
             .unwrap();
         let uploads = document.prepare_uploads(&changed).unwrap();
         assert!(validate_tile_uploads(257, 3, &uploads).is_ok());
+        let batch = ValidatedTileUploads::new((257, 3), uploads.clone()).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.write_count(), 1);
+        let write = &batch.writes[0];
+        assert_eq!(write.origin, [0, 0]);
+        assert_eq!(write.extent, [257, 3]);
+        assert_eq!(write.bytes_per_row, 1280);
         assert_eq!(
-            ValidatedTileUploads::new((257, 3), uploads.clone())
-                .unwrap()
-                .len(),
-            2
+            &write.pixels[2 * 1280 + 255 * 4..2 * 1280 + 257 * 4],
+            &[200, 0, 0, 255, 0, 0, 200, 255]
         );
         let mut invalid = uploads.clone();
         invalid[1].extent = [2, 3];
@@ -2120,6 +2231,31 @@ mod tests {
         invalid[1].pixels.pop();
         assert!(validate_tile_uploads(257, 3, &invalid).is_err());
         assert!(ValidatedTileUploads::new((257, 3), invalid).is_err());
+        assert!(
+            ValidatedTileUploads::new((257, 3), vec![uploads[0].clone(), uploads[0].clone()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn tile_uploads_keep_disjoint_runs_separate() {
+        let mut document = TiledRasterDocument::new(769, 3).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let first = document
+            .write_rect("paint", [0, 0, 1, 1], &[1, 2, 3, 255])
+            .unwrap()
+            .unwrap();
+        let last = document
+            .write_rect("paint", [768, 2, 1, 1], &[4, 5, 6, 255])
+            .unwrap()
+            .unwrap();
+        let mut uploads = document.prepare_uploads(&first).unwrap();
+        uploads.extend(document.prepare_uploads(&last).unwrap());
+        let batch = ValidatedTileUploads::new((769, 3), uploads).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.write_count(), 2);
+        assert_eq!(batch.writes[0].origin, [0, 0]);
+        assert_eq!(batch.writes[1].origin, [768, 0]);
     }
 
     #[test]
@@ -2299,12 +2435,24 @@ mod tests {
             let coords =
                 stroke_candidate_tile_coords_at_scale(removed, source.dimensions(), scale).unwrap();
             let after = project_committed_paint_layer_at_scale(&undone, scale).unwrap();
+            let graph = ProcessingGraph::project_raster(&after).unwrap();
+            let output_coords = graph
+                .affected_output_tiles(
+                    &TileInvalidation {
+                        layer_id: after.layers()[0].id.clone(),
+                        coords: coords.clone(),
+                    },
+                    ChangeTarget::Source,
+                    after.dimensions(),
+                )
+                .unwrap();
             let all = after.prepare_changed_uploads(&before).unwrap();
             let bounded = after
-                .prepare_changed_uploads_in_coords(&before, &coords)
+                .prepare_changed_uploads_in_coords(&before, &output_coords)
                 .unwrap();
             assert!(!all.is_empty());
             assert_eq!(bounded, all);
+            assert_eq!(output_coords, coords);
             assert!(!coords.contains(&TileCoord { x: 0, y: 0 }));
         }
     }
@@ -2355,6 +2503,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn empty_paint_layer_settings_do_not_create_gpu_uploads() {
+        use lumapaint_core::document::LayerSettings;
+        let mut source = Document::default();
+        let mut projected = project_committed_paint_layer_at_scale(&source, 1).unwrap();
+        source
+            .set_layer_settings(LayerSettings {
+                id: "layer-1".into(),
+                name: "Layer 1".into(),
+                opacity: 0.5,
+                locked: false,
+                alpha_locked: false,
+                mask_enabled: true,
+                mask_inverted: false,
+                mask_density: 0.5,
+            })
+            .unwrap();
+        let uploads =
+            update_projected_paint_appearance(&mut projected, source.paint_projection_state())
+                .unwrap();
+        assert!(uploads.is_empty());
+        assert_eq!(
+            projected.prepare_full_uploads(),
+            project_committed_paint_layer_at_scale(&source, 1)
+                .unwrap()
+                .prepare_full_uploads()
+        );
     }
 
     #[test]

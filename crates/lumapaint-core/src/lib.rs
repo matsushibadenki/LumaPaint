@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 pub mod document;
+pub mod graph;
 pub mod selection;
 pub mod tiles;
 pub mod vector;
