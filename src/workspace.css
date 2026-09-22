@@ -183,6 +183,7 @@ h1, h2, h3 { font-style: normal; }
 .document-size-grid .document-unit { grid-column: 1 / -1; }
 .document-direction { display: grid; grid-template-columns: 1fr 34px 34px; align-items: end; gap: 6px; color: var(--color-muted); font-size: var(--text-small); }
 .document-direction button { height: 32px; min-height: 32px; padding: 4px; font-size: 15px; }
+.document-direction button svg { width: 18px; height: 18px; }
 .document-direction button[aria-pressed='true'] { border-color: var(--color-focus); color: var(--color-focus); background: var(--color-selected); }
 .document-check { display: flex !important; align-items: center; gap: 8px !important; }
 .document-check input { width: auto; min-height: 0; }

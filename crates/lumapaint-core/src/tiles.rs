@@ -1,15 +1,58 @@
 //! Sparse RGBA8 raster tiles. A fully transparent tile has no allocation.
 use crate::document::{mask_factor, Point};
 use crate::selection::Selection;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const TILE_SIZE: u32 = 256;
 const TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize * 4;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TileCoord {
     pub x: u32,
     pub y: u32,
+}
+
+/// Validated, history-free state shared by the live tiled document, recovery,
+/// and the future binary project container. Pixel payloads remain raw here;
+/// compression and checksums belong to the container boundary.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TiledRasterState {
+    pub width: u32,
+    pub height: u32,
+    pub layers: Vec<RasterLayerState>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RasterLayerState {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
+    pub locked: bool,
+    pub alpha_locked: bool,
+    pub mask_enabled: bool,
+    pub mask_inverted: bool,
+    pub mask_density: f32,
+    pub tiles: Vec<RasterTileState>,
+    pub mask_tiles: Vec<MaskTileState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RasterTileState {
+    pub coord: TileCoord,
+    pub pixels: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaskTileState {
+    pub coord: TileCoord,
+    pub values: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -455,6 +498,28 @@ fn valid_tile_payload(coord: TileCoord, bytes: &[u8], width: u32, height: u32) -
     painted
 }
 
+fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) -> bool {
+    if values.len() != TILE_BYTES / 4
+        || coord.x >= width.div_ceil(TILE_SIZE)
+        || coord.y >= height.div_ceil(TILE_SIZE)
+    {
+        return false;
+    }
+    let mut edited = false;
+    for (index, value) in values.iter().enumerate() {
+        let x = coord.x * TILE_SIZE + index as u32 % TILE_SIZE;
+        let y = coord.y * TILE_SIZE + index as u32 / TILE_SIZE;
+        if x >= width || y >= height {
+            if *value != 255 {
+                return false;
+            }
+        } else if *value != 255 {
+            edited = true;
+        }
+    }
+    edited
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterLayer {
     pub id: String,
@@ -644,6 +709,103 @@ impl TiledRasterDocument {
             redo: Vec::new(),
             revision: 0,
         })
+    }
+
+    pub fn state(&self) -> TiledRasterState {
+        TiledRasterState {
+            width: self.width,
+            height: self.height,
+            layers: self
+                .layers
+                .iter()
+                .map(|layer| RasterLayerState {
+                    id: layer.id.clone(),
+                    name: layer.name.clone(),
+                    visible: layer.visible,
+                    opacity: layer.opacity,
+                    locked: layer.locked,
+                    alpha_locked: layer.alpha_locked,
+                    mask_enabled: layer.mask_enabled,
+                    mask_inverted: layer.mask_inverted,
+                    mask_density: layer.mask_density,
+                    tiles: layer
+                        .tiles
+                        .tiles
+                        .iter()
+                        .map(|(coord, pixels)| RasterTileState {
+                            coord: *coord,
+                            pixels: pixels.clone(),
+                        })
+                        .collect(),
+                    mask_tiles: layer
+                        .mask
+                        .tiles
+                        .iter()
+                        .map(|(coord, values)| MaskTileState {
+                            coord: *coord,
+                            values: values.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Restore validated authoritative pixels without importing edit history.
+    /// The caller must validate container sizes before decoding untrusted bytes;
+    /// this method validates all semantic fields and tile payloads atomically.
+    pub fn from_state(state: TiledRasterState) -> Result<Self, String> {
+        let mut document = Self::new(state.width, state.height)?;
+        if state.layers.len() > 16 {
+            return Err("Too many raster layers".into());
+        }
+        for saved in state.layers {
+            if !saved.opacity.is_finite()
+                || !(0.0..=1.0).contains(&saved.opacity)
+                || !saved.mask_density.is_finite()
+                || !(0.0..=1.0).contains(&saved.mask_density)
+            {
+                return Err("Invalid raster layer state".into());
+            }
+            document.add_layer(saved.id.clone(), saved.name)?;
+            let layer = document.layers.last_mut().expect("layer was just added");
+            layer.visible = saved.visible;
+            layer.opacity = saved.opacity;
+            layer.locked = saved.locked;
+            layer.alpha_locked = saved.alpha_locked;
+            layer.mask_enabled = saved.mask_enabled;
+            layer.mask_inverted = saved.mask_inverted;
+            layer.mask_density = saved.mask_density;
+            for tile in saved.tiles {
+                if layer.tiles.tiles.contains_key(&tile.coord)
+                    || !valid_tile_payload(
+                        tile.coord,
+                        &tile.pixels,
+                        document.width,
+                        document.height,
+                    )
+                {
+                    return Err("Invalid raster tile state".into());
+                }
+                layer.tiles.tiles.insert(tile.coord, tile.pixels);
+            }
+            for tile in saved.mask_tiles {
+                if layer.mask.tiles.contains_key(&tile.coord)
+                    || !valid_mask_payload(
+                        tile.coord,
+                        &tile.values,
+                        document.width,
+                        document.height,
+                    )
+                {
+                    return Err("Invalid raster mask tile state".into());
+                }
+                layer.mask.tiles.insert(tile.coord, tile.values);
+            }
+        }
+        document.revision = 0;
+        document.discard_history();
+        Ok(document)
     }
 
     pub fn layers(&self) -> &[RasterLayer] {
@@ -1765,6 +1927,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(document.layers()[0].mask.pixel(256, 15), Some(255));
+    }
+
+    #[test]
+    fn tiled_state_round_trips_pixels_spatial_masks_and_layer_order() {
+        let mut document = TiledRasterDocument::new(257, 17).unwrap();
+        document.add_layer("back".into(), "Back".into()).unwrap();
+        document.add_layer("front".into(), "Front".into()).unwrap();
+        document
+            .write_rect("back", [255, 2, 2, 1], &[200, 10, 20, 255, 5, 40, 80, 128])
+            .unwrap();
+        document
+            .write_rect("front", [12, 3, 1, 1], &[20, 180, 60, 220])
+            .unwrap();
+        document.set_layer_appearance("front", false, 0.4).unwrap();
+        document.set_layer_locks("front", true, true).unwrap();
+        document.set_layer_mask("back", true, true, 0.75).unwrap();
+        document
+            .write_mask_rect("back", [255, 2, 2, 1], &[0, 128])
+            .unwrap();
+
+        let state = document.state();
+        let restored = TiledRasterDocument::from_state(state.clone()).unwrap();
+
+        assert_eq!(restored.state(), state);
+        assert_eq!(restored.revision(), 0);
+        assert!(restored
+            .prepare_changed_uploads(&document)
+            .unwrap()
+            .is_empty());
+        assert_eq!(restored.layers()[0].mask.pixel(255, 2), Some(0));
+        assert_eq!(restored.layers()[0].mask.pixel(256, 2), Some(128));
+        assert_eq!(restored.layers()[1].id, "front");
+        assert!(restored.layers()[1].locked && restored.layers()[1].alpha_locked);
+    }
+
+    #[test]
+    fn tiled_state_rejects_duplicate_and_invalid_edge_payloads_atomically() {
+        let mut document = TiledRasterDocument::new(257, 1).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        document
+            .write_rect("paint", [256, 0, 1, 1], &[20, 40, 80, 255])
+            .unwrap();
+        document
+            .write_mask_rect("paint", [256, 0, 1, 1], &[0])
+            .unwrap();
+        let state = document.state();
+
+        let mut duplicate = state.clone();
+        let repeated = duplicate.layers[0].tiles[0].clone();
+        duplicate.layers[0].tiles.push(repeated);
+        assert!(TiledRasterDocument::from_state(duplicate).is_err());
+
+        let mut invalid_mask = state.clone();
+        invalid_mask.layers[0].mask_tiles[0].values[1] = 0;
+        assert!(TiledRasterDocument::from_state(invalid_mask).is_err());
+
+        let mut invalid_pixels = state;
+        invalid_pixels.layers[0].tiles[0].pixels[7] = 255;
+        assert!(TiledRasterDocument::from_state(invalid_pixels).is_err());
     }
 
     #[test]

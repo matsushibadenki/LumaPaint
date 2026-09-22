@@ -432,6 +432,26 @@ pub fn paint_stroke_into_mask(
     )
 }
 
+/// Prepare the composite uploads caused by a source or spatial-mask edit.
+///
+/// The graph converts layer-local changed coordinates into output coordinates,
+/// including the finite support of downstream filters. Comparing only those
+/// coordinates keeps mask painting and future graph edits on the incremental
+/// upload path without transferring tiles whose composite pixels did not change.
+pub fn prepare_graph_changed_uploads(
+    document: &TiledRasterDocument,
+    before: &TiledRasterDocument,
+    invalidation: &TileInvalidation,
+    target: ChangeTarget,
+) -> Result<Vec<TileUpload>, String> {
+    if document.dimensions() != before.dimensions() {
+        return Err("Tile document dimensions changed".into());
+    }
+    let graph = ProcessingGraph::project_raster(document)?;
+    let coords = graph.affected_output_tiles(invalidation, target, document.dimensions())?;
+    document.prepare_changed_uploads_in_coords(before, &coords)
+}
+
 /// Reconstruct the committed v1 paint layer as tiles for migration checks.
 /// SVG/vector layers and an active pointer stroke remain on the v1 renderer.
 /// This does not alter the source document or its save format.
@@ -2300,6 +2320,53 @@ mod tests {
         assert!(document.layers()[0].mask.pixel(20, 20).unwrap() < 255);
         document.undo().unwrap();
         assert_eq!(document.layers()[0].mask.allocated_tile_count(), 0);
+    }
+
+    #[test]
+    fn spatial_mask_changes_prepare_only_graph_affected_uploads() {
+        let mut document = TiledRasterDocument::new(520, 32).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        document
+            .write_rect("paint", [250, 4, 20, 1], &[200, 80, 20, 255].repeat(20))
+            .unwrap();
+        document.set_layer_mask("paint", true, false, 1.0).unwrap();
+        document.discard_history();
+
+        let before = document.clone();
+        let changed = document
+            .write_mask_rect("paint", [255, 4, 2, 1], &[0, 128])
+            .unwrap()
+            .unwrap();
+        let bounded =
+            prepare_graph_changed_uploads(&document, &before, &changed, ChangeTarget::Mask)
+                .unwrap();
+        let full = document.prepare_changed_uploads(&before).unwrap();
+
+        assert_eq!(bounded, full);
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(bounded[0].coord, TileCoord { x: 0, y: 0 });
+        assert_eq!(bounded[1].coord, TileCoord { x: 1, y: 0 });
+    }
+
+    #[test]
+    fn disabled_spatial_mask_does_not_prepare_output_uploads() {
+        let mut document = TiledRasterDocument::new(64, 64).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        document
+            .write_rect("paint", [8, 8, 1, 1], &[20, 40, 80, 255])
+            .unwrap();
+        document.discard_history();
+        let before = document.clone();
+        let changed = document
+            .write_mask_rect("paint", [8, 8, 1, 1], &[0])
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            prepare_graph_changed_uploads(&document, &before, &changed, ChangeTarget::Mask,)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

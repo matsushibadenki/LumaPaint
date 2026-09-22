@@ -88,6 +88,9 @@ impl ProcessingGraph {
         if change.coords.is_empty() {
             return Ok(Vec::new());
         }
+        if affected.is_empty() {
+            return Ok(Vec::new());
+        }
         affected
             .into_iter()
             .find(|item| item.node_id == self.output)
@@ -211,6 +214,12 @@ impl ProcessingGraph {
             }
         }
         if !found {
+            if target == ChangeTarget::Mask {
+                // A disabled mask is intentionally absent from the graph. Its
+                // stored pixels may still be edited, but they cannot affect the
+                // current output until the mask is enabled.
+                return Ok(Vec::new());
+            }
             return Err("Changed layer is not in the processing graph".into());
         }
         while let Some((index, incoming)) = pending.pop_front() {
@@ -769,5 +778,31 @@ mod tests {
             tiles.prepare_uploads(&changed).unwrap(),
             tiles.prepare_uploads(&projected).unwrap()
         );
+    }
+
+    #[test]
+    fn disabled_mask_edits_do_not_invalidate_graph_output() {
+        let mut tiles = TiledRasterDocument::new(256, 256).unwrap();
+        tiles.add_layer("paint".into(), "Paint".into()).unwrap();
+        let changed = tiles
+            .write_mask_rect("paint", [12, 14, 1, 1], &[0])
+            .unwrap()
+            .unwrap();
+        let graph = ProcessingGraph::project_raster(&tiles).unwrap();
+
+        assert!(graph
+            .affected_output_tiles(&changed, ChangeTarget::Mask, tiles.dimensions())
+            .unwrap()
+            .is_empty());
+        assert!(graph
+            .affected_output_tiles(
+                &TileInvalidation {
+                    layer_id: "missing".into(),
+                    coords: changed.coords,
+                },
+                ChangeTarget::Source,
+                tiles.dimensions(),
+            )
+            .is_err());
     }
 }
