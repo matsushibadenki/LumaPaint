@@ -327,7 +327,12 @@ pub struct TileTexture {
 }
 
 impl TileTexture {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self, String> {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
         let limit = device.limits().max_texture_dimension_2d;
         if width == 0
             || height == 0
@@ -351,9 +356,28 @@ impl TileTexture {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        let view = texture.create_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear tile composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+        }
+        queue.submit([encoder.finish()]);
         Ok(Self {
             texture,
             width,
@@ -702,8 +726,10 @@ pub struct Renderer {
     brush_bind_layout: wgpu::BindGroupLayout,
     brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
+    tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
+    tile_preview: Option<TileGpuPreview>,
     svg_cache: HashMap<String, CachedSvg>,
     drag_cache: HashMap<String, DragLayerCache>,
     uniform_layout: wgpu::BindGroupLayout,
@@ -712,6 +738,11 @@ pub struct Renderer {
     device_error: Arc<Mutex<Option<String>>>,
     pub adapter_name: String,
     pub backend: String,
+}
+
+struct TileGpuPreview {
+    texture: TileTexture,
+    bind_group: wgpu::BindGroup,
 }
 
 fn create_svg_pipeline(
@@ -740,20 +771,39 @@ fn create_svg_pipeline(
             },
         ],
     });
-    let svg_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("SVG layer layout"),
-        bind_group_layouts: &[bind_layout, &svg_bind_layout],
+    let svg_pipeline = create_textured_layer_pipeline(
+        device,
+        bind_layout,
+        &svg_bind_layout,
+        format,
+        include_str!("svg.wgsl"),
+        "SVG layer",
+    );
+    (svg_bind_layout, svg_pipeline)
+}
+
+fn create_textured_layer_pipeline(
+    device: &wgpu::Device,
+    viewport_layout: &wgpu::BindGroupLayout,
+    texture_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+    source: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[viewport_layout, texture_layout],
         push_constant_ranges: &[],
     });
-    let svg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("SVG layer"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("svg.wgsl").into()),
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    let svg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("SVG layer pipeline"),
-        layout: Some(&svg_layout),
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
-            module: &svg_shader,
+            module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
             buffers: &[],
@@ -762,7 +812,7 @@ fn create_svg_pipeline(
         depth_stencil: None,
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &svg_shader,
+            module: &shader,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -784,8 +834,7 @@ fn create_svg_pipeline(
         }),
         multiview: None,
         cache: None,
-    });
-    (svg_bind_layout, svg_pipeline)
+    })
 }
 
 struct CachedSvg {
@@ -904,6 +953,55 @@ pub fn prepare_svg_layer(
 }
 
 impl Renderer {
+    /// Opt-in tile paint preview. The host must only install a tile document
+    /// matching the current v1 document and clear it when that source changes.
+    pub fn install_tiled_preview(&mut self, tiles: &TiledRasterDocument) -> Result<(), String> {
+        let (width, height) = tiles.dimensions();
+        let texture = TileTexture::new(&self.device, &self.queue, width, height)?;
+        texture.upload(&self.queue, &tiles.prepare_full_uploads())?;
+        let view = texture.texture().create_view(&Default::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Tile paint preview"),
+            layout: &self.svg_bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.svg_sampler),
+                },
+            ],
+        });
+        self.tile_preview = Some(TileGpuPreview {
+            texture,
+            bind_group,
+        });
+        Ok(())
+    }
+
+    pub fn update_tiled_preview(
+        &mut self,
+        tiles: &TiledRasterDocument,
+        invalidation: &TileInvalidation,
+    ) -> Result<(), String> {
+        let preview = self
+            .tile_preview
+            .as_ref()
+            .ok_or("No tile preview installed")?;
+        if tiles.dimensions() != (preview.texture.width, preview.texture.height) {
+            return Err("Tile preview dimensions changed".into());
+        }
+        preview
+            .texture
+            .upload(&self.queue, &tiles.prepare_uploads(invalidation)?)
+    }
+
+    pub fn clear_tiled_preview(&mut self) {
+        self.tile_preview = None;
+    }
+
     /// Layers that still need CPU preparation for the committed document frame.
     pub fn missing_svg_layers(&self, document: &Document) -> Vec<SvgLayer> {
         let size = document.dimensions();
@@ -1156,6 +1254,14 @@ impl Renderer {
             ..Default::default()
         });
         let (svg_bind_layout, svg_pipeline) = create_svg_pipeline(&device, &bind_layout, format);
+        let tile_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            format,
+            include_str!("tile.wgsl"),
+            "Tile paint layer",
+        );
         let svg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -1191,8 +1297,10 @@ impl Renderer {
             brush_bind_layout,
             brush_sampler,
             svg_pipeline,
+            tile_pipeline,
             svg_bind_layout,
             svg_sampler,
+            tile_preview: None,
             svg_cache: HashMap::new(),
             drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
@@ -1293,6 +1401,11 @@ impl Renderer {
             Err(error) => return Err(error.to_string()),
         };
         let uniforms = Self::uniforms(viewport);
+        if self.tile_preview.as_ref().is_some_and(|preview| {
+            (preview.texture.width, preview.texture.height) != document.dimensions()
+        }) {
+            self.tile_preview = None;
+        }
         let vector_overlays = document.vector_overlay_selections_at_offset(offset[0], offset[1]);
         let outline_selections = document
             .selection()
@@ -1315,10 +1428,14 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let view = frame.texture.create_view(&Default::default());
-        let stroke_segments: Vec<_> = document
-            .visible_strokes()
-            .map(|stroke| segments(stroke, document.paint_layer_opacity()))
-            .collect();
+        let stroke_segments: Vec<_> = if self.tile_preview.is_some() {
+            Vec::new()
+        } else {
+            document
+                .visible_strokes()
+                .map(|stroke| segments(stroke, document.paint_layer_opacity()))
+                .collect()
+        };
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
@@ -1482,6 +1599,25 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if let Some(preview) = &self.tile_preview {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Tile paint preview pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.tile_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &preview.bind_group, &[]);
+            pass.draw(0..6, 0..1);
         }
         if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
             for ((buffer, segments), selection_group) in brush_buffers

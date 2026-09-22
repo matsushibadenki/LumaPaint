@@ -575,16 +575,15 @@ fn dab_density(
         if dab.weight == 0.0 {
             continue;
         }
-        let left = ((dab.x - dab.radius - 1.0).floor() as i32).max(0) as u32;
-        let top = ((dab.y - dab.radius - 1.0).floor() as i32).max(0) as u32;
-        let right = ((dab.x + dab.radius + 1.0).ceil() as i32)
+        let left = ((dab.x - dab.radius - 2.0).floor() as i32).max(0) as u32;
+        let top = ((dab.y - dab.radius - 2.0).floor() as i32).max(0) as u32;
+        let right = ((dab.x + dab.radius + 2.0).ceil() as i32)
             .min(width as i32)
             .max(0) as u32;
-        let bottom = ((dab.y + dab.radius + 1.0).ceil() as i32)
+        let bottom = ((dab.y + dab.radius + 2.0).ceil() as i32)
             .min(height as i32)
             .max(0) as u32;
         let inner = dab.radius * dab.hardness;
-        let edge = (inner + 1.0).max(dab.radius + 1.0);
         for y in top..bottom {
             for x in left..right {
                 if selection.is_some_and(|selection| {
@@ -595,8 +594,13 @@ fn dab_density(
                 }) {
                     continue;
                 }
-                let distance =
-                    ((x as f32 + 0.5 - dab.x).powi(2) + (y as f32 + 0.5 - dab.y).powi(2)).sqrt();
+                let dx = x as f32 + 0.5 - dab.x;
+                let dy = y as f32 + 0.5 - dab.y;
+                let distance = dx.hypot(dy);
+                // At 1:1 zoom, fwidth(distance) is approximately the L1 norm
+                // of the radial distance gradient used by the GPU brush.
+                let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01);
+                let edge = (inner + aa).max(dab.radius + aa);
                 let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
                 let profile = 1.0 - t * t * (3.0 - 2.0 * t);
                 if profile <= 0.0 {
@@ -644,6 +648,10 @@ impl TiledRasterDocument {
 
     pub fn layers(&self) -> &[RasterLayer] {
         &self.layers
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     pub fn revision(&self) -> u64 {
@@ -1746,7 +1754,18 @@ mod tests {
             for x in 12..29 {
                 let combined = one.layers()[0].tiles.pixel(x, y).unwrap();
                 let separate = two.layers()[0].tiles.pixel(x, y).unwrap();
-                for (a, b) in combined.into_iter().zip(separate) {
+                let premultiplied = |pixel: [u8; 4]| {
+                    [
+                        pixel[0] as u16 * pixel[3] as u16 / 255,
+                        pixel[1] as u16 * pixel[3] as u16 / 255,
+                        pixel[2] as u16 * pixel[3] as u16 / 255,
+                        u16::from(pixel[3]),
+                    ]
+                };
+                for (a, b) in premultiplied(combined)
+                    .into_iter()
+                    .zip(premultiplied(separate))
+                {
                     assert!(
                         a.abs_diff(b) <= 2,
                         "pixel ({x}, {y}): {combined:?} vs {separate:?}"

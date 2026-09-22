@@ -247,6 +247,121 @@ impl Gpu {
         readback.unmap();
         result
     }
+
+    fn render_tiled_strokes(&self, strokes: &[Stroke]) -> Vec<u8> {
+        let mut document = TiledRasterDocument::new(960, 640).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        for stroke in strokes {
+            paint_stroke_into_tiles(&mut document, "paint", stroke).unwrap();
+            document.discard_history();
+        }
+        let texture = TileTexture::new(&self.device, &self.queue, 960, 640).unwrap();
+        texture
+            .upload(&self.queue, &document.prepare_full_uploads())
+            .unwrap();
+        let (layout, _) = create_svg_pipeline(
+            &self.device,
+            &self.uniform_layout,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        let pipeline = create_textured_layer_pipeline(
+            &self.device,
+            &self.uniform_layout,
+            &layout,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            include_str!("tile.wgsl"),
+            "Tiled comparison",
+        );
+        let tile_view = texture.texture().create_view(&Default::default());
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tile_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let output = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = output.create_view(&Default::default());
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Tiled brush comparison"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &self.uniforms, &[]);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(W * H * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: Some(H),
+                },
+            },
+            wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        pixels
+    }
 }
 
 fn figure_eight(brush: Brush, count: usize) -> Stroke {
@@ -267,6 +382,83 @@ fn figure_eight(brush: Brush, count: usize) -> Stroke {
     }
 }
 
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
+    let gpu = Gpu::new();
+    let line = Stroke {
+        brush: Brush {
+            size: 24.0,
+            hardness: 1.0,
+            color: [0, 0, 0],
+        },
+        points: vec![Point { x: 90.0, y: 120.0 }, Point { x: 500.0, y: 120.0 }],
+        pressures: vec![],
+        selection: None,
+    };
+    let arc = Stroke {
+        brush: Brush {
+            size: 48.0,
+            hardness: 0.0,
+            color: [30, 90, 180],
+        },
+        points: vec![
+            Point { x: 100.0, y: 340.0 },
+            Point { x: 240.0, y: 250.0 },
+            Point { x: 400.0, y: 340.0 },
+        ],
+        pressures: vec![],
+        selection: None,
+    };
+    let crossing = Stroke {
+        brush: Brush {
+            size: 32.0,
+            hardness: 0.25,
+            color: [0, 0, 0],
+        },
+        points: vec![Point { x: 140.0, y: 470.0 }, Point { x: 450.0, y: 560.0 }],
+        pressures: vec![],
+        selection: None,
+    };
+    let crossing_back = Stroke {
+        points: vec![Point { x: 140.0, y: 560.0 }, Point { x: 450.0, y: 470.0 }],
+        ..crossing.clone()
+    };
+    for (name, strokes) in [
+        ("hard", vec![line]),
+        ("soft", vec![arc]),
+        ("crossing", vec![crossing, crossing_back]),
+    ] {
+        let v1 = gpu.render(&strokes);
+        let tiled = gpu.render_tiled_strokes(&strokes);
+        let mut max_diff = 0u8;
+        let mut total_diff = 0u64;
+        let mut changed = 0u64;
+        let mut over_16 = 0u64;
+        for (original, projected) in v1.as_chunks::<4>().0.iter().zip(tiled.as_chunks::<4>().0) {
+            if original[..3] == [255; 3] && projected[..3] == [255; 3] {
+                continue;
+            }
+            changed += 1;
+            for (a, b) in original[..3].iter().zip(&projected[..3]) {
+                let delta = a.abs_diff(*b);
+                max_diff = max_diff.max(delta);
+                total_diff += u64::from(delta);
+                over_16 += u64::from(delta > 16);
+            }
+        }
+        assert!(changed > 0, "{name} produced no paint");
+        eprintln!(
+            "tile-v1 {name}: changed_pixels={changed}, mean_channel_diff={:.2}, max_channel_diff={max_diff}, channels_over_16={over_16}",
+            total_diff as f64 / (changed * 3) as f64,
+        );
+        assert!(
+            max_diff <= 16 && total_diff as f64 / (changed * 3) as f64 <= 2.0,
+            "{name} tile preview differs too much from the v1 brush"
+        );
+    }
+}
+
 fn save_image(name: &str, pixels: Vec<u8>) {
     if let Ok(dir) = std::env::var("LUMAPAINT_GPU_ARTIFACTS") {
         std::fs::create_dir_all(&dir).unwrap();
@@ -284,7 +476,7 @@ fn save_image(name: &str, pixels: Vec<u8>) {
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_tile_upload_updates_edge_and_clears_hidden_content() {
     let gpu = Gpu::new();
-    let texture = TileTexture::new(&gpu.device, 257, 3).unwrap();
+    let texture = TileTexture::new(&gpu.device, &gpu.queue, 257, 3).unwrap();
     let mut document = TiledRasterDocument::new(257, 3).unwrap();
     document.add_layer("paint".into(), "Paint".into()).unwrap();
     let changed = document
@@ -352,6 +544,168 @@ fn gpu_tile_upload_updates_edge_and_clears_hidden_content() {
         .unwrap();
     let cleared = read(&gpu);
     assert_eq!(&cleared[(2 * 1280 + 255 * 4) as usize..][..8], &[0; 8]);
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_tile_preview_uses_document_coordinates_and_premultiplied_blending() {
+    let gpu = Gpu::new();
+    let texture = TileTexture::new(&gpu.device, &gpu.queue, 257, 3).unwrap();
+    let mut document = TiledRasterDocument::new(257, 3).unwrap();
+    document.add_layer("paint".into(), "Paint".into()).unwrap();
+    let changed = document
+        .write_rect("paint", [255, 2, 2, 1], &[200, 0, 0, 255, 0, 0, 200, 255])
+        .unwrap()
+        .unwrap();
+    texture
+        .upload(&gpu.queue, &document.prepare_uploads(&changed).unwrap())
+        .unwrap();
+    let (layout, _) = create_svg_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        include_str!("tile.wgsl"),
+        "Tiled preview test",
+    );
+    let view = texture.texture().create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let tile_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let viewport = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::bytes_of(&Uniforms {
+                viewport: [305.0, 51.0, 1.0, 1.0],
+                appearance: [0.0; 4],
+                document: [257.0, 3.0, 0.0, 0.0],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+    let viewport_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &gpu.uniform_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: viewport.as_entire_binding(),
+        }],
+    });
+    let render = || {
+        let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 305,
+                height: 51,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = output.create_view(&Default::default());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &viewport_group, &[]);
+            pass.set_bind_group(1, &tile_group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 1280 * 51,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1280),
+                    rows_per_image: Some(51),
+                },
+            },
+            wgpu::Extent3d {
+                width: 305,
+                height: 51,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        pixels
+    };
+    let pixels = render();
+    assert_eq!(
+        &pixels[(26 * 1280 + 279 * 4) as usize..][..4],
+        &[200, 0, 0, 255]
+    );
+    assert_eq!(
+        &pixels[(26 * 1280 + 280 * 4) as usize..][..4],
+        &[0, 0, 200, 255]
+    );
+    assert_eq!(&pixels[(26 * 1280 + 281 * 4) as usize..][..4], &[0; 4]);
+
+    let hidden = document
+        .set_layer_appearance("paint", false, 1.0)
+        .unwrap()
+        .unwrap();
+    texture
+        .upload(&gpu.queue, &document.prepare_uploads(&hidden).unwrap())
+        .unwrap();
+    let hidden_pixels = render();
+    assert_eq!(
+        &hidden_pixels[(26 * 1280 + 279 * 4) as usize..][..8],
+        &[0; 8]
+    );
 }
 
 #[test]
