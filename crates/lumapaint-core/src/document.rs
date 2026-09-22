@@ -2131,19 +2131,33 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                         y += text.space_before + text.space_after;
                     }
                 }
+                let baseline = text.line_baselines.get(index).copied().unwrap_or(y);
                 let first_indent = if index == 0 || hard_break_before {
                     text.indent_first
                 } else {
                     0.0
                 };
-                let x = match text.alignment {
+                let fallback_x = match text.alignment {
                     crate::vector::TextAlignment::Left => text.indent_left + first_indent,
                     crate::vector::TextAlignment::Center => {
                         (text.box_width + text.indent_left - text.indent_right + first_indent) * 0.5
                     }
                     crate::vector::TextAlignment::Right => text.box_width - text.indent_right,
                 };
-                let _ = write!(svg, r#"<tspan x="{x}" y="{y}">"#);
+                let measured_origin = text.line_origins.get(index).copied();
+                let x = measured_origin.unwrap_or(fallback_x);
+                let _ = write!(svg, r#"<tspan x="{x}" y="{baseline}""#);
+                if measured_origin.is_some() {
+                    svg.push_str(r#" text-anchor="start""#);
+                }
+                if let Some(width) = text
+                    .line_widths
+                    .get(index)
+                    .filter(|width| **width > 0.0 && !line.is_empty())
+                {
+                    let _ = write!(svg, r#" textLength="{width}" lengthAdjust="spacing""#);
+                }
+                svg.push('>');
                 let mut segment = String::new();
                 let mut previous = None;
                 let mut offset = start;
@@ -2817,6 +2831,111 @@ mod text_tests {
         for breaks in [vec![2], vec![3, 3], vec![5], vec![6]] {
             bad.text.soft_breaks = breaks;
             assert!(bad.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_text_bounds_drive_selection_and_survive_save() {
+        let mut edit = settings();
+        edit.text.content = "Visible".into();
+        edit.text.layout_bounds = Some([10.0, 8.0, 80.0, 24.0]);
+        edit.text.rotation = 45.0;
+        edit.position = [100.0, 100.0];
+        let points = edit.text.control_points();
+        let center = [
+            100.0 + points.iter().map(|point| point[0]).sum::<f32>() / 4.0,
+            100.0 + points.iter().map(|point| point[1]).sum::<f32>() / 4.0,
+        ];
+        let min_x = points
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min);
+        let min_y = points
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::INFINITY, f32::min);
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        assert_eq!(
+            doc.text_at(center),
+            Some(doc.snapshot().text_objects[0].id.clone())
+        );
+        assert_eq!(
+            doc.text_at([100.0 + min_x + 1.0, 100.0 + min_y + 1.0]),
+            None
+        );
+        assert_eq!(
+            Document::decode(&doc.encode().unwrap())
+                .unwrap()
+                .snapshot()
+                .text_objects[0]
+                .text
+                .layout_bounds,
+            edit.text.layout_bounds
+        );
+        for bounds in [[0.0, 0.0, 0.0, 5.0], [0.0, 0.0, 5.0, f32::NAN]] {
+            edit.text.layout_bounds = Some(bounds);
+            assert!(edit.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_line_baselines_drive_svg_and_survive_save() {
+        let mut edit = settings();
+        edit.text.content = "Large\nSmall".into();
+        edit.text.line_baselines = vec![38.0, 104.5];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("y=\"38\""));
+        assert!(svg.contains("y=\"104.5\""));
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.line_baselines,
+            vec![38.0, 104.5]
+        );
+        for baselines in [vec![38.0], vec![38.0, 38.0], vec![38.0, f32::NAN]] {
+            edit.text.line_baselines = baselines;
+            assert!(edit.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_line_widths_drive_svg_without_stretching_glyphs() {
+        let mut edit = settings();
+        edit.text.content = "Wide\nNarrow".into();
+        edit.text.line_widths = vec![125.5, 71.0];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("textLength=\"125.5\" lengthAdjust=\"spacing\""));
+        assert!(svg.contains("textLength=\"71\" lengthAdjust=\"spacing\""));
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.line_widths,
+            vec![125.5, 71.0]
+        );
+        for widths in [vec![125.5], vec![125.5, f32::NAN], vec![-1.0, 71.0]] {
+            edit.text.line_widths = widths;
+            assert!(edit.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_line_origins_override_legacy_alignment() {
+        let mut edit = settings();
+        edit.text.content = "Centered\nRight".into();
+        edit.text.alignment = crate::vector::TextAlignment::Center;
+        edit.text.line_origins = vec![42.0, 75.5];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("x=\"42\" y=\"36\" text-anchor=\"start\""));
+        assert!(svg.contains("x=\"75.5\" y=\"90\" text-anchor=\"start\""));
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.line_origins,
+            vec![42.0, 75.5]
+        );
+        for origins in [vec![42.0], vec![42.0, f32::NAN]] {
+            edit.text.line_origins = origins;
+            assert!(edit.text.validate().is_err());
         }
     }
     #[test]

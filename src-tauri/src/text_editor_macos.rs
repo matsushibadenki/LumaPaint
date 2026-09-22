@@ -116,6 +116,10 @@ fn current(session: &Session) -> TextSettings {
     settings.text.content = session.view.string().to_string();
     settings.text.runs.clear();
     settings.text.soft_breaks.clear();
+    settings.text.line_baselines.clear();
+    settings.text.line_widths.clear();
+    settings.text.line_origins.clear();
+    settings.text.layout_bounds = None;
     if let Some(storage) = unsafe { session.view.textStorage() } {
         let key = NSString::from_str(STYLE_KEY);
         let mut at = 0;
@@ -144,23 +148,72 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
-    settings.text.soft_breaks = measured_soft_breaks(&session.view, &settings.text.content);
+    let (breaks, baselines, widths, origins, bounds) =
+        measured_layout(&session.view, &settings.text);
+    settings.text.soft_breaks = breaks;
+    settings.text.line_baselines = baselines;
+    settings.text.line_widths = widths;
+    settings.text.line_origins = origins;
+    settings.text.layout_bounds = bounds;
     settings
 }
 
-fn measured_soft_breaks(view: &NSTextView, content: &str) -> Vec<usize> {
+type MeasuredTextLayout = (Vec<usize>, Vec<f32>, Vec<f32>, Vec<f32>, Option<[f32; 4]>);
+
+fn measured_layout(view: &NSTextView, text: &VectorText) -> MeasuredTextLayout {
     let mut breaks = Vec::new();
+    let mut baselines = Vec::new();
+    let mut widths = Vec::new();
+    let mut origins = Vec::new();
+    let mut bounds = None;
     if let (Some(manager), Some(container)) = (unsafe { view.layoutManager() }, unsafe {
         view.textContainer()
     }) {
         manager.ensureLayoutForTextContainer(&container);
-        let utf16: Vec<_> = content.encode_utf16().collect();
+        let glyph_range = manager.glyphRangeForTextContainer(&container);
+        let origin = view.textContainerOrigin();
+        let mut y_correction = 0.0;
+        if glyph_range.length > 0 {
+            let rect = manager.boundingRectForGlyphRange_inTextContainer(glyph_range, &container);
+            let line = unsafe {
+                manager.lineFragmentRectForGlyphAtIndex_effectiveRange(0, std::ptr::null_mut())
+            };
+            let natural_baseline = line.origin.y + manager.locationForGlyphAtIndex(0).y + origin.y;
+            y_correction = f64::from(text.font_size + text.space_before) - natural_baseline;
+            let candidate = [
+                (rect.origin.x + origin.x) as f32,
+                (rect.origin.y + origin.y + y_correction) as f32,
+                rect.size.width as f32,
+                rect.size.height as f32,
+            ];
+            if candidate
+                .iter()
+                .all(|value| value.is_finite() && value.abs() < 100_000.0)
+                && candidate[2] > 0.0
+                && candidate[3] > 0.0
+                && (candidate[0] + candidate[2]).abs() < 100_000.0
+                && (candidate[1] + candidate[3]).abs() < 100_000.0
+            {
+                bounds = Some(candidate);
+            }
+        }
+        let utf16: Vec<_> = text.content.encode_utf16().collect();
         let mut glyph = 0;
         while glyph < manager.numberOfGlyphs() {
             let mut range = NSRange::new(0, 0);
-            unsafe {
-                manager.lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, &mut range);
-            }
+            let line = unsafe {
+                manager.lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, &mut range)
+            };
+            let used = unsafe {
+                manager
+                    .lineFragmentUsedRectForGlyphAtIndex_effectiveRange(glyph, std::ptr::null_mut())
+            };
+            let baseline =
+                line.origin.y + manager.locationForGlyphAtIndex(glyph).y + origin.y + y_correction;
+            baselines.push(baseline as f32);
+            widths.push(used.size.width as f32);
+            origins
+                .push((line.origin.x + manager.locationForGlyphAtIndex(glyph).x + origin.x) as f32);
             if range.location > 0 {
                 let offset = manager.characterIndexForGlyphAtIndex(range.location);
                 if offset > 0
@@ -176,13 +229,43 @@ fn measured_soft_breaks(view: &NSTextView, content: &str) -> Vec<usize> {
             glyph = (range.location + range.length).max(glyph + 1);
         }
     }
-    breaks
+    // An empty trailing paragraph has no glyph fragment to measure. Keep the
+    // legacy line-spacing fallback rather than saving an incomplete layout.
+    let mut measured_text = text.clone();
+    measured_text.soft_breaks = breaks.clone();
+    if baselines.len() != measured_text.visual_lines().len()
+        || baselines
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+        || baselines.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        baselines.clear();
+    }
+    if widths.len() != measured_text.visual_lines().len()
+        || widths
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..100_000.0).contains(value))
+    {
+        widths.clear();
+    }
+    if origins.len() != measured_text.visual_lines().len()
+        || origins
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+    {
+        origins.clear();
+    }
+    (breaks, baselines, widths, origins, bounds)
 }
 
 /// Reflow a committed panel edit with the same AppKit font and paragraph attributes
 /// used by inline editing, without displaying or focusing another editor.
 pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.soft_breaks.clear();
+    settings.text.line_baselines.clear();
+    settings.text.line_widths.clear();
+    settings.text.line_origins.clear();
+    settings.text.layout_bounds = None;
     settings.text.validate()?;
     let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
     let view = NSTextView::initWithFrame(
@@ -202,7 +285,12 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
         container.setWidthTracksTextView(true);
     }
     apply_attributes_to_view(&view, settings)?;
-    settings.text.soft_breaks = measured_soft_breaks(&view, &settings.text.content);
+    let (breaks, baselines, widths, origins, bounds) = measured_layout(&view, &settings.text);
+    settings.text.soft_breaks = breaks;
+    settings.text.line_baselines = baselines;
+    settings.text.line_widths = widths;
+    settings.text.line_origins = origins;
+    settings.text.layout_bounds = bounds;
     settings.text.validate()
 }
 

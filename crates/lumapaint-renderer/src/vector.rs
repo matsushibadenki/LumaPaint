@@ -211,6 +211,56 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn saved_line_width_changes_rendered_advance() {
+        let raster = |length: &str| {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="120"><text x="10" y="70" font-family="Arial" font-size="48"><tspan {length}>ABCD</tspan></text></svg>"#
+            );
+            rasterize_svg(&svg, 400, 120).unwrap()
+        };
+        let rightmost = |image: &SvgRaster| {
+            image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 32)
+                .map(|(index, _)| index % 400)
+                .max()
+                .unwrap()
+        };
+        let natural = raster("");
+        let measured = raster("textLength=\"220\" lengthAdjust=\"spacing\"");
+        assert!(rightmost(&measured) > rightmost(&natural) + 40);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn measured_line_origin_overrides_inherited_text_anchor() {
+        let raster = |child_anchor: &str| {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="120"><text text-anchor="middle" font-family="Arial" font-size="48"><tspan x="120" y="70" {child_anchor}>ABCD</tspan></text></svg>"#
+            );
+            rasterize_svg(&svg, 400, 120).unwrap()
+        };
+        let leftmost = |image: &SvgRaster| {
+            image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 32)
+                .map(|(index, _)| index % 400)
+                .min()
+                .unwrap()
+        };
+        assert!(leftmost(&raster("text-anchor=\"start\"")) > leftmost(&raster("")) + 35);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn per_character_size_and_color_reach_the_raster() {
         use lumapaint_core::{
             document::{Document, TextSettings},

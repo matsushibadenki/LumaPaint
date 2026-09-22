@@ -125,6 +125,18 @@ pub struct VectorText {
     /// UTF-16 offsets at the start of visual lines inserted by the native text layout.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub soft_breaks: Vec<usize>,
+    /// Native layout baselines for visual lines in unscaled text-container coordinates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_baselines: Vec<f32>,
+    /// Native layout width for each visual line, before text-object transforms.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_widths: Vec<f32>,
+    /// Native layout pen position at the start of each visual line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_origins: Vec<f32>,
+    /// Glyph enclosure in unscaled, unrotated text-container coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_bounds: Option<[f32; 4]>,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: f32,
@@ -161,6 +173,10 @@ impl Default for VectorText {
             content: String::new(),
             runs: Vec::new(),
             soft_breaks: Vec::new(),
+            line_baselines: Vec::new(),
+            line_widths: Vec::new(),
+            line_origins: Vec::new(),
+            layout_bounds: None,
             font_family: "sans-serif".into(),
             font_size: 48.0,
             line_height: 1.4,
@@ -333,6 +349,48 @@ impl VectorText {
         {
             return Err("Invalid text wrap positions".into());
         }
+        if !self.line_baselines.is_empty()
+            && (self.line_baselines.len() != self.visual_lines().len()
+                || self
+                    .line_baselines
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+                || self
+                    .line_baselines
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1]))
+        {
+            return Err("Invalid text line baselines".into());
+        }
+        if !self.line_widths.is_empty()
+            && (self.line_widths.len() != self.visual_lines().len()
+                || self
+                    .line_widths
+                    .iter()
+                    .any(|value| !value.is_finite() || !(0.0..100_000.0).contains(value)))
+        {
+            return Err("Invalid text line widths".into());
+        }
+        if !self.line_origins.is_empty()
+            && (self.line_origins.len() != self.visual_lines().len()
+                || self
+                    .line_origins
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() >= 100_000.0))
+        {
+            return Err("Invalid text line origins".into());
+        }
+        if self.layout_bounds.is_some_and(|[x, y, width, height]| {
+            [x, y, width, height]
+                .iter()
+                .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+                || width <= 0.0
+                || height <= 0.0
+                || (x + width).abs() >= 100_000.0
+                || (y + height).abs() >= 100_000.0
+        }) {
+            return Err("Invalid text layout bounds".into());
+        }
         let mut previous_end = 0;
         for run in &self.runs {
             if run.start < previous_end
@@ -349,7 +407,7 @@ impl VectorText {
     }
 
     pub fn control_points(&self) -> Vec<[f32; 2]> {
-        // Point-text bounds are conservative; the frame also supplies paragraph alignment.
+        // Older documents fall back to a conservative text-frame rectangle.
         let max_size = self
             .runs
             .iter()
@@ -370,22 +428,21 @@ impl VectorText {
         let top = -highest_shift - (max_size - self.font_size).max(0.0);
         let bottom = height - lowest_shift + (max_size - self.font_size).max(0.0);
         let angle = self.rotation.to_radians();
-        [
-            [0.0, top],
-            [self.box_width, top],
-            [self.box_width, bottom],
-            [0.0, bottom],
-        ]
-        .into_iter()
-        .map(|[x, y]| {
-            let x = x * self.scale_x;
-            let y = y * self.scale_y;
-            [
-                x * angle.cos() - y * angle.sin(),
-                x * angle.sin() + y * angle.cos(),
-            ]
-        })
-        .collect()
+        let [left, top, right, bottom] = self.layout_bounds.map_or(
+            [0.0, top, self.box_width, bottom],
+            |[x, y, width, height]| [x, y, x + width, y + height],
+        );
+        [[left, top], [right, top], [right, bottom], [left, bottom]]
+            .into_iter()
+            .map(|[x, y]| {
+                let x = x * self.scale_x;
+                let y = y * self.scale_y;
+                [
+                    x * angle.cos() - y * angle.sin(),
+                    x * angle.sin() + y * angle.cos(),
+                ]
+            })
+            .collect()
     }
 }
 
@@ -467,7 +524,8 @@ impl VectorObject {
             .map(|p| p[1])
             .fold(f32::NEG_INFINITY, f32::max);
         match self.kind {
-            VectorObjectKind::Rectangle | VectorObjectKind::Text | VectorObjectKind::Compound => {
+            VectorObjectKind::Text => point_in_convex_quad(&points, point, tolerance),
+            VectorObjectKind::Rectangle | VectorObjectKind::Compound => {
                 point[0] >= min_x - tolerance
                     && point[0] <= max_x + tolerance
                     && point[1] >= min_y - tolerance
@@ -488,6 +546,30 @@ impl VectorObject {
             }),
         }
     }
+}
+
+fn point_in_convex_quad(points: &[[f32; 2]], point: [f32; 2], tolerance: f32) -> bool {
+    if points.len() != 4 {
+        return false;
+    }
+    let mut positive = false;
+    let mut negative = false;
+    for index in 0..4 {
+        let a = points[index];
+        let b = points[(index + 1) % 4];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        let length = edge[0].hypot(edge[1]);
+        if length <= f32::EPSILON {
+            return false;
+        }
+        let distance = (edge[0] * (point[1] - a[1]) - edge[1] * (point[0] - a[0])) / length;
+        positive |= distance > tolerance;
+        negative |= distance < -tolerance;
+        if positive && negative {
+            return false;
+        }
+    }
+    true
 }
 
 fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
