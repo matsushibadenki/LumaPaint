@@ -6,7 +6,7 @@ import { toolMenuImages } from './toolMenuImages';
 
 export interface IconToolChoice { id: string; label: string; icon: keyof typeof import('./Icon').iconPaths; shortcut?: string; enabled?: boolean }
 export function IconToolMenu({ label, choices, selected, active, enabled, selectionShortcuts = false, onSelect, onError }: {
-  label: string; choices: readonly [IconToolChoice, IconToolChoice]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
+  label: string; choices: readonly [IconToolChoice, IconToolChoice, ...IconToolChoice[]]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
   onSelect: (tool: string) => void; onError: (message: string) => void;
 }) {
   const selectedIndex = Math.max(0, choices.findIndex(choice => choice.id === selected));

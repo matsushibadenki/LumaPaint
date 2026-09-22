@@ -36,6 +36,9 @@ pub enum CanvasTool {
     VectorRectangle,
     VectorEllipse,
     Text,
+    ZoomIn,
+    ZoomOut,
+    Hand,
 }
 
 impl CanvasRequest {

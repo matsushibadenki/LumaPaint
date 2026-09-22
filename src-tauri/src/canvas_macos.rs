@@ -5,19 +5,20 @@ use super::{
 };
 use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
-    SelectionMode, SelectionShape, TextSettings,
+    PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
 };
+use lumapaint_core::tiles::{TileUpload, TiledRasterDocument};
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
 use lumapaint_renderer::{
-    prepare_svg_layer, project_committed_paint_layer_at_scale, validate_svg, wgpu,
-    PreparedSvgLayer, Renderer, Viewport,
+    paint_stroke_into_tiles_at_scale, prepare_svg_layer, project_committed_paint_layer_at_scale,
+    validate_svg, wgpu, PreparedSvgLayer, Renderer, Viewport,
 };
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
 };
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventSubtype, NSView};
+use objc2_app_kit::{NSCursor, NSEvent, NSEventModifierFlags, NSEventSubtype, NSView};
 use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -75,8 +76,35 @@ impl TileKey {
 
 struct TileJob {
     key: TileKey,
-    document: Document,
+    work: TileWork,
+    state: PaintProjectionState,
+    dimensions: (u32, u32),
     queued_at: Instant,
+}
+
+enum TileWork {
+    Full(Box<Document>),
+    Append {
+        cache: Box<TileCache>,
+        stroke: Stroke,
+    },
+    Reconcile {
+        cache: Box<TileCache>,
+        document: Box<Document>,
+    },
+}
+
+struct TileResult {
+    tiles: TiledRasterDocument,
+    uploads: Vec<TileUpload>,
+    incremental: bool,
+}
+
+struct TileCache {
+    key: TileKey,
+    state: PaintProjectionState,
+    dimensions: (u32, u32),
+    tiles: TiledRasterDocument,
 }
 
 fn render_metrics_enabled() -> bool {
@@ -128,10 +156,62 @@ pub fn initialize(app: tauri::AppHandle) {
                 }
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
-                let result = project_committed_paint_layer_at_scale(&job.document, job.key.scale);
+                let result = match job.work {
+                    TileWork::Full(document) => {
+                        project_committed_paint_layer_at_scale(&document, job.key.scale).map(
+                            |tiles| {
+                                let uploads = tiles.prepare_full_uploads();
+                                TileResult {
+                                    tiles,
+                                    uploads,
+                                    incremental: false,
+                                }
+                            },
+                        )
+                    }
+                    TileWork::Append { mut cache, stroke } => {
+                        let layer_id = cache.tiles.layers()[0].id.clone();
+                        paint_stroke_into_tiles_at_scale(
+                            &mut cache.tiles,
+                            &layer_id,
+                            &stroke,
+                            job.key.scale,
+                        )
+                        .and_then(|changed| {
+                            let uploads =
+                                changed.as_ref().map_or(Ok(Vec::new()), |invalidation| {
+                                    cache.tiles.prepare_uploads(invalidation)
+                                })?;
+                            Ok(TileResult {
+                                tiles: cache.tiles,
+                                uploads,
+                                incremental: true,
+                            })
+                        })
+                    }
+                    TileWork::Reconcile { cache, document } => {
+                        project_committed_paint_layer_at_scale(&document, job.key.scale).and_then(
+                            |tiles| {
+                                let uploads = tiles.prepare_changed_uploads(&cache.tiles)?;
+                                Ok(TileResult {
+                                    tiles,
+                                    uploads,
+                                    incremental: true,
+                                })
+                            },
+                        )
+                    }
+                };
                 let cpu_time = started.elapsed();
                 let _ = tile_app.run_on_main_thread(move || {
-                    finish_tile_job(job.key, result, queued_for, cpu_time)
+                    finish_tile_job(
+                        job.key,
+                        job.state,
+                        job.dimensions,
+                        result,
+                        queued_for,
+                        cpu_time,
+                    )
                 });
             }
         })
@@ -152,21 +232,35 @@ define_class!(
         fn accepts_first_responder(&self) -> bool { true }
         #[unsafe(method(acceptsFirstMouse:))]
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool { true }
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            let cursor = if PANNING.with(|value| value.get()) {
+                Some(NSCursor::closedHandCursor())
+            } else {
+                match TOOL.with(|tool| tool.get()) {
+                    CanvasTool::ZoomIn => Some(NSCursor::zoomInCursor()),
+                    CanvasTool::ZoomOut => Some(NSCursor::zoomOutCursor()),
+                    CanvasTool::Hand => Some(NSCursor::openHandCursor()),
+                    _ => None,
+                }
+            };
+            if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
+        }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             if let Some(window) = self.window() { window.makeFirstResponder(Some(self)); }
-            if SPACE_DOWN.with(|space| space.get()) { self.begin_pan(event); } else { self.pointer(event, 0); }
+            if SPACE_DOWN.with(|space| space.get()) || TOOL.with(|tool| tool.get()) == CanvasTool::Hand { self.begin_pan(event); } else { self.pointer(event, 0); }
         }
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); } else { self.pointer(event, 1); } }
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.replace(false)) { self.update_pan(event); } else { self.pointer(event, 2); } }
+        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); } else { self.pointer(event, 2); } }
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) { self.begin_pan(event); }
         #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, event: &NSEvent) { self.update_pan(event); }
         #[unsafe(method(otherMouseUp:))]
-        fn other_mouse_up(&self, event: &NSEvent) { self.update_pan(event); PANNING.with(|value| value.set(false)); }
+        fn other_mouse_up(&self, event: &NSEvent) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             if self.isHidden() { return; }
@@ -210,7 +304,7 @@ define_class!(
         }
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
-            if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(false)); PANNING.with(|value| value.set(false)); }
+            if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(false)); PANNING.with(|value| value.set(false)); self.refresh_cursor(); }
             else { unsafe { msg_send![super(self), keyUp: event] } }
         }
         #[unsafe(method(performKeyEquivalent:))]
@@ -255,15 +349,53 @@ impl PaintView {
         unsafe { msg_send![super(view), initWithFrame: frame] }
     }
 
+    fn refresh_cursor(&self) {
+        if let Some(window) = self.window() {
+            window.invalidateCursorRectsForView(self);
+        }
+    }
+
     fn pointer(&self, event: &NSEvent, phase: u8) {
         if self.isHidden() || !DOCUMENT_OPEN.with(|open| open.get()) {
             return;
         }
-        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        let location = self.convertPoint_fromView(event.locationInWindow(), None);
         let Some(viewport) = CANVAS.with(|slot| slot.borrow().as_ref().map(|c| c.viewport)) else {
             return;
         };
-        let point = viewport.document_point(point.x as f32, point.y as f32);
+        let point = viewport.document_point(location.x as f32, location.y as f32);
+        let tool = TOOL.with(|tool| tool.get());
+        if matches!(tool, CanvasTool::ZoomIn | CanvasTool::ZoomOut) {
+            if phase == 0
+                && point.x >= 0.0
+                && point.y >= 0.0
+                && point.x < viewport.document_width
+                && point.y < viewport.document_height
+            {
+                let factor = if tool == CanvasTool::ZoomIn {
+                    1.25
+                } else {
+                    0.8
+                };
+                let zoom = (viewport.zoom * factor).clamp(0.25, 4.0);
+                if zoom != viewport.zoom {
+                    let viewport = viewport.zoom_around(location.x as f32, location.y as f32, zoom);
+                    PAN.with(|pan| pan.set((viewport.pan_x, viewport.pan_y)));
+                    CANVAS.with(|slot| {
+                        if let Some(canvas) = slot.borrow_mut().as_mut() {
+                            canvas.viewport = viewport;
+                        }
+                    });
+                    if let Err(error) = redraw() {
+                        emit_error(error);
+                    }
+                    if let Some(app) = APP.get() {
+                        let _ = app.emit_to("main", "canvas-zoom-changed", zoom);
+                    }
+                }
+            }
+            return;
+        }
         if phase == 0 {
             if let Err(error) = text_editor::finish(true) {
                 emit_error(error);
@@ -352,6 +484,7 @@ impl PaintView {
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         LAST_PAN_POINT.with(|last| last.set((point.x as f32, point.y as f32)));
         PANNING.with(|value| value.set(true));
+        self.refresh_cursor();
     }
 
     fn update_pan(&self, event: &NSEvent) {
@@ -841,13 +974,11 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
 
 fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
     let Some(scale) = canvas.viewport.compatible_tile_preview_scale() else {
-        canvas.renderer.clear_tiled_preview();
-        canvas.tile_ready = None;
+        canvas.renderer.set_tiled_preview_visible(false);
         return;
     };
     if document.has_active_stroke() || document.committed_paint_strokes().next().is_none() {
-        canvas.renderer.clear_tiled_preview();
-        canvas.tile_ready = None;
+        canvas.renderer.set_tiled_preview_visible(false);
         return;
     }
     let key = TileKey {
@@ -859,26 +990,121 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
         scale,
     };
     if canvas.tile_ready == Some(key) {
+        canvas.renderer.set_tiled_preview_visible(true);
         return;
     }
-    canvas.renderer.clear_tiled_preview();
-    canvas.tile_ready = None;
+    canvas.renderer.set_tiled_preview_visible(false);
+    let state = document.paint_projection_state();
     if canvas.tile_job == Some(key) || canvas.tile_failure == Some(key) {
         return;
     }
     let Some(sender) = TILE_SENDER.get() else {
+        canvas.renderer.clear_tiled_preview();
+        canvas.tile_cache = None;
+        canvas.tile_ready = None;
         return;
     };
+    if can_append_tile_preview(canvas.tile_cache.as_ref(), document, key, state) {
+        let cache = canvas.tile_cache.take().expect("Append cache was checked");
+        let stroke = document.committed_paint_strokes().last().unwrap().clone();
+        let job = TileJob {
+            key,
+            work: TileWork::Append {
+                cache: Box::new(cache),
+                stroke,
+            },
+            state,
+            dimensions: document.dimensions(),
+            queued_at: Instant::now(),
+        };
+        match sender.try_send(job) {
+            Ok(()) => canvas.tile_job = Some(key),
+            Err(TrySendError::Full(job)) => {
+                if let TileWork::Append { cache, .. } = job.work {
+                    canvas.tile_cache = Some(*cache);
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => canvas.renderer.clear_tiled_preview(),
+        }
+        return;
+    }
+    if can_reconcile_tile_preview(canvas.tile_cache.as_ref(), document, key) {
+        let cache = canvas
+            .tile_cache
+            .take()
+            .expect("Reconcile cache was checked");
+        let job = TileJob {
+            key,
+            work: TileWork::Reconcile {
+                cache: Box::new(cache),
+                document: Box::new(document.clone()),
+            },
+            state,
+            dimensions: document.dimensions(),
+            queued_at: Instant::now(),
+        };
+        match sender.try_send(job) {
+            Ok(()) => canvas.tile_job = Some(key),
+            Err(TrySendError::Full(job)) => {
+                if let TileWork::Reconcile { cache, .. } = job.work {
+                    canvas.tile_cache = Some(*cache);
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => canvas.renderer.clear_tiled_preview(),
+        }
+        return;
+    }
+    canvas.renderer.clear_tiled_preview();
+    canvas.tile_cache = None;
+    canvas.tile_ready = None;
     if sender
         .try_send(TileJob {
             key,
-            document: document.clone(),
+            work: TileWork::Full(Box::new(document.clone())),
+            state,
+            dimensions: document.dimensions(),
             queued_at: Instant::now(),
         })
         .is_ok()
     {
         canvas.tile_job = Some(key);
     }
+}
+
+fn can_append_tile_preview(
+    cache: Option<&TileCache>,
+    document: &Document,
+    key: TileKey,
+    state: PaintProjectionState,
+) -> bool {
+    let Some(cache) = cache else {
+        return false;
+    };
+    if cache.key.source.document_id != key.source.document_id
+        || cache.key.source.canvas_token != key.source.canvas_token
+        || cache.key.scale != key.scale
+        || cache.key.source.revision.checked_add(1) != Some(key.source.revision)
+        || cache.dimensions != document.dimensions()
+        || !cache.state.can_append_one(state)
+    {
+        return false;
+    }
+    document.committed_paint_strokes().last().is_some()
+}
+
+fn can_reconcile_tile_preview(
+    cache: Option<&TileCache>,
+    document: &Document,
+    key: TileKey,
+) -> bool {
+    let Some(cache) = cache else {
+        return false;
+    };
+    cache.key.source.document_id == key.source.document_id
+        && cache.key.source.canvas_token == key.source.canvas_token
+        && cache.key.scale == key.scale
+        && cache.key.source.revision.checked_add(1) == Some(key.source.revision)
+        && cache.dimensions == document.dimensions()
 }
 
 fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), String> {
@@ -970,20 +1196,25 @@ fn finish_raster_job(
 
 fn finish_tile_job(
     key: TileKey,
-    result: Result<lumapaint_core::tiles::TiledRasterDocument, String>,
+    state: PaintProjectionState,
+    source_dimensions: (u32, u32),
+    result: Result<TileResult, String>,
     queued_for: Duration,
     cpu_time: Duration,
 ) {
     let document_id = ACTIVE_DOCUMENT_ID.with(|id| id.get());
-    let (revision, dimensions, active) = DOCUMENT.with(|document| {
+    let (revision, dimensions, active, current_state) = DOCUMENT.with(|document| {
         let document = document.borrow();
         (
             document.revision(),
             document.dimensions(),
             document.has_active_stroke(),
+            document.paint_projection_state(),
         )
     });
     let mut failure = None;
+    let mut incremental = false;
+    let mut changed_tiles = 0;
     let upload_started = Instant::now();
     CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -994,32 +1225,58 @@ fn finish_tile_job(
             canvas.tile_job = None;
         }
         if active
+            || dimensions != source_dimensions
+            || state != current_state
             || canvas.viewport.compatible_tile_preview_scale() != Some(key.scale)
             || !key.matches(document_id, revision, canvas.token, key.scale)
         {
             return;
         }
         match result {
-            Ok(tiles) => {
-                if let Err(error) = canvas
-                    .renderer
-                    .install_tiled_preview_at_scale(&tiles, dimensions, key.scale)
-                {
+            Ok(prepared) => {
+                incremental = prepared.incremental;
+                changed_tiles = prepared.uploads.len();
+                let upload = if prepared.incremental {
+                    canvas.renderer.update_tiled_preview_uploads(
+                        prepared.tiles.dimensions(),
+                        &prepared.uploads,
+                    )
+                } else {
+                    canvas.renderer.install_tiled_preview_uploads_at_scale(
+                        prepared.tiles.dimensions(),
+                        dimensions,
+                        key.scale,
+                        &prepared.uploads,
+                    )
+                };
+                if let Err(error) = upload {
                     failure = Some(error);
                 } else {
+                    canvas.renderer.set_tiled_preview_visible(true);
                     canvas.tile_ready = Some(key);
+                    canvas.tile_cache = Some(TileCache {
+                        key,
+                        state,
+                        dimensions,
+                        tiles: prepared.tiles,
+                    });
                 }
             }
             Err(error) => failure = Some(error),
         }
         if failure.is_some() {
             canvas.tile_failure = Some(key);
+            canvas.tile_cache = None;
+            canvas.tile_ready = None;
+            canvas.renderer.clear_tiled_preview();
         }
     });
     if render_metrics_enabled() {
         eprintln!(
-            "LumaPaint tile projection scale={} queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2}{}",
+            "LumaPaint tile {} scale={} changed_tiles={} queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2}{}",
+            if incremental { "incremental" } else { "projection" },
             key.scale,
+            changed_tiles,
             queued_for.as_secs_f64() * 1000.0,
             cpu_time.as_secs_f64() * 1000.0,
             upload_started.elapsed().as_secs_f64() * 1000.0,
@@ -1042,6 +1299,7 @@ struct Canvas {
     tile_job: Option<TileKey>,
     tile_ready: Option<TileKey>,
     tile_failure: Option<TileKey>,
+    tile_cache: Option<TileCache>,
 }
 
 impl Drop for Canvas {
@@ -1212,7 +1470,8 @@ pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, S
 }
 
 fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
-    if TOOL.with(|tool| tool.get()) != request.tool || !request.visible {
+    let tool_changed = TOOL.with(|tool| tool.get()) != request.tool;
+    if tool_changed || !request.visible {
         cancel_vector_drag();
         text_editor::finish(true)?;
     }
@@ -1295,6 +1554,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         tile_job: None,
                         tile_ready: None,
                         tile_failure: None,
+                        tile_cache: None,
                     })
                 }
                 Err(error) => {
@@ -1307,6 +1567,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
         canvas.view.setHidden(false);
+        if tool_changed {
+            canvas.view.refresh_cursor();
+        }
         render_canvas(canvas)?;
         Ok(CanvasInfo {
             status: "ready",

@@ -269,6 +269,33 @@ struct VectorHistoryState {
     selection: Vec<String>,
 }
 
+/// Minimal state needed to append one committed stroke to a projected tile
+/// cache. Changes to layer appearance or locks require a full projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaintProjectionState {
+    pub stroke_count: usize,
+    visible: bool,
+    opacity: u32,
+    locked: bool,
+    alpha_locked: bool,
+    mask_enabled: bool,
+    mask_inverted: bool,
+    mask_density: u32,
+}
+
+impl PaintProjectionState {
+    pub fn can_append_one(self, next: Self) -> bool {
+        self.visible
+            && !self.locked
+            && !self.alpha_locked
+            && self.stroke_count.checked_add(1) == Some(next.stroke_count)
+            && Self {
+                stroke_count: next.stroke_count,
+                ..self
+            } == next
+    }
+}
+
 #[derive(Clone)]
 pub struct Document {
     selection: Option<Selection>,
@@ -359,6 +386,19 @@ impl Document {
 
     pub fn has_active_stroke(&self) -> bool {
         self.active.is_some()
+    }
+
+    pub fn paint_projection_state(&self) -> PaintProjectionState {
+        PaintProjectionState {
+            stroke_count: self.strokes.len(),
+            visible: self.visible,
+            opacity: self.layer_opacity.to_bits(),
+            locked: self.layer_locked,
+            alpha_locked: self.layer_alpha_locked,
+            mask_enabled: self.layer_mask_enabled,
+            mask_inverted: self.layer_mask_inverted,
+            mask_density: self.layer_mask_density.to_bits(),
+        }
     }
 
     pub fn snapshot(&self) -> DocumentSnapshot {
@@ -1966,6 +2006,19 @@ mod tests {
         doc.undo();
         stroke(&mut doc);
         assert!(!doc.snapshot().can_redo);
+    }
+    #[test]
+    fn tile_append_requires_one_stroke_and_unchanged_paint_settings() {
+        let mut doc = Document::default();
+        let initial = doc.paint_projection_state();
+        stroke(&mut doc);
+        assert!(initial.can_append_one(doc.paint_projection_state()));
+        let previous = doc.paint_projection_state();
+        doc.toggle_visibility();
+        assert!(!previous.can_append_one(doc.paint_projection_state()));
+        doc.toggle_visibility();
+        doc.undo();
+        assert!(!previous.can_append_one(doc.paint_projection_state()));
     }
     #[test]
     fn hidden_layer_and_outside_page_reject_new_strokes() {

@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'text';
+export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface Brush { size: number; hardness: number; color: [number, number, number] }
@@ -257,6 +257,11 @@ export async function deleteAllRecoveries(): Promise<RecoveryInfo> { return invo
 export async function subscribeCanvasTool(onTool: (tool: CanvasTool) => void) {
   if (!isTauri()) return () => {};
   return listen<CanvasTool>('canvas-tool-changed', event => onTool(event.payload));
+}
+
+export async function subscribeCanvasZoom(onZoom: (zoom: number) => void) {
+  if (!isTauri()) return () => {};
+  return listen<number>('canvas-zoom-changed', event => onZoom(event.payload));
 }
 
 export async function subscribeCanvasColorSwap(onSwap: () => void) {

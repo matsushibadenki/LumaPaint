@@ -694,6 +694,29 @@ impl TiledRasterDocument {
             .expect("allocated tile coordinates are within the document")
     }
 
+    /// Compare two composites and upload only changed tiles, including a
+    /// transparent payload for tiles removed by Undo or visibility changes.
+    pub fn prepare_changed_uploads(&self, previous: &Self) -> Result<Vec<TileUpload>, String> {
+        if self.dimensions() != previous.dimensions() {
+            return Err("Raster documents have different dimensions".into());
+        }
+        let coords = self
+            .layers
+            .iter()
+            .chain(&previous.layers)
+            .flat_map(|layer| layer.tiles.allocated_coords())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let before = previous.prepare_coords(&coords)?;
+        let after = self.prepare_coords(&coords)?;
+        Ok(after
+            .into_iter()
+            .zip(before)
+            .filter_map(|(next, old)| (next.pixels != old.pixels).then_some(next))
+            .collect())
+    }
+
     fn prepare_coords(&self, coords: &[TileCoord]) -> Result<Vec<TileUpload>, String> {
         let ordered = coords.iter().copied().collect::<BTreeSet<_>>();
         if ordered.iter().any(|coord| {
@@ -1387,6 +1410,36 @@ mod tests {
             coords: vec![TileCoord { x: 0, y: 0 }, TileCoord { x: 2, y: 0 }],
         };
         assert!(document.prepare_uploads(&invalid).is_err());
+    }
+
+    #[test]
+    fn changed_uploads_skip_identical_tiles_and_clear_removed_pixels() {
+        let mut document = TiledRasterDocument::new(512, 256).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        document
+            .write_rect("paint", [0, 0, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        let before = document.clone();
+        document
+            .write_rect("paint", [256, 0, 1, 1], &[0, 0, 255, 255])
+            .unwrap();
+        let uploads = document.prepare_changed_uploads(&before).unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].coord, TileCoord { x: 1, y: 0 });
+        assert_eq!(
+            document.prepare_changed_uploads(&document).unwrap().len(),
+            0
+        );
+
+        let painted = document.clone();
+        document.undo().unwrap();
+        let cleared = document.prepare_changed_uploads(&painted).unwrap();
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].coord, TileCoord { x: 1, y: 0 });
+        assert!(cleared[0].pixels.iter().all(|byte| *byte == 0));
+
+        let different_size = TiledRasterDocument::new(256, 256).unwrap();
+        assert!(document.prepare_changed_uploads(&different_size).is_err());
     }
 
     #[test]

@@ -1,7 +1,8 @@
-type Name = 'zoomIn' | 'zoomOut' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 export const iconPaths: Record<Name, string> = {
   zoomIn: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8 M10 6v8',
   zoomOut: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8',
+  hand: 'M8 14V6a1.5 1.5 0 0 1 3 0v5 M11 11V4a1.5 1.5 0 0 1 3 0v7 M14 11V6a1.5 1.5 0 0 1 3 0v6 M17 12V9a1.5 1.5 0 0 1 3 0v6c0 4-2.5 6-6 6h-2c-2.6 0-4-1-5.3-3L3 12.8a1.5 1.5 0 0 1 2.5-1.7L8 14',
   layout: 'M3 3h18v18H3z M3 9h18 M10 9v12',
   animation: 'M3 4h18v16H3z M3 8h18 M7 4v4 M13 4v4 M19 4v4 M10 11l5 3-5 3z',
   text: 'M4 4h16 M12 4v16 M8 20h8 M4 4v3 M20 4v3',

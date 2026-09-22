@@ -78,6 +78,10 @@ h1, h2, h3 { font-style: normal; }
 .canvas-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .native-slot { flex: 1; min-height: 0; position: relative; overflow: clip; background: var(--color-canvas); container-type: size; display: grid; place-items: center; }
 .native-slot[data-document='empty'] { display: block; }
+.native-slot[data-tool='zoomIn'] { cursor: zoom-in; }
+.native-slot[data-tool='zoomOut'] { cursor: zoom-out; }
+.native-slot[data-tool='hand'] { cursor: grab; }
+.native-slot[data-tool='hand']:active { cursor: grabbing; }
 .paper-preview { width: min(calc(100% - 48px), calc((100cqh - 48px) * 1.5)); aspect-ratio: 1.5; background: var(--color-white); }
 .canvas-notice { position: absolute; max-width: 80%; text-align: center; padding: var(--space-sm) var(--space-md); background: var(--color-panel); font-size: var(--text-small); line-height: 1.6; }
 .canvas-footer { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: 5px var(--space-md); min-height: 38px; background: var(--color-bar); border-top: 1px solid var(--color-rule); }

@@ -12,15 +12,15 @@ pub struct ToolMenuRequest {
     x: f64,
     y: f64,
     selected: usize,
-    enabled: [bool; 2],
+    enabled: Vec<bool>,
     selection_shortcuts: bool,
-    labels: [String; 2],
+    labels: Vec<String>,
     images: ToolMenuImages,
 }
 
 #[derive(serde::Deserialize)]
 struct ToolMenuImages {
-    buttons: [[Vec<u8>; 2]; 2],
+    buttons: Vec<[Vec<u8>; 2]>,
 }
 
 #[tauri::command]
@@ -28,7 +28,10 @@ pub async fn icon_tool_menu(
     window: tauri::WebviewWindow,
     request: ToolMenuRequest,
 ) -> Result<ToolMenuResult, String> {
-    if request.selected > 1
+    if !(2..=8).contains(&request.enabled.len())
+        || request.selected >= request.enabled.len()
+        || request.labels.len() != request.enabled.len()
+        || request.images.buttons.len() != request.enabled.len()
         || !request.enabled.iter().any(|enabled| *enabled)
         || window.label() != "main"
         || !request.x.is_finite()
@@ -99,10 +102,10 @@ mod macos {
 
     pub struct PickerState {
         finished: Cell<bool>,
-        buttons: [Retained<ToolButton>; 2],
+        buttons: Vec<Retained<ToolButton>>,
         focused: Cell<usize>,
         chosen: Cell<Option<usize>>,
-        enabled: [bool; 2],
+        enabled: Vec<bool>,
         selection_shortcuts: bool,
     }
 
@@ -148,11 +151,12 @@ mod macos {
                 let focused = self.ivars().focused.get();
                 match event.keyCode() {
                     53 => self.ivars().finished.set(true),
-                    123..=126 => self.focus(1 - focused),
+                    123 | 126 => self.move_focus(focused, -1),
+                    124 | 125 => self.move_focus(focused, 1),
                     115 => self.focus(0),
-                    119 => self.focus(1),
+                    119 => self.focus(self.ivars().buttons.len() - 1),
                     36 | 49 | 76 => self.commit(focused),
-                    46 if self.ivars().selection_shortcuts && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) => {
+                    46 if self.ivars().selection_shortcuts && self.ivars().buttons.len() == 2 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) => {
                         self.commit(usize::from(event.modifierFlags().contains(NSEventModifierFlags::Shift)));
                     }
                     _ => unsafe { msg_send![super(self), keyDown: event] },
@@ -162,6 +166,18 @@ mod macos {
     );
 
     impl ToolPicker {
+        fn move_focus(&self, focused: usize, direction: isize) {
+            let len = self.ivars().buttons.len();
+            for step in 1..=len {
+                let index = (focused as isize + direction * step as isize).rem_euclid(len as isize)
+                    as usize;
+                if self.ivars().enabled[index] {
+                    self.focus(index);
+                    break;
+                }
+            }
+        }
+
         fn focus(&self, index: usize) {
             if !self.ivars().enabled[index] {
                 return;
@@ -221,18 +237,21 @@ mod macos {
             button.setTag(index as isize);
             Ok(button)
         };
-        let buttons = [make_button(0)?, make_button(1)?];
+        let buttons = (0..request.enabled.len())
+            .map(make_button)
+            .collect::<Result<Vec<_>, _>>()?;
+        let menu_width = buttons.len() as f64 * 36.0;
         let allocated = ToolPicker::alloc(mtm).set_ivars(PickerState {
             finished: Cell::new(false),
             buttons,
             focused: Cell::new(0),
             chosen: Cell::new(None),
-            enabled: request.enabled,
+            enabled: request.enabled.clone(),
             selection_shortcuts: request.selection_shortcuts,
         });
         // SAFETY: initialize the allocated NSView once; targets stay alive through tracking.
         let picker: Retained<ToolPicker> = unsafe {
-            msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(72.0, 36.0))]
+            msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(menu_width, 36.0))]
         };
         for button in &picker.ivars().buttons {
             picker.addSubview(button);
@@ -244,7 +263,11 @@ mod macos {
         picker.focus(if request.enabled[request.selected] {
             request.selected
         } else {
-            1 - request.selected
+            request
+                .enabled
+                .iter()
+                .position(|enabled| *enabled)
+                .unwrap_or(0)
         });
         // Anchor the row's center to the trigger's center, with no menu padding.
         let bounds = parent.bounds();
@@ -262,9 +285,10 @@ mod macos {
         let mut origin = NSPoint::new(screen.origin.x, screen.origin.y - 18.0);
         if let Some(display) = owner.screen() {
             let bounds = display.visibleFrame();
-            origin.x = origin
-                .x
-                .clamp(bounds.origin.x, bounds.origin.x + bounds.size.width - 72.0);
+            origin.x = origin.x.clamp(
+                bounds.origin.x,
+                (bounds.origin.x + bounds.size.width - menu_width).max(bounds.origin.x),
+            );
             origin.y = origin
                 .y
                 .clamp(bounds.origin.y, bounds.origin.y + bounds.size.height - 36.0);
@@ -272,7 +296,7 @@ mod macos {
         let allocated = PickerWindow::alloc(mtm).set_ivars(());
         // SAFETY: initialize once on the main thread; Rust owns the window's lifetime.
         let window: Retained<PickerWindow> = unsafe {
-            msg_send![super(allocated), initWithContentRect: NSRect::new(origin, NSSize::new(72.0, 36.0)), styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
+            msg_send![super(allocated), initWithContentRect: NSRect::new(origin, NSSize::new(menu_width, 36.0)), styleMask: NSWindowStyleMask::Borderless, backing: NSBackingStoreType::Buffered, defer: false]
         };
         unsafe {
             window.setReleasedWhenClosed(false);

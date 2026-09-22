@@ -98,6 +98,20 @@ impl Viewport {
             y: (y - height * 0.5 - self.pan_y) / (fit * self.zoom) + self.document_height * 0.5,
         }
     }
+    pub fn zoom_around(mut self, x: f32, y: f32, zoom: f32) -> Self {
+        let anchor = self.document_point(x, y);
+        let width = self.width as f32 / self.scale;
+        let height = self.height as f32 / self.scale;
+        let fit = ((width - 48.0) / self.document_width)
+            .min((height - 48.0) / self.document_height)
+            .max(0.01);
+        self.zoom = zoom;
+        self.pan_x = (x - width * 0.5 - (anchor.x - self.document_width * 0.5) * fit * zoom)
+            .clamp(-8192.0, 8192.0);
+        self.pan_y = (y - height * 0.5 - (anchor.y - self.document_height * 0.5) * fit * zoom)
+            .clamp(-8192.0, 8192.0);
+        self
+    }
     pub fn new(width: f64, height: f64, scale: f64, zoom: f64, dark: bool) -> Result<Self, String> {
         if ![width, height, scale, zoom].iter().all(|v| v.is_finite())
             || width <= 0.0
@@ -844,6 +858,7 @@ struct TileGpuPreview {
     document_dimensions: (u32, u32),
     linear_bind_group: wgpu::BindGroup,
     nearest_bind_group: wgpu::BindGroup,
+    visible: bool,
 }
 
 fn create_svg_pipeline(
@@ -1068,15 +1083,31 @@ impl Renderer {
         document_dimensions: (u32, u32),
         scale: u32,
     ) -> Result<(), String> {
+        self.install_tiled_preview_uploads_at_scale(
+            tiles.dimensions(),
+            document_dimensions,
+            scale,
+            &tiles.prepare_full_uploads(),
+        )
+    }
+
+    /// Accept already-composited tile pixels so the host can prepare them off the UI thread.
+    pub fn install_tiled_preview_uploads_at_scale(
+        &mut self,
+        tile_dimensions: (u32, u32),
+        document_dimensions: (u32, u32),
+        scale: u32,
+        uploads: &[TileUpload],
+    ) -> Result<(), String> {
         if !(1..=2).contains(&scale)
-            || document_dimensions.0.checked_mul(scale) != Some(tiles.dimensions().0)
-            || document_dimensions.1.checked_mul(scale) != Some(tiles.dimensions().1)
+            || document_dimensions.0.checked_mul(scale) != Some(tile_dimensions.0)
+            || document_dimensions.1.checked_mul(scale) != Some(tile_dimensions.1)
         {
             return Err("Tile preview dimensions do not match the document scale".into());
         }
-        let (width, height) = tiles.dimensions();
+        let (width, height) = tile_dimensions;
         let texture = TileTexture::new(&self.device, &self.queue, width, height)?;
-        texture.upload(&self.queue, &tiles.prepare_full_uploads())?;
+        texture.upload(&self.queue, uploads)?;
         let view = texture.texture().create_view(&Default::default());
         let make_bind_group = |sampler: &wgpu::Sampler| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1099,6 +1130,7 @@ impl Renderer {
             document_dimensions,
             linear_bind_group: make_bind_group(&self.svg_sampler),
             nearest_bind_group: make_bind_group(&self.tile_nearest_sampler),
+            visible: true,
         });
         Ok(())
     }
@@ -1108,20 +1140,34 @@ impl Renderer {
         tiles: &TiledRasterDocument,
         invalidation: &TileInvalidation,
     ) -> Result<(), String> {
+        self.update_tiled_preview_uploads(tiles.dimensions(), &tiles.prepare_uploads(invalidation)?)
+    }
+
+    /// Upload only pixels prepared for the changed tiles on a worker thread.
+    pub fn update_tiled_preview_uploads(
+        &mut self,
+        tile_dimensions: (u32, u32),
+        uploads: &[TileUpload],
+    ) -> Result<(), String> {
         let preview = self
             .tile_preview
             .as_ref()
             .ok_or("No tile preview installed")?;
-        if tiles.dimensions() != (preview.texture.width, preview.texture.height) {
+        if tile_dimensions != (preview.texture.width, preview.texture.height) {
             return Err("Tile preview dimensions changed".into());
         }
-        preview
-            .texture
-            .upload(&self.queue, &tiles.prepare_uploads(invalidation)?)
+        preview.texture.upload(&self.queue, uploads)
     }
 
     pub fn clear_tiled_preview(&mut self) {
         self.tile_preview = None;
+    }
+
+    /// Keep uploaded tile data while the active stroke uses the v1 brush path.
+    pub fn set_tiled_preview_visible(&mut self, visible: bool) {
+        if let Some(preview) = &mut self.tile_preview {
+            preview.visible = visible;
+        }
     }
 
     /// Layers that still need CPU preparation for the committed document frame.
@@ -1558,7 +1604,11 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let view = frame.texture.create_view(&Default::default());
-        let stroke_segments: Vec<_> = if self.tile_preview.is_some() {
+        let stroke_segments: Vec<_> = if self
+            .tile_preview
+            .as_ref()
+            .is_some_and(|preview| preview.visible)
+        {
             Vec::new()
         } else {
             document
@@ -1730,7 +1780,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        if let Some(preview) = &self.tile_preview {
+        if let Some(preview) = self.tile_preview.as_ref().filter(|preview| preview.visible) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Tile paint preview pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2013,6 +2063,42 @@ mod tests {
     }
 
     #[test]
+    fn appended_stroke_matches_full_projection_at_both_resolutions() {
+        use lumapaint_core::document::Brush;
+        let mut source = Document::default();
+        let brush = Brush {
+            size: 32.0,
+            hardness: 0.4,
+            color: [30, 90, 180],
+        };
+        source.begin(Point { x: 240.0, y: 240.0 }, brush).unwrap();
+        source.extend(Point { x: 300.0, y: 300.0 }).unwrap();
+        source.finish();
+        let before = source.paint_projection_state();
+        for scale in [1, 2] {
+            let mut incremental = project_committed_paint_layer_at_scale(&source, scale).unwrap();
+            let mut edited = source.clone();
+            edited.begin_selection(Point { x: 265.0, y: 220.0 }, SelectionShape::Rectangle);
+            edited.extend_selection(Point { x: 330.0, y: 320.0 }, true);
+            edited.begin(Point { x: 250.0, y: 300.0 }, brush).unwrap();
+            edited.extend(Point { x: 320.0, y: 240.0 }).unwrap();
+            edited.finish();
+            assert!(before.can_append_one(edited.paint_projection_state()));
+            let stroke = edited.committed_paint_strokes().last().unwrap();
+            let changed =
+                paint_stroke_into_tiles_at_scale(&mut incremental, "layer-1", stroke, scale)
+                    .unwrap()
+                    .unwrap();
+            assert!(!changed.coords.is_empty());
+            let rebuilt = project_committed_paint_layer_at_scale(&edited, scale).unwrap();
+            assert_eq!(
+                incremental.prepare_full_uploads(),
+                rebuilt.prepare_full_uploads()
+            );
+        }
+    }
+
+    #[test]
     fn partial_drag_cache_is_used_only_while_raster_runs_stay_separate() {
         let bounds = [
             (false, Some([10, 10, 20, 20])),
@@ -2220,6 +2306,21 @@ mod tests {
         let point = viewport.document_point(440.0, 230.0);
         assert!((point.x - WIDTH * 0.5).abs() < 0.001);
         assert!((point.y - HEIGHT * 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn zoom_around_keeps_clicked_document_point_under_pointer() {
+        let viewport = Viewport::new(800.0, 500.0, 2.0, 1.0, true)
+            .unwrap()
+            .with_pan(35.0, -18.0)
+            .unwrap();
+        let anchor = (270.0, 190.0);
+        let before = viewport.document_point(anchor.0, anchor.1);
+        let zoomed = viewport.zoom_around(anchor.0, anchor.1, 1.25);
+        let after = zoomed.document_point(anchor.0, anchor.1);
+        assert!((before.x - after.x).abs() < 0.001);
+        assert!((before.y - after.y).abs() < 0.001);
+        assert_eq!(zoomed.zoom, 1.25);
     }
 
     #[test]
