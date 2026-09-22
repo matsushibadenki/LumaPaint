@@ -137,6 +137,106 @@ impl SparseTiles {
         Ok(changes)
     }
 
+    /// Accumulate optical density across a single stroke, then composite once.
+    /// This keeps self-crossings from becoming separate opacity layers.
+    pub fn paint_dabs(
+        &mut self,
+        dabs: &[RasterDab],
+        color: [u8; 3],
+    ) -> Result<Vec<TileChange>, String> {
+        if dabs.len() > 65_536 {
+            return Err("Too many raster brush dabs".into());
+        }
+        for dab in dabs {
+            dab.validate()?;
+        }
+        let mut density: BTreeMap<TileCoord, Vec<f32>> = BTreeMap::new();
+        for dab in dabs {
+            if dab.weight == 0.0 {
+                continue;
+            }
+            let left = ((dab.x - dab.radius - 1.0).floor() as i32).max(0) as u32;
+            let top = ((dab.y - dab.radius - 1.0).floor() as i32).max(0) as u32;
+            let right = ((dab.x + dab.radius + 1.0).ceil() as i32)
+                .min(self.width as i32)
+                .max(0) as u32;
+            let bottom = ((dab.y + dab.radius + 1.0).ceil() as i32)
+                .min(self.height as i32)
+                .max(0) as u32;
+            let inner = dab.radius * dab.hardness;
+            let edge = (inner + 1.0).max(dab.radius + 1.0);
+            for y in top..bottom {
+                for x in left..right {
+                    let distance = ((x as f32 + 0.5 - dab.x).powi(2)
+                        + (y as f32 + 0.5 - dab.y).powi(2))
+                    .sqrt();
+                    let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
+                    let profile = 1.0 - t * t * (3.0 - 2.0 * t);
+                    if profile <= 0.0 {
+                        continue;
+                    }
+                    let coord = TileCoord {
+                        x: x / TILE_SIZE,
+                        y: y / TILE_SIZE,
+                    };
+                    let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                    density
+                        .entry(coord)
+                        .or_insert_with(|| vec![0.0; TILE_BYTES / 4])[index] +=
+                        (4.0 + 12.0 * dab.hardness) * dab.weight * profile;
+                }
+            }
+        }
+        let mut changes = Vec::new();
+        for (coord, coverage) in density {
+            let before = self.tiles.get(&coord).cloned();
+            let mut after = before.clone().unwrap_or_else(|| vec![0; TILE_BYTES]);
+            for (pixel, depth) in after.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
+                if depth <= 0.0 {
+                    continue;
+                }
+                let source_alpha = 1.0 - (-depth).exp();
+                let old_alpha = f32::from(pixel[3]) / 255.0;
+                let output_alpha = source_alpha + old_alpha * (1.0 - source_alpha);
+                let byte_alpha = (output_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+                if byte_alpha == 0 {
+                    pixel.fill(0);
+                    continue;
+                }
+                for channel in 0..3 {
+                    let old = f32::from(pixel[channel]) / 255.0;
+                    let ink = f32::from(color[channel]) / 255.0;
+                    pixel[channel] = (((ink * source_alpha
+                        + old * old_alpha * (1.0 - source_alpha))
+                        / output_alpha)
+                        * 255.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+                pixel[3] = byte_alpha;
+            }
+            let after = after.iter().any(|byte| *byte != 0).then_some(after);
+            if before == after {
+                continue;
+            }
+            match &after {
+                Some(bytes) => {
+                    self.tiles.insert(coord, bytes.clone());
+                }
+                None => {
+                    self.tiles.remove(&coord);
+                }
+            }
+            changes.push(TileChange {
+                coord,
+                before,
+                after,
+            });
+        }
+        changes.sort_by_key(|change| (change.coord.y, change.coord.x));
+        Ok(changes)
+    }
+
     pub fn apply_changes(&mut self, changes: &[TileChange], undo: bool) -> Result<(), String> {
         // Validate the entire batch before changing any tile.
         let mut previous = None;
@@ -221,6 +321,35 @@ enum RasterEdit {
 pub struct TileInvalidation {
     pub layer_id: String,
     pub coords: Vec<TileCoord>,
+}
+
+/// One sampled brush dab in document pixels. Radius already includes pressure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RasterDab {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub hardness: f32,
+    pub weight: f32,
+}
+
+impl RasterDab {
+    fn validate(self) -> Result<(), String> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || self.x.abs() >= 100_000.0
+            || self.y.abs() >= 100_000.0
+            || !self.radius.is_finite()
+            || !(0.025..=512.0).contains(&self.radius)
+            || !self.hardness.is_finite()
+            || !(0.0..=1.0).contains(&self.hardness)
+            || !self.weight.is_finite()
+            || !(0.0..=64.0).contains(&self.weight)
+        {
+            return Err("Invalid raster brush dab".into());
+        }
+        Ok(())
+    }
 }
 
 /// Tile-backed document model for the future raster pipeline. This does not
@@ -409,6 +538,35 @@ impl TiledRasterDocument {
         Ok(Some(TileInvalidation {
             layer_id: layer_id.into(),
             coords: changed_coords,
+        }))
+    }
+
+    pub fn paint_dabs(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        color: [u8; 3],
+    ) -> Result<Option<TileInvalidation>, String> {
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        if !layer.visible {
+            return Err("Raster layer is hidden".into());
+        }
+        let changes = layer.tiles.paint_dabs(dabs, color)?;
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let coords = changes.iter().map(|change| change.coord).collect();
+        self.record_edit(RasterEdit::Pixels {
+            layer_id: layer_id.into(),
+            changes,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
         }))
     }
 
@@ -693,5 +851,98 @@ mod tests {
         document.redo().unwrap();
         assert_eq!(document.layers()[0].id, "front");
         assert!(document.move_layer("front", 2).is_err());
+    }
+
+    #[test]
+    fn sampled_brush_stroke_crosses_tiles_and_undoes_as_one_edit() {
+        let mut document = TiledRasterDocument::new(512, 256).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let dab = RasterDab {
+            x: 256.0,
+            y: 30.5,
+            radius: 8.0,
+            hardness: 0.0,
+            weight: 0.3,
+        };
+        let before = document.clone();
+        let changed = document
+            .paint_dabs("paint", &[dab, dab], [20, 80, 200])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            changed.coords,
+            [TileCoord { x: 0, y: 0 }, TileCoord { x: 1, y: 0 }]
+        );
+        let layer = &document.layers()[0];
+        assert_eq!(layer.tiles.pixel(255, 30), layer.tiles.pixel(256, 30));
+        assert!(layer.tiles.pixel(255, 30).unwrap()[3] > layer.tiles.pixel(250, 30).unwrap()[3]);
+        let painted = layer.tiles.pixel(255, 30);
+        assert_eq!(document.undo().unwrap().unwrap().coords, changed.coords);
+        assert_eq!(document.layers()[0].tiles, before.layers()[0].tiles);
+        document.redo().unwrap();
+        assert_eq!(document.layers()[0].tiles.pixel(255, 30), painted);
+    }
+
+    #[test]
+    fn invalid_brush_batch_is_atomic_and_zero_weight_is_a_noop() {
+        let mut document = TiledRasterDocument::new(256, 256).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let dab = RasterDab {
+            x: 30.0,
+            y: 30.0,
+            radius: 6.0,
+            hardness: 1.0,
+            weight: 0.0,
+        };
+        let before = document.clone();
+        assert!(document
+            .paint_dabs("paint", &[dab], [0; 3])
+            .unwrap()
+            .is_none());
+        assert!(document
+            .paint_dabs(
+                "paint",
+                &[
+                    dab,
+                    RasterDab {
+                        radius: f32::NAN,
+                        ..dab
+                    }
+                ],
+                [0; 3],
+            )
+            .is_err());
+        assert_eq!(document, before);
+    }
+
+    #[test]
+    fn overlapping_dabs_match_separate_same_color_strokes_within_rgba_rounding() {
+        let dab = RasterDab {
+            x: 20.5,
+            y: 20.5,
+            radius: 8.0,
+            hardness: 0.2,
+            weight: 0.1,
+        };
+        let mut one = TiledRasterDocument::new(64, 64).unwrap();
+        let mut two = TiledRasterDocument::new(64, 64).unwrap();
+        for document in [&mut one, &mut two] {
+            document.add_layer("paint".into(), "Paint".into()).unwrap();
+        }
+        one.paint_dabs("paint", &[dab, dab], [20, 80, 200]).unwrap();
+        two.paint_dabs("paint", &[dab], [20, 80, 200]).unwrap();
+        two.paint_dabs("paint", &[dab], [20, 80, 200]).unwrap();
+        for y in 12..29 {
+            for x in 12..29 {
+                let combined = one.layers()[0].tiles.pixel(x, y).unwrap();
+                let separate = two.layers()[0].tiles.pixel(x, y).unwrap();
+                for (a, b) in combined.into_iter().zip(separate) {
+                    assert!(
+                        a.abs_diff(b) <= 2,
+                        "pixel ({x}, {y}): {combined:?} vs {separate:?}"
+                    );
+                }
+            }
+        }
     }
 }

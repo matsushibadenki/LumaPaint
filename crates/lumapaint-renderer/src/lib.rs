@@ -3,6 +3,7 @@ use lumapaint_core::document::{
     CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, SvgLayer,
     HEIGHT, WIDTH,
 };
+use lumapaint_core::tiles::{RasterDab, TileInvalidation, TiledRasterDocument};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 pub use wgpu;
@@ -213,6 +214,63 @@ fn linear_color(color: [u8; 3]) -> [f32; 4] {
 fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
     let points = smooth_points(&stroke.points, &stroke.pressures);
     dabs_along_path(&points, stroke.brush, opacity)
+}
+
+/// Use the same curve and arc-length sampler as the current GPU brush for a
+/// tile-backed stroke. Selection clipping remains on the existing GPU path.
+pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
+    stroke.brush.validate()?;
+    if stroke.selection.is_some() {
+        return Err("Selection-clipped strokes are not supported by the tile painter".into());
+    }
+    if stroke.points.is_empty()
+        || stroke.points.len() > 65_536
+        || stroke.points.iter().any(|point| {
+            !point.x.is_finite()
+                || !point.y.is_finite()
+                || point.x.abs() >= 100_000.0
+                || point.y.abs() >= 100_000.0
+        })
+        || (!stroke.pressures.is_empty() && stroke.pressures.len() != stroke.points.len())
+        || stroke
+            .pressures
+            .iter()
+            .any(|pressure| !pressure.is_finite() || !(0.0..=1.0).contains(pressure))
+    {
+        return Err("Invalid stroke samples".into());
+    }
+    let points = smooth_points(&stroke.points, &stroke.pressures);
+    let base_radius = stroke.brush.size * 0.5;
+    let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - stroke.brush.hardness));
+    let length: f64 = points
+        .windows(2)
+        .map(|pair| f64::from((pair[1].0.x - pair[0].0.x).hypot(pair[1].0.y - pair[0].0.y)))
+        .sum();
+    if !length.is_finite() || length > f64::from(spacing) * 65_535.0 {
+        return Err("Stroke exceeds tile dab limit".into());
+    }
+    let dabs = dabs_along_path(&points, stroke.brush, 1.0)
+        .into_iter()
+        .map(|segment| RasterDab {
+            x: segment.ends[0],
+            y: segment.ends[1],
+            radius: segment.radius,
+            hardness: segment.hardness,
+            weight: segment.weight,
+        })
+        .collect::<Vec<_>>();
+    if dabs.len() > 65_536 {
+        return Err("Stroke exceeds tile dab limit".into());
+    }
+    Ok(dabs)
+}
+
+pub fn paint_stroke_into_tiles(
+    document: &mut TiledRasterDocument,
+    layer_id: &str,
+    stroke: &Stroke,
+) -> Result<Option<TileInvalidation>, String> {
+    document.paint_dabs(layer_id, &sampled_raster_dabs(stroke)?, stroke.brush.color)
 }
 
 fn dabs_along_path(
@@ -1396,6 +1454,43 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_dabs_share_gpu_curve_spacing_radius_hardness_and_pressure() {
+        let stroke = Stroke {
+            brush: lumapaint_core::document::Brush {
+                size: 32.0,
+                hardness: 0.3,
+                color: [20, 80, 200],
+            },
+            points: vec![
+                Point { x: 20.0, y: 20.0 },
+                Point { x: 80.0, y: 30.0 },
+                Point { x: 120.0, y: 80.0 },
+            ],
+            pressures: vec![0.2, 0.8, 0.4],
+            selection: None,
+        };
+        let gpu = segments(&stroke, 1.0);
+        let tiled = sampled_raster_dabs(&stroke).unwrap();
+        assert_eq!(gpu.len(), tiled.len());
+        assert!(tiled.len() > stroke.points.len());
+        for (segment, dab) in gpu.iter().zip(&tiled) {
+            assert_eq!([dab.x, dab.y], [segment.ends[0], segment.ends[1]]);
+            assert_eq!(dab.radius, segment.radius);
+            assert_eq!(dab.hardness, segment.hardness);
+            assert_eq!(dab.weight, segment.weight);
+        }
+        let mut document = TiledRasterDocument::new(128, 128).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let changed = paint_stroke_into_tiles(&mut document, "paint", &stroke)
+            .unwrap()
+            .unwrap();
+        assert!(!changed.coords.is_empty());
+        assert!(document.layers()[0].tiles.allocated_tile_count() > 0);
+        document.undo().unwrap();
+        assert_eq!(document.layers()[0].tiles.allocated_tile_count(), 0);
+    }
 
     #[test]
     fn partial_drag_cache_is_used_only_while_raster_runs_stay_separate() {
