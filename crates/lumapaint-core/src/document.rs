@@ -2108,16 +2108,10 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             .stroke
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
         if let Some(text) = &object.text {
-            let (anchor, x) = match text.alignment {
-                crate::vector::TextAlignment::Left => {
-                    ("start", text.indent_left + text.indent_first)
-                }
-                crate::vector::TextAlignment::Center => (
-                    "middle",
-                    (text.box_width + text.indent_left - text.indent_right) * 0.5
-                        + text.indent_first * 0.5,
-                ),
-                crate::vector::TextAlignment::Right => ("end", text.box_width - text.indent_right),
+            let anchor = match text.alignment {
+                crate::vector::TextAlignment::Left => "start",
+                crate::vector::TextAlignment::Center => "middle",
+                crate::vector::TextAlignment::Right => "end",
             };
             let _ = write!(
                 svg,
@@ -2127,17 +2121,32 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             let color = object.fill.map_or([0, 0, 0], |paint| {
                 [paint.color[0], paint.color[1], paint.color[2]]
             });
-            let mut offset = 0;
-            for (index, line) in text.content.split('\n').enumerate() {
-                let y = text.font_size
-                    + text.space_before
-                    + index as f32
-                        * (text.font_size * text.line_height
-                            + text.space_before
-                            + text.space_after);
+            let mut y = text.font_size + text.space_before;
+            for (index, (start, line, hard_break_before)) in
+                text.visual_lines().into_iter().enumerate()
+            {
+                if index > 0 {
+                    y += text.font_size * text.line_height;
+                    if hard_break_before {
+                        y += text.space_before + text.space_after;
+                    }
+                }
+                let first_indent = if index == 0 || hard_break_before {
+                    text.indent_first
+                } else {
+                    0.0
+                };
+                let x = match text.alignment {
+                    crate::vector::TextAlignment::Left => text.indent_left + first_indent,
+                    crate::vector::TextAlignment::Center => {
+                        (text.box_width + text.indent_left - text.indent_right + first_indent) * 0.5
+                    }
+                    crate::vector::TextAlignment::Right => text.box_width - text.indent_right,
+                };
                 let _ = write!(svg, r#"<tspan x="{x}" y="{y}">"#);
                 let mut segment = String::new();
                 let mut previous = None;
+                let mut offset = start;
                 for c in line.chars() {
                     let style = text.style_at(offset, color);
                     if previous.as_ref().is_some_and(|old| old != &style) {
@@ -2152,7 +2161,6 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     write_text_segment(&mut svg, &style, &segment);
                 }
                 svg.push_str("</tspan>");
-                offset += 1;
             }
             svg.push_str("</text></g>");
             continue;
@@ -2759,6 +2767,56 @@ mod text_tests {
             },
             position: [40.0, 50.0],
             color: [24, 80, 160],
+        }
+    }
+    #[test]
+    fn soft_wraps_preserve_source_offsets_styles_and_saved_layout() {
+        let mut edit = settings();
+        edit.text.content = "A😀BC\n日本語".into();
+        edit.text.soft_breaks = vec![3, 8];
+        edit.text.box_width = 120.0;
+        edit.text.indent_first = 12.0;
+        edit.text
+            .apply_style(
+                3,
+                4,
+                &crate::vector::TextStylePatch {
+                    color: Some([255, 0, 0]),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        assert_eq!(
+            edit.text.visual_lines(),
+            vec![
+                (0, "A😀", false),
+                (3, "BC", false),
+                (6, "日本", true),
+                (8, "語", false)
+            ]
+        );
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert_eq!(svg.matches("<tspan x=").count(), 4);
+        assert!(svg.contains("A😀</tspan>"));
+        assert!(svg.contains("fill=\"#ff0000\""));
+        assert!(svg.contains("x=\"12\" y=\"36\""));
+        assert!(svg.contains("x=\"0\" y=\"90\""));
+        assert_eq!(
+            Document::decode(&doc.encode().unwrap())
+                .unwrap()
+                .snapshot()
+                .text_objects[0]
+                .text
+                .soft_breaks,
+            vec![3, 8]
+        );
+        let mut bad = edit;
+        for breaks in [vec![2], vec![3, 3], vec![5], vec![6]] {
+            bad.text.soft_breaks = breaks;
+            assert!(bad.text.validate().is_err());
         }
     }
     #[test]

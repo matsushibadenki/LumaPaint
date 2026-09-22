@@ -578,8 +578,9 @@ pub fn add_vector_layer() -> Result<DocumentSnapshot, String> {
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
-pub fn set_text_object(settings: TextSettings) -> Result<DocumentSnapshot, String> {
+pub fn set_text_object(mut settings: TextSettings) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
+    text_editor::reflow(&mut settings)?;
     DOCUMENT.with(|doc| doc.borrow_mut().set_text_object(settings))?;
     redraw()?;
     emit_document();

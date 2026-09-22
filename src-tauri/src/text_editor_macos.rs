@@ -115,6 +115,7 @@ fn current(session: &Session) -> TextSettings {
     let mut settings = session.settings.clone();
     settings.text.content = session.view.string().to_string();
     settings.text.runs.clear();
+    settings.text.soft_breaks.clear();
     if let Some(storage) = unsafe { session.view.textStorage() } {
         let key = NSString::from_str(STYLE_KEY);
         let mut at = 0;
@@ -143,7 +144,66 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
+    settings.text.soft_breaks = measured_soft_breaks(&session.view, &settings.text.content);
     settings
+}
+
+fn measured_soft_breaks(view: &NSTextView, content: &str) -> Vec<usize> {
+    let mut breaks = Vec::new();
+    if let (Some(manager), Some(container)) = (unsafe { view.layoutManager() }, unsafe {
+        view.textContainer()
+    }) {
+        manager.ensureLayoutForTextContainer(&container);
+        let utf16: Vec<_> = content.encode_utf16().collect();
+        let mut glyph = 0;
+        while glyph < manager.numberOfGlyphs() {
+            let mut range = NSRange::new(0, 0);
+            unsafe {
+                manager.lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, &mut range);
+            }
+            if range.location > 0 {
+                let offset = manager.characterIndexForGlyphAtIndex(range.location);
+                if offset > 0
+                    && offset < utf16.len()
+                    && utf16[offset - 1] != b'\n' as u16
+                    && utf16[offset] != b'\n' as u16
+                    && !(0xD800..=0xDBFF).contains(&utf16[offset - 1])
+                    && breaks.last().is_none_or(|last| *last < offset)
+                {
+                    breaks.push(offset);
+                }
+            }
+            glyph = (range.location + range.length).max(glyph + 1);
+        }
+    }
+    breaks
+}
+
+/// Reflow a committed panel edit with the same AppKit font and paragraph attributes
+/// used by inline editing, without displaying or focusing another editor.
+pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
+    settings.text.soft_breaks.clear();
+    settings.text.validate()?;
+    let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
+    let view = NSTextView::initWithFrame(
+        NSTextView::alloc(mtm),
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(settings.text.box_width.into(), 100_000.0),
+        ),
+    );
+    view.setTextContainerInset(NSSize::new(0.0, 0.0));
+    view.setString(&NSString::from_str(&settings.text.content));
+    view.setHorizontallyResizable(false);
+    view.setVerticallyResizable(false);
+    if let Some(container) = unsafe { view.textContainer() } {
+        container.setLineFragmentPadding(0.0);
+        container.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+        container.setWidthTracksTextView(true);
+    }
+    apply_attributes_to_view(&view, settings)?;
+    settings.text.soft_breaks = measured_soft_breaks(&view, &settings.text.content);
+    settings.text.validate()
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -297,7 +357,8 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     view.setVerticallyResizable(false);
     if let Some(container) = unsafe { view.textContainer() } {
         container.setLineFragmentPadding(0.0);
-        container.setLineBreakMode(NSLineBreakMode::ByClipping);
+        container.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+        container.setWidthTracksTextView(true);
     }
     CANVAS.with(|slot| -> Result<(), String> {
         let slot = slot.borrow();
@@ -568,6 +629,7 @@ fn attributes(
         TextAlignment::Center => NSTextAlignment::Center,
         TextAlignment::Right => NSTextAlignment::Right,
     });
+    paragraph.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
     paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
     paragraph.setMaximumLineHeight((text.font_size * text.line_height).into());
     paragraph.setHeadIndent(text.indent_left.into());
@@ -575,7 +637,6 @@ fn attributes(
     paragraph.setTailIndent((-text.indent_right).into());
     paragraph.setParagraphSpacingBefore(text.space_before.into());
     paragraph.setParagraphSpacing(text.space_after.into());
-    paragraph.setLineBreakMode(NSLineBreakMode::ByClipping);
     let kern = NSNumber::new_f64((style.tracking * style.font_size / 1000.0).into());
     let baseline = NSNumber::new_f64(style.baseline_shift.into());
     let underline = NSNumber::new_i32(i32::from(style.underline));
@@ -614,6 +675,10 @@ fn apply_all_attributes() -> Result<(), String> {
     let Some((view, settings)) = state else {
         return Ok(());
     };
+    apply_attributes_to_view(&view, &settings)
+}
+
+fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Result<(), String> {
     if let Some(storage) = unsafe { view.textStorage() } {
         let base = attributes(&settings.text, &settings.text.base_style(settings.color))?;
         unsafe {

@@ -23,14 +23,14 @@ export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
-  runs?: TextRun[];
+  runs?: TextRun[]; softBreaks?: number[];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
   boxWidth: number; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
 }
 export const defaultVectorText: VectorText = {
-  content: 'Text', fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
+  content: 'Text', runs: [], softBreaks: [], fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
   italic: false, tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
   underline: false, strikethrough: false, alignment: 'left', boxWidth: 480,
   indentLeft: 0, indentRight: 0, indentFirst: 0, spaceBefore: 0, spaceAfter: 0,

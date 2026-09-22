@@ -122,6 +122,9 @@ pub struct VectorText {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<TextRun>,
+    /// UTF-16 offsets at the start of visual lines inserted by the native text layout.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub soft_breaks: Vec<usize>,
     pub font_family: String,
     pub font_size: f32,
     pub line_height: f32,
@@ -157,6 +160,7 @@ impl Default for VectorText {
         Self {
             content: String::new(),
             runs: Vec::new(),
+            soft_breaks: Vec::new(),
             font_family: "sans-serif".into(),
             font_size: 48.0,
             line_height: 1.4,
@@ -181,6 +185,42 @@ impl Default for VectorText {
 }
 
 impl VectorText {
+    /// Retain source text and character styles while splitting at hard and soft line breaks.
+    /// The bool distinguishes a paragraph break from a wrapped line.
+    pub fn visual_lines(&self) -> Vec<(usize, &str, bool)> {
+        let mut lines = Vec::new();
+        let mut start_byte = 0;
+        let mut start_utf16 = 0;
+        let mut offset = 0;
+        let mut hard_break_before = false;
+        for (byte, c) in self.content.char_indices() {
+            if c == '\n' {
+                lines.push((
+                    start_utf16,
+                    &self.content[start_byte..byte],
+                    hard_break_before,
+                ));
+                offset += 1;
+                start_byte = byte + 1;
+                start_utf16 = offset;
+                hard_break_before = true;
+                continue;
+            }
+            if self.soft_breaks.binary_search(&offset).is_ok() && byte > start_byte {
+                lines.push((
+                    start_utf16,
+                    &self.content[start_byte..byte],
+                    hard_break_before,
+                ));
+                start_byte = byte;
+                start_utf16 = offset;
+                hard_break_before = false;
+            }
+            offset += c.len_utf16();
+        }
+        lines.push((start_utf16, &self.content[start_byte..], hard_break_before));
+        lines
+    }
     pub fn base_style(&self, color: [u8; 3]) -> TextStyle {
         TextStyle {
             font_family: self.font_family.clone(),
@@ -280,6 +320,19 @@ impl VectorText {
         if self.runs.len() > 4096 {
             return Err("Too many character runs".into());
         }
+        let utf16: Vec<_> = self.content.encode_utf16().collect();
+        if self.soft_breaks.len() > 4096
+            || self.soft_breaks.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.soft_breaks.iter().any(|&offset| {
+                offset == 0
+                    || offset >= utf16.len()
+                    || !self.utf16_boundary(offset)
+                    || utf16[offset - 1] == b'\n' as u16
+                    || utf16[offset] == b'\n' as u16
+            })
+        {
+            return Err("Invalid text wrap positions".into());
+        }
         let mut previous_end = 0;
         for run in &self.runs {
             if run.start < previous_end
@@ -302,7 +355,7 @@ impl VectorText {
             .iter()
             .map(|run| run.style.font_size)
             .fold(self.font_size, f32::max);
-        let height = self.content.split('\n').count() as f32
+        let height = self.visual_lines().len() as f32
             * (self.font_size * self.line_height + self.space_before + self.space_after);
         let highest_shift = self
             .runs

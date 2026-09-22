@@ -299,6 +299,51 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn saved_soft_breaks_place_glyphs_on_distinct_rendered_lines() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::VectorText;
+        let mut text = VectorText {
+            content: "ABCD".into(),
+            font_family: "Arial".into(),
+            font_size: 36.0,
+            ..Default::default()
+        };
+        let mut document = Document::default();
+        let settings = |text| TextSettings {
+            id: None,
+            text,
+            position: [10.0, 10.0],
+            color: [0, 0, 0],
+        };
+        document.set_text_object(settings(text.clone())).unwrap();
+        let one_line =
+            rasterize_svg(&document.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        text.soft_breaks = vec![2];
+        document
+            .set_text_object(TextSettings {
+                id: Some(document.snapshot().text_objects[0].id.clone()),
+                ..settings(text)
+            })
+            .unwrap();
+        let wrapped =
+            rasterize_svg(&document.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let bottom = |image: &SvgRaster| {
+            image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 0)
+                .map(|(index, _)| index / 960)
+                .max()
+                .unwrap()
+        };
+        assert!(bottom(&wrapped) > bottom(&one_line) + 30);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn cjk_fallback_renders_requested_weights_and_typography_moves_the_text() {
         let svg = |weight| {
             format!(
