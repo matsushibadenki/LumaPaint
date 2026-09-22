@@ -28,13 +28,83 @@ pub fn reflow_text_with_system_fonts(
     color: [u8; 3],
 ) -> Result<(), String> {
     let source = text.clone();
+    let mut candidate = text.clone();
     let mut measurer = PortableFontMeasurer {
         fonts: system_fonts(),
         resolver: font_resolver(),
         face_cache: std::collections::HashMap::new(),
         glyph_cache: std::collections::HashMap::new(),
     };
-    text.reflow_soft_breaks_with(|content, start| measurer.measure(&source, color, content, start))
+    candidate.reflow_soft_breaks_with(|content, start| {
+        measurer.measure(&source, color, content, start)
+    })?;
+    let mut widths = Vec::new();
+    let mut origins = Vec::new();
+    let mut segment_origins = Vec::new();
+    for (index, (start, line, hard_break_before)) in
+        candidate.visual_lines().into_iter().enumerate()
+    {
+        let width = measurer.measure(&source, color, line, start)?;
+        let first_indent = if index == 0 || hard_break_before {
+            candidate.indent_first
+        } else {
+            0.0
+        };
+        let origin = match candidate.alignment {
+            lumapaint_core::vector::TextAlignment::Left => candidate.indent_left + first_indent,
+            lumapaint_core::vector::TextAlignment::Center => {
+                (candidate.box_width + candidate.indent_left - candidate.indent_right
+                    + first_indent
+                    - width)
+                    * 0.5
+            }
+            lumapaint_core::vector::TextAlignment::Right => {
+                candidate.box_width - candidate.indent_right - width
+            }
+        };
+        let starts = candidate.style_segment_starts(start, line, color);
+        let mut line_segments = Vec::with_capacity(starts.len());
+        let mut cursor = origin;
+        for (segment_index, segment_start) in starts.iter().enumerate() {
+            line_segments.push(cursor);
+            let segment_end = starts
+                .get(segment_index + 1)
+                .copied()
+                .unwrap_or(start + line.encode_utf16().count());
+            let start_byte = utf16_byte_index(line, segment_start - start)
+                .ok_or("Invalid text style boundary")?;
+            let end_byte =
+                utf16_byte_index(line, segment_end - start).ok_or("Invalid text style boundary")?;
+            cursor +=
+                measurer.measure(&source, color, &line[start_byte..end_byte], *segment_start)?;
+        }
+        widths.push(width);
+        origins.push(origin);
+        segment_origins.push(line_segments);
+    }
+    candidate.line_widths = widths;
+    candidate.line_origins = origins;
+    candidate.style_segment_origins = segment_origins;
+    candidate.validate()?;
+    *text = candidate;
+    Ok(())
+}
+
+fn utf16_byte_index(content: &str, offset: usize) -> Option<usize> {
+    if offset == 0 {
+        return Some(0);
+    }
+    let mut units = 0;
+    for (byte, character) in content.char_indices() {
+        units += character.len_utf16();
+        if units == offset {
+            return Some(byte + character.len_utf8());
+        }
+        if units > offset {
+            return None;
+        }
+    }
+    None
 }
 
 struct PortableFontMeasurer {
@@ -398,6 +468,10 @@ mod tests {
         reflow_text_with_system_fonts(&mut text, [0, 0, 0]).unwrap();
         assert!(!text.soft_breaks.is_empty());
         assert_eq!(text.runs, runs);
+        assert_eq!(text.line_widths.len(), text.visual_lines().len());
+        assert_eq!(text.line_origins.len(), text.visual_lines().len());
+        assert_eq!(text.style_segment_origins.len(), text.visual_lines().len());
+        assert!(text.line_widths.iter().any(|width| *width > 0.0));
         assert_eq!(
             text.visual_lines()
                 .iter()
@@ -421,6 +495,31 @@ mod tests {
         reflow_text_with_system_fonts(&mut small, [0, 0, 0]).unwrap();
         reflow_text_with_system_fonts(&mut large, [0, 0, 0]).unwrap();
         assert!(large.soft_breaks.len() > small.soft_breaks.len());
+
+        let mut aligned = VectorText {
+            content: "ABCD".into(),
+            font_family: "sans-serif".into(),
+            font_size: 30.0,
+            box_width: 200.0,
+            alignment: lumapaint_core::vector::TextAlignment::Right,
+            ..Default::default()
+        };
+        aligned
+            .apply_style(
+                2,
+                4,
+                &TextStylePatch {
+                    bold: Some(true),
+                    ..Default::default()
+                },
+                [0, 0, 0],
+            )
+            .unwrap();
+        reflow_text_with_system_fonts(&mut aligned, [0, 0, 0]).unwrap();
+        assert!((aligned.line_origins[0] + aligned.line_widths[0] - 200.0).abs() < 0.01);
+        assert_eq!(aligned.style_segment_origins[0].len(), 2);
+        assert!((aligned.style_segment_origins[0][0] - aligned.line_origins[0]).abs() < 0.01);
+        assert!(aligned.style_segment_origins[0][1] > aligned.style_segment_origins[0][0]);
     }
 
     fn pixel(image: &SvgRaster, width: usize, x: usize, y: usize) -> &[u8] {
