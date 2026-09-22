@@ -216,6 +216,86 @@ impl VectorText {
         self.layout_bounds = None;
     }
 
+    /// Reflow without a platform text view. The caller supplies a width measured
+    /// with its font engine for a UTF-16-offset substring of the source text.
+    /// Breaks always land on extended grapheme boundaries; source text and runs
+    /// are never rewritten. Widths should grow as text is appended, allowing a
+    /// logarithmic search for each line. Native hosts can replace the result.
+    pub fn reflow_soft_breaks_with(
+        &mut self,
+        mut measure: impl FnMut(&str, usize) -> Result<f32, String>,
+    ) -> Result<(), String> {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let mut candidate = self.clone();
+        candidate.clear_measured_layout();
+        candidate.validate()?;
+        let mut breaks = Vec::new();
+        let mut paragraph_utf16 = 0;
+        for paragraph in self.content.split('\n') {
+            let mut boundaries = vec![(0, 0)];
+            let mut utf16 = 0;
+            for (byte, grapheme) in paragraph.grapheme_indices(true) {
+                utf16 += grapheme.encode_utf16().count();
+                boundaries.push((byte + grapheme.len(), utf16));
+            }
+            let preferred: std::collections::HashSet<_> = paragraph
+                .split_word_bound_indices()
+                .map(|(byte, word)| byte + word.len())
+                .collect();
+            let mut line_start = 0;
+            let last = boundaries.len() - 1;
+            while line_start < last {
+                let mut fitting = line_start + 1;
+                let first_line = line_start == 0;
+                let available = self.box_width
+                    - self.indent_left
+                    - self.indent_right
+                    - if first_line { self.indent_first } else { 0.0 };
+                if !available.is_finite() || available <= 0.0 {
+                    return Err("Invalid text line width".into());
+                }
+                let first_source = &paragraph[boundaries[line_start].0..boundaries[fitting].0];
+                let first_width =
+                    measure(first_source, paragraph_utf16 + boundaries[line_start].1)?;
+                if !first_width.is_finite() || !(0.0..100_000.0).contains(&first_width) {
+                    return Err("Invalid measured text width".into());
+                }
+                let mut upper = last + 1;
+                while fitting < upper {
+                    let end = fitting + (upper - fitting) / 2;
+                    if end == fitting {
+                        break;
+                    }
+                    let source = &paragraph[boundaries[line_start].0..boundaries[end].0];
+                    let width = measure(source, paragraph_utf16 + boundaries[line_start].1)?;
+                    if !width.is_finite() || !(0.0..100_000.0).contains(&width) {
+                        return Err("Invalid measured text width".into());
+                    }
+                    if width <= available {
+                        fitting = end;
+                    } else {
+                        upper = end;
+                    }
+                }
+                if fitting == last {
+                    break;
+                }
+                let next = (line_start + 1..=fitting)
+                    .rev()
+                    .find(|index| preferred.contains(&boundaries[*index].0))
+                    .unwrap_or(fitting);
+                breaks.push(paragraph_utf16 + boundaries[next].1);
+                line_start = next;
+            }
+            paragraph_utf16 += utf16 + 1;
+        }
+        candidate.soft_breaks = breaks;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Retain source text and character styles while splitting at hard and soft line breaks.
     /// The bool distinguishes a paragraph break from a wrapped line.
     pub fn visual_lines(&self) -> Vec<(usize, &str, bool)> {
@@ -669,6 +749,70 @@ pub trait VectorPathEngine {
 #[cfg(test)]
 mod text_style_tests {
     use super::*;
+    #[test]
+    fn portable_reflow_preserves_graphemes_runs_and_hard_breaks() {
+        let mut text = VectorText {
+            content: "A\n😀😀😀".into(),
+            box_width: 21.0,
+            ..Default::default()
+        };
+        text.apply_style(
+            2,
+            4,
+            &TextStylePatch {
+                color: Some([200, 0, 0]),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        let runs = text.runs.clone();
+        text.reflow_soft_breaks_with(|source, _| {
+            use unicode_segmentation::UnicodeSegmentation;
+            Ok((source.graphemes(true).count() * 10) as f32)
+        })
+        .unwrap();
+        assert_eq!(text.soft_breaks, vec![6]);
+        assert_eq!(
+            text.visual_lines(),
+            vec![(0, "A", false), (2, "😀😀", true), (6, "😀", false)]
+        );
+        assert_eq!(text.runs, runs);
+        text.validate().unwrap();
+    }
+
+    #[test]
+    fn portable_reflow_obeys_first_line_indent_and_is_atomic_on_error() {
+        let mut text = VectorText {
+            content: "abcdef".into(),
+            box_width: 50.0,
+            indent_first: 20.0,
+            ..Default::default()
+        };
+        text.reflow_soft_breaks_with(|source, _| Ok(source.len() as f32 * 10.0))
+            .unwrap();
+        assert_eq!(text.soft_breaks, vec![3]);
+        let before = text.clone();
+        assert!(text.reflow_soft_breaks_with(|_, _| Ok(f32::NAN)).is_err());
+        assert_eq!(text, before);
+    }
+
+    #[test]
+    fn portable_reflow_avoids_measuring_every_prefix_of_a_long_line() {
+        let mut text = VectorText {
+            content: "a".repeat(4096),
+            box_width: 8192.0,
+            ..Default::default()
+        };
+        let calls = std::cell::Cell::new(0);
+        text.reflow_soft_breaks_with(|source, _| {
+            calls.set(calls.get() + 1);
+            Ok(source.len() as f32)
+        })
+        .unwrap();
+        assert!(text.soft_breaks.is_empty());
+        assert!(calls.get() < 32, "measured {} candidates", calls.get());
+    }
     #[test]
     fn style_changes_invalidate_only_the_layout_they_affect() {
         let mut text = VectorText {

@@ -20,6 +20,185 @@ pub fn prepare_text_fonts() {
     let _ = system_fonts();
 }
 
+/// Portable fallback for hosts without AppKit text layout. It uses the same
+/// system font database and CJK fallback policy as SVG rendering. The native
+/// macOS editor remains authoritative where available.
+pub fn reflow_text_with_system_fonts(
+    text: &mut lumapaint_core::vector::VectorText,
+    color: [u8; 3],
+) -> Result<(), String> {
+    let source = text.clone();
+    let mut measurer = PortableFontMeasurer {
+        fonts: system_fonts(),
+        resolver: font_resolver(),
+        face_cache: std::collections::HashMap::new(),
+        glyph_cache: std::collections::HashMap::new(),
+    };
+    text.reflow_soft_breaks_with(|content, start| measurer.measure(&source, color, content, start))
+}
+
+struct PortableFontMeasurer {
+    fonts: Arc<usvg::fontdb::Database>,
+    resolver: usvg::FontResolver<'static>,
+    face_cache: std::collections::HashMap<(String, bool, bool), usvg::fontdb::ID>,
+    glyph_cache: std::collections::HashMap<(usvg::fontdb::ID, char), bool>,
+}
+
+impl PortableFontMeasurer {
+    fn measure(
+        &mut self,
+        text: &lumapaint_core::vector::VectorText,
+        color: [u8; 3],
+        content: &str,
+        start: usize,
+    ) -> Result<f32, String> {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut width = 0.0;
+        let mut offset = start;
+        let mut group = String::new();
+        let mut group_font = None;
+        let mut group_style = None;
+        let mut graphemes = 0;
+        for grapheme in content.graphemes(true) {
+            let style = text.style_at(offset, color);
+            let face_key = (style.font_family.clone(), style.bold, style.italic);
+            let base = if let Some(id) = self.face_cache.get(&face_key) {
+                *id
+            } else {
+                let id = find_style_font(&self.fonts, &style).ok_or("No usable system font")?;
+                self.face_cache.insert(face_key, id);
+                id
+            };
+            let font = if font_supports(&self.fonts, base, grapheme, &mut self.glyph_cache) {
+                base
+            } else {
+                let missing = grapheme
+                    .chars()
+                    .find(|character| {
+                        !font_supports(
+                            &self.fonts,
+                            base,
+                            &character.to_string(),
+                            &mut self.glyph_cache,
+                        )
+                    })
+                    .unwrap_or_else(|| grapheme.chars().next().unwrap_or(' '));
+                (self.resolver.select_fallback)(missing, &[base], &mut self.fonts).unwrap_or(base)
+            };
+            if group_font != Some(font) || group_style.as_ref() != Some(&style) {
+                if let (Some(id), Some(previous)) = (group_font, group_style.as_ref()) {
+                    width += shape_width(&self.fonts, id, &group, previous, graphemes)?;
+                }
+                group.clear();
+                graphemes = 0;
+                group_font = Some(font);
+                group_style = Some(style);
+            }
+            group.push_str(grapheme);
+            graphemes += 1;
+            offset += grapheme.encode_utf16().count();
+        }
+        if let (Some(id), Some(style)) = (group_font, group_style.as_ref()) {
+            width += shape_width(&self.fonts, id, &group, style, graphemes)?;
+        }
+        Ok(width)
+    }
+}
+
+fn find_style_font(
+    fonts: &usvg::fontdb::Database,
+    style: &lumapaint_core::vector::TextStyle,
+) -> Option<usvg::fontdb::ID> {
+    use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
+    let families: Vec<_> = match style.font_family.as_str() {
+        "serif" => vec![
+            Family::Name("Hiragino Mincho ProN"),
+            Family::Name("Songti SC"),
+            Family::Serif,
+        ],
+        "monospace" => vec![Family::Name("Menlo"), Family::Monospace],
+        "sans-serif" => vec![
+            Family::Name("Hiragino Sans"),
+            Family::Name("PingFang SC"),
+            Family::SansSerif,
+        ],
+        name => vec![Family::Name(name), Family::SansSerif],
+    };
+    fonts.query(&Query {
+        families: &families,
+        weight: if style.bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        },
+        stretch: Stretch::Normal,
+        style: if style.italic {
+            Style::Italic
+        } else {
+            Style::Normal
+        },
+    })
+}
+
+fn font_supports(
+    fonts: &usvg::fontdb::Database,
+    id: usvg::fontdb::ID,
+    content: &str,
+    cache: &mut std::collections::HashMap<(usvg::fontdb::ID, char), bool>,
+) -> bool {
+    let unknown: Vec<_> = content
+        .chars()
+        .filter(|character| !character.is_control() && !cache.contains_key(&(id, *character)))
+        .collect();
+    if !unknown.is_empty() {
+        let support = fonts.with_face_data(id, |data, index| {
+            ttf_parser::Face::parse(data, index).ok().map(|face| {
+                unknown
+                    .iter()
+                    .map(|character| (*character, face.glyph_index(*character).is_some()))
+                    .collect::<Vec<_>>()
+            })
+        });
+        if let Some(Some(support)) = support {
+            for (character, supported) in support {
+                cache.insert((id, character), supported);
+            }
+        } else {
+            return false;
+        }
+    }
+    content
+        .chars()
+        .filter(|character| !character.is_control())
+        .all(|character| cache.get(&(id, character)) == Some(&true))
+}
+
+fn shape_width(
+    fonts: &usvg::fontdb::Database,
+    id: usvg::fontdb::ID,
+    content: &str,
+    style: &lumapaint_core::vector::TextStyle,
+    graphemes: usize,
+) -> Result<f32, String> {
+    let advance = fonts
+        .with_face_data(id, |data, index| {
+            let face = rustybuzz::Face::from_slice(data, index)?;
+            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            buffer.push_str(content);
+            buffer.guess_segment_properties();
+            let glyphs = rustybuzz::shape(&face, &[], buffer);
+            let units: i64 = glyphs
+                .glyph_positions()
+                .iter()
+                .map(|glyph| i64::from(glyph.x_advance))
+                .sum();
+            Some(units as f32 * style.font_size / face.units_per_em() as f32)
+        })
+        .flatten()
+        .ok_or("Unable to shape system font")?;
+    Ok((advance.abs() + graphemes as f32 * style.tracking * style.font_size / 1000.0).max(0.0))
+}
+
 fn font_resolver() -> usvg::FontResolver<'static> {
     let fallback = usvg::FontResolver::default_fallback_selector();
     usvg::FontResolver {
@@ -191,6 +370,58 @@ fn supports_skia(group: &usvg::Group) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_system_font_reflow_handles_mixed_multilingual_text() {
+        use lumapaint_core::vector::{TextStylePatch, VectorText};
+        if system_fonts().faces().next().is_none() {
+            return;
+        }
+        let mut text = VectorText {
+            content: "Hello 日本語 简体中文 Hello".into(),
+            font_family: "sans-serif".into(),
+            font_size: 30.0,
+            box_width: 120.0,
+            ..Default::default()
+        };
+        text.apply_style(
+            6,
+            9,
+            &TextStylePatch {
+                bold: Some(true),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        let runs = text.runs.clone();
+        reflow_text_with_system_fonts(&mut text, [0, 0, 0]).unwrap();
+        assert!(!text.soft_breaks.is_empty());
+        assert_eq!(text.runs, runs);
+        assert_eq!(
+            text.visual_lines()
+                .iter()
+                .map(|(_, line, _)| *line)
+                .collect::<String>(),
+            text.content
+        );
+        text.validate().unwrap();
+
+        let mut small = VectorText {
+            content: "Hello world Hello world".into(),
+            font_family: "sans-serif".into(),
+            font_size: 12.0,
+            box_width: 120.0,
+            ..Default::default()
+        };
+        let mut large = VectorText {
+            font_size: 36.0,
+            ..small.clone()
+        };
+        reflow_text_with_system_fonts(&mut small, [0, 0, 0]).unwrap();
+        reflow_text_with_system_fonts(&mut large, [0, 0, 0]).unwrap();
+        assert!(large.soft_breaks.len() > small.soft_breaks.len());
+    }
 
     fn pixel(image: &SvgRaster, width: usize, x: usize, y: usize) -> &[u8] {
         &image.pixels[(y * width + x) * 4..][..4]

@@ -2210,6 +2210,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2220,8 +2221,10 @@ dependencies = [
  "lumapaint-core",
  "pollster",
  "resvg",
+ "rustybuzz",
  "skia-safe",
  "ttf-parser",
+ "unicode-segmentation",
  "wgpu",
 ]
 
