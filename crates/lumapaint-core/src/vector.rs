@@ -205,6 +205,17 @@ impl Default for VectorText {
 }
 
 impl VectorText {
+    /// Discard measurements tied to a particular font/layout engine.
+    /// A host should call this before measuring the current content again.
+    pub fn clear_measured_layout(&mut self) {
+        self.soft_breaks.clear();
+        self.line_baselines.clear();
+        self.line_widths.clear();
+        self.line_origins.clear();
+        self.style_segment_origins.clear();
+        self.layout_bounds = None;
+    }
+
     /// Retain source text and character styles while splitting at hard and soft line breaks.
     /// The bool distinguishes a paragraph break from a wrapped line.
     pub fn visual_lines(&self) -> Vec<(usize, &str, bool)> {
@@ -318,8 +329,23 @@ impl VectorText {
         }
         let base = self.base_style(color);
         runs.retain(|run| run.style != base);
+        let changed = self.runs != runs;
         self.runs = runs;
-        self.style_segment_origins.clear();
+        if changed
+            && (patch.font_family.is_some()
+                || patch.font_size.is_some()
+                || patch.bold.is_some()
+                || patch.italic.is_some()
+                || patch.tracking.is_some()
+                || patch.baseline_shift.is_some()
+                || patch.underline.is_some()
+                || patch.strikethrough.is_some())
+        {
+            self.clear_measured_layout();
+        } else if changed {
+            // Color can split or merge style segments without changing glyph geometry.
+            self.style_segment_origins.clear();
+        }
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -643,6 +669,57 @@ pub trait VectorPathEngine {
 #[cfg(test)]
 mod text_style_tests {
     use super::*;
+    #[test]
+    fn style_changes_invalidate_only_the_layout_they_affect() {
+        let mut text = VectorText {
+            content: "ABCD".into(),
+            soft_breaks: vec![2],
+            line_baselines: vec![48.0, 110.0],
+            line_widths: vec![80.0, 82.0],
+            line_origins: vec![0.0, 0.0],
+            style_segment_origins: vec![vec![0.0], vec![0.0]],
+            layout_bounds: Some([0.0, 0.0, 100.0, 120.0]),
+            ..Default::default()
+        };
+        let color = [0, 0, 0];
+        text.validate().unwrap();
+        let original = text.clone();
+        text.apply_style(0, 2, &TextStylePatch::default(), color)
+            .unwrap();
+        assert_eq!(text, original);
+        text.apply_style(
+            0,
+            2,
+            &TextStylePatch {
+                color: Some([255, 0, 0]),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert_eq!(text.soft_breaks, vec![2]);
+        assert_eq!(text.line_baselines, vec![48.0, 110.0]);
+        assert_eq!(text.line_widths, vec![80.0, 82.0]);
+        assert_eq!(text.line_origins, vec![0.0, 0.0]);
+        assert_eq!(text.layout_bounds, original.layout_bounds);
+        assert!(text.style_segment_origins.is_empty());
+        text.apply_style(
+            0,
+            2,
+            &TextStylePatch {
+                font_size: Some(72.0),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert!(text.soft_breaks.is_empty());
+        assert!(text.line_baselines.is_empty());
+        assert!(text.line_widths.is_empty());
+        assert!(text.line_origins.is_empty());
+        assert!(text.style_segment_origins.is_empty());
+        assert_eq!(text.layout_bounds, None);
+    }
     #[test]
     fn selected_character_patches_preserve_other_properties_and_unicode_boundaries() {
         let mut text = VectorText {

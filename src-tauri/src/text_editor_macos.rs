@@ -115,12 +115,7 @@ fn current(session: &Session) -> TextSettings {
     let mut settings = session.settings.clone();
     settings.text.content = session.view.string().to_string();
     settings.text.runs.clear();
-    settings.text.soft_breaks.clear();
-    settings.text.line_baselines.clear();
-    settings.text.line_widths.clear();
-    settings.text.line_origins.clear();
-    settings.text.style_segment_origins.clear();
-    settings.text.layout_bounds = None;
+    settings.text.clear_measured_layout();
     if let Some(storage) = unsafe { session.view.textStorage() } {
         let key = NSString::from_str(STYLE_KEY);
         let mut at = 0;
@@ -305,12 +300,7 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
 /// Reflow a committed panel edit with the same AppKit font and paragraph attributes
 /// used by inline editing, without displaying or focusing another editor.
 pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
-    settings.text.soft_breaks.clear();
-    settings.text.line_baselines.clear();
-    settings.text.line_widths.clear();
-    settings.text.line_origins.clear();
-    settings.text.style_segment_origins.clear();
-    settings.text.layout_bounds = None;
+    settings.text.clear_measured_layout();
     settings.text.validate()?;
     let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
     let view = NSTextView::initWithFrame(
