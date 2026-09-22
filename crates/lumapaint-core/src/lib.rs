@@ -3,6 +3,7 @@
 use serde::Serialize;
 pub mod document;
 pub mod selection;
+pub mod tiles;
 pub mod vector;
 
 #[derive(Debug, Serialize)]
