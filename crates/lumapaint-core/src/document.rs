@@ -2146,6 +2146,22 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 };
                 let measured_origin = text.line_origins.get(index).copied();
                 let x = measured_origin.unwrap_or(fallback_x);
+                let segment_starts = text.style_segment_starts(start, line, color);
+                let segment_origins = text
+                    .style_segment_origins
+                    .get(index)
+                    .filter(|origins| origins.len() == segment_starts.len() && origins.len() > 1);
+                let segment_widths = segment_origins.zip(text.line_widths.get(index)).and_then(
+                    |(origins, line_width)| {
+                        let mut widths: Vec<f32> =
+                            origins.windows(2).map(|pair| pair[1] - pair[0]).collect();
+                        widths.push(origins[0] + line_width - origins[origins.len() - 1]);
+                        widths
+                            .iter()
+                            .all(|width| width.is_finite() && (0.0..100_000.0).contains(width))
+                            .then_some(widths)
+                    },
+                );
                 let _ = write!(svg, r#"<tspan x="{x}" y="{baseline}""#);
                 if measured_origin.is_some() {
                     svg.push_str(r#" text-anchor="start""#);
@@ -2153,7 +2169,7 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 if let Some(width) = text
                     .line_widths
                     .get(index)
-                    .filter(|width| **width > 0.0 && !line.is_empty())
+                    .filter(|width| **width > 0.0 && segment_starts.len() == 1)
                 {
                     let _ = write!(svg, r#" textLength="{width}" lengthAdjust="spacing""#);
                 }
@@ -2161,18 +2177,42 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 let mut segment = String::new();
                 let mut previous = None;
                 let mut offset = start;
+                let mut segment_index = 0;
                 for c in line.chars() {
                     let style = text.style_at(offset, color);
                     if previous.as_ref().is_some_and(|old| old != &style) {
-                        write_text_segment(&mut svg, previous.as_ref().unwrap(), &segment);
+                        write_text_segment(
+                            &mut svg,
+                            previous.as_ref().unwrap(),
+                            &segment,
+                            segment_origins
+                                .and_then(|origins| origins.get(segment_index))
+                                .copied(),
+                            segment_widths
+                                .as_ref()
+                                .and_then(|widths| widths.get(segment_index))
+                                .copied(),
+                        );
                         segment.clear();
+                        segment_index += 1;
                     }
                     segment.push(c);
                     previous = Some(style);
                     offset += c.len_utf16();
                 }
                 if let Some(style) = previous {
-                    write_text_segment(&mut svg, &style, &segment);
+                    write_text_segment(
+                        &mut svg,
+                        &style,
+                        &segment,
+                        segment_origins
+                            .and_then(|origins| origins.get(segment_index))
+                            .copied(),
+                        segment_widths
+                            .as_ref()
+                            .and_then(|widths| widths.get(segment_index))
+                            .copied(),
+                    );
                 }
                 svg.push_str("</tspan>");
             }
@@ -2194,7 +2234,13 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     svg
 }
 
-fn write_text_segment(svg: &mut String, style: &crate::vector::TextStyle, content: &str) {
+fn write_text_segment(
+    svg: &mut String,
+    style: &crate::vector::TextStyle,
+    content: &str,
+    x: Option<f32>,
+    width: Option<f32>,
+) {
     use std::fmt::Write;
     let family = match style.font_family.as_str() {
         "serif" => "Hiragino Mincho ProN, Songti SC, Noto Serif CJK JP, serif",
@@ -2209,9 +2255,15 @@ fn write_text_segment(svg: &mut String, style: &crate::vector::TextStyle, conten
         _ => "none",
     };
     let [r, g, b] = style.color;
+    let x_attribute = x.map_or_else(String::new, |x| format!(r#" x="{x}""#));
+    let width_attribute = width
+        .filter(|_| content.chars().count() > 1)
+        .map_or_else(String::new, |width| {
+            format!(r#" textLength="{width}" lengthAdjust="spacing""#)
+        });
     let _ = write!(
         svg,
-        r##"<tspan fill="#{r:02x}{g:02x}{b:02x}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
+        r##"<tspan{x_attribute}{width_attribute} fill="#{r:02x}{g:02x}{b:02x}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
         escape_xml(family),
         style.font_size,
         if style.bold { 700 } else { 400 },
@@ -2935,6 +2987,42 @@ mod text_tests {
         );
         for origins in [vec![42.0], vec![42.0, f32::NAN]] {
             edit.text.line_origins = origins;
+            assert!(edit.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_style_segment_origins_are_saved_and_bound_to_runs() {
+        let mut edit = settings();
+        edit.text.content = "ABCD".into();
+        edit.text
+            .apply_style(
+                2,
+                4,
+                &crate::vector::TextStylePatch {
+                    bold: Some(false),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        edit.text.style_segment_origins = vec![vec![4.0, 81.0]];
+        edit.text.line_widths = vec![130.0];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("<tspan x=\"4\" textLength="));
+        assert!(svg.contains("<tspan x=\"81\" textLength="));
+        assert!(svg.contains("x=\"4\" textLength=\"77\" lengthAdjust=\"spacing\""));
+        assert!(svg.contains("x=\"81\" textLength=\"53\" lengthAdjust=\"spacing\""));
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0]
+                .text
+                .style_segment_origins,
+            vec![vec![4.0, 81.0]]
+        );
+        for segments in [vec![vec![]], vec![vec![f32::NAN]]] {
+            edit.text.style_segment_origins = segments;
             assert!(edit.text.validate().is_err());
         }
     }

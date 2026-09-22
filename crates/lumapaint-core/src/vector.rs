@@ -134,6 +134,9 @@ pub struct VectorText {
     /// Native layout pen position at the start of each visual line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line_origins: Vec<f32>,
+    /// Native pen positions for the style segments on each visual line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_segment_origins: Vec<Vec<f32>>,
     /// Glyph enclosure in unscaled, unrotated text-container coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_bounds: Option<[f32; 4]>,
@@ -176,6 +179,7 @@ impl Default for VectorText {
             line_baselines: Vec::new(),
             line_widths: Vec::new(),
             line_origins: Vec::new(),
+            style_segment_origins: Vec::new(),
             layout_bounds: None,
             font_family: "sans-serif".into(),
             font_size: 48.0,
@@ -250,6 +254,20 @@ impl VectorText {
             color,
         }
     }
+    pub fn style_segment_starts(&self, start: usize, line: &str, color: [u8; 3]) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut previous = None;
+        let mut offset = start;
+        for c in line.chars() {
+            let style = self.style_at(offset, color);
+            if previous.as_ref() != Some(&style) {
+                starts.push(offset);
+                previous = Some(style);
+            }
+            offset += c.len_utf16();
+        }
+        starts
+    }
     pub fn style_at(&self, offset: usize, color: [u8; 3]) -> TextStyle {
         self.runs
             .iter()
@@ -301,6 +319,7 @@ impl VectorText {
         let base = self.base_style(color);
         runs.retain(|run| run.style != base);
         self.runs = runs;
+        self.style_segment_origins.clear();
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -379,6 +398,22 @@ impl VectorText {
                     .any(|value| !value.is_finite() || value.abs() >= 100_000.0))
         {
             return Err("Invalid text line origins".into());
+        }
+        if !self.style_segment_origins.is_empty()
+            && (self.style_segment_origins.len() != self.visual_lines().len()
+                || self
+                    .style_segment_origins
+                    .iter()
+                    .zip(self.visual_lines())
+                    .any(|(origins, (_, line, _))| {
+                        origins.len() > line.chars().count()
+                            || (origins.is_empty() != line.is_empty())
+                            || origins
+                                .iter()
+                                .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+                    }))
+        {
+            return Err("Invalid text style segment origins".into());
         }
         if self.layout_bounds.is_some_and(|[x, y, width, height]| {
             [x, y, width, height]

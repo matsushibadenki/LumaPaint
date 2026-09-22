@@ -237,6 +237,63 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn saved_style_segment_origins_reach_mixed_style_document_rendering() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{TextStylePatch, VectorText},
+        };
+        let mut text = VectorText {
+            content: "ABCD".into(),
+            font_family: "Arial".into(),
+            font_size: 48.0,
+            ..Default::default()
+        };
+        text.apply_style(
+            2,
+            4,
+            &TextStylePatch {
+                bold: Some(true),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        let mut doc = Document::default();
+        let mut settings = TextSettings {
+            id: None,
+            text: text.clone(),
+            position: [10.0, 30.0],
+            color: [0, 0, 0],
+        };
+        doc.set_text_object(settings.clone()).unwrap();
+        let natural = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        settings.id = Some(doc.snapshot().text_objects[0].id.clone());
+        settings.text.line_widths = vec![150.0];
+        settings.text.line_origins = vec![0.0];
+        settings.text.style_segment_origins = vec![vec![0.0, 100.0]];
+        doc.set_text_object(settings.clone()).unwrap();
+        let measured = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        settings.text.line_widths = vec![220.0];
+        doc.set_text_object(settings).unwrap();
+        let wider = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let rightmost = |image: &SvgRaster| {
+            image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 32)
+                .map(|(index, _)| index % 960)
+                .max()
+                .unwrap()
+        };
+        assert!(rightmost(&measured) > rightmost(&natural) + 10);
+        assert!(rightmost(&wider) > rightmost(&measured) + 30);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn measured_line_origin_overrides_inherited_text_anchor() {
         let raster = |child_anchor: &str| {
             let svg = format!(

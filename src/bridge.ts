@@ -23,7 +23,7 @@ export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
-  runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; layoutBounds?: [number, number, number, number];
+  runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';

@@ -119,6 +119,7 @@ fn current(session: &Session) -> TextSettings {
     settings.text.line_baselines.clear();
     settings.text.line_widths.clear();
     settings.text.line_origins.clear();
+    settings.text.style_segment_origins.clear();
     settings.text.layout_bounds = None;
     if let Some(storage) = unsafe { session.view.textStorage() } {
         let key = NSString::from_str(STYLE_KEY);
@@ -148,23 +149,32 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
-    let (breaks, baselines, widths, origins, bounds) =
-        measured_layout(&session.view, &settings.text);
+    let (breaks, baselines, widths, origins, segments, bounds) =
+        measured_layout(&session.view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
     settings.text.line_widths = widths;
     settings.text.line_origins = origins;
+    settings.text.style_segment_origins = segments;
     settings.text.layout_bounds = bounds;
     settings
 }
 
-type MeasuredTextLayout = (Vec<usize>, Vec<f32>, Vec<f32>, Vec<f32>, Option<[f32; 4]>);
+type MeasuredTextLayout = (
+    Vec<usize>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<Vec<f32>>,
+    Option<[f32; 4]>,
+);
 
-fn measured_layout(view: &NSTextView, text: &VectorText) -> MeasuredTextLayout {
+fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> MeasuredTextLayout {
     let mut breaks = Vec::new();
     let mut baselines = Vec::new();
     let mut widths = Vec::new();
     let mut origins = Vec::new();
+    let mut segments = Vec::new();
     let mut bounds = None;
     if let (Some(manager), Some(container)) = (unsafe { view.layoutManager() }, unsafe {
         view.textContainer()
@@ -255,7 +265,41 @@ fn measured_layout(view: &NSTextView, text: &VectorText) -> MeasuredTextLayout {
     {
         origins.clear();
     }
-    (breaks, baselines, widths, origins, bounds)
+    if let Some(manager) = unsafe { view.layoutManager() } {
+        for (start, line, _) in measured_text.visual_lines() {
+            let mut line_segments = Vec::new();
+            for offset in measured_text.style_segment_starts(start, line, color) {
+                let glyph = manager.glyphIndexForCharacterAtIndex(offset);
+                if glyph >= manager.numberOfGlyphs() {
+                    line_segments.clear();
+                    break;
+                }
+                let fragment = unsafe {
+                    manager
+                        .lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, std::ptr::null_mut())
+                };
+                let x = fragment.origin.x
+                    + manager.locationForGlyphAtIndex(glyph).x
+                    + view.textContainerOrigin().x;
+                line_segments.push(x as f32);
+            }
+            segments.push(line_segments);
+        }
+    }
+    if segments.len() != measured_text.visual_lines().len()
+        || segments
+            .iter()
+            .zip(measured_text.visual_lines())
+            .any(|(positions, (start, line, _))| {
+                positions.len() != measured_text.style_segment_starts(start, line, color).len()
+                    || positions
+                        .iter()
+                        .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+            })
+    {
+        segments.clear();
+    }
+    (breaks, baselines, widths, origins, segments, bounds)
 }
 
 /// Reflow a committed panel edit with the same AppKit font and paragraph attributes
@@ -265,6 +309,7 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.line_baselines.clear();
     settings.text.line_widths.clear();
     settings.text.line_origins.clear();
+    settings.text.style_segment_origins.clear();
     settings.text.layout_bounds = None;
     settings.text.validate()?;
     let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
@@ -285,11 +330,13 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
         container.setWidthTracksTextView(true);
     }
     apply_attributes_to_view(&view, settings)?;
-    let (breaks, baselines, widths, origins, bounds) = measured_layout(&view, &settings.text);
+    let (breaks, baselines, widths, origins, segments, bounds) =
+        measured_layout(&view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
     settings.text.line_widths = widths;
     settings.text.line_origins = origins;
+    settings.text.style_segment_origins = segments;
     settings.text.layout_bounds = bounds;
     settings.text.validate()
 }
