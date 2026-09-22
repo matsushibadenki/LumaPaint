@@ -1,12 +1,12 @@
 //! GPU rendering shared across desktop platforms; native view ownership lives in the host.
 use lumapaint_core::document::{
-    CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, SvgLayer,
-    HEIGHT, WIDTH,
+    CanvasColor, Document, PaintProjectionState, Point, Selection, SelectionOperation,
+    SelectionShape, Stroke, SvgLayer, HEIGHT, WIDTH,
 };
 use lumapaint_core::tiles::{
-    RasterDab, TileInvalidation, TileUpload, TiledRasterDocument, TILE_SIZE,
+    RasterDab, TileCoord, TileInvalidation, TileUpload, TiledRasterDocument, TILE_SIZE,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 pub use wgpu;
 use wgpu::util::DeviceExt;
@@ -369,6 +369,52 @@ pub fn paint_stroke_into_tiles_at_scale(
     document.paint_dabs_clipped(layer_id, &dabs, stroke.brush.color, selection.as_ref())
 }
 
+/// Conservative tile bounds for one retained stroke. The two-pixel margin
+/// matches the raster dab's coverage loop, including edge antialiasing.
+pub fn stroke_candidate_tile_coords_at_scale(
+    stroke: &Stroke,
+    dimensions: (u32, u32),
+    scale: u32,
+) -> Result<Vec<TileCoord>, String> {
+    if !(1..=2).contains(&scale) {
+        return Err("Unsupported tile preview scale".into());
+    }
+    let width = dimensions
+        .0
+        .checked_mul(scale)
+        .ok_or("Tile preview width overflow")?;
+    let height = dimensions
+        .1
+        .checked_mul(scale)
+        .ok_or("Tile preview height overflow")?;
+    let factor = scale as f32;
+    let mut coords = BTreeSet::new();
+    for dab in sampled_raster_dabs(stroke)? {
+        if dab.weight == 0.0 {
+            continue;
+        }
+        let x = dab.x * factor;
+        let y = dab.y * factor;
+        let radius = dab.radius * factor;
+        let left = (x - radius - 2.0).floor().max(0.0) as u32;
+        let top = (y - radius - 2.0).floor().max(0.0) as u32;
+        let right = (x + radius + 2.0).ceil().max(0.0).min(width as f32) as u32;
+        let bottom = (y + radius + 2.0).ceil().max(0.0).min(height as f32) as u32;
+        if left >= right || top >= bottom {
+            continue;
+        }
+        for tile_y in top / TILE_SIZE..=(bottom - 1) / TILE_SIZE {
+            for tile_x in left / TILE_SIZE..=(right - 1) / TILE_SIZE {
+                coords.insert(TileCoord {
+                    x: tile_x,
+                    y: tile_y,
+                });
+            }
+        }
+    }
+    Ok(coords.into_iter().collect())
+}
+
 /// Paint a sampled stroke into a layer mask using an explicit grayscale target.
 /// Zero hides the layer and 255 reveals it when the mask is enabled.
 pub fn paint_stroke_into_mask(
@@ -430,12 +476,76 @@ pub fn project_committed_paint_layer_at_scale(
     Ok(projected)
 }
 
+/// Apply paint-layer settings to a retained projection without replaying its
+/// strokes. Only the allocated tiles can change their composite pixels.
+pub fn update_projected_paint_appearance(
+    projected: &mut TiledRasterDocument,
+    state: PaintProjectionState,
+) -> Result<Vec<TileUpload>, String> {
+    let layer = projected
+        .layers()
+        .first()
+        .ok_or("Missing projected paint layer")?;
+    let invalidation = TileInvalidation {
+        layer_id: layer.id.clone(),
+        coords: layer.tiles.allocated_coords().collect(),
+    };
+    let before = projected.prepare_uploads(&invalidation)?;
+    let (visible, opacity, mask_enabled, mask_inverted, mask_density) = state.tile_appearance();
+    projected.set_layer_mask(
+        &invalidation.layer_id,
+        mask_enabled,
+        mask_inverted,
+        mask_density,
+    )?;
+    projected.set_layer_appearance(&invalidation.layer_id, visible, opacity)?;
+    let (locked, alpha_locked) = state.locks();
+    projected.set_layer_locks(&invalidation.layer_id, locked, alpha_locked)?;
+    projected.discard_history();
+    let after = projected.prepare_uploads(&invalidation)?;
+    Ok(after
+        .into_iter()
+        .zip(before)
+        .filter_map(|(next, old)| (next.pixels != old.pixels).then_some(next))
+        .collect())
+}
+
 /// GPU storage for the tile document's premultiplied RGBA8 composite.
 /// The current v1 frame renderer does not sample this texture yet.
 pub struct TileTexture {
     texture: wgpu::Texture,
     width: u32,
     height: u32,
+}
+
+/// A tile transfer batch whose coordinates, extents and payload lengths were
+/// checked before it reached the UI thread.
+pub struct ValidatedTileUploads {
+    dimensions: (u32, u32),
+    uploads: Vec<TileUpload>,
+}
+
+impl ValidatedTileUploads {
+    pub fn new(dimensions: (u32, u32), uploads: Vec<TileUpload>) -> Result<Self, String> {
+        validate_tile_uploads(dimensions.0, dimensions.1, &uploads)?;
+        Ok(Self {
+            dimensions,
+            uploads,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.uploads.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.uploads.is_empty()
+    }
+}
+
+enum TileUploadSource<'a> {
+    Raw(&'a [TileUpload]),
+    Validated(&'a ValidatedTileUploads),
 }
 
 impl TileTexture {
@@ -504,6 +614,23 @@ impl TileTexture {
     /// Validate the full batch before submitting any texture writes.
     pub fn upload(&self, queue: &wgpu::Queue, uploads: &[TileUpload]) -> Result<(), String> {
         validate_tile_uploads(self.width, self.height, uploads)?;
+        self.upload_unchecked(queue, uploads);
+        Ok(())
+    }
+
+    fn upload_validated(
+        &self,
+        queue: &wgpu::Queue,
+        batch: &ValidatedTileUploads,
+    ) -> Result<(), String> {
+        if batch.dimensions != (self.width, self.height) {
+            return Err("Tile upload dimensions changed".into());
+        }
+        self.upload_unchecked(queue, &batch.uploads);
+        Ok(())
+    }
+
+    fn upload_unchecked(&self, queue: &wgpu::Queue, uploads: &[TileUpload]) {
         for upload in uploads {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -529,7 +656,6 @@ impl TileTexture {
                 },
             );
         }
-        Ok(())
     }
 }
 
@@ -1099,6 +1225,37 @@ impl Renderer {
         scale: u32,
         uploads: &[TileUpload],
     ) -> Result<(), String> {
+        self.install_tiled_preview_upload_source(
+            tile_dimensions,
+            document_dimensions,
+            scale,
+            TileUploadSource::Raw(uploads),
+        )
+    }
+
+    /// Install a worker-validated batch without repeating per-tile checks on
+    /// the UI thread.
+    pub fn install_tiled_preview_batch_at_scale(
+        &mut self,
+        document_dimensions: (u32, u32),
+        scale: u32,
+        batch: &ValidatedTileUploads,
+    ) -> Result<(), String> {
+        self.install_tiled_preview_upload_source(
+            batch.dimensions,
+            document_dimensions,
+            scale,
+            TileUploadSource::Validated(batch),
+        )
+    }
+
+    fn install_tiled_preview_upload_source(
+        &mut self,
+        tile_dimensions: (u32, u32),
+        document_dimensions: (u32, u32),
+        scale: u32,
+        uploads: TileUploadSource<'_>,
+    ) -> Result<(), String> {
         if !(1..=2).contains(&scale)
             || document_dimensions.0.checked_mul(scale) != Some(tile_dimensions.0)
             || document_dimensions.1.checked_mul(scale) != Some(tile_dimensions.1)
@@ -1107,7 +1264,10 @@ impl Renderer {
         }
         let (width, height) = tile_dimensions;
         let texture = TileTexture::new(&self.device, &self.queue, width, height)?;
-        texture.upload(&self.queue, uploads)?;
+        match uploads {
+            TileUploadSource::Raw(uploads) => texture.upload(&self.queue, uploads)?,
+            TileUploadSource::Validated(batch) => texture.upload_validated(&self.queue, batch)?,
+        }
         let view = texture.texture().create_view(&Default::default());
         let make_bind_group = |sampler: &wgpu::Sampler| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1157,6 +1317,17 @@ impl Renderer {
             return Err("Tile preview dimensions changed".into());
         }
         preview.texture.upload(&self.queue, uploads)
+    }
+
+    pub fn update_tiled_preview_batch(
+        &mut self,
+        batch: &ValidatedTileUploads,
+    ) -> Result<(), String> {
+        let preview = self
+            .tile_preview
+            .as_ref()
+            .ok_or("No tile preview installed")?;
+        preview.texture.upload_validated(&self.queue, batch)
     }
 
     pub fn clear_tiled_preview(&mut self) {
@@ -1935,12 +2106,20 @@ mod tests {
             .unwrap();
         let uploads = document.prepare_uploads(&changed).unwrap();
         assert!(validate_tile_uploads(257, 3, &uploads).is_ok());
+        assert_eq!(
+            ValidatedTileUploads::new((257, 3), uploads.clone())
+                .unwrap()
+                .len(),
+            2
+        );
         let mut invalid = uploads.clone();
         invalid[1].extent = [2, 3];
         assert!(validate_tile_uploads(257, 3, &invalid).is_err());
+        assert!(ValidatedTileUploads::new((257, 3), invalid.clone()).is_err());
         invalid[1] = uploads[1].clone();
         invalid[1].pixels.pop();
         assert!(validate_tile_uploads(257, 3, &invalid).is_err());
+        assert!(ValidatedTileUploads::new((257, 3), invalid).is_err());
     }
 
     #[test]
@@ -2095,6 +2274,86 @@ mod tests {
                 incremental.prepare_full_uploads(),
                 rebuilt.prepare_full_uploads()
             );
+        }
+    }
+
+    #[test]
+    fn undone_stroke_bounds_cover_every_changed_tile_at_both_resolutions() {
+        use lumapaint_core::document::Brush;
+        let mut source = Document::default();
+        let brush = Brush {
+            size: 24.0,
+            hardness: 0.25,
+            color: [20, 40, 80],
+        };
+        source.begin(Point { x: 80.0, y: 80.0 }, brush).unwrap();
+        source.finish();
+        source.begin(Point { x: 255.0, y: 280.0 }, brush).unwrap();
+        source.extend(Point { x: 520.0, y: 350.0 }).unwrap();
+        source.finish();
+        for scale in [1, 2] {
+            let before = project_committed_paint_layer_at_scale(&source, scale).unwrap();
+            let mut undone = source.clone();
+            undone.undo();
+            let removed = undone.last_undone_paint_stroke().unwrap();
+            let coords =
+                stroke_candidate_tile_coords_at_scale(removed, source.dimensions(), scale).unwrap();
+            let after = project_committed_paint_layer_at_scale(&undone, scale).unwrap();
+            let all = after.prepare_changed_uploads(&before).unwrap();
+            let bounded = after
+                .prepare_changed_uploads_in_coords(&before, &coords)
+                .unwrap();
+            assert!(!all.is_empty());
+            assert_eq!(bounded, all);
+            assert!(!coords.contains(&TileCoord { x: 0, y: 0 }));
+        }
+    }
+
+    #[test]
+    fn appearance_updates_match_full_projection_without_replaying_strokes() {
+        use lumapaint_core::document::{Brush, LayerSettings};
+        let mut source = Document::default();
+        source
+            .begin(Point { x: 260.0, y: 260.0 }, Brush::default())
+            .unwrap();
+        source.finish();
+        for scale in [1, 2] {
+            let mut edited = source.clone();
+            let mut projected = project_committed_paint_layer_at_scale(&edited, scale).unwrap();
+            for (opacity, mask_enabled, mask_density, visible, expect_empty) in [
+                (0.5, false, 1.0, true, false),
+                (0.5, true, 0.4, true, false),
+                (0.5, true, 0.4, false, false),
+                (0.25, true, 0.4, false, true),
+                (0.25, true, 0.4, true, false),
+            ] {
+                edited
+                    .set_layer_settings(LayerSettings {
+                        id: "layer-1".into(),
+                        name: "Layer 1".into(),
+                        opacity,
+                        locked: false,
+                        alpha_locked: false,
+                        mask_enabled,
+                        mask_inverted: false,
+                        mask_density,
+                    })
+                    .unwrap();
+                if edited.snapshot().layers[0].visible != visible {
+                    edited.toggle_visibility();
+                }
+                let uploads = update_projected_paint_appearance(
+                    &mut projected,
+                    edited.paint_projection_state(),
+                )
+                .unwrap();
+                assert_eq!(uploads.is_empty(), expect_empty);
+                let rebuilt = project_committed_paint_layer_at_scale(&edited, scale).unwrap();
+                assert_eq!(
+                    projected.prepare_full_uploads(),
+                    rebuilt.prepare_full_uploads()
+                );
+            }
         }
     }
 

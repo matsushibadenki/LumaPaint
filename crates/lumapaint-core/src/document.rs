@@ -269,8 +269,8 @@ struct VectorHistoryState {
     selection: Vec<String>,
 }
 
-/// Minimal state needed to append one committed stroke to a projected tile
-/// cache. Changes to layer appearance or locks require a full projection.
+/// Minimal state needed to decide whether a projected paint tile cache can be
+/// reused or extended after a document revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaintProjectionState {
     pub stroke_count: usize,
@@ -284,15 +284,44 @@ pub struct PaintProjectionState {
 }
 
 impl PaintProjectionState {
+    /// A document edit did not change the projected paint pixels. Lock flags
+    /// affect future edits but do not alter already committed pixels.
+    pub fn same_composite(self, next: Self) -> bool {
+        self.stroke_count == next.stroke_count
+            && self.visible == next.visible
+            && self.opacity == next.opacity
+            && self.mask_enabled == next.mask_enabled
+            && self.mask_inverted == next.mask_inverted
+            && self.mask_density == next.mask_density
+    }
+
+    pub fn locks(self) -> (bool, bool) {
+        (self.locked, self.alpha_locked)
+    }
+
+    pub fn tile_appearance(self) -> (bool, f32, bool, bool, f32) {
+        (
+            self.visible,
+            f32::from_bits(self.opacity),
+            self.mask_enabled,
+            self.mask_inverted,
+            f32::from_bits(self.mask_density),
+        )
+    }
+
+    pub fn same_appearance(self, next: Self) -> bool {
+        Self {
+            stroke_count: next.stroke_count,
+            ..self
+        } == next
+    }
+
     pub fn can_append_one(self, next: Self) -> bool {
         self.visible
             && !self.locked
             && !self.alpha_locked
             && self.stroke_count.checked_add(1) == Some(next.stroke_count)
-            && Self {
-                stroke_count: next.stroke_count,
-                ..self
-            } == next
+            && self.same_appearance(next)
     }
 }
 
@@ -1692,6 +1721,13 @@ impl Document {
     pub fn committed_paint_strokes(&self) -> impl Iterator<Item = &Stroke> {
         self.strokes.iter()
     }
+
+    /// The stroke most recently removed by Undo, when it is the next Redo action.
+    pub fn last_undone_paint_stroke(&self) -> Option<&Stroke> {
+        matches!(self.redo_order.last(), Some(HistoryKind::Stroke))
+            .then(|| self.redo.last())
+            .flatten()
+    }
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
     }
@@ -2019,6 +2055,30 @@ mod tests {
         doc.toggle_visibility();
         doc.undo();
         assert!(!previous.can_append_one(doc.paint_projection_state()));
+    }
+
+    #[test]
+    fn tile_composite_is_unchanged_by_lock_and_vector_edits() {
+        let mut doc = Document::default();
+        stroke(&mut doc);
+        let painted = doc.paint_projection_state();
+        doc.set_layer_settings(LayerSettings {
+            id: "layer-1".into(),
+            name: "Paint".into(),
+            opacity: 1.0,
+            locked: true,
+            alpha_locked: true,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.0,
+        })
+        .unwrap();
+        assert!(painted.same_composite(doc.paint_projection_state()));
+        assert!(!painted.same_appearance(doc.paint_projection_state()));
+        doc.add_vector_layer().unwrap();
+        assert!(painted.same_composite(doc.paint_projection_state()));
+        doc.toggle_visibility();
+        assert!(!painted.same_composite(doc.paint_projection_state()));
     }
     #[test]
     fn hidden_layer_and_outside_page_reject_new_strokes() {

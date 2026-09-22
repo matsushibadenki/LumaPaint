@@ -7,13 +7,14 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
 };
-use lumapaint_core::tiles::{TileUpload, TiledRasterDocument};
+use lumapaint_core::tiles::TiledRasterDocument;
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
 use lumapaint_renderer::{
     paint_stroke_into_tiles_at_scale, prepare_svg_layer, project_committed_paint_layer_at_scale,
-    validate_svg, wgpu, PreparedSvgLayer, Renderer, Viewport,
+    stroke_candidate_tile_coords_at_scale, update_projected_paint_appearance, validate_svg, wgpu,
+    PreparedSvgLayer, Renderer, ValidatedTileUploads, Viewport,
 };
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -88,15 +89,19 @@ enum TileWork {
         cache: Box<TileCache>,
         stroke: Stroke,
     },
+    Appearance {
+        cache: Box<TileCache>,
+    },
     Reconcile {
         cache: Box<TileCache>,
         document: Box<Document>,
+        stroke_hint: Option<Stroke>,
     },
 }
 
 struct TileResult {
     tiles: TiledRasterDocument,
-    uploads: Vec<TileUpload>,
+    uploads: ValidatedTileUploads,
     incremental: bool,
 }
 
@@ -161,11 +166,7 @@ pub fn initialize(app: tauri::AppHandle) {
                         project_committed_paint_layer_at_scale(&document, job.key.scale).map(
                             |tiles| {
                                 let uploads = tiles.prepare_full_uploads();
-                                TileResult {
-                                    tiles,
-                                    uploads,
-                                    incremental: false,
-                                }
+                                (tiles, uploads, false)
                             },
                         )
                     }
@@ -182,26 +183,49 @@ pub fn initialize(app: tauri::AppHandle) {
                                 changed.as_ref().map_or(Ok(Vec::new()), |invalidation| {
                                     cache.tiles.prepare_uploads(invalidation)
                                 })?;
-                            Ok(TileResult {
-                                tiles: cache.tiles,
-                                uploads,
-                                incremental: true,
-                            })
+                            Ok((cache.tiles, uploads, true))
                         })
                     }
-                    TileWork::Reconcile { cache, document } => {
-                        project_committed_paint_layer_at_scale(&document, job.key.scale).and_then(
-                            |tiles| {
-                                let uploads = tiles.prepare_changed_uploads(&cache.tiles)?;
-                                Ok(TileResult {
-                                    tiles,
-                                    uploads,
-                                    incremental: true,
-                                })
-                            },
-                        )
+                    TileWork::Appearance { mut cache } => {
+                        update_projected_paint_appearance(&mut cache.tiles, job.state)
+                            .map(|uploads| (cache.tiles, uploads, true))
                     }
-                };
+                    TileWork::Reconcile {
+                        cache,
+                        document,
+                        stroke_hint,
+                    } => project_committed_paint_layer_at_scale(&document, job.key.scale).and_then(
+                        |tiles| {
+                            let uploads = stroke_hint
+                                .as_ref()
+                                .and_then(|stroke| {
+                                    stroke_candidate_tile_coords_at_scale(
+                                        stroke,
+                                        job.dimensions,
+                                        job.key.scale,
+                                    )
+                                    .ok()
+                                })
+                                .map_or_else(
+                                    || tiles.prepare_changed_uploads(&cache.tiles),
+                                    |coords| {
+                                        tiles.prepare_changed_uploads_in_coords(
+                                            &cache.tiles,
+                                            &coords,
+                                        )
+                                    },
+                                )?;
+                            Ok((tiles, uploads, true))
+                        },
+                    ),
+                }
+                .and_then(|(tiles, uploads, incremental)| {
+                    Ok(TileResult {
+                        uploads: ValidatedTileUploads::new(tiles.dimensions(), uploads)?,
+                        tiles,
+                        incremental,
+                    })
+                });
                 let cpu_time = started.elapsed();
                 let _ = tile_app.run_on_main_thread(move || {
                     finish_tile_job(
@@ -993,8 +1017,34 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
         canvas.renderer.set_tiled_preview_visible(true);
         return;
     }
-    canvas.renderer.set_tiled_preview_visible(false);
     let state = document.paint_projection_state();
+    if canvas.tile_cache.as_ref().is_some_and(|cache| {
+        canvas.tile_ready == Some(cache.key)
+            && cache.key.source.document_id == key.source.document_id
+            && cache.key.source.canvas_token == key.source.canvas_token
+            && cache.key.scale == key.scale
+            && cache.key.source.revision.checked_add(1) == Some(key.source.revision)
+            && cache.dimensions == document.dimensions()
+            && cache.state.same_composite(state)
+    }) {
+        let cache = canvas.tile_cache.as_mut().expect("Reuse cache was checked");
+        if let Some(layer_id) = cache.tiles.layers().first().map(|layer| layer.id.clone()) {
+            let (locked, alpha_locked) = state.locks();
+            if cache
+                .tiles
+                .set_layer_locks(&layer_id, locked, alpha_locked)
+                .is_ok()
+            {
+                cache.tiles.discard_history();
+                cache.key = key;
+                cache.state = state;
+                canvas.tile_ready = Some(key);
+                canvas.renderer.set_tiled_preview_visible(true);
+                return;
+            }
+        }
+    }
+    canvas.renderer.set_tiled_preview_visible(false);
     if canvas.tile_job == Some(key) || canvas.tile_failure == Some(key) {
         return;
     }
@@ -1028,7 +1078,49 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
         }
         return;
     }
+    if can_reconcile_tile_preview(canvas.tile_cache.as_ref(), document, key)
+        && canvas
+            .tile_cache
+            .as_ref()
+            .is_some_and(|cache| cache.state.stroke_count == state.stroke_count)
+    {
+        let cache = canvas
+            .tile_cache
+            .take()
+            .expect("Appearance cache was checked");
+        let job = TileJob {
+            key,
+            work: TileWork::Appearance {
+                cache: Box::new(cache),
+            },
+            state,
+            dimensions: document.dimensions(),
+            queued_at: Instant::now(),
+        };
+        match sender.try_send(job) {
+            Ok(()) => canvas.tile_job = Some(key),
+            Err(TrySendError::Full(job)) => {
+                if let TileWork::Appearance { cache } = job.work {
+                    canvas.tile_cache = Some(*cache);
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => canvas.renderer.clear_tiled_preview(),
+        }
+        return;
+    }
     if can_reconcile_tile_preview(canvas.tile_cache.as_ref(), document, key) {
+        let stroke_hint = canvas.tile_cache.as_ref().and_then(|cache| {
+            if !cache.state.same_appearance(state) {
+                return None;
+            }
+            if cache.state.stroke_count.checked_add(1) == Some(state.stroke_count) {
+                document.committed_paint_strokes().last().cloned()
+            } else if state.stroke_count.checked_add(1) == Some(cache.state.stroke_count) {
+                document.last_undone_paint_stroke().cloned()
+            } else {
+                None
+            }
+        });
         let cache = canvas
             .tile_cache
             .take()
@@ -1038,6 +1130,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             work: TileWork::Reconcile {
                 cache: Box::new(cache),
                 document: Box::new(document.clone()),
+                stroke_hint,
             },
             state,
             dimensions: document.dimensions(),
@@ -1237,13 +1330,11 @@ fn finish_tile_job(
                 incremental = prepared.incremental;
                 changed_tiles = prepared.uploads.len();
                 let upload = if prepared.incremental {
-                    canvas.renderer.update_tiled_preview_uploads(
-                        prepared.tiles.dimensions(),
-                        &prepared.uploads,
-                    )
+                    canvas
+                        .renderer
+                        .update_tiled_preview_batch(&prepared.uploads)
                 } else {
-                    canvas.renderer.install_tiled_preview_uploads_at_scale(
-                        prepared.tiles.dimensions(),
+                    canvas.renderer.install_tiled_preview_batch_at_scale(
                         dimensions,
                         key.scale,
                         &prepared.uploads,

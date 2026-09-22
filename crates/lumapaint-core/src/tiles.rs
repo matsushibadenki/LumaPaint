@@ -708,8 +708,21 @@ impl TiledRasterDocument {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let before = previous.prepare_coords(&coords)?;
-        let after = self.prepare_coords(&coords)?;
+        self.prepare_changed_uploads_in_coords(previous, &coords)
+    }
+
+    /// Compare only coordinates known to contain a change. Callers must pass
+    /// a conservative superset of every possibly affected tile.
+    pub fn prepare_changed_uploads_in_coords(
+        &self,
+        previous: &Self,
+        coords: &[TileCoord],
+    ) -> Result<Vec<TileUpload>, String> {
+        if self.dimensions() != previous.dimensions() {
+            return Err("Raster documents have different dimensions".into());
+        }
+        let before = previous.prepare_coords(coords)?;
+        let after = self.prepare_coords(coords)?;
         Ok(after
             .into_iter()
             .zip(before)
