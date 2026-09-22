@@ -58,8 +58,9 @@ export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot>
   return result;
 }
 export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
+export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
 export interface VectorPaint { color: [number, number, number, number] }
-export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
+export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
@@ -132,6 +133,11 @@ export function upsertVectorObject(layerId: string, object: VectorObject): Promi
 }
 export function selectVectorObjects(ids: string[]): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_vector_objects', { ids }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function combineSelectedVectors(operation: PathOperation): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('combine_selected_vectors', { operation }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

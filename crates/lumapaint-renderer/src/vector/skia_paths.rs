@@ -1,6 +1,6 @@
 //! Skia PathOps adapter; callers exchange only portable SVG path data and fill rules.
-use lumapaint_core::vector::{FillRule, PathOperation, VectorPath, VectorPathEngine};
-use skia_safe::{Path, PathFillType, PathOp};
+use lumapaint_core::vector::{FillRule, PathOperation, VectorObject, VectorPath, VectorPathEngine};
+use skia_safe::{Matrix, Path, PathFillType, PathOp};
 
 pub struct SkiaPathEngine;
 
@@ -58,9 +58,60 @@ impl VectorPathEngine for SkiaPathEngine {
     }
 }
 
+impl SkiaPathEngine {
+    /// Combine filled objects in document coordinates, including their SVG transforms.
+    pub fn combine_objects(
+        &self,
+        back: &VectorObject,
+        front: &VectorObject,
+        operation: PathOperation,
+    ) -> Result<(VectorPath, Vec<[f32; 2]>), String> {
+        let transformed = |object: &VectorObject| -> Result<Path, String> {
+            let [a, b, c, d, e, f] = object.transform;
+            let matrix = Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0);
+            let path = parse(&object.path)?.with_transform(&matrix);
+            if !path.is_finite() || path.count_points() > 65536 {
+                return Err("Invalid transformed vector geometry".into());
+            }
+            Ok(path)
+        };
+        let result = skia_safe::op(
+            &transformed(back)?,
+            &transformed(front)?,
+            match operation {
+                PathOperation::Union => PathOp::Union,
+                PathOperation::Difference => PathOp::Difference,
+                PathOperation::Intersection => PathOp::Intersect,
+                PathOperation::Xor => PathOp::XOR,
+            },
+        )
+        .ok_or("Skia path operation failed")?;
+        let fill_rule = match result.fill_type() {
+            PathFillType::Winding => FillRule::NonZero,
+            PathFillType::EvenOdd => FillRule::EvenOdd,
+            _ => return Err("Inverse fill is not supported".into()),
+        };
+        let points = result
+            .points()
+            .iter()
+            .map(|point| [point.x, point.y])
+            .collect();
+        let path = VectorPath {
+            data: result.to_svg(),
+            fill_rule,
+        };
+        if !path.data.is_empty() {
+            parse(&path)?;
+        }
+        Ok((path, points))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumapaint_core::document::Document;
+    use lumapaint_core::vector::{VectorObjectKind, VectorPaint};
     fn path(data: &str) -> VectorPath {
         VectorPath {
             data: data.into(),
@@ -118,5 +169,123 @@ mod tests {
         assert!(SkiaPathEngine
             .contains(&path(&" ".repeat(1024 * 1024 + 1)), [0., 0.])
             .is_err());
+    }
+
+    #[test]
+    fn selected_transformed_shapes_combine_atomically_and_undo() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        let shape = |id: &str, x: f32| VectorObject {
+            id: id.into(),
+            name: id.into(),
+            path: path("M0 0H20V20H0Z"),
+            transform: [1.0, 0.0, 0.0, 1.0, x, 0.0],
+            fill: Some(VectorPaint {
+                color: [20, 90, 180, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.0,
+            visible: true,
+            kind: VectorObjectKind::Rectangle,
+            control_points: vec![[0.0, 0.0], [20.0, 20.0]],
+            text: None,
+        };
+        document
+            .upsert_vector_object(&layer_id, shape("back", 5.0))
+            .unwrap();
+        document
+            .upsert_vector_object(&layer_id, shape("front", 15.0))
+            .unwrap();
+        document
+            .select_vector_objects(vec!["front".into(), "back".into()])
+            .unwrap();
+        let original = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .clone();
+        document
+            .combine_selected_vectors(PathOperation::Difference, |back, front, op| {
+                SkiaPathEngine.combine_objects(back, front, op)
+            })
+            .unwrap();
+        let combined = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap();
+        assert_eq!(combined.vector_objects.len(), 1);
+        assert_eq!(combined.vector_objects[0].id, "back");
+        assert!(SkiaPathEngine
+            .contains(&combined.vector_objects[0].path, [10.0, 10.0])
+            .unwrap());
+        assert!(!SkiaPathEngine
+            .contains(&combined.vector_objects[0].path, [20.0, 10.0])
+            .unwrap());
+        assert_eq!(document.snapshot().selected_vector_objects, ["back"]);
+        document.undo();
+        let restored = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap();
+        assert_eq!(restored.vector_objects, original.vector_objects);
+        assert_eq!(restored.source, original.source);
+        assert_eq!(
+            document.snapshot().selected_vector_objects,
+            ["front", "back"]
+        );
+        document.redo();
+        assert_eq!(
+            document
+                .svg_layers()
+                .find(|layer| layer.id == layer_id)
+                .unwrap()
+                .vector_objects
+                .len(),
+            1
+        );
+        let reopened = Document::decode(&document.encode().unwrap()).unwrap();
+        let reopened_object = &reopened
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects[0];
+        assert_eq!(reopened_object.kind, VectorObjectKind::Compound);
+        assert!(SkiaPathEngine
+            .contains(&reopened_object.path, [10.0, 10.0])
+            .unwrap());
+
+        document.undo();
+        let before = document.snapshot().revision;
+        let mut incompatible = shape("front", 15.0);
+        incompatible.fill = Some(VectorPaint {
+            color: [200, 20, 20, 255],
+        });
+        document
+            .upsert_vector_object(&layer_id, incompatible)
+            .unwrap();
+        let incompatible_revision = document.snapshot().revision;
+        assert!(document
+            .combine_selected_vectors(PathOperation::Union, |back, front, op| {
+                SkiaPathEngine.combine_objects(back, front, op)
+            })
+            .is_err());
+        assert_eq!(document.snapshot().revision, incompatible_revision);
+        assert!(incompatible_revision > before);
+
+        document
+            .upsert_vector_object(&layer_id, shape("front", 100.0))
+            .unwrap();
+        document
+            .combine_selected_vectors(PathOperation::Intersection, |back, front, op| {
+                SkiaPathEngine.combine_objects(back, front, op)
+            })
+            .unwrap();
+        assert!(document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        assert!(document.snapshot().selected_vector_objects.is_empty());
     }
 }

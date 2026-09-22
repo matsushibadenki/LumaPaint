@@ -4,7 +4,7 @@ use crate::selection::SelectionGesture;
 pub use crate::selection::{
     Selection, SelectionMode, SelectionOperation, SelectionRegion, SelectionShape,
 };
-use crate::vector::{VectorObject, VectorObjectKind, VectorText};
+use crate::vector::{PathOperation, VectorObject, VectorObjectKind, VectorPath, VectorText};
 use serde::{Deserialize, Serialize};
 
 pub const WIDTH: f32 = 960.0;
@@ -1199,6 +1199,107 @@ impl Document {
         self.selected_vector_objects = unique;
         Ok(())
     }
+
+    /// Apply one boolean operation to two filled shapes on the same editable layer.
+    /// Their layer order determines the operands: difference is back minus front.
+    pub fn combine_selected_vectors(
+        &mut self,
+        operation: PathOperation,
+        combine: impl FnOnce(
+            &VectorObject,
+            &VectorObject,
+            PathOperation,
+        ) -> Result<(VectorPath, Vec<[f32; 2]>), String>,
+    ) -> Result<(), String> {
+        if self.selected_vector_objects.len() != 2 {
+            return Err("Select exactly two vector shapes".into());
+        }
+        let selected = &self.selected_vector_objects;
+        let matches: Vec<_> =
+            self.svg_layers
+                .iter()
+                .enumerate()
+                .flat_map(|(layer_index, layer)| {
+                    layer.vector_objects.iter().enumerate().filter_map(
+                        move |(object_index, object)| {
+                            selected
+                                .contains(&object.id)
+                                .then_some((layer_index, object_index))
+                        },
+                    )
+                })
+                .collect();
+        if matches.len() != 2 || matches[0].0 != matches[1].0 {
+            return Err("Select two shapes on the same vector layer".into());
+        }
+        let layer_index = matches[0].0;
+        let layer = &self.svg_layers[layer_index];
+        let back = &layer.vector_objects[matches[0].1];
+        let front = &layer.vector_objects[matches[1].1];
+        if layer.locked || !layer.visible || !back.visible || !front.visible {
+            return Err("Selected shapes must be visible and unlocked".into());
+        }
+        if back.kind == VectorObjectKind::Text
+            || front.kind == VectorObjectKind::Text
+            || back.fill.is_none()
+            || front.fill != back.fill
+            || back.stroke.is_some()
+            || front.stroke.is_some()
+        {
+            return Err("Select two filled shapes with the same color and no stroke".into());
+        }
+        let (path, points) = combine(back, front, operation)?;
+        if path.data.len() > 1024 * 1024
+            || points.len() > 65_536
+            || points
+                .iter()
+                .flatten()
+                .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+        {
+            return Err("Invalid vector operation result".into());
+        }
+        let mut updated = layer.clone();
+        let back_id = back.id.clone();
+        updated.vector_objects.remove(matches[1].1);
+        if path.data.is_empty() {
+            updated.vector_objects.remove(matches[0].1);
+        } else {
+            let object = &mut updated.vector_objects[matches[0].1];
+            object.path = path;
+            object.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+            object.kind = VectorObjectKind::Compound;
+            object.control_points = points;
+            object.validate()?;
+        }
+        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
+        let total = updated.source.len()
+            + self
+                .svg_layers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != layer_index)
+                .map(|(_, layer)| layer.source.len())
+                .sum::<usize>();
+        if total > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        validate_svg_layer(&updated)?;
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[layer_index] = updated;
+        self.selected_vector_objects = if self.svg_layers[layer_index]
+            .vector_objects
+            .iter()
+            .any(|object| object.id == back_id)
+        {
+            vec![back_id]
+        } else {
+            vec![]
+        };
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
     pub fn select_vector_at(
         &mut self,
         point: Point,
@@ -1362,7 +1463,7 @@ impl Document {
                     (max_y - min_y).max(1.0),
                 ],
             ));
-            if object.kind == VectorObjectKind::Text {
+            if object.kind == VectorObjectKind::Text || object.kind == VectorObjectKind::Compound {
                 continue;
             }
             for point in points {
@@ -1389,6 +1490,7 @@ impl Document {
             .filter(|object| {
                 self.selected_vector_objects.contains(&object.id)
                     && object.kind != VectorObjectKind::Text
+                    && object.kind != VectorObjectKind::Compound
             })
             .find_map(|object| {
                 transformed_control_points(object)
@@ -1425,6 +1527,9 @@ impl Document {
             .position(|object| object.id == id)
             .ok_or("Vector object not found")?;
         let object = &mut self.svg_layers[layer_index].vector_objects[object_index];
+        if object.kind == VectorObjectKind::Compound {
+            return Err("Compound path control points are not directly editable".into());
+        }
         let [a, b, c, d, e, f] = object.transform;
         let determinant = a * d - b * c;
         if determinant.abs() < 0.000_001 {
@@ -2124,6 +2229,9 @@ fn rebuild_vector_path(object: &mut VectorObject) -> Result<(), String> {
     use std::fmt::Write;
     object.path.data = match object.kind {
         VectorObjectKind::Text => return Err("Edit text through text settings".into()),
+        VectorObjectKind::Compound => {
+            return Err("Compound paths cannot be rebuilt from control points".into())
+        }
         VectorObjectKind::Path => {
             let Some(first) = object.control_points.first() else {
                 return Err("Path has no control points".into());

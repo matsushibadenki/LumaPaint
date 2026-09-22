@@ -1,7 +1,7 @@
 use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings,
 };
-use lumapaint_core::vector::VectorObject;
+use lumapaint_core::vector::{PathOperation, VectorObject};
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
@@ -381,6 +381,24 @@ pub async fn select_vector_objects(
     {
         let _ = (window, ids);
         Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn combine_selected_vectors(
+    window: tauri::WebviewWindow,
+    operation: PathOperation,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::combine_selected_vectors(operation)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, operation);
+        Err("Vector path operations are not supported on this platform yet".into())
     }
 }
 #[tauri::command]

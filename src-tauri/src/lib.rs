@@ -105,6 +105,7 @@ pub fn run() {
             canvas::update_text_edit,
             canvas::finish_text_edit,
             canvas::select_vector_objects,
+            canvas::combine_selected_vectors,
             canvas::reorder_layers,
             canvas::set_color_mode,
             canvas::set_bit_depth,

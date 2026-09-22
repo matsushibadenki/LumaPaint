@@ -29,6 +29,7 @@ pub struct VectorPaint {
 pub enum VectorObjectKind {
     #[default]
     Path,
+    Compound,
     Rectangle,
     Ellipse,
     Text,
@@ -413,7 +414,7 @@ impl VectorObject {
             .map(|p| p[1])
             .fold(f32::NEG_INFINITY, f32::max);
         match self.kind {
-            VectorObjectKind::Rectangle | VectorObjectKind::Text => {
+            VectorObjectKind::Rectangle | VectorObjectKind::Text | VectorObjectKind::Compound => {
                 point[0] >= min_x - tolerance
                     && point[0] <= max_x + tolerance
                     && point[1] >= min_y - tolerance
@@ -448,7 +449,8 @@ fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
     (point[0] - start[0] - t * delta[0]).hypot(point[1] - start[1] - t * delta[1])
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PathOperation {
     Union,
     Difference,

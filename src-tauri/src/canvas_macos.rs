@@ -7,7 +7,9 @@ use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
     SelectionMode, SelectionShape, TextSettings,
 };
-use lumapaint_core::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
+use lumapaint_core::vector::{
+    FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
+};
 use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -596,6 +598,19 @@ pub fn upsert_vector_object(
 pub fn select_vector_objects(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().select_vector_objects(ids))?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn combine_selected_vectors(operation: PathOperation) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .combine_selected_vectors(operation, |back, front, op| {
+                lumapaint_renderer::vector::skia_paths::SkiaPathEngine
+                    .combine_objects(back, front, op)
+            })
+    })?;
+    redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }

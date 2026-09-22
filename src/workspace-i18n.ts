@@ -1,6 +1,6 @@
 export const workspaceMessages = {
   en: {
-    selectionTools: 'Selection tools', zoomTools: 'Zoom tools',
+    selectionTools: 'Selection tools', zoomTools: 'Zoom tools', pathOperations: 'Combine shapes', pathUnion: 'Unite', pathDifference: 'Subtract front', pathIntersection: 'Intersect', pathXor: 'Exclude overlap',
     rectangle: 'Rectangular selection', ellipse: 'Elliptical selection', tools: 'Tools', deselect: 'Deselect', selectionHint: 'Shift: add · Option/Alt: subtract · Drag inside to move',
     layoutTools: 'Layout tools', animationTools: 'Animation tools', layoutHint: 'Arrange vector objects, shapes and editable text', animationHint: 'Drawing tools · Timeline and keyframes are planned', text: 'Text', textTool: 'Text', timelineTool: 'Timeline', toolPlanned: 'Coming soon', paintTools: 'Paint tools', vectorTools: 'Vector tools', switchToolMode: 'Switch tool mode', vectorSelect: 'Vector selection', vectorPen: 'Pen', vectorRectangle: 'Rectangle', vectorEllipse: 'Ellipse', vectorSelected: 'vector objects selected', importVector: 'Import SVG as vector layer', vectorHint: 'Drag on the canvas to create an editable vector object',
 
@@ -21,7 +21,7 @@ export const workspaceMessages = {
     roundBrush: 'Hard round', reorderPanel: 'Drag to reorder · Alt + arrow keys also move this tab', colors: ['Black', 'Gray', 'White', 'Coral', 'Ochre', 'Green', 'Blue', 'Violet'],
   },
   ja: {
-    selectionTools: '選択ツール', zoomTools: '拡大・縮小ツール',
+    selectionTools: '選択ツール', zoomTools: '拡大・縮小ツール', pathOperations: '図形を合成', pathUnion: '合体', pathDifference: '前面を型抜き', pathIntersection: '交差', pathXor: '重なりを除外',
     rectangle: '長方形選択', ellipse: '楕円形選択', tools: 'ツール', deselect: '選択を解除', selectionHint: 'Shift：加算 · Option：減算 · 範囲内をドラッグして移動',
     layoutTools: 'レイアウト用ツール', animationTools: 'アニメーション用ツール', layoutHint: 'ベクター・図形・編集可能な文字を配置', animationHint: '作画用ツール · タイムラインとキーフレームは準備中', text: '文字', textTool: '文字', timelineTool: 'タイムライン', toolPlanned: '準備中', paintTools: 'ペイント用ツール', vectorTools: 'ベクター用ツール', switchToolMode: 'ツールモードを切り替え', vectorSelect: 'ベクター選択', vectorPen: 'ペン', vectorRectangle: '長方形', vectorEllipse: '楕円形', vectorSelected: '個のベクターオブジェクトを選択中', importVector: 'SVGをベクターレイヤーとして読み込み', vectorHint: 'キャンバスをドラッグして編集可能なベクターを作成できます',
 
@@ -42,7 +42,7 @@ export const workspaceMessages = {
     roundBrush: 'ハード円ブラシ', reorderPanel: 'ドラッグで並べ替え · Alt＋矢印キーでも移動できます', colors: ['黒', 'グレー', '白', 'コーラル', 'オーカー', '緑', '青', '紫'],
   },
   'zh-CN': {
-    selectionTools: '选区工具', zoomTools: '缩放工具',
+    selectionTools: '选区工具', zoomTools: '缩放工具', pathOperations: '合并形状', pathUnion: '联合', pathDifference: '减去前方形状', pathIntersection: '交集', pathXor: '排除重叠',
     rectangle: '矩形选框', ellipse: '椭圆选框', tools: '工具', deselect: '取消选择', selectionHint: 'Shift：添加 · Option/Alt：减去 · 拖动选区内部以移动',
     layoutTools: '布局工具', animationTools: '动画工具', layoutHint: '排列矢量对象、形状和可编辑文字', animationHint: '绘图工具 · 时间轴和关键帧即将推出', text: '文字', textTool: '文字', timelineTool: '时间轴', toolPlanned: '即将推出', paintTools: '绘画工具', vectorTools: '矢量工具', switchToolMode: '切换工具模式', vectorSelect: '矢量选择', vectorPen: '钢笔', vectorRectangle: '矩形', vectorEllipse: '椭圆', vectorSelected: '个矢量对象已选择', importVector: '将 SVG 导入为矢量图层', vectorHint: '在画布上拖动以创建可编辑的矢量对象',
 
