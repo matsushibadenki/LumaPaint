@@ -3,7 +3,9 @@ use lumapaint_core::document::{
     CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, SvgLayer,
     HEIGHT, WIDTH,
 };
-use lumapaint_core::tiles::{RasterDab, TileInvalidation, TiledRasterDocument};
+use lumapaint_core::tiles::{
+    RasterDab, TileInvalidation, TileUpload, TiledRasterDocument, TILE_SIZE,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 pub use wgpu;
@@ -273,6 +275,151 @@ pub fn paint_stroke_into_tiles(
         stroke.brush.color,
         stroke.selection.as_ref(),
     )
+}
+
+/// Paint a sampled stroke into a layer mask using an explicit grayscale target.
+/// Zero hides the layer and 255 reveals it when the mask is enabled.
+pub fn paint_stroke_into_mask(
+    document: &mut TiledRasterDocument,
+    layer_id: &str,
+    stroke: &Stroke,
+    value: u8,
+) -> Result<Option<TileInvalidation>, String> {
+    document.paint_mask_dabs(
+        layer_id,
+        &sampled_raster_dabs(stroke)?,
+        value,
+        stroke.selection.as_ref(),
+    )
+}
+
+/// Reconstruct the committed v1 paint layer as tiles for migration checks.
+/// SVG/vector layers and an active pointer stroke remain on the v1 renderer.
+/// This does not alter the source document or its save format.
+pub fn project_committed_paint_layer(source: &Document) -> Result<TiledRasterDocument, String> {
+    let (width, height) = source.dimensions();
+    let mut projected = TiledRasterDocument::new(width, height)?;
+    let snapshot = source.snapshot();
+    let paint = snapshot.layers.first().ok_or("Missing v1 paint layer")?;
+    projected.add_layer(paint.id.clone(), paint.name.clone())?;
+    for stroke in source.committed_paint_strokes() {
+        paint_stroke_into_tiles(&mut projected, &paint.id, stroke)?;
+        projected.discard_history();
+    }
+    projected.set_layer_mask(
+        &paint.id,
+        paint.mask_enabled,
+        paint.mask_inverted,
+        paint.mask_density,
+    )?;
+    projected.set_layer_appearance(&paint.id, paint.visible, paint.opacity)?;
+    projected.set_layer_locks(&paint.id, paint.locked, paint.alpha_locked)?;
+    projected.discard_history();
+    Ok(projected)
+}
+
+/// GPU storage for the tile document's premultiplied RGBA8 composite.
+/// The current v1 frame renderer does not sample this texture yet.
+pub struct TileTexture {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+}
+
+impl TileTexture {
+    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self, String> {
+        let limit = device.limits().max_texture_dimension_2d;
+        if width == 0
+            || height == 0
+            || width > 8192
+            || height > 8192
+            || width > limit
+            || height > limit
+        {
+            return Err("Invalid tile texture dimensions".into());
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Tile composite"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        Ok(Self {
+            texture,
+            width,
+            height,
+        })
+    }
+
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    /// Validate the full batch before submitting any texture writes.
+    pub fn upload(&self, queue: &wgpu::Queue, uploads: &[TileUpload]) -> Result<(), String> {
+        validate_tile_uploads(self.width, self.height, uploads)?;
+        for upload in uploads {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: upload.origin[0],
+                        y: upload.origin[1],
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &upload.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(upload.bytes_per_row),
+                    rows_per_image: Some(TILE_SIZE),
+                },
+                wgpu::Extent3d {
+                    width: upload.extent[0],
+                    height: upload.extent[1],
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_tile_uploads(width: u32, height: u32, uploads: &[TileUpload]) -> Result<(), String> {
+    for upload in uploads {
+        let x = upload
+            .coord
+            .x
+            .checked_mul(TILE_SIZE)
+            .ok_or("Tile origin overflow")?;
+        let y = upload
+            .coord
+            .y
+            .checked_mul(TILE_SIZE)
+            .ok_or("Tile origin overflow")?;
+        if x >= width
+            || y >= height
+            || upload.origin != [x, y]
+            || upload.extent != [(width - x).min(TILE_SIZE), (height - y).min(TILE_SIZE)]
+            || upload.bytes_per_row != TILE_SIZE * 4
+            || upload.pixels.len() != (TILE_SIZE * TILE_SIZE * 4) as usize
+        {
+            return Err("Invalid tile upload".into());
+        }
+    }
+    Ok(())
 }
 
 fn dabs_along_path(
@@ -1458,6 +1605,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tile_upload_validation_rejects_partial_bad_batches_before_gpu_writes() {
+        let mut document = TiledRasterDocument::new(257, 3).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let changed = document
+            .write_rect("paint", [255, 2, 2, 1], &[200, 0, 0, 255, 0, 0, 200, 255])
+            .unwrap()
+            .unwrap();
+        let uploads = document.prepare_uploads(&changed).unwrap();
+        assert!(validate_tile_uploads(257, 3, &uploads).is_ok());
+        let mut invalid = uploads.clone();
+        invalid[1].extent = [2, 3];
+        assert!(validate_tile_uploads(257, 3, &invalid).is_err());
+        invalid[1] = uploads[1].clone();
+        invalid[1].pixels.pop();
+        assert!(validate_tile_uploads(257, 3, &invalid).is_err());
+    }
+
+    #[test]
     fn tile_dabs_share_gpu_curve_spacing_radius_hardness_and_pressure() {
         let stroke = Stroke {
             brush: lumapaint_core::document::Brush {
@@ -1492,6 +1657,63 @@ mod tests {
         assert!(document.layers()[0].tiles.allocated_tile_count() > 0);
         document.undo().unwrap();
         assert_eq!(document.layers()[0].tiles.allocated_tile_count(), 0);
+        let mask_change = paint_stroke_into_mask(&mut document, "paint", &stroke, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mask_change.coords, changed.coords);
+        assert!(document.layers()[0].mask.pixel(20, 20).unwrap() < 255);
+        document.undo().unwrap();
+        assert_eq!(document.layers()[0].mask.allocated_tile_count(), 0);
+    }
+
+    #[test]
+    fn committed_v1_paint_projects_hidden_pixels_and_layer_settings_without_mutation() {
+        use lumapaint_core::document::{Brush, LayerSettings};
+
+        let mut source = Document::default();
+        source.begin_selection(Point { x: 10.0, y: 10.0 }, SelectionShape::Rectangle);
+        source.extend_selection(Point { x: 40.0, y: 40.0 }, true);
+        source
+            .begin(
+                Point { x: 30.0, y: 30.0 },
+                Brush {
+                    size: 20.0,
+                    hardness: 0.5,
+                    color: [180, 40, 20],
+                },
+            )
+            .unwrap();
+        source.finish();
+        source.deselect();
+        source
+            .set_layer_settings(LayerSettings {
+                id: "layer-1".into(),
+                name: "Imported paint".into(),
+                opacity: 0.5,
+                locked: true,
+                alpha_locked: true,
+                mask_enabled: true,
+                mask_inverted: false,
+                mask_density: 0.5,
+            })
+            .unwrap();
+        source.toggle_visibility();
+        let source_revision = source.revision();
+        let mut projected = project_committed_paint_layer(&source).unwrap();
+        let layer = &projected.layers()[0];
+        assert_eq!(layer.name, "Imported paint");
+        assert!(!layer.visible);
+        assert!(layer.locked && layer.alpha_locked);
+        assert_eq!(layer.effective_opacity(), 0.25);
+        assert!(layer.tiles.pixel(30, 30).unwrap()[3] > 0);
+        assert_eq!(layer.tiles.pixel(45, 30), Some([0; 4]));
+        assert_eq!(
+            projected.composite_tile(lumapaint_core::tiles::TileCoord { x: 0, y: 0 }),
+            None
+        );
+        assert!(projected.undo().unwrap().is_none());
+        assert_eq!(source.revision(), source_revision);
+        assert_eq!(source.committed_paint_strokes().count(), 1);
     }
 
     #[test]

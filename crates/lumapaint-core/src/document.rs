@@ -1643,6 +1643,11 @@ impl Document {
             .chain(self.active.iter())
             .filter(|_| self.visible)
     }
+    /// Retained paint strokes, including those on a temporarily hidden layer.
+    /// The active, uncommitted stroke is intentionally excluded.
+    pub fn committed_paint_strokes(&self) -> impl Iterator<Item = &Stroke> {
+        self.strokes.iter()
+    }
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
     }

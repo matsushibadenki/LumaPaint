@@ -282,6 +282,80 @@ fn save_image(name: &str, pixels: Vec<u8>) {
 
 #[test]
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_tile_upload_updates_edge_and_clears_hidden_content() {
+    let gpu = Gpu::new();
+    let texture = TileTexture::new(&gpu.device, 257, 3).unwrap();
+    let mut document = TiledRasterDocument::new(257, 3).unwrap();
+    document.add_layer("paint".into(), "Paint".into()).unwrap();
+    let changed = document
+        .write_rect("paint", [255, 2, 2, 1], &[200, 0, 0, 255, 0, 0, 200, 255])
+        .unwrap()
+        .unwrap();
+    texture
+        .upload(&gpu.queue, &document.prepare_uploads(&changed).unwrap())
+        .unwrap();
+
+    let read = |gpu: &Gpu| {
+        let row_pitch = 1280;
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Tile upload readback"),
+            size: u64::from(row_pitch * 3),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.texture().as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_pitch),
+                    rows_per_image: Some(3),
+                },
+            },
+            wgpu::Extent3d {
+                width: 257,
+                height: 3,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let data = buffer.slice(..).get_mapped_range().to_vec();
+        buffer.unmap();
+        data
+    };
+    let pixels = read(&gpu);
+    assert_eq!(
+        &pixels[(2 * 1280 + 255 * 4) as usize..][..4],
+        &[200, 0, 0, 255]
+    );
+    assert_eq!(
+        &pixels[(2 * 1280 + 256 * 4) as usize..][..4],
+        &[0, 0, 200, 255]
+    );
+
+    let hidden = document
+        .set_layer_appearance("paint", false, 1.0)
+        .unwrap()
+        .unwrap();
+    texture
+        .upload(&gpu.queue, &document.prepare_uploads(&hidden).unwrap())
+        .unwrap();
+    let cleared = read(&gpu);
+    assert_eq!(&cleared[(2 * 1280 + 255 * 4) as usize..][..8], &[0; 8]);
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
     let gpu = Gpu::new();
     let mut selection = Selection::new(SelectionShape::Rectangle, [200.0, 180.0, 220.0, 220.0]);
