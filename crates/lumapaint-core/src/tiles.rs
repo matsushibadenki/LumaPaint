@@ -1,5 +1,5 @@
 //! Sparse RGBA8 raster tiles. A fully transparent tile has no allocation.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const TILE_SIZE: u32 = 256;
 const TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize * 4;
@@ -46,6 +46,10 @@ impl SparseTiles {
 
     pub fn tile(&self, coord: TileCoord) -> Option<&[u8]> {
         self.tiles.get(&coord).map(Vec::as_slice)
+    }
+
+    pub fn allocated_coords(&self) -> impl Iterator<Item = TileCoord> + '_ {
+        self.tiles.keys().copied()
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -185,17 +189,32 @@ fn valid_tile_payload(coord: TileCoord, bytes: &[u8], width: u32, height: u32) -
     painted
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RasterLayer {
     pub id: String,
     pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
     pub tiles: SparseTiles,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RasterEdit {
-    layer_id: String,
-    changes: Vec<TileChange>,
+#[derive(Clone, Debug, PartialEq)]
+enum RasterEdit {
+    Pixels {
+        layer_id: String,
+        changes: Vec<TileChange>,
+    },
+    Appearance {
+        layer_id: String,
+        before: (bool, f32),
+        after: (bool, f32),
+    },
+    Reorder {
+        layer_id: String,
+        from: usize,
+        to: usize,
+        coords: Vec<TileCoord>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -206,7 +225,7 @@ pub struct TileInvalidation {
 
 /// Tile-backed document model for the future raster pipeline. This does not
 /// participate in the current v1 stroke/SVG project format or renderer yet.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TiledRasterDocument {
     width: u32,
     height: u32,
@@ -237,6 +256,43 @@ impl TiledRasterDocument {
         self.revision
     }
 
+    /// Composite one tile in layer order. Input tiles use straight alpha;
+    /// the returned RGBA8 pixels are premultiplied for the GPU compositor.
+    pub fn composite_tile(&self, coord: TileCoord) -> Option<Vec<u8>> {
+        if coord.x >= self.width.div_ceil(TILE_SIZE) || coord.y >= self.height.div_ceil(TILE_SIZE) {
+            return None;
+        }
+        let sources = self
+            .layers
+            .iter()
+            .filter(|layer| layer.visible && layer.opacity > 0.0)
+            .filter_map(|layer| layer.tiles.tile(coord).map(|tile| (tile, layer.opacity)))
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            return None;
+        }
+        let mut result = vec![0u8; TILE_BYTES];
+        for (source, opacity) in sources {
+            for (target, pixel) in result
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source.as_chunks::<4>().0.iter())
+            {
+                let alpha = (f32::from(pixel[3]) * opacity).round() as u32;
+                let remaining = 255 - alpha;
+                let out_alpha = (alpha + div_255(u32::from(target[3]) * remaining)).min(255);
+                for channel in 0..3 {
+                    let foreground = div_255(u32::from(pixel[channel]) * alpha);
+                    let background = div_255(u32::from(target[channel]) * remaining);
+                    target[channel] = (foreground + background).min(out_alpha) as u8;
+                }
+                target[3] = out_alpha as u8;
+            }
+        }
+        Some(result)
+    }
+
     pub fn add_layer(&mut self, id: String, name: String) -> Result<(), String> {
         if id.is_empty()
             || id.len() > 64
@@ -250,10 +306,82 @@ impl TiledRasterDocument {
         self.layers.push(RasterLayer {
             id,
             name,
+            visible: true,
+            opacity: 1.0,
             tiles: SparseTiles::new(self.width, self.height)?,
         });
         self.revision += 1;
         Ok(())
+    }
+
+    pub fn set_layer_appearance(
+        &mut self,
+        layer_id: &str,
+        visible: bool,
+        opacity: f32,
+    ) -> Result<Option<TileInvalidation>, String> {
+        if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+            return Err("Invalid raster layer opacity".into());
+        }
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        let before = (layer.visible, layer.opacity);
+        let after = (visible, opacity);
+        if before == after {
+            return Ok(None);
+        }
+        let coords = layer.tiles.allocated_coords().collect();
+        layer.visible = visible;
+        layer.opacity = opacity;
+        self.record_edit(RasterEdit::Appearance {
+            layer_id: layer_id.into(),
+            before,
+            after,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
+        }))
+    }
+
+    /// Move a layer to a zero-based back-to-front index.
+    pub fn move_layer(
+        &mut self,
+        layer_id: &str,
+        to: usize,
+    ) -> Result<Option<TileInvalidation>, String> {
+        let from = self
+            .layers
+            .iter()
+            .position(|layer| layer.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        if to >= self.layers.len() {
+            return Err("Raster layer index outside stack".into());
+        }
+        if from == to {
+            return Ok(None);
+        }
+        let coords = self.layers[from.min(to)..=from.max(to)]
+            .iter()
+            .flat_map(|layer| layer.tiles.allocated_coords())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let layer = self.layers.remove(from);
+        self.layers.insert(to, layer);
+        self.record_edit(RasterEdit::Reorder {
+            layer_id: layer_id.into(),
+            from,
+            to,
+            coords: coords.clone(),
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
+        }))
     }
 
     pub fn write_rect(
@@ -274,12 +402,10 @@ impl TiledRasterDocument {
             return Ok(None);
         }
         let changed_coords = changes.iter().map(|change| change.coord).collect();
-        self.undo.push(RasterEdit {
+        self.record_edit(RasterEdit::Pixels {
             layer_id: layer_id.into(),
             changes,
         });
-        self.redo.clear();
-        self.revision += 1;
         Ok(Some(TileInvalidation {
             layer_id: layer_id.into(),
             coords: changed_coords,
@@ -294,21 +420,71 @@ impl TiledRasterDocument {
         self.apply_history(false)
     }
 
+    fn record_edit(&mut self, edit: RasterEdit) {
+        self.undo.push(edit);
+        self.redo.clear();
+        self.revision += 1;
+    }
+
     fn apply_history(&mut self, undo: bool) -> Result<Option<TileInvalidation>, String> {
         let source = if undo { &self.undo } else { &self.redo };
         let Some(edit) = source.last() else {
             return Ok(None);
         };
-        let invalidation = TileInvalidation {
-            layer_id: edit.layer_id.clone(),
-            coords: edit.changes.iter().map(|change| change.coord).collect(),
+        let invalidation = match edit {
+            RasterEdit::Pixels { layer_id, changes } => {
+                self.layers
+                    .iter_mut()
+                    .find(|layer| layer.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?
+                    .tiles
+                    .apply_changes(changes, undo)?;
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords: changes.iter().map(|change| change.coord).collect(),
+                }
+            }
+            RasterEdit::Appearance {
+                layer_id,
+                before,
+                after,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|layer| layer.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?;
+                if (layer.visible, layer.opacity) != if undo { *after } else { *before } {
+                    return Err("Raster appearance changed outside history".into());
+                }
+                let coords = layer.tiles.allocated_coords().collect();
+                (layer.visible, layer.opacity) = if undo { *before } else { *after };
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords,
+                }
+            }
+            RasterEdit::Reorder {
+                layer_id,
+                from,
+                to,
+                coords,
+            } => {
+                let current = if undo { *to } else { *from };
+                let destination = if undo { *from } else { *to };
+                if self.layers.get(current).map(|layer| layer.id.as_str())
+                    != Some(layer_id.as_str())
+                {
+                    return Err("Raster layer order changed outside history".into());
+                }
+                let layer = self.layers.remove(current);
+                self.layers.insert(destination, layer);
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords: coords.clone(),
+                }
+            }
         };
-        self.layers
-            .iter_mut()
-            .find(|layer| layer.id == edit.layer_id)
-            .ok_or("Raster history layer is missing")?
-            .tiles
-            .apply_changes(&edit.changes, undo)?;
         let edit = if undo {
             self.undo.pop().unwrap()
         } else {
@@ -322,6 +498,10 @@ impl TiledRasterDocument {
         self.revision += 1;
         Ok(Some(invalidation))
     }
+}
+
+fn div_255(value: u32) -> u32 {
+    (value + 127) / 255
 }
 
 #[cfg(test)]
@@ -424,5 +604,94 @@ mod tests {
             .write_rect("upper", [0, 0, 1, 1], &[0, 255, 0, 255])
             .unwrap();
         assert!(document.redo().unwrap().is_none());
+    }
+
+    #[test]
+    fn composite_tile_respects_layer_order_alpha_and_sparse_bounds() {
+        let mut document = TiledRasterDocument::new(257, 257).unwrap();
+        document.add_layer("back".into(), "Back".into()).unwrap();
+        document.add_layer("front".into(), "Front".into()).unwrap();
+        assert!(document.composite_tile(TileCoord { x: 0, y: 0 }).is_none());
+        assert!(document.composite_tile(TileCoord { x: 2, y: 0 }).is_none());
+        document
+            .write_rect("back", [256, 256, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        document
+            .write_rect("front", [256, 256, 1, 1], &[0, 0, 255, 128])
+            .unwrap();
+        let coord = TileCoord { x: 1, y: 1 };
+        let pixels = document.composite_tile(coord).unwrap();
+        assert_eq!(&pixels[..4], &[127, 0, 128, 255]);
+        assert_eq!(&pixels[4..8], &[0; 4]);
+        assert_eq!(&pixels[(256 * 4)..(256 * 4 + 4)], &[0; 4]);
+        document.undo().unwrap();
+        assert_eq!(
+            &document.composite_tile(coord).unwrap()[..4],
+            &[255, 0, 0, 255]
+        );
+    }
+
+    #[test]
+    fn appearance_and_reorder_invalidate_affected_tiles_and_share_history() {
+        let mut document = TiledRasterDocument::new(512, 256).unwrap();
+        document.add_layer("back".into(), "Back".into()).unwrap();
+        document.add_layer("front".into(), "Front".into()).unwrap();
+        document
+            .write_rect("back", [0, 0, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        document
+            .write_rect("back", [256, 0, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        document
+            .write_rect("front", [0, 0, 1, 1], &[0, 0, 255, 255])
+            .unwrap();
+        let tile = TileCoord { x: 0, y: 0 };
+        let other = TileCoord { x: 1, y: 0 };
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[0, 0, 255, 255]
+        );
+        let changed = document
+            .set_layer_appearance("front", true, 0.5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.coords, [tile]);
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[127, 0, 128, 255]
+        );
+        let revision = document.revision();
+        assert!(document
+            .set_layer_appearance("front", true, 0.5)
+            .unwrap()
+            .is_none());
+        assert!(document
+            .set_layer_appearance("front", true, f32::NAN)
+            .is_err());
+        assert_eq!(document.revision(), revision);
+        document.set_layer_appearance("front", false, 0.5).unwrap();
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[255, 0, 0, 255]
+        );
+        document.undo().unwrap();
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[127, 0, 128, 255]
+        );
+        let moved = document.move_layer("front", 0).unwrap().unwrap();
+        assert_eq!(moved.coords, [tile, other]);
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[255, 0, 0, 255]
+        );
+        assert_eq!(document.undo().unwrap().unwrap().coords, [tile, other]);
+        assert_eq!(
+            &document.composite_tile(tile).unwrap()[..4],
+            &[127, 0, 128, 255]
+        );
+        document.redo().unwrap();
+        assert_eq!(document.layers()[0].id, "front");
+        assert!(document.move_layer("front", 2).is_err());
     }
 }

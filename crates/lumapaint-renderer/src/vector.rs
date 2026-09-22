@@ -9,9 +9,46 @@ fn system_fonts() -> Arc<usvg::fontdb::Database> {
         .get_or_init(|| {
             let mut fonts = usvg::fontdb::Database::new();
             fonts.load_system_fonts();
+            configure_generic_font_families(&mut fonts);
             Arc::new(fonts)
         })
         .clone()
+}
+
+fn configure_generic_font_families(fonts: &mut usvg::fontdb::Database) {
+    use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
+    let has_family = |fonts: &usvg::fontdb::Database, family| {
+        fonts
+            .query(&Query {
+                families: &[family],
+                weight: Weight::NORMAL,
+                stretch: Stretch::Normal,
+                style: Style::Normal,
+            })
+            .is_some()
+    };
+    let installed_family = |fonts: &usvg::fontdb::Database, needle: &str| {
+        fonts
+            .faces()
+            .flat_map(|face| face.families.iter())
+            .find(|(name, _)| name.to_ascii_lowercase().contains(needle))
+            .map(|(name, _)| name.clone())
+    };
+    if !has_family(fonts, Family::SansSerif) {
+        if let Some(name) = installed_family(fonts, "sans") {
+            fonts.set_sans_serif_family(name);
+        }
+    }
+    if !has_family(fonts, Family::Serif) {
+        if let Some(name) = installed_family(fonts, "serif") {
+            fonts.set_serif_family(name);
+        }
+    }
+    if !has_family(fonts, Family::Monospace) {
+        if let Some(name) = installed_family(fonts, "mono") {
+            fonts.set_monospace_family(name);
+        }
+    }
 }
 
 /// May run on a worker at startup so the first text edit avoids a system font scan.
@@ -440,6 +477,31 @@ fn supports_skia(group: &usvg::Group) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_sans_font_repairs_missing_generic_family() {
+        let mut fonts = usvg::fontdb::Database::new();
+        fonts.load_system_fonts();
+        if !fonts.faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.to_ascii_lowercase().contains("sans"))
+        }) {
+            return;
+        }
+        fonts.set_sans_serif_family("LumaPaint missing generic font");
+        let generic_sans = |fonts: &usvg::fontdb::Database| {
+            fonts.query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::SansSerif],
+                weight: usvg::fontdb::Weight::NORMAL,
+                stretch: usvg::fontdb::Stretch::Normal,
+                style: usvg::fontdb::Style::Normal,
+            })
+        };
+        assert!(generic_sans(&fonts).is_none());
+        configure_generic_font_families(&mut fonts);
+        assert!(generic_sans(&fonts).is_some());
+    }
 
     #[test]
     fn portable_system_font_reflow_handles_mixed_multilingual_text() {
