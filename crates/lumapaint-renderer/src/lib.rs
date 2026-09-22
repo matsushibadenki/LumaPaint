@@ -42,6 +42,51 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    fn tile_pixels_per_document_pixel(&self) -> f32 {
+        let width = self.width as f32 / self.scale;
+        let height = self.height as f32 / self.scale;
+        let fit = ((width - 48.0) / self.document_width)
+            .min((height - 48.0) / self.document_height)
+            .max(0.01);
+        fit * self.zoom * self.scale
+    }
+
+    fn tile_filter_nearest(&self) -> bool {
+        self.tile_pixels_per_document_pixel() < 0.75
+    }
+
+    /// Choose preview resolution from the effective physical pixel density,
+    /// not the display's backing scale alone.
+    pub fn recommended_tile_preview_scale(&self) -> u32 {
+        if self.tile_pixels_per_document_pixel() >= 1.5
+            && self.document_width <= 4096.0
+            && self.document_height <= 4096.0
+        {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// The v1 brush and raster tiles have comparable edge widths only near
+    /// whole physical pixels per document pixel. Keep other zooms on v1.
+    pub fn compatible_tile_preview_scale(&self) -> Option<u32> {
+        let density = self.tile_pixels_per_document_pixel();
+        let scale = if (0.9..=1.1).contains(&density) {
+            1u32
+        } else if (1.8..=2.2).contains(&density) {
+            2u32
+        } else {
+            return None;
+        };
+        let width = self.document_width as u32;
+        let height = self.document_height as u32;
+        let pixels = width
+            .checked_mul(scale)?
+            .checked_mul(height.checked_mul(scale)?)?;
+        (pixels <= 16_777_216 && width * scale <= 8192 && height * scale <= 8192).then_some(scale)
+    }
+
     pub fn document_point(&self, x: f32, y: f32) -> Point {
         let width = self.width as f32 / self.scale;
         let height = self.height as f32 / self.scale;
@@ -277,6 +322,39 @@ pub fn paint_stroke_into_tiles(
     )
 }
 
+/// Rasterize a retained v1 stroke at an integer preview resolution. Sampling
+/// stays in document coordinates so dab density and pressure do not change.
+pub fn paint_stroke_into_tiles_at_scale(
+    document: &mut TiledRasterDocument,
+    layer_id: &str,
+    stroke: &Stroke,
+    scale: u32,
+) -> Result<Option<TileInvalidation>, String> {
+    if !(1..=2).contains(&scale) {
+        return Err("Unsupported tile preview scale".into());
+    }
+    let factor = scale as f32;
+    let mut dabs = sampled_raster_dabs(stroke)?;
+    for dab in &mut dabs {
+        dab.x *= factor;
+        dab.y *= factor;
+        dab.radius *= factor;
+    }
+    let selection = stroke.selection.as_ref().map(|selection| {
+        let mut scaled = selection.clone();
+        for region in &mut scaled.regions {
+            for value in &mut region.bounds {
+                *value *= factor;
+            }
+        }
+        scaled
+    });
+    if let Some(selection) = &selection {
+        selection.validate()?;
+    }
+    document.paint_dabs_clipped(layer_id, &dabs, stroke.brush.color, selection.as_ref())
+}
+
 /// Paint a sampled stroke into a layer mask using an explicit grayscale target.
 /// Zero hides the layer and 255 reveals it when the mask is enabled.
 pub fn paint_stroke_into_mask(
@@ -297,13 +375,33 @@ pub fn paint_stroke_into_mask(
 /// SVG/vector layers and an active pointer stroke remain on the v1 renderer.
 /// This does not alter the source document or its save format.
 pub fn project_committed_paint_layer(source: &Document) -> Result<TiledRasterDocument, String> {
+    project_committed_paint_layer_at_scale(source, 1)
+}
+
+/// Rebuild a temporary high-resolution preview from retained strokes. The
+/// returned tile dimensions are `source.dimensions() * scale`; it is not a
+/// replacement for the project's document pixel dimensions or save format.
+pub fn project_committed_paint_layer_at_scale(
+    source: &Document,
+    scale: u32,
+) -> Result<TiledRasterDocument, String> {
+    if !(1..=2).contains(&scale) {
+        return Err("Unsupported tile preview scale".into());
+    }
     let (width, height) = source.dimensions();
-    let mut projected = TiledRasterDocument::new(width, height)?;
+    let mut projected = TiledRasterDocument::new(
+        width
+            .checked_mul(scale)
+            .ok_or("Tile preview width overflow")?,
+        height
+            .checked_mul(scale)
+            .ok_or("Tile preview height overflow")?,
+    )?;
     let snapshot = source.snapshot();
     let paint = snapshot.layers.first().ok_or("Missing v1 paint layer")?;
     projected.add_layer(paint.id.clone(), paint.name.clone())?;
     for stroke in source.committed_paint_strokes() {
-        paint_stroke_into_tiles(&mut projected, &paint.id, stroke)?;
+        paint_stroke_into_tiles_at_scale(&mut projected, &paint.id, stroke, scale)?;
         projected.discard_history();
     }
     projected.set_layer_mask(
@@ -729,6 +827,7 @@ pub struct Renderer {
     tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
+    tile_nearest_sampler: wgpu::Sampler,
     tile_preview: Option<TileGpuPreview>,
     svg_cache: HashMap<String, CachedSvg>,
     drag_cache: HashMap<String, DragLayerCache>,
@@ -742,7 +841,9 @@ pub struct Renderer {
 
 struct TileGpuPreview {
     texture: TileTexture,
-    bind_group: wgpu::BindGroup,
+    document_dimensions: (u32, u32),
+    linear_bind_group: wgpu::BindGroup,
+    nearest_bind_group: wgpu::BindGroup,
 }
 
 fn create_svg_pipeline(
@@ -956,27 +1057,48 @@ impl Renderer {
     /// Opt-in tile paint preview. The host must only install a tile document
     /// matching the current v1 document and clear it when that source changes.
     pub fn install_tiled_preview(&mut self, tiles: &TiledRasterDocument) -> Result<(), String> {
+        self.install_tiled_preview_at_scale(tiles, tiles.dimensions(), 1)
+    }
+
+    /// Install a temporary tile preview sampled at 1x or 2x while retaining
+    /// the source document's logical dimensions and pointer coordinates.
+    pub fn install_tiled_preview_at_scale(
+        &mut self,
+        tiles: &TiledRasterDocument,
+        document_dimensions: (u32, u32),
+        scale: u32,
+    ) -> Result<(), String> {
+        if !(1..=2).contains(&scale)
+            || document_dimensions.0.checked_mul(scale) != Some(tiles.dimensions().0)
+            || document_dimensions.1.checked_mul(scale) != Some(tiles.dimensions().1)
+        {
+            return Err("Tile preview dimensions do not match the document scale".into());
+        }
         let (width, height) = tiles.dimensions();
         let texture = TileTexture::new(&self.device, &self.queue, width, height)?;
         texture.upload(&self.queue, &tiles.prepare_full_uploads())?;
         let view = texture.texture().create_view(&Default::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Tile paint preview"),
-            layout: &self.svg_bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.svg_sampler),
-                },
-            ],
-        });
+        let make_bind_group = |sampler: &wgpu::Sampler| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Tile paint preview"),
+                layout: &self.svg_bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        };
         self.tile_preview = Some(TileGpuPreview {
             texture,
-            bind_group,
+            document_dimensions,
+            linear_bind_group: make_bind_group(&self.svg_sampler),
+            nearest_bind_group: make_bind_group(&self.tile_nearest_sampler),
         });
         Ok(())
     }
@@ -1267,6 +1389,11 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let tile_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
         if let Some(error) = device.pop_error_scope().await {
             return Err(error.to_string());
         }
@@ -1300,6 +1427,7 @@ impl Renderer {
             tile_pipeline,
             svg_bind_layout,
             svg_sampler,
+            tile_nearest_sampler,
             tile_preview: None,
             svg_cache: HashMap::new(),
             drag_cache: HashMap::new(),
@@ -1401,9 +1529,11 @@ impl Renderer {
             Err(error) => return Err(error.to_string()),
         };
         let uniforms = Self::uniforms(viewport);
-        if self.tile_preview.as_ref().is_some_and(|preview| {
-            (preview.texture.width, preview.texture.height) != document.dimensions()
-        }) {
+        if self
+            .tile_preview
+            .as_ref()
+            .is_some_and(|preview| preview.document_dimensions != document.dimensions())
+        {
             self.tile_preview = None;
         }
         let vector_overlays = document.vector_overlay_selections_at_offset(offset[0], offset[1]);
@@ -1616,7 +1746,12 @@ impl Renderer {
             });
             pass.set_pipeline(&self.tile_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_bind_group(1, &preview.bind_group, &[]);
+            let tile_bind_group = if viewport.tile_filter_nearest() {
+                &preview.nearest_bind_group
+            } else {
+                &preview.linear_bind_group
+            };
+            pass.set_bind_group(1, tile_bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
         if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
@@ -1853,6 +1988,31 @@ mod tests {
     }
 
     #[test]
+    fn doubled_tile_projection_scales_paint_and_stored_selection_together() {
+        use lumapaint_core::document::Brush;
+        let mut source = Document::default();
+        source.begin_selection(Point { x: 10.0, y: 10.0 }, SelectionShape::Rectangle);
+        source.extend_selection(Point { x: 40.0, y: 40.0 }, true);
+        source
+            .begin(
+                Point { x: 39.0, y: 30.0 },
+                Brush {
+                    size: 24.0,
+                    hardness: 1.0,
+                    color: [0, 0, 0],
+                },
+            )
+            .unwrap();
+        source.finish();
+        let projected = project_committed_paint_layer_at_scale(&source, 2).unwrap();
+        assert_eq!(projected.dimensions(), (1920, 1280));
+        let tiles = &projected.layers()[0].tiles;
+        assert!(tiles.pixel(76, 60).unwrap()[3] > 0);
+        assert_eq!(tiles.pixel(82, 60), Some([0; 4]));
+        assert!(project_committed_paint_layer_at_scale(&source, 3).is_err());
+    }
+
+    #[test]
     fn partial_drag_cache_is_used_only_while_raster_runs_stay_separate() {
         let bounds = [
             (false, Some([10, 10, 20, 20])),
@@ -2077,6 +2237,25 @@ mod tests {
         let viewport = Viewport::new(641.5, 300.0, 2.0, 1.0, false).unwrap();
         assert_eq!((viewport.width, viewport.height), (1283, 600));
         assert_eq!(viewport.scale, 2.0);
+    }
+
+    #[test]
+    fn tile_filter_accounts_for_fit_zoom_and_retina_scale() {
+        let base = Viewport::new(1024.0, 768.0, 1.0, 960.0 / 976.0, false).unwrap();
+        assert!(!base.tile_filter_nearest());
+        let reduced = Viewport::new(1024.0, 768.0, 1.0, 0.5, false).unwrap();
+        assert!(reduced.tile_filter_nearest());
+        let retina = Viewport::new(512.0, 384.0, 2.0, 1.0, false).unwrap();
+        assert!(!retina.tile_filter_nearest());
+        assert_eq!(base.recommended_tile_preview_scale(), 1);
+        assert_eq!(reduced.recommended_tile_preview_scale(), 1);
+        assert_eq!(retina.recommended_tile_preview_scale(), 1);
+        assert_eq!(base.compatible_tile_preview_scale(), Some(1));
+        assert_eq!(reduced.compatible_tile_preview_scale(), None);
+        assert_eq!(retina.compatible_tile_preview_scale(), Some(1));
+        let enlarged = Viewport::new(1024.0, 768.0, 1.0, 2.0, false).unwrap();
+        assert_eq!(enlarged.recommended_tile_preview_scale(), 2);
+        assert_eq!(enlarged.compatible_tile_preview_scale(), Some(2));
     }
 
     #[test]

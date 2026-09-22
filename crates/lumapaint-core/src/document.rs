@@ -357,6 +357,10 @@ impl Document {
         self.revision
     }
 
+    pub fn has_active_stroke(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
             id: "layer-1".into(),
@@ -1983,12 +1987,15 @@ mod tests {
         let mut doc = Document::default();
         doc.begin(Point { x: 10.0, y: 10.0 }, Brush::default())
             .unwrap();
+        assert!(doc.has_active_stroke());
         assert!(doc
             .extend(Point {
                 x: f32::NAN,
                 y: 20.0
             })
             .is_err());
+        doc.finish();
+        assert!(!doc.has_active_stroke());
         doc.finish();
         assert_eq!(doc.visible_strokes().next().unwrap().points.len(), 1);
     }

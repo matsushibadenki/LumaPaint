@@ -11,7 +11,8 @@ use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
 use lumapaint_renderer::{
-    prepare_svg_layer, validate_svg, wgpu, PreparedSvgLayer, Renderer, Viewport,
+    prepare_svg_layer, project_committed_paint_layer_at_scale, validate_svg, wgpu,
+    PreparedSvgLayer, Renderer, Viewport,
 };
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
@@ -35,6 +36,7 @@ mod text_editor;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 static RASTER_SENDER: OnceLock<SyncSender<RasterJob>> = OnceLock::new();
+static TILE_SENDER: OnceLock<SyncSender<TileJob>> = OnceLock::new();
 static NEXT_CANVAS_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,24 @@ struct RasterJob {
     queued_at: Instant,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TileKey {
+    source: RasterKey,
+    scale: u32,
+}
+
+impl TileKey {
+    fn matches(self, document_id: u64, revision: u64, canvas_token: u64, scale: u32) -> bool {
+        self.source.matches(document_id, revision, canvas_token) && self.scale == scale
+    }
+}
+
+struct TileJob {
+    key: TileKey,
+    document: Document,
+    queued_at: Instant,
+}
+
 fn render_metrics_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("LUMAPAINT_RENDER_METRICS").is_some())
@@ -66,6 +86,7 @@ fn render_metrics_enabled() -> bool {
 
 pub fn initialize(app: tauri::AppHandle) {
     let _ = APP.set(app.clone());
+    let tile_app = app.clone();
     start_recovery();
     // Optional prewarming: rendering still initializes fonts if the worker cannot start.
     let _ = std::thread::Builder::new()
@@ -96,6 +117,27 @@ pub fn initialize(app: tauri::AppHandle) {
         .is_ok()
     {
         let _ = RASTER_SENDER.set(sender);
+    }
+    let (sender, receiver) = sync_channel::<TileJob>(1);
+    if std::thread::Builder::new()
+        .name("tile-project".into())
+        .spawn(move || {
+            while let Ok(mut job) = receiver.recv() {
+                while let Ok(newer) = receiver.try_recv() {
+                    job = newer;
+                }
+                let queued_for = job.queued_at.elapsed();
+                let started = Instant::now();
+                let result = project_committed_paint_layer_at_scale(&job.document, job.key.scale);
+                let cpu_time = started.elapsed();
+                let _ = tile_app.run_on_main_thread(move || {
+                    finish_tile_job(job.key, result, queued_for, cpu_time)
+                });
+            }
+        })
+        .is_ok()
+    {
+        let _ = TILE_SENDER.set(sender);
     }
 }
 
@@ -787,6 +829,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     DOCUMENT.with(|document| {
         let document = document.borrow();
+        refresh_tile_preview(canvas, &document);
         if RASTER_SENDER.get().is_some() {
             schedule_raster_job(canvas, &document)?;
             canvas.renderer.render_deferred(canvas.viewport, &document)
@@ -794,6 +837,48 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
             canvas.renderer.render(canvas.viewport, &document)
         }
     })
+}
+
+fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
+    let Some(scale) = canvas.viewport.compatible_tile_preview_scale() else {
+        canvas.renderer.clear_tiled_preview();
+        canvas.tile_ready = None;
+        return;
+    };
+    if document.has_active_stroke() || document.committed_paint_strokes().next().is_none() {
+        canvas.renderer.clear_tiled_preview();
+        canvas.tile_ready = None;
+        return;
+    }
+    let key = TileKey {
+        source: RasterKey {
+            document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            revision: document.revision(),
+            canvas_token: canvas.token,
+        },
+        scale,
+    };
+    if canvas.tile_ready == Some(key) {
+        return;
+    }
+    canvas.renderer.clear_tiled_preview();
+    canvas.tile_ready = None;
+    if canvas.tile_job == Some(key) || canvas.tile_failure == Some(key) {
+        return;
+    }
+    let Some(sender) = TILE_SENDER.get() else {
+        return;
+    };
+    if sender
+        .try_send(TileJob {
+            key,
+            document: document.clone(),
+            queued_at: Instant::now(),
+        })
+        .is_ok()
+    {
+        canvas.tile_job = Some(key);
+    }
 }
 
 fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), String> {
@@ -883,6 +968,69 @@ fn finish_raster_job(
     }
 }
 
+fn finish_tile_job(
+    key: TileKey,
+    result: Result<lumapaint_core::tiles::TiledRasterDocument, String>,
+    queued_for: Duration,
+    cpu_time: Duration,
+) {
+    let document_id = ACTIVE_DOCUMENT_ID.with(|id| id.get());
+    let (revision, dimensions, active) = DOCUMENT.with(|document| {
+        let document = document.borrow();
+        (
+            document.revision(),
+            document.dimensions(),
+            document.has_active_stroke(),
+        )
+    });
+    let mut failure = None;
+    let upload_started = Instant::now();
+    CANVAS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(canvas) = slot.as_mut() else {
+            return;
+        };
+        if canvas.tile_job == Some(key) {
+            canvas.tile_job = None;
+        }
+        if active
+            || canvas.viewport.compatible_tile_preview_scale() != Some(key.scale)
+            || !key.matches(document_id, revision, canvas.token, key.scale)
+        {
+            return;
+        }
+        match result {
+            Ok(tiles) => {
+                if let Err(error) = canvas
+                    .renderer
+                    .install_tiled_preview_at_scale(&tiles, dimensions, key.scale)
+                {
+                    failure = Some(error);
+                } else {
+                    canvas.tile_ready = Some(key);
+                }
+            }
+            Err(error) => failure = Some(error),
+        }
+        if failure.is_some() {
+            canvas.tile_failure = Some(key);
+        }
+    });
+    if render_metrics_enabled() {
+        eprintln!(
+            "LumaPaint tile projection scale={} queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2}{}",
+            key.scale,
+            queued_for.as_secs_f64() * 1000.0,
+            cpu_time.as_secs_f64() * 1000.0,
+            upload_started.elapsed().as_secs_f64() * 1000.0,
+            failure.as_ref().map_or("", |_| " fallback=v1")
+        );
+    }
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+}
+
 struct Canvas {
     // Rust drops fields in declaration order: surface/renderer MUST precede its native view.
     renderer: Renderer,
@@ -891,6 +1039,9 @@ struct Canvas {
     token: u64,
     raster_job: Option<RasterKey>,
     raster_failure: Option<RasterKey>,
+    tile_job: Option<TileKey>,
+    tile_ready: Option<TileKey>,
+    tile_failure: Option<TileKey>,
 }
 
 impl Drop for Canvas {
@@ -1141,6 +1292,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         token: NEXT_CANVAS_TOKEN.fetch_add(1, Ordering::Relaxed),
                         raster_job: None,
                         raster_failure: None,
+                        tile_job: None,
+                        tile_ready: None,
+                        tile_failure: None,
                     })
                 }
                 Err(error) => {
@@ -1201,6 +1355,23 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_result_rejects_an_old_document_canvas_or_scale() {
+        let key = TileKey {
+            source: RasterKey {
+                document_id: 2,
+                revision: 7,
+                canvas_token: 11,
+            },
+            scale: 2,
+        };
+        assert!(key.matches(2, 7, 11, 2));
+        assert!(!key.matches(3, 7, 11, 2));
+        assert!(!key.matches(2, 8, 11, 2));
+        assert!(!key.matches(2, 7, 12, 2));
+        assert!(!key.matches(2, 7, 11, 1));
+    }
 
     #[test]
     fn raster_result_requires_the_same_document_revision_and_canvas() {

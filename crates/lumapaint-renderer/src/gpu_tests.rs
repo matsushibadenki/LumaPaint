@@ -16,10 +16,15 @@ struct Gpu {
     texture_layout: wgpu::BindGroupLayout,
     selection_layout: wgpu::BindGroupLayout,
     outline: wgpu::RenderPipeline,
+    tile_nearest: bool,
 }
 
 impl Gpu {
     fn new() -> Self {
+        Self::new_with_viewport(1.0, 960.0 / 976.0)
+    }
+
+    fn new_with_viewport(scale: f32, zoom: f32) -> Self {
         pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -44,9 +49,9 @@ impl Gpu {
                 });
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                // fit = 1 and screen/document translation = (32,64).
+                // The default case has fit = 1 and translation = (32,64).
                 contents: bytemuck::bytes_of(&Uniforms {
-                    viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
+                    viewport: [W as f32, H as f32, scale, zoom],
                     appearance: [0.0; 4],
                     document: [960.0, 640.0, 0.0, 0.0],
                 }),
@@ -81,6 +86,19 @@ impl Gpu {
                 texture_layout,
                 selection_layout,
                 outline,
+                tile_nearest: Viewport {
+                    width: W,
+                    height: H,
+                    scale,
+                    zoom,
+                    dark: false,
+                    pan_x: 0.0,
+                    pan_y: 0.0,
+                    document_width: 960.0,
+                    document_height: 640.0,
+                    canvas_color: CanvasColor::White,
+                }
+                .tile_filter_nearest(),
             }
         })
     }
@@ -249,13 +267,19 @@ impl Gpu {
     }
 
     fn render_tiled_strokes(&self, strokes: &[Stroke]) -> Vec<u8> {
-        let mut document = TiledRasterDocument::new(960, 640).unwrap();
+        self.render_tiled_strokes_at_scale(strokes, 1)
+    }
+
+    fn render_tiled_strokes_at_scale(&self, strokes: &[Stroke], scale: u32) -> Vec<u8> {
+        let width = 960 * scale;
+        let height = 640 * scale;
+        let mut document = TiledRasterDocument::new(width, height).unwrap();
         document.add_layer("paint".into(), "Paint".into()).unwrap();
         for stroke in strokes {
-            paint_stroke_into_tiles(&mut document, "paint", stroke).unwrap();
+            paint_stroke_into_tiles_at_scale(&mut document, "paint", stroke, scale).unwrap();
             document.discard_history();
         }
-        let texture = TileTexture::new(&self.device, &self.queue, 960, 640).unwrap();
+        let texture = TileTexture::new(&self.device, &self.queue, width, height).unwrap();
         texture
             .upload(&self.queue, &document.prepare_full_uploads())
             .unwrap();
@@ -273,9 +297,14 @@ impl Gpu {
             "Tiled comparison",
         );
         let tile_view = texture.texture().create_view(&Default::default());
+        let filter = if self.tile_nearest {
+            wgpu::FilterMode::Nearest
+        } else {
+            wgpu::FilterMode::Linear
+        };
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: filter,
+            min_filter: filter,
             ..Default::default()
         });
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -382,6 +411,33 @@ fn figure_eight(brush: Brush, count: usize) -> Stroke {
     }
 }
 
+fn brush_pixel_difference(v1: &[u8], tiled: &[u8]) -> (f64, u8, u64, u64) {
+    assert_eq!(v1.len(), tiled.len());
+    let mut max_diff = 0u8;
+    let mut total_diff = 0u64;
+    let mut changed = 0u64;
+    let mut over_16 = 0u64;
+    for (original, projected) in v1.as_chunks::<4>().0.iter().zip(tiled.as_chunks::<4>().0) {
+        if original[..3] == [255; 3] && projected[..3] == [255; 3] {
+            continue;
+        }
+        changed += 1;
+        for (a, b) in original[..3].iter().zip(&projected[..3]) {
+            let delta = a.abs_diff(*b);
+            max_diff = max_diff.max(delta);
+            total_diff += u64::from(delta);
+            over_16 += u64::from(delta > 16);
+        }
+    }
+    assert!(changed > 0, "comparison produced no paint");
+    (
+        total_diff as f64 / (changed * 3) as f64,
+        max_diff,
+        over_16,
+        changed,
+    )
+}
+
 #[test]
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
@@ -431,31 +487,73 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
     ] {
         let v1 = gpu.render(&strokes);
         let tiled = gpu.render_tiled_strokes(&strokes);
-        let mut max_diff = 0u8;
-        let mut total_diff = 0u64;
-        let mut changed = 0u64;
-        let mut over_16 = 0u64;
-        for (original, projected) in v1.as_chunks::<4>().0.iter().zip(tiled.as_chunks::<4>().0) {
-            if original[..3] == [255; 3] && projected[..3] == [255; 3] {
-                continue;
-            }
-            changed += 1;
-            for (a, b) in original[..3].iter().zip(&projected[..3]) {
-                let delta = a.abs_diff(*b);
-                max_diff = max_diff.max(delta);
-                total_diff += u64::from(delta);
-                over_16 += u64::from(delta > 16);
-            }
-        }
-        assert!(changed > 0, "{name} produced no paint");
+        let (mean_diff, max_diff, over_16, changed) = brush_pixel_difference(&v1, &tiled);
         eprintln!(
             "tile-v1 {name}: changed_pixels={changed}, mean_channel_diff={:.2}, max_channel_diff={max_diff}, channels_over_16={over_16}",
-            total_diff as f64 / (changed * 3) as f64,
+            mean_diff,
         );
         assert!(
-            max_diff <= 16 && total_diff as f64 / (changed * 3) as f64 <= 2.0,
+            max_diff <= 16 && mean_diff <= 2.0,
             "{name} tile preview differs too much from the v1 brush"
         );
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
+    let hard = Stroke {
+        brush: Brush {
+            size: 24.0,
+            hardness: 1.0,
+            color: [0, 0, 0],
+        },
+        points: vec![Point { x: 380.0, y: 320.0 }, Point { x: 580.0, y: 320.0 }],
+        pressures: vec![],
+        selection: None,
+    };
+    let soft = Stroke {
+        brush: Brush {
+            size: 48.0,
+            hardness: 0.0,
+            color: [30, 90, 180],
+        },
+        points: vec![
+            Point { x: 380.0, y: 360.0 },
+            Point { x: 480.0, y: 240.0 },
+            Point { x: 580.0, y: 360.0 },
+        ],
+        pressures: vec![],
+        selection: None,
+    };
+    for (viewport, scale, zoom) in [
+        ("half", 1.0, 0.5),
+        ("one", 1.0, 960.0 / 976.0),
+        ("double", 1.0, 2.0),
+        ("retina", 2.0, 1.0),
+    ] {
+        let gpu = Gpu::new_with_viewport(scale, zoom);
+        for (brush, strokes) in [("hard", vec![hard.clone()]), ("soft", vec![soft.clone()])] {
+            let v1 = gpu.render(&strokes);
+            let tiled = gpu.render_tiled_strokes(&strokes);
+            let (mean, max, over_16, changed) = brush_pixel_difference(&v1, &tiled);
+            eprintln!("tile-v1 {viewport}/{brush}: changed_pixels={changed}, mean_channel_diff={mean:.2}, max_channel_diff={max}, channels_over_16={over_16}");
+            if viewport == "one" {
+                assert!(mean <= 2.0 && max <= 16, "{brush} lost 1:1 tile parity");
+            }
+            if viewport == "double" || viewport == "retina" {
+                let high_resolution = gpu.render_tiled_strokes_at_scale(&strokes, 2);
+                let (high_mean, max, over_16, changed) =
+                    brush_pixel_difference(&v1, &high_resolution);
+                eprintln!("tile-v1 {viewport}/{brush}/2x: changed_pixels={changed}, mean_channel_diff={high_mean:.2}, max_channel_diff={max}, channels_over_16={over_16}");
+                if viewport == "double" {
+                    assert!(
+                        high_mean < mean,
+                        "2x tiles must improve {brush} at 200% zoom"
+                    );
+                }
+            }
+        }
     }
 }
 
