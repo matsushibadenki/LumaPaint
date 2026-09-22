@@ -30,6 +30,7 @@ define_class!(
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             unsafe { msg_send![super(self), didChangeText] }
+            invalidate_current_cache();
             publish();
         }
         #[unsafe(method(keyDown:))]
@@ -67,6 +68,8 @@ struct Session {
     view: Retained<InlineEditor>,
     settings: TextSettings,
     preview: Document,
+    layout_generation: std::cell::Cell<u64>,
+    current_cache: RefCell<Option<(u64, TextSettings)>>,
 }
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
@@ -401,18 +404,46 @@ fn publish() {
         let Ok(slot) = slot.try_borrow() else {
             return None;
         };
-        Some(slot.as_ref().map(|session| {
-            let settings = current(session);
-            let selection = selection_style(session, &settings);
-            SessionEvent {
-                settings,
-                selection,
-            }
+        let Some(session) = slot.as_ref() else {
+            return Some(None);
+        };
+        let settings = cached_current(session)?;
+        let selection = selection_style(session, &settings);
+        Some(Some(SessionEvent {
+            settings,
+            selection,
         }))
     });
     if let (Some(app), Some(settings)) = (APP.get(), settings) {
         let _ = app.emit_to("main", "canvas-text-session", settings);
     }
+}
+
+fn invalidate_current_cache() {
+    SESSION.with(|slot| {
+        if let Ok(slot) = slot.try_borrow() {
+            if let Some(session) = slot.as_ref() {
+                session
+                    .layout_generation
+                    .set(session.layout_generation.get().wrapping_add(1));
+            }
+        }
+    });
+}
+
+fn cached_current(session: &Session) -> Option<TextSettings> {
+    let generation = session.layout_generation.get();
+    let mut cache = session.current_cache.try_borrow_mut().ok()?;
+    if let Some((saved_generation, settings)) = cache.as_ref() {
+        if *saved_generation == generation {
+            return Some(settings.clone());
+        }
+    }
+    let settings = current(session);
+    if session.layout_generation.get() == generation {
+        *cache = Some((generation, settings.clone()));
+    }
+    Some(settings)
 }
 
 pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
@@ -496,6 +527,8 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             view: view.clone(),
             settings,
             preview,
+            layout_generation: std::cell::Cell::new(0),
+            current_cache: RefCell::new(None),
         })
     });
     apply_all_attributes()?;
@@ -566,6 +599,9 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
     SESSION.with(|slot| {
         if let Some(session) = slot.borrow_mut().as_mut() {
             session.settings = next;
+            session
+                .layout_generation
+                .set(session.layout_generation.get().wrapping_add(1));
         }
     });
     apply_all_attributes()?;
@@ -621,6 +657,7 @@ pub fn finish(commit: bool) -> Result<(), String> {
 }
 
 pub fn layout() -> Result<(), String> {
+    invalidate_current_cache();
     let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
     let Some(viewport) = viewport else {
         return Ok(());

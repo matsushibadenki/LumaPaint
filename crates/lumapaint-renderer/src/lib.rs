@@ -1,12 +1,28 @@
 //! GPU rendering shared across desktop platforms; native view ownership lives in the host.
 use lumapaint_core::document::{
-    CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, HEIGHT,
-    WIDTH,
+    CanvasColor, Document, Point, Selection, SelectionOperation, SelectionShape, Stroke, SvgLayer,
+    HEIGHT, WIDTH,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 pub use wgpu;
 use wgpu::util::DeviceExt;
+
+fn render_metrics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LUMAPAINT_RENDER_METRICS").is_some())
+}
+
+#[derive(Default)]
+struct VectorDragMetrics {
+    unit_reuse: usize,
+    partial_reuse: usize,
+    cache_builds: usize,
+    full_previews: usize,
+    upload_bytes: usize,
+    cache_setup_ms: f64,
+    full_prepare_upload_ms: f64,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
@@ -482,6 +498,7 @@ pub struct Renderer {
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
     svg_cache: HashMap<String, CachedSvg>,
+    drag_cache: HashMap<String, DragLayerCache>,
     uniform_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -573,7 +590,256 @@ struct CachedSvg {
     bind_group: wgpu::BindGroup,
 }
 
+struct DragLayerCache {
+    source: String,
+    selected_ids: Vec<String>,
+    size: (u32, u32),
+    opacity: f32,
+    /// Empty means the preview needs the full-raster fallback.
+    runs: Vec<DragRun>,
+    bytes: usize,
+}
+
+struct DragRun {
+    selected: bool,
+    cached: CachedSvg,
+    bounds: Option<[i32; 4]>,
+}
+
+fn alpha_bounds(pixels: &[u8], size: (u32, u32)) -> Option<[i32; 4]> {
+    let mut result: Option<[i32; 4]> = None;
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let x = (index % size.0 as usize) as i32;
+        let y = (index / size.0 as usize) as i32;
+        match &mut result {
+            Some([left, top, right, bottom]) => {
+                *left = (*left).min(x);
+                *top = (*top).min(y);
+                *right = (*right).max(x + 1);
+                *bottom = (*bottom).max(y + 1);
+            }
+            None => result = Some([x, y, x + 1, y + 1]),
+        }
+    }
+    result
+}
+
+fn bounds_are_separate(bounds: &[(bool, Option<[i32; 4]>)], offset: [f32; 2]) -> bool {
+    for (index, (first_selected, first_bounds)) in bounds.iter().enumerate() {
+        let Some(a) = first_bounds else { continue };
+        let (ax, ay) = if *first_selected {
+            (offset[0], offset[1])
+        } else {
+            (0.0, 0.0)
+        };
+        for (second_selected, second_bounds) in bounds.iter().skip(index + 1) {
+            let Some(b) = second_bounds else { continue };
+            let (bx, by) = if *second_selected {
+                (offset[0], offset[1])
+            } else {
+                (0.0, 0.0)
+            };
+            // Include the sampling footprint at fractional zoom and drag offsets.
+            if (a[0] as f32 + ax) < (b[2] as f32 + bx + 2.0)
+                && (a[2] as f32 + ax + 2.0) > (b[0] as f32 + bx)
+                && (a[1] as f32 + ay) < (b[3] as f32 + by + 2.0)
+                && (a[3] as f32 + ay + 2.0) > (b[1] as f32 + by)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn drag_runs_are_separate(runs: &[DragRun], offset: [f32; 2]) -> bool {
+    let bounds = runs
+        .iter()
+        .map(|run| (run.selected, run.bounds))
+        .collect::<Vec<_>>();
+    bounds_are_separate(&bounds, offset)
+}
+
+/// CPU-only SVG result. The host can prepare this away from the AppKit/GPU owner.
+pub struct PreparedSvgLayer {
+    pub id: String,
+    pub source: String,
+    pub opacity: f32,
+    pub size: (u32, u32),
+    pub fully_contained: bool,
+    pub pixels: Vec<u8>,
+}
+
+pub fn prepare_svg_layer(
+    layer: &SvgLayer,
+    width: u32,
+    height: u32,
+) -> Result<PreparedSvgLayer, String> {
+    let raster = vector::rasterize_svg(&layer.source, width, height)?;
+    let opacity = layer.effective_opacity();
+    let mut pixels = raster.pixels;
+    if opacity != 1.0 {
+        for value in &mut pixels {
+            *value = (f32::from(*value) * opacity).round() as u8;
+        }
+    }
+    Ok(PreparedSvgLayer {
+        id: layer.id.clone(),
+        source: layer.source.clone(),
+        opacity,
+        size: (width, height),
+        fully_contained: raster.fully_contained,
+        pixels,
+    })
+}
+
 impl Renderer {
+    /// Layers that still need CPU preparation for the committed document frame.
+    pub fn missing_svg_layers(&self, document: &Document) -> Vec<SvgLayer> {
+        let size = document.dimensions();
+        document
+            .visible_svg_layers()
+            .filter(|layer| {
+                !self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                    cached.source == layer.source
+                        && cached.opacity == layer.effective_opacity()
+                        && cached.size == size
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// GPU-only half of SVG preparation. The host checks the document generation
+    /// before installing a result produced by a worker.
+    pub fn install_prepared_svg(&mut self, prepared: PreparedSvgLayer) -> Result<(), String> {
+        let id = prepared.id.clone();
+        let cached = self.make_cached_svg(prepared)?;
+        self.svg_cache.insert(id, cached);
+        Ok(())
+    }
+
+    fn make_cached_svg(&self, prepared: PreparedSvgLayer) -> Result<CachedSvg, String> {
+        let (width, height) = prepared.size;
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or("Invalid prepared SVG dimensions")?;
+        if width == 0
+            || height == 0
+            || width > self.device.limits().max_texture_dimension_2d
+            || height > self.device.limits().max_texture_dimension_2d
+            || prepared.pixels.len() != expected
+        {
+            return Err("Invalid prepared SVG pixels".into());
+        }
+        let texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("SVG layer texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &prepared.pixels,
+        );
+        let view = texture.create_view(&Default::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SVG layer"),
+            layout: &self.svg_bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.svg_sampler),
+                },
+            ],
+        });
+        Ok(CachedSvg {
+            fully_contained: prepared.fully_contained,
+            source: prepared.source,
+            opacity: prepared.opacity,
+            size: prepared.size,
+            _texture: texture,
+            bind_group,
+        })
+    }
+
+    fn prepare_drag_cache(
+        &self,
+        document: &Document,
+        layer: &SvgLayer,
+        size: (u32, u32),
+    ) -> Result<Option<DragLayerCache>, String> {
+        let Some(runs) = document.vector_drag_runs(layer) else {
+            return Ok(None);
+        };
+        let unsupported = || DragLayerCache {
+            source: layer.source.clone(),
+            selected_ids: document.selected_vector_ids().to_vec(),
+            size,
+            opacity: layer.effective_opacity(),
+            runs: Vec::new(),
+            bytes: 0,
+        };
+        const MAX_DRAG_RUNS: usize = 8;
+        const MAX_DRAG_CACHE_BYTES: usize = 64 * 1024 * 1024;
+        let estimated_bytes = (size.0 as usize)
+            .checked_mul(size.1 as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|bytes| bytes.checked_mul(runs.len()));
+        let in_use: usize = self.drag_cache.values().map(|cache| cache.bytes).sum();
+        if runs.len() > MAX_DRAG_RUNS
+            || estimated_bytes
+                .is_none_or(|bytes| bytes > MAX_DRAG_CACHE_BYTES.saturating_sub(in_use))
+        {
+            return Ok(Some(unsupported()));
+        }
+        let mut prepared = Vec::with_capacity(runs.len());
+        for (selected, run) in &runs {
+            let raster = prepare_svg_layer(run, size.0, size.1)?;
+            if *selected && !raster.fully_contained {
+                return Ok(Some(unsupported()));
+            }
+            prepared.push((*selected, raster));
+        }
+        let runs = prepared
+            .into_iter()
+            .map(|(selected, raster)| {
+                let bounds = alpha_bounds(&raster.pixels, size);
+                self.make_cached_svg(raster).map(|cached| DragRun {
+                    selected,
+                    cached,
+                    bounds,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(DragLayerCache {
+            source: layer.source.clone(),
+            selected_ids: document.selected_vector_ids().to_vec(),
+            size,
+            opacity: layer.effective_opacity(),
+            runs,
+            bytes: estimated_bytes.unwrap_or(0),
+        }))
+    }
+
     pub async fn new(
         instance: &wgpu::Instance,
         surface: wgpu::Surface<'static>,
@@ -721,6 +987,7 @@ impl Renderer {
             svg_bind_layout,
             svg_sampler,
             svg_cache: HashMap::new(),
+            drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
             uniforms,
             bind_group,
@@ -756,6 +1023,16 @@ impl Renderer {
         self.render_vector_drag(viewport, document, [0.0, 0.0])
     }
 
+    /// Draw a committed frame without blocking the UI on missing SVG layers.
+    /// The host installs matching CPU results and requests another frame.
+    pub fn render_deferred(
+        &mut self,
+        viewport: Viewport,
+        document: &Document,
+    ) -> Result<(), String> {
+        self.render_vector_drag_inner(viewport, document, [0.0, 0.0], true)
+    }
+
     /// Transient drag offset in document pixels; no document edit or text shaping per frame
     /// is needed when the selected layer's full content already fits in its cached texture.
     pub fn render_vector_drag(
@@ -763,6 +1040,16 @@ impl Renderer {
         viewport: Viewport,
         document: &Document,
         offset: [f32; 2],
+    ) -> Result<(), String> {
+        self.render_vector_drag_inner(viewport, document, offset, false)
+    }
+
+    fn render_vector_drag_inner(
+        &mut self,
+        viewport: Viewport,
+        document: &Document,
+        offset: [f32; 2],
+        defer_svg: bool,
     ) -> Result<(), String> {
         if offset
             .iter()
@@ -829,6 +1116,11 @@ impl Renderer {
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
         let mut translated_layers = std::collections::HashSet::new();
+        let mut partial_layers = std::collections::HashSet::new();
+        let mut drag_metrics = VectorDragMetrics::default();
+        if offset == [0.0, 0.0] {
+            self.drag_cache.clear();
+        }
         for original in document.visible_svg_layers() {
             let dragging = offset != [0.0, 0.0];
             if dragging
@@ -841,13 +1133,46 @@ impl Renderer {
                 })
             {
                 translated_layers.insert(original.id.as_str());
+                drag_metrics.unit_reuse += 1;
                 continue;
+            }
+            if dragging && original.vector_layer && original.effective_opacity() == 1.0 {
+                let cache_valid = self.drag_cache.get(&original.id).is_some_and(|cache| {
+                    cache.source == original.source
+                        && cache.selected_ids == document.selected_vector_ids()
+                        && cache.size == (width, height)
+                        && cache.opacity == original.effective_opacity()
+                });
+                if !cache_valid {
+                    self.drag_cache.remove(&original.id);
+                    let started = std::time::Instant::now();
+                    if let Some(cache) =
+                        self.prepare_drag_cache(document, original, (width, height))?
+                    {
+                        if !cache.runs.is_empty() {
+                            drag_metrics.cache_builds += 1;
+                            drag_metrics.upload_bytes += cache.bytes;
+                        }
+                        self.drag_cache.insert(original.id.clone(), cache);
+                    }
+                    drag_metrics.cache_setup_ms += started.elapsed().as_secs_f64() * 1000.0;
+                }
+                if self.drag_cache.get(&original.id).is_some_and(|cache| {
+                    !cache.runs.is_empty() && drag_runs_are_separate(&cache.runs, offset)
+                }) {
+                    partial_layers.insert(original.id.as_str());
+                    drag_metrics.partial_reuse += 1;
+                    continue;
+                }
             }
             let preview = if dragging {
                 document.translated_vector_layer(original, offset[0], offset[1])?
             } else {
                 None
             };
+            if preview.is_some() {
+                drag_metrics.full_previews += 1;
+            }
             let layer = preview.as_ref().unwrap_or(original);
             if self.svg_cache.get(&layer.id).is_some_and(|cached| {
                 cached.source == layer.source
@@ -856,61 +1181,17 @@ impl Renderer {
             }) {
                 continue;
             }
-            let raster = vector::rasterize_svg(&layer.source, width, height)?;
-            let mut pixels = raster.pixels;
-            let effective_opacity = layer.effective_opacity();
-            if effective_opacity != 1.0 {
-                for value in &mut pixels {
-                    *value = (f32::from(*value) * effective_opacity).round() as u8;
-                }
+            if defer_svg {
+                self.svg_cache.remove(&layer.id);
+                continue;
             }
-            let texture = self.device.create_texture_with_data(
-                &self.queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("SVG layer texture"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &pixels,
-            );
-            let view = texture.create_view(&Default::default());
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("SVG layer"),
-                layout: &self.svg_bind_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.svg_sampler),
-                    },
-                ],
-            });
-            self.svg_cache.insert(
-                layer.id.clone(),
-                CachedSvg {
-                    fully_contained: raster.fully_contained,
-                    source: layer.source.clone(),
-                    opacity: effective_opacity,
-                    size: (width, height),
-                    _texture: texture,
-                    bind_group,
-                },
-            );
+            let started = std::time::Instant::now();
+            let prepared = prepare_svg_layer(layer, width, height)?;
+            drag_metrics.upload_bytes += prepared.pixels.len();
+            self.install_prepared_svg(prepared)?;
+            drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
-        let translated_uniforms = if translated_layers.is_empty() {
+        let translated_uniforms = if translated_layers.is_empty() && partial_layers.is_empty() {
             None
         } else {
             let mut moved = uniforms;
@@ -1054,7 +1335,29 @@ impl Renderer {
                 ..Default::default()
             });
             for layer in document.visible_svg_layers() {
-                let bind_group = &self.svg_cache[&layer.id].bind_group;
+                if partial_layers.contains(layer.id.as_str()) {
+                    if let Some(cache) = self.drag_cache.get(&layer.id) {
+                        for run in &cache.runs {
+                            pass.set_pipeline(&self.svg_pipeline);
+                            pass.set_bind_group(
+                                0,
+                                if run.selected {
+                                    translated_uniforms.as_ref().unwrap_or(&self.bind_group)
+                                } else {
+                                    &self.bind_group
+                                },
+                                &[],
+                            );
+                            pass.set_bind_group(1, &run.cached.bind_group, &[]);
+                            pass.draw(0..6, 0..1);
+                        }
+                    }
+                    continue;
+                }
+                let Some(cached) = self.svg_cache.get(&layer.id) else {
+                    continue;
+                };
+                let bind_group = &cached.bind_group;
                 pass.set_pipeline(&self.svg_pipeline);
                 let uniforms = if translated_layers.contains(layer.id.as_str()) {
                     translated_uniforms.as_ref().unwrap_or(&self.bind_group)
@@ -1074,6 +1377,18 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        if offset != [0.0, 0.0] && render_metrics_enabled() {
+            eprintln!(
+                "LumaPaint vector-drag unit_reuse={} partial_reuse={} cache_builds={} full_previews={} upload_bytes={} cache_setup_ms={:.2} full_prepare_upload_ms={:.2}",
+                drag_metrics.unit_reuse,
+                drag_metrics.partial_reuse,
+                drag_metrics.cache_builds,
+                drag_metrics.full_previews,
+                drag_metrics.upload_bytes,
+                drag_metrics.cache_setup_ms,
+                drag_metrics.full_prepare_upload_ms,
+            );
+        }
         Ok(())
     }
 }
@@ -1081,6 +1396,164 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_drag_cache_is_used_only_while_raster_runs_stay_separate() {
+        let bounds = [
+            (false, Some([10, 10, 20, 20])),
+            (true, Some([40, 10, 50, 20])),
+            (false, Some([70, 10, 80, 20])),
+        ];
+        assert!(bounds_are_separate(&bounds, [0.0, 0.0]));
+        assert!(!bounds_are_separate(&bounds, [-25.0, 0.0]));
+        assert!(!bounds_are_separate(&bounds, [25.0, 0.0]));
+        assert!(bounds_are_separate(&bounds, [0.0, 25.0]));
+        let mut pixels = vec![0; 4 * 4 * 4];
+        pixels[4 * (2 * 4 + 1) + 3] = 255;
+        assert_eq!(alpha_bounds(&pixels, (4, 4)), Some([1, 2, 2, 3]));
+    }
+
+    fn separated_drag_document() -> Document {
+        use lumapaint_core::vector::{
+            FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
+        };
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        for (id, x, color) in [
+            ("moving", 20.0, [255, 0, 0, 255]),
+            ("still", 150.0, [0, 0, 255, 255]),
+        ] {
+            document
+                .upsert_vector_object(
+                    &layer_id,
+                    VectorObject {
+                        id: id.into(),
+                        name: id.into(),
+                        text: None,
+                        path: VectorPath {
+                            data: "M 0 0 H 30 V 30 H 0 Z".into(),
+                            fill_rule: FillRule::NonZero,
+                        },
+                        transform: [1.0, 0.0, 0.0, 1.0, x, 20.0],
+                        fill: Some(VectorPaint { color }),
+                        stroke: None,
+                        stroke_width: 0.0,
+                        visible: true,
+                        kind: VectorObjectKind::Rectangle,
+                        control_points: vec![[0.0, 0.0], [30.0, 30.0]],
+                    },
+                )
+                .unwrap();
+        }
+        document
+            .select_vector_objects(vec!["moving".into()])
+            .unwrap();
+        document
+    }
+
+    #[test]
+    fn separated_vector_drag_runs_match_full_preview_pixels() {
+        let document = separated_drag_document();
+        let layer_id = document.svg_layers().next().unwrap().id.clone();
+        let layer = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap();
+        let runs = document.vector_drag_runs(layer).unwrap();
+        let full = document
+            .translated_vector_layer(layer, 15.0, 0.0)
+            .unwrap()
+            .unwrap();
+        let expected = vector::rasterize_svg(&full.source, 960, 640)
+            .unwrap()
+            .pixels;
+        let mut combined = vec![0u8; expected.len()];
+        for (selected, part) in runs {
+            let raster = vector::rasterize_svg(&part.source, 960, 640).unwrap();
+            for y in 0..640usize {
+                for x in 0..960usize {
+                    let source = (y * 960 + x) * 4;
+                    if raster.pixels[source + 3] == 0 {
+                        continue;
+                    }
+                    let target_x = x + if selected { 15 } else { 0 };
+                    let target = (y * 960 + target_x) * 4;
+                    assert_eq!(combined[target + 3], 0);
+                    combined[target..target + 4]
+                        .copy_from_slice(&raster.pixels[source..source + 4]);
+                }
+            }
+        }
+        assert_eq!(combined, expected);
+    }
+
+    #[test]
+    #[ignore = "Diagnostic CPU benchmark; run explicitly with --ignored --nocapture"]
+    fn vector_drag_raster_cost_diagnostic() {
+        let document = separated_drag_document();
+        let layer = document.svg_layers().next().unwrap();
+        let offsets = (0..24).map(|step| [step as f32 * 3.0, 0.0]);
+        let started = std::time::Instant::now();
+        let mut full_bytes = 0usize;
+        for offset in offsets {
+            let preview = document
+                .translated_vector_layer(layer, offset[0], offset[1])
+                .unwrap()
+                .unwrap();
+            full_bytes += vector::rasterize_svg(&preview.source, 960, 640)
+                .unwrap()
+                .pixels
+                .len();
+        }
+        let full_time = started.elapsed();
+        let started = std::time::Instant::now();
+        let cached_bytes: usize = document
+            .vector_drag_runs(layer)
+            .unwrap()
+            .iter()
+            .map(|(_, run)| {
+                vector::rasterize_svg(&run.source, 960, 640)
+                    .unwrap()
+                    .pixels
+                    .len()
+            })
+            .sum();
+        let cache_time = started.elapsed();
+        assert!(cached_bytes < full_bytes);
+        eprintln!(
+            "24 drag offsets: full CPU raster {:.2} ms, {} MiB; split cache setup {:.2} ms, {} MiB",
+            full_time.as_secs_f64() * 1000.0,
+            full_bytes / (1024 * 1024),
+            cache_time.as_secs_f64() * 1000.0,
+            cached_bytes / (1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn prepared_svg_keeps_identity_and_applies_effective_opacity() {
+        let layer = SvgLayer {
+            id: "layer-1".into(),
+            name: "Sample".into(),
+            visible: true,
+            opacity: 0.5,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: true,
+            mask_inverted: false,
+            mask_density: 0.5,
+            source: "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><rect width='8' height='8' fill='red'/></svg>".into(),
+            paint_layer: false,
+            vector_layer: false,
+            vector_objects: Vec::new(),
+        };
+        let prepared = prepare_svg_layer(&layer, 8, 8).unwrap();
+        assert_eq!(prepared.id, layer.id);
+        assert_eq!(prepared.source, layer.source);
+        assert_eq!(prepared.opacity, 0.25);
+        assert_eq!(prepared.size, (8, 8));
+        assert_eq!(prepared.pixels.len(), 8 * 8 * 4);
+        assert_eq!(&prepared.pixels[4 * (4 * 8 + 4)..][..4], &[64, 0, 0, 64]);
+    }
 
     #[test]
     fn brush_curve_interpolation_preserves_endpoints_and_adds_smooth_samples() {

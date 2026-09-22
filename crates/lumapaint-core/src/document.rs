@@ -353,6 +353,9 @@ impl Document {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
@@ -1411,6 +1414,47 @@ impl Document {
                 .all(|object| self.selected_vector_objects.contains(&object.id))
     }
 
+    pub fn selected_vector_ids(&self) -> &[String] {
+        &self.selected_vector_objects
+    }
+
+    /// Consecutive visible objects stay in painter order when a partial drag is
+    /// composed from stationary and translated textures. Group opacity requires
+    /// compositing the whole layer first, so those layers use the regular path.
+    pub fn vector_drag_runs(&self, layer: &SvgLayer) -> Option<Vec<(bool, SvgLayer)>> {
+        if !layer.vector_layer || !layer.visible || layer.locked || layer.effective_opacity() != 1.0
+        {
+            return None;
+        }
+        let mut groups: Vec<(bool, Vec<VectorObject>)> = Vec::new();
+        for object in layer.vector_objects.iter().filter(|object| object.visible) {
+            let selected = self.selected_vector_objects.contains(&object.id);
+            if let Some((last_selected, objects)) = groups.last_mut() {
+                if *last_selected == selected {
+                    objects.push(object.clone());
+                    continue;
+                }
+            }
+            groups.push((selected, vec![object.clone()]));
+        }
+        if !groups.iter().any(|(selected, _)| *selected)
+            || !groups.iter().any(|(selected, _)| !selected)
+        {
+            return None;
+        }
+        Some(
+            groups
+                .into_iter()
+                .map(|(selected, objects)| {
+                    let mut run = layer.clone();
+                    run.source = vector_svg(self.width, self.height, &objects);
+                    run.vector_objects = objects;
+                    (selected, run)
+                })
+                .collect(),
+        )
+    }
+
     pub fn vector_overlay_selections(&self) -> Vec<Selection> {
         self.vector_overlay_selections_at_offset(0.0, 0.0)
     }
@@ -2436,6 +2480,64 @@ mod persistence_tests {
         assert!(layer.source.contains("fill=\"#0a50dcff\""));
         assert!(layer.source.contains("fill-rule=\"evenodd\""));
         assert_eq!(decoded.snapshot().layers[1].kind, "vector");
+    }
+
+    #[test]
+    fn partial_vector_drag_runs_preserve_painter_order_without_editing_document() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        for (index, id) in ["back", "middle", "front"].into_iter().enumerate() {
+            document
+                .upsert_vector_object(
+                    &layer_id,
+                    VectorObject {
+                        text: None,
+                        id: id.into(),
+                        name: id.into(),
+                        path: VectorPath {
+                            data: "M 10 10 H 60 V 60 H 10 Z".into(),
+                            fill_rule: FillRule::NonZero,
+                        },
+                        transform: [1.0, 0.0, 0.0, 1.0, index as f32 * 10.0, 0.0],
+                        fill: Some(VectorPaint {
+                            color: [50, 80, 120, 255],
+                        }),
+                        stroke: None,
+                        stroke_width: 0.0,
+                        visible: true,
+                        kind: crate::vector::VectorObjectKind::Rectangle,
+                        control_points: vec![[10.0, 10.0], [60.0, 60.0]],
+                    },
+                )
+                .unwrap();
+        }
+        document
+            .select_vector_objects(vec!["middle".into()])
+            .unwrap();
+        let layer = document
+            .svg_layers()
+            .find(|item| item.id == layer_id)
+            .unwrap();
+        let original = layer.source.clone();
+        let revision = document.revision();
+        let runs = document.vector_drag_runs(layer).unwrap();
+        assert_eq!(
+            runs.iter()
+                .map(|(selected, _)| *selected)
+                .collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        assert_eq!(
+            runs.iter()
+                .map(|(_, run)| run.vector_objects[0].id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["back", "middle", "front"]
+        );
+        assert_eq!(layer.source, original);
+        assert_eq!(document.revision(), revision);
+        let mut faded = layer.clone();
+        faded.opacity = 0.5;
+        assert!(document.vector_drag_runs(&faded).is_none());
     }
 
     #[test]

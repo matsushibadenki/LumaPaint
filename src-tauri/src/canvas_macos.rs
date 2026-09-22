@@ -10,7 +10,9 @@ use lumapaint_core::document::{
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
-use lumapaint_renderer::{validate_svg, wgpu, Renderer, Viewport};
+use lumapaint_renderer::{
+    prepare_svg_layer, validate_svg, wgpu, PreparedSvgLayer, Renderer, Viewport,
+};
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
 };
@@ -19,7 +21,12 @@ use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
-use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::{sync_channel, SyncSender, TrySendError},
+    OnceLock,
+};
+use std::time::{Duration, Instant};
 use std::{cell::RefCell, ffi::c_void, ptr::NonNull};
 use tauri::{Emitter, Manager};
 
@@ -27,13 +34,69 @@ use tauri::{Emitter, Manager};
 mod text_editor;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+static RASTER_SENDER: OnceLock<SyncSender<RasterJob>> = OnceLock::new();
+static NEXT_CANVAS_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RasterKey {
+    document_id: u64,
+    revision: u64,
+    canvas_token: u64,
+}
+
+impl RasterKey {
+    fn matches(self, document_id: u64, revision: u64, canvas_token: u64) -> bool {
+        self.document_id == document_id
+            && self.revision == revision
+            && self.canvas_token == canvas_token
+    }
+}
+
+struct RasterJob {
+    key: RasterKey,
+    layers: Vec<lumapaint_core::document::SvgLayer>,
+    size: (u32, u32),
+    queued_at: Instant,
+}
+
+fn render_metrics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LUMAPAINT_RENDER_METRICS").is_some())
+}
+
 pub fn initialize(app: tauri::AppHandle) {
-    let _ = APP.set(app);
+    let _ = APP.set(app.clone());
     start_recovery();
     // Optional prewarming: rendering still initializes fonts if the worker cannot start.
     let _ = std::thread::Builder::new()
         .name("text-fonts".into())
         .spawn(lumapaint_renderer::vector::prepare_text_fonts);
+    let (sender, receiver) = sync_channel::<RasterJob>(1);
+    if std::thread::Builder::new()
+        .name("svg-raster".into())
+        .spawn(move || {
+            while let Ok(mut job) = receiver.recv() {
+                // At most one request waits while a raster is running. Keep the newest.
+                while let Ok(newer) = receiver.try_recv() {
+                    job = newer;
+                }
+                let queued_for = job.queued_at.elapsed();
+                let started = Instant::now();
+                let result: Result<Vec<PreparedSvgLayer>, String> = job
+                    .layers
+                    .iter()
+                    .map(|layer| prepare_svg_layer(layer, job.size.0, job.size.1))
+                    .collect();
+                let cpu_time = started.elapsed();
+                let _ = app.run_on_main_thread(move || {
+                    finish_raster_job(job.key, result, queued_for, cpu_time)
+                });
+            }
+        })
+        .is_ok()
+    {
+        let _ = RASTER_SENDER.set(sender);
+    }
 }
 
 define_class!(
@@ -688,15 +751,136 @@ pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
 fn redraw() -> Result<(), String> {
     CANVAS.with(|slot| {
         if let Some(canvas) = slot.borrow_mut().as_mut() {
-            // Modal edits are rendered once, with their final state, when the view resumes.
-            if canvas.view.isHidden() {
-                return Ok(());
-            }
-            text_editor::render(canvas)
+            render_canvas(canvas)
         } else {
             Ok(())
         }
     })
+}
+
+fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
+    let started = Instant::now();
+    let mode = if text_editor::active() {
+        "inline-text"
+    } else if VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
+        "vector-drag"
+    } else {
+        "committed"
+    };
+    let result = render_canvas_inner(canvas);
+    if render_metrics_enabled() && !canvas.view.isHidden() {
+        eprintln!(
+            "LumaPaint render mode={mode} main_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    result
+}
+
+fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
+    // Modal edits are rendered once, with their final state, when the view resumes.
+    if canvas.view.isHidden() {
+        return Ok(());
+    }
+    if text_editor::active() || VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
+        return text_editor::render(canvas);
+    }
+    DOCUMENT.with(|document| {
+        let document = document.borrow();
+        if RASTER_SENDER.get().is_some() {
+            schedule_raster_job(canvas, &document)?;
+            canvas.renderer.render_deferred(canvas.viewport, &document)
+        } else {
+            canvas.renderer.render(canvas.viewport, &document)
+        }
+    })
+}
+
+fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), String> {
+    let layers = canvas.renderer.missing_svg_layers(document);
+    if layers.is_empty() {
+        canvas.raster_job = None;
+        canvas.raster_failure = None;
+        return Ok(());
+    }
+    let key = RasterKey {
+        document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+        revision: document.revision(),
+        canvas_token: canvas.token,
+    };
+    if canvas.raster_job == Some(key) || canvas.raster_failure == Some(key) {
+        return Ok(());
+    }
+    let Some(sender) = RASTER_SENDER.get() else {
+        return Ok(());
+    };
+    match sender.try_send(RasterJob {
+        key,
+        layers,
+        size: document.dimensions(),
+        queued_at: Instant::now(),
+    }) {
+        Ok(()) => canvas.raster_job = Some(key),
+        Err(TrySendError::Full(_)) => {} // Completion of the running job retries the latest state.
+        Err(TrySendError::Disconnected(_)) => return Err("SVG raster worker stopped".into()),
+    }
+    Ok(())
+}
+
+fn finish_raster_job(
+    key: RasterKey,
+    result: Result<Vec<PreparedSvgLayer>, String>,
+    queued_for: Duration,
+    cpu_time: Duration,
+) {
+    let document_id = ACTIVE_DOCUMENT_ID.with(|id| id.get());
+    let revision = DOCUMENT.with(|document| document.borrow().revision());
+    let mut failure = None;
+    let mut upload_bytes = 0usize;
+    let upload_started = Instant::now();
+    CANVAS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(canvas) = slot.as_mut() else {
+            return false;
+        };
+        if canvas.raster_job == Some(key) {
+            canvas.raster_job = None;
+        }
+        if !key.matches(document_id, revision, canvas.token) {
+            return false;
+        }
+        match result {
+            Ok(layers) => {
+                for layer in layers {
+                    upload_bytes += layer.pixels.len();
+                    if let Err(error) = canvas.renderer.install_prepared_svg(layer) {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            Err(error) => failure = Some(error),
+        }
+        if failure.is_some() {
+            canvas.raster_failure = Some(key);
+        }
+        true
+    });
+    if render_metrics_enabled() && upload_bytes > 0 {
+        eprintln!(
+            "LumaPaint raster queue_ms={:.2} cpu_ms={:.2} upload_ms={:.2} bytes={upload_bytes}",
+            queued_for.as_secs_f64() * 1000.0,
+            cpu_time.as_secs_f64() * 1000.0,
+            upload_started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    if let Some(error) = failure {
+        emit_error(error);
+    } else {
+        if let Err(error) = redraw() {
+            emit_error(error);
+        }
+    }
 }
 
 struct Canvas {
@@ -704,6 +888,9 @@ struct Canvas {
     renderer: Renderer,
     view: Retained<PaintView>,
     viewport: Viewport,
+    token: u64,
+    raster_job: Option<RasterKey>,
+    raster_failure: Option<RasterKey>,
 }
 
 impl Drop for Canvas {
@@ -951,6 +1138,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         renderer,
                         view,
                         viewport,
+                        token: NEXT_CANVAS_TOKEN.fetch_add(1, Ordering::Relaxed),
+                        raster_job: None,
+                        raster_failure: None,
                     })
                 }
                 Err(error) => {
@@ -963,7 +1153,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
         canvas.view.setHidden(false);
-        text_editor::render(canvas)?;
+        render_canvas(canvas)?;
         Ok(CanvasInfo {
             status: "ready",
             backend: canvas.renderer.backend.clone(),
@@ -1011,6 +1201,19 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raster_result_requires_the_same_document_revision_and_canvas() {
+        let key = RasterKey {
+            document_id: 7,
+            revision: 12,
+            canvas_token: 3,
+        };
+        assert!(key.matches(7, 12, 3));
+        assert!(!key.matches(8, 12, 3));
+        assert!(!key.matches(7, 13, 3));
+        assert!(!key.matches(7, 12, 4));
+    }
 
     #[test]
     fn text_drag_updates_before_mouse_up_and_commits_once() {
