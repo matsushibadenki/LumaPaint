@@ -1493,7 +1493,7 @@ fn document_tab(id: u64, document: &Document) -> DocumentTabSnapshot {
         id,
         file_name: snapshot.file_name.or(Some(snapshot.name)),
         dirty: snapshot.dirty,
-        format: crate::project_file::ProjectFormat::Legacy,
+        format: "legacy",
     }
 }
 
@@ -1513,7 +1513,7 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
             id,
             file_name: document.file_name.clone().or(Some(document.name.clone())),
             dirty: document.dirty,
-            format: crate::project_file::ProjectFormat::Legacy,
+            format: "legacy",
         });
     }
     documents.sort_by_key(|document| document.id);
