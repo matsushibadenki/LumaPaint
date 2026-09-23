@@ -117,6 +117,15 @@ pub struct TextRun {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextGlyphCluster {
+    /// UTF-16 offsets relative to the visual line.
+    pub start: usize,
+    pub end: usize,
+    pub x: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
     pub content: String,
@@ -140,6 +149,9 @@ pub struct VectorText {
     /// Native pen positions for each Unicode scalar on every visual line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub character_origins: Vec<Vec<f32>>,
+    /// Native shaping clusters for ligatures and combining sequences on each line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub glyph_clusters: Vec<Vec<TextGlyphCluster>>,
     /// Glyph enclosure in unscaled, unrotated text-container coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_bounds: Option<[f32; 4]>,
@@ -184,6 +196,7 @@ impl Default for VectorText {
             line_origins: Vec::new(),
             style_segment_origins: Vec::new(),
             character_origins: Vec::new(),
+            glyph_clusters: Vec::new(),
             layout_bounds: None,
             font_family: "sans-serif".into(),
             font_size: 48.0,
@@ -208,6 +221,17 @@ impl Default for VectorText {
     }
 }
 
+fn utf16_boundary_in(value: &str, offset: usize) -> bool {
+    let mut at = 0;
+    for character in value.chars() {
+        if at == offset {
+            return true;
+        }
+        at += character.len_utf16();
+    }
+    at == offset
+}
+
 impl VectorText {
     /// Discard measurements tied to a particular font/layout engine.
     /// A host should call this before measuring the current content again.
@@ -218,6 +242,7 @@ impl VectorText {
         self.line_origins.clear();
         self.style_segment_origins.clear();
         self.character_origins.clear();
+        self.glyph_clusters.clear();
         self.layout_bounds = None;
     }
 
@@ -540,6 +565,31 @@ impl VectorText {
         {
             return Err("Invalid text character origins".into());
         }
+        if !self.glyph_clusters.is_empty()
+            && (self.glyph_clusters.len() != self.visual_lines().len()
+                || self.glyph_clusters.iter().zip(self.visual_lines()).any(
+                    |(clusters, (_, line, _))| {
+                        let line_len = line.encode_utf16().count();
+                        let mut end = 0;
+                        for cluster in clusters {
+                            if cluster.start != end
+                                || cluster.end <= cluster.start
+                                || cluster.end > line_len
+                                || !cluster.x.is_finite()
+                                || cluster.x.abs() >= 100_000.0
+                                || !utf16_boundary_in(line, cluster.start)
+                                || !utf16_boundary_in(line, cluster.end)
+                            {
+                                return true;
+                            }
+                            end = cluster.end;
+                        }
+                        end != line_len || (line_len > 0 && clusters.is_empty())
+                    },
+                ))
+        {
+            return Err("Invalid text glyph clusters".into());
+        }
         if self.layout_bounds.is_some_and(|[x, y, width, height]| {
             [x, y, width, height]
                 .iter()
@@ -842,6 +892,32 @@ mod text_style_tests {
             line_origins: vec![0.0, 0.0],
             style_segment_origins: vec![vec![0.0], vec![0.0]],
             character_origins: vec![vec![0.0, 40.0], vec![0.0, 41.0]],
+            glyph_clusters: vec![
+                vec![
+                    TextGlyphCluster {
+                        start: 0,
+                        end: 1,
+                        x: 0.0,
+                    },
+                    TextGlyphCluster {
+                        start: 1,
+                        end: 2,
+                        x: 40.0,
+                    },
+                ],
+                vec![
+                    TextGlyphCluster {
+                        start: 0,
+                        end: 1,
+                        x: 0.0,
+                    },
+                    TextGlyphCluster {
+                        start: 1,
+                        end: 2,
+                        x: 41.0,
+                    },
+                ],
+            ],
             layout_bounds: Some([0.0, 0.0, 100.0, 120.0]),
             ..Default::default()
         };
@@ -866,6 +942,7 @@ mod text_style_tests {
         assert_eq!(text.line_widths, vec![80.0, 82.0]);
         assert_eq!(text.line_origins, vec![0.0, 0.0]);
         assert_eq!(text.character_origins, original.character_origins);
+        assert_eq!(text.glyph_clusters, original.glyph_clusters);
         assert_eq!(text.layout_bounds, original.layout_bounds);
         assert!(text.style_segment_origins.is_empty());
         text.apply_style(

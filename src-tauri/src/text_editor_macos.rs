@@ -1,6 +1,8 @@
 //! Native inline input: IME and selection stay in AppKit, one commit enters document history.
 use super::*;
-use lumapaint_core::vector::{TextAlignment, TextRun, TextStyle, TextStylePatch, VectorText};
+use lumapaint_core::vector::{
+    TextAlignment, TextGlyphCluster, TextRun, TextStyle, TextStylePatch, VectorText,
+};
 use objc2::{runtime::AnyObject, DefinedClass};
 use objc2_app_kit::{
     NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName, NSFontManager,
@@ -147,7 +149,7 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
-    let (breaks, baselines, widths, origins, segments, characters, bounds) =
+    let (breaks, baselines, widths, origins, segments, characters, clusters, bounds) =
         measured_layout(&session.view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
@@ -155,6 +157,7 @@ fn current(session: &Session) -> TextSettings {
     settings.text.line_origins = origins;
     settings.text.style_segment_origins = segments;
     settings.text.character_origins = characters;
+    settings.text.glyph_clusters = clusters;
     settings.text.layout_bounds = bounds;
     settings
 }
@@ -166,6 +169,7 @@ type MeasuredTextLayout = (
     Vec<f32>,
     Vec<Vec<f32>>,
     Vec<Vec<f32>>,
+    Vec<Vec<TextGlyphCluster>>,
     Option<[f32; 4]>,
 );
 
@@ -176,6 +180,7 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
     let mut origins = Vec::new();
     let mut segments = Vec::new();
     let mut characters = Vec::new();
+    let mut clusters = Vec::new();
     let mut bounds = None;
     if let (Some(manager), Some(container)) = (unsafe { view.layoutManager() }, unsafe {
         view.textContainer()
@@ -337,8 +342,72 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
     {
         characters.clear();
     }
+    if let Some(manager) = unsafe { view.layoutManager() } {
+        for (start, line, _) in measured_text.visual_lines() {
+            let line_len = line.encode_utf16().count();
+            let line_end = start + line_len;
+            let mut at = start;
+            let mut line_clusters = Vec::new();
+            while at < line_end {
+                let glyph = manager.glyphIndexForCharacterAtIndex(at);
+                if glyph >= manager.numberOfGlyphs() {
+                    line_clusters.clear();
+                    break;
+                }
+                let character_range = unsafe {
+                    manager.characterRangeForGlyphRange_actualGlyphRange(
+                        NSRange::new(glyph, 1),
+                        std::ptr::null_mut(),
+                    )
+                };
+                let cluster_start = character_range.location.max(start);
+                let cluster_end = (character_range.location + character_range.length).min(line_end);
+                if cluster_start != at || cluster_end <= cluster_start {
+                    line_clusters.clear();
+                    break;
+                }
+                let fragment = unsafe {
+                    manager
+                        .lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, std::ptr::null_mut())
+                };
+                let x = fragment.origin.x
+                    + manager.locationForGlyphAtIndex(glyph).x
+                    + view.textContainerOrigin().x;
+                line_clusters.push(TextGlyphCluster {
+                    start: cluster_start - start,
+                    end: cluster_end - start,
+                    x: x as f32,
+                });
+                at = cluster_end;
+            }
+            clusters.push(line_clusters);
+        }
+    }
+    if clusters.len() != measured_text.visual_lines().len()
+        || clusters
+            .iter()
+            .zip(measured_text.visual_lines())
+            .any(|(line_clusters, (_, line, _))| {
+                let line_len = line.encode_utf16().count();
+                let mut end = 0;
+                for cluster in line_clusters {
+                    if cluster.start != end
+                        || cluster.end <= cluster.start
+                        || cluster.end > line_len
+                        || !cluster.x.is_finite()
+                        || cluster.x.abs() >= 100_000.0
+                    {
+                        return true;
+                    }
+                    end = cluster.end;
+                }
+                end != line_len || (line_len > 0 && line_clusters.is_empty())
+            })
+    {
+        clusters.clear();
+    }
     (
-        breaks, baselines, widths, origins, segments, characters, bounds,
+        breaks, baselines, widths, origins, segments, characters, clusters, bounds,
     )
 }
 
@@ -368,7 +437,7 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
         container.setWidthTracksTextView(true);
     }
     apply_attributes_to_view(&view, settings)?;
-    let (breaks, baselines, widths, origins, segments, characters, bounds) =
+    let (breaks, baselines, widths, origins, segments, characters, clusters, bounds) =
         measured_layout(&view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
@@ -376,6 +445,7 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.line_origins = origins;
     settings.text.style_segment_origins = segments;
     settings.text.character_origins = characters;
+    settings.text.glyph_clusters = clusters;
     settings.text.layout_bounds = bounds;
     settings.text.validate()
 }

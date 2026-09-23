@@ -2662,6 +2662,27 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     let _ = write!(svg, r#" textLength="{width}" lengthAdjust="spacing""#);
                 }
                 svg.push('>');
+                if let Some(clusters) = text
+                    .glyph_clusters
+                    .get(index)
+                    .filter(|clusters| !clusters.is_empty())
+                {
+                    for cluster in clusters {
+                        if let Some(content) = utf16_slice(line, cluster.start, cluster.end) {
+                            let style = text.style_at(start + cluster.start, color);
+                            write_text_segment(
+                                &mut svg,
+                                &style,
+                                content,
+                                Some(cluster.x),
+                                None,
+                                None,
+                            );
+                        }
+                    }
+                    svg.push_str("</tspan>");
+                    continue;
+                }
                 let mut segment = String::new();
                 let mut previous = None;
                 let mut offset = start;
@@ -2728,6 +2749,32 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn utf16_slice(value: &str, start: usize, end: usize) -> Option<&str> {
+    if start > end {
+        return None;
+    }
+    let mut utf16 = 0;
+    let mut start_byte = (start == 0).then_some(0);
+    let mut end_byte = (end == 0).then_some(0);
+    for (byte, character) in value.char_indices() {
+        if utf16 == start {
+            start_byte = Some(byte);
+        }
+        if utf16 == end {
+            end_byte = Some(byte);
+            break;
+        }
+        utf16 += character.len_utf16();
+    }
+    if start_byte.is_none() && utf16 == start {
+        start_byte = Some(value.len());
+    }
+    if end_byte.is_none() && utf16 == end {
+        end_byte = Some(value.len());
+    }
+    Some(&value[start_byte?..end_byte?])
 }
 
 fn write_text_segment(
@@ -3636,6 +3683,37 @@ mod text_tests {
             edit.text.character_origins = origins;
             assert!(edit.text.validate().is_err());
         }
+    }
+    #[test]
+    fn measured_glyph_clusters_keep_combining_sequences_together() {
+        let mut edit = settings();
+        edit.text.content = "e\u{301}x".into();
+        edit.text.line_origins = vec![4.0];
+        edit.text.glyph_clusters = vec![vec![
+            crate::vector::TextGlyphCluster {
+                start: 0,
+                end: 2,
+                x: 4.0,
+            },
+            crate::vector::TextGlyphCluster {
+                start: 2,
+                end: 3,
+                x: 31.5,
+            },
+        ]];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("x=\"4\""));
+        assert!(svg.contains("x=\"31.5\""));
+        assert!(svg.contains("e\u{301}</tspan>"), "{svg}");
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.glyph_clusters,
+            edit.text.glyph_clusters
+        );
+        edit.text.glyph_clusters[0][0].end = 1;
+        assert!(edit.text.validate().is_err());
     }
     #[test]
     fn measured_style_segment_origins_are_saved_and_bound_to_runs() {
