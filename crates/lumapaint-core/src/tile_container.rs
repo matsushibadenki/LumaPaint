@@ -15,6 +15,14 @@ pub const MAX_TILE_CONTAINER_BYTES: usize = 512 * 1024 * 1024;
 const PIXEL_TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize * 4;
 const MASK_TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize;
 
+/// Returns whether the bytes declare the independent tiled project format.
+///
+/// This only identifies the container. Call [`decode`] before trusting any of
+/// its contents.
+pub fn is_container(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC)
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Manifest {
@@ -101,7 +109,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
-    if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TILE_CONTAINER_BYTES || &bytes[..8] != MAGIC
+    if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TILE_CONTAINER_BYTES || !is_container(bytes)
     {
         return Err("Invalid tile container header".into());
     }

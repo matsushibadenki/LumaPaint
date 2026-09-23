@@ -13,14 +13,32 @@ pub struct FileFingerprint {
     hash: u64,
 }
 
+pub enum ProjectData {
+    Legacy(Document),
+    Tiled(TiledRasterState),
+}
+
 pub fn read(path: &Path) -> Result<Document, String> {
     read_with_fingerprint(path).map(|(document, _)| document)
 }
 
 pub fn read_with_fingerprint(path: &Path) -> Result<(Document, FileFingerprint), String> {
+    let (project, fingerprint) = read_any_with_fingerprint(path)?;
+    match project {
+        ProjectData::Legacy(document) => Ok((document, fingerprint)),
+        ProjectData::Tiled(_) => Err("This project uses the tiled document format".into()),
+    }
+}
+
+pub fn read_any_with_fingerprint(path: &Path) -> Result<(ProjectData, FileFingerprint), String> {
     let bytes = read_bytes(path)?;
     let fingerprint = fingerprint_bytes(&bytes);
-    Ok((Document::decode(&bytes)?, fingerprint))
+    let project = if tile_container::is_container(&bytes) {
+        ProjectData::Tiled(tile_container::decode(&bytes)?)
+    } else {
+        ProjectData::Legacy(Document::decode(&bytes)?)
+    };
+    Ok((project, fingerprint))
 }
 
 pub fn fingerprint(path: &Path) -> Result<FileFingerprint, String> {
@@ -64,7 +82,10 @@ pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Read a next-generation tiled project through the same bounded file boundary.
 pub fn read_tiled(path: &Path) -> Result<TiledRasterState, String> {
-    tile_container::decode(&read_bytes(path)?)
+    match read_any_with_fingerprint(path)?.0 {
+        ProjectData::Tiled(state) => Ok(state),
+        ProjectData::Legacy(_) => Err("This project uses the legacy document format".into()),
+    }
 }
 
 /// Atomically write a next-generation tiled project beside the destination.

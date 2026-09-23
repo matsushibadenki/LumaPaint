@@ -2012,7 +2012,16 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
             };
             // Validate before replacing anything or asking to discard work.
-            let (loaded, fingerprint) = crate::project_file::read_with_fingerprint(&path)?;
+            let (project, fingerprint) = crate::project_file::read_any_with_fingerprint(&path)?;
+            let loaded = match project {
+                crate::project_file::ProjectData::Legacy(document) => document,
+                crate::project_file::ProjectData::Tiled(_) => {
+                    return Err(
+                        "This tiled project is valid, but the macOS document workspace cannot edit it yet"
+                            .into(),
+                    );
+                }
+            };
             for layer in loaded.svg_layers() {
                 validate_svg(&layer.source)?;
             }
