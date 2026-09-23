@@ -1871,7 +1871,11 @@ impl Renderer {
             }
             Err(error) => return Err(error.to_string()),
         };
-        let uniforms = Self::uniforms(viewport);
+        let mut background_viewport = viewport;
+        if !document.background_visible() {
+            background_viewport.canvas_color = CanvasColor::Transparent;
+        }
+        let uniforms = Self::uniforms(background_viewport);
         if self
             .tile_preview
             .as_ref()

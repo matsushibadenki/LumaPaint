@@ -22,6 +22,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   const dark = theme === 'dark' || (theme === 'system' && systemDark);
   const settings = useRef({ zoom, dark, brush, tool, visible });
   const schedule = useRef<() => void>(() => {});
+  const retry = () => { setError(''); setStatus('loading'); setAttempt(value => value + 1); };
 
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: dark)');
@@ -52,7 +53,9 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
       failed = true;
       setInfo(null);
       setStatus('failed');
-      setError(String(cause));
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setError(detail);
+      console.error('LumaPaint canvas synchronization failed:', cause);
       void syncCanvas({ x: 0, y: 0, width: 0, height: 0, ...settings.current, visible: false }).catch(() => {});
     };
 
@@ -109,7 +112,11 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   return <section className="canvas-workspace" aria-label={t.canvas}>
     <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'text' ? textPanelMessages[locale].hint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && <div className="paper-preview" aria-hidden="true" />}
-      {hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
+      {status === 'failed' ? <div className="canvas-notice canvas-failure" role="alert">
+        <p>{t.canvasStatus.failed}</p>
+        <pre aria-label={t.errorDetails}>{error}</pre>
+        <button type="button" onClick={retry}>{t.retry}</button>
+      </div> : hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
     </div>
     <div className="canvas-footer">
       <div className="zoom-controls">
@@ -120,8 +127,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
       </div>
       {footerAccessory}
       <span className="canvas-state" role="status" title={info ? `${info.backend} · ${info.adapterName} · ${info.physicalWidth} × ${info.physicalHeight} px · ${info.scaleFactor}×` : undefined}>{t.canvasStatus[status]}</span>
-      {status === 'failed' && <button onClick={() => { setError(''); setStatus('loading'); setAttempt(value => value + 1); }}>{t.retry}</button>}
+      {status === 'failed' && <button type="button" onClick={retry}>{t.retry}</button>}
     </div>
-    {error && <details className="canvas-error"><summary>{t.errorDetails}</summary><pre>{error}</pre></details>}
   </section>;
 }

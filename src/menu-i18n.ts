@@ -1,7 +1,7 @@
 export const menuMessages = {
   ja: {
     bar: 'アプリケーションメニュー', names: ['ファイル', '編集', 'イメージ', 'レイヤー', '書式', '選択範囲', 'フィルター', '表示', 'プラグイン', 'ウインドウ', 'ヘルプ'],
-    new: '新規', closeDocument: 'ドキュメントを閉じる', importSvg: 'SVGをレイヤーとして読み込み…', export: '書き出し…', cut: 'カット', copy: 'コピー', paste: 'ペースト', colorSettings: 'カラー設定…',
+    new: '新規', closeDocument: 'ドキュメントを閉じる', importSvg: '選択レイヤーに画像を追加…', export: '書き出し…', cut: 'カット', copy: 'コピー', paste: 'ペースト', colorSettings: 'カラー設定…',
     colorMode: 'カラーモード', bitDepth: '階調', imageSize: '画像解像度…', canvasSize: 'カンバスサイズ…', rotate: '画像の回転…',
     newLayer: '新規レイヤー…', duplicateLayer: 'レイヤーを複製', deleteLayer: 'レイヤーを削除',
     font: 'フォント…', fontSize: '文字サイズ…', paragraph: '段落…',
@@ -12,7 +12,7 @@ export const menuMessages = {
   },
   en: {
     bar: 'Application menu', names: ['File', 'Edit', 'Image', 'Layer', 'Type', 'Select', 'Filter', 'View', 'Plugins', 'Window', 'Help'],
-    new: 'New', closeDocument: 'Close Document', importSvg: 'Import SVG as Layer…', export: 'Export…', cut: 'Cut', copy: 'Copy', paste: 'Paste', colorSettings: 'Color settings…',
+    new: 'New', closeDocument: 'Close Document', importSvg: 'Add Image to Selected Layer…', export: 'Export…', cut: 'Cut', copy: 'Copy', paste: 'Paste', colorSettings: 'Color settings…',
     colorMode: 'Color mode', bitDepth: 'Bit depth', imageSize: 'Image size…', canvasSize: 'Canvas size…', rotate: 'Rotate image…',
     newLayer: 'New layer…', duplicateLayer: 'Duplicate layer', deleteLayer: 'Delete layer',
     font: 'Font…', fontSize: 'Font size…', paragraph: 'Paragraph…',
@@ -23,7 +23,7 @@ export const menuMessages = {
   },
   'zh-CN': {
     bar: '应用菜单', names: ['文件', '编辑', '图像', '图层', '文字', '选择', '滤镜', '视图', '插件', '窗口', '帮助'],
-    new: '新建', closeDocument: '关闭文档', importSvg: '将 SVG 导入为图层…', export: '导出…', cut: '剪切', copy: '复制', paste: '粘贴', colorSettings: '颜色设置…',
+    new: '新建', closeDocument: '关闭文档', importSvg: '向所选图层添加图像…', export: '导出…', cut: '剪切', copy: '复制', paste: '粘贴', colorSettings: '颜色设置…',
     colorMode: '颜色模式', bitDepth: '位深度', imageSize: '图像大小…', canvasSize: '画布大小…', rotate: '旋转图像…',
     newLayer: '新建图层…', duplicateLayer: '复制图层', deleteLayer: '删除图层',
     font: '字体…', fontSize: '字号…', paragraph: '段落…',

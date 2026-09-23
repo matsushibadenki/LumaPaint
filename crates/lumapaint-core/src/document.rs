@@ -195,7 +195,17 @@ pub struct LayerSettings {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LayerObjectSnapshot {
+    pub id: String,
+    pub name: String,
+    pub kind: VectorObjectKind,
+    pub visible: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LayerSnapshot {
+    pub objects: Vec<LayerObjectSnapshot>,
     pub id: String,
     pub name: String,
     pub kind: &'static str,
@@ -214,6 +224,7 @@ pub struct LayerSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TextObjectSnapshot {
     pub id: String,
+    pub layer_id: String,
     pub text: VectorText,
     pub position: [f32; 2],
     pub color: [u8; 3],
@@ -241,7 +252,7 @@ pub struct DocumentSnapshot {
     pub artboards: bool,
     pub canvas_color: CanvasColor,
     pub pixel_aspect_ratio: f32,
-    pub layer_id: &'static str,
+    pub layer_id: String,
     pub layer_visible: bool,
     pub color_mode: ColorMode,
     pub color_profile: ColorProfile,
@@ -349,6 +360,7 @@ pub struct Document {
     layer_mask_inverted: bool,
     layer_mask_density: f32,
     svg_layers: Vec<SvgLayer>,
+    selected_layer: Option<String>,
     selected_vector_objects: Vec<String>,
     vector_undo: Vec<VectorHistoryState>,
     vector_redo: Vec<VectorHistoryState>,
@@ -380,7 +392,7 @@ impl Default for Document {
             redo: Vec::new(),
             active: None,
             visible: true,
-            layer_name: "Layer 1".into(),
+            layer_name: "Background".into(),
             layer_opacity: 1.0,
             layer_locked: false,
             layer_alpha_locked: false,
@@ -388,6 +400,7 @@ impl Default for Document {
             layer_mask_inverted: false,
             layer_mask_density: 1.0,
             svg_layers: Vec::new(),
+            selected_layer: None,
             selected_vector_objects: Vec::new(),
             vector_undo: Vec::new(),
             vector_redo: Vec::new(),
@@ -432,6 +445,7 @@ impl Document {
 
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
+            objects: Vec::new(),
             id: "layer-1".into(),
             name: self.layer_name.clone(),
             kind: "paint",
@@ -445,25 +459,37 @@ impl Document {
             deletable: false,
             stroke_count: self.strokes.len(),
         }];
-        layers.extend(self.svg_layers.iter().map(|layer| LayerSnapshot {
-            id: layer.id.clone(),
-            name: layer.name.clone(),
-            kind: if layer.paint_layer {
-                "paint"
-            } else if layer.vector_layer {
-                "vector"
-            } else {
-                "svg"
-            },
-            visible: layer.visible,
-            opacity: layer.opacity,
-            locked: layer.locked,
-            alpha_locked: layer.alpha_locked,
-            mask_enabled: layer.mask_enabled,
-            mask_inverted: layer.mask_inverted,
-            mask_density: layer.mask_density,
-            deletable: true,
-            stroke_count: 0,
+        layers.extend(self.svg_layers.iter().map(|layer| {
+            LayerSnapshot {
+                objects: layer
+                    .vector_objects
+                    .iter()
+                    .map(|object| LayerObjectSnapshot {
+                        id: object.id.clone(),
+                        name: object.name.clone(),
+                        kind: object.kind,
+                        visible: object.visible,
+                    })
+                    .collect(),
+                id: layer.id.clone(),
+                name: layer.name.clone(),
+                kind: if layer.paint_layer {
+                    "paint"
+                } else if layer.vector_layer {
+                    "vector"
+                } else {
+                    "svg"
+                },
+                visible: layer.visible,
+                opacity: layer.opacity,
+                locked: layer.locked,
+                alpha_locked: layer.alpha_locked,
+                mask_enabled: layer.mask_enabled,
+                mask_inverted: layer.mask_inverted,
+                mask_density: layer.mask_density,
+                deletable: true,
+                stroke_count: 0,
+            }
         }));
         DocumentSnapshot {
             selection: self.selection.clone(),
@@ -475,7 +501,11 @@ impl Document {
             artboards: self.artboards,
             canvas_color: self.canvas_color,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
-            layer_id: "layer-1",
+            layer_id: self
+                .selected_layer
+                .clone()
+                .filter(|id| id == "layer-1" || self.svg_layers.iter().any(|layer| &layer.id == id))
+                .unwrap_or_else(|| "layer-1".into()),
             layer_visible: self.visible,
             color_mode: self.color_mode,
             color_profile: self.color_profile,
@@ -492,6 +522,7 @@ impl Document {
                             let color = object.fill.map_or([0, 0, 0, 255], |fill| fill.color);
                             TextObjectSnapshot {
                                 id: object.id.clone(),
+                                layer_id: layer.id.clone(),
                                 text: text.clone(),
                                 position: [object.transform[4], object.transform[5]],
                                 color: [color[0], color[1], color[2]],
@@ -622,7 +653,7 @@ impl Document {
             strokes: file.strokes,
             svg_layers: file.svg_layers,
             visible: file.layer_visible,
-            layer_name: file.layer_name.unwrap_or_else(|| "Layer 1".into()),
+            layer_name: file.layer_name.unwrap_or_else(|| "Background".into()),
             layer_opacity: file.layer_opacity.unwrap_or(1.0),
             layer_locked: file.layer_locked.unwrap_or(false),
             layer_alpha_locked: file.layer_alpha_locked.unwrap_or(false),
@@ -724,6 +755,13 @@ impl Document {
         pressure: f32,
     ) -> Result<bool, String> {
         brush.validate()?;
+        if self
+            .selected_layer
+            .as_deref()
+            .is_some_and(|id| id != "layer-1")
+        {
+            return Err("ブラシは基礎ペイントレイヤーを選択してください。\nSelect the base paint layer for brush strokes.\n请为画笔选择基础绘画图层。".into());
+        }
         if !point.valid() || !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
             return Err("Invalid pointer position".into());
         }
@@ -981,7 +1019,69 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    pub fn select_layer(&mut self, id: String) -> Result<(), String> {
+        if id != "layer-1" && !self.svg_layers.iter().any(|layer| layer.id == id) {
+            return Err("Layer not found".into());
+        }
+        self.finish();
+        self.selected_layer = Some(id);
+        self.selected_vector_objects.clear();
+        Ok(())
+    }
+
+    pub fn selected_vector_target(&self) -> Result<Option<String>, String> {
+        let Some(id) = &self.selected_layer else {
+            return Ok(None);
+        };
+        let layer = self.svg_layers.iter().find(|layer| &layer.id == id);
+        match layer {
+            Some(layer) if layer.vector_layer && !layer.locked && layer.visible => Ok(Some(id.clone())),
+            _ => Err("選択レイヤーにはテキスト・パスを書き込めません。表示中のロックされていないベクターレイヤーを選択してください。\nSelect an unlocked, visible vector layer for text and paths.\n请为文字和路径选择可见且未锁定的矢量图层。".into()),
+        }
+    }
+
     pub fn import_svg(&mut self, name: String, source: String) -> Result<(), String> {
+        if let Some(id) = self.selected_layer.clone() {
+            let index = self.svg_layers.iter().position(|layer| layer.id == id)
+                .ok_or("選択レイヤーには画像を追加できません。画像レイヤーを選択してください。\nSelect an image layer to add an image.\n请选择图像图层以添加图像。")?;
+            let layer = &self.svg_layers[index];
+            if layer.vector_layer || layer.locked || !layer.visible {
+                return Err("選択レイヤーには画像を追加できません。表示中のロックされていない画像レイヤーを選択してください。\nSelect an unlocked, visible image layer.\n请选择可见且未锁定的图像图层。".into());
+            }
+            let mut updated = layer.clone();
+            let incoming = source
+                .find("<svg")
+                .map(|start| &source[start..])
+                .ok_or("Invalid SVG image")?;
+            let existing = layer
+                .source
+                .find("<svg")
+                .map(|start| &layer.source[start..])
+                .ok_or("Invalid layer image")?;
+            updated.source = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\">{}{}</svg>",
+                self.width, self.height, existing, incoming
+            );
+            validate_svg_layer(&updated)?;
+            if updated.source.len()
+                + self
+                    .svg_layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != index)
+                    .map(|(_, layer)| layer.source.len())
+                    .sum::<usize>()
+                > MAX_SVG_TOTAL_BYTES
+            {
+                return Err("Project contains too much image data".into());
+            }
+            self.finish();
+            let before = self.vector_history_state();
+            self.svg_layers[index] = updated;
+            self.record_vector_edit(before);
+            self.revision += 1;
+            return Ok(());
+        }
         self.finish();
         let id = format!("svg-layer-{}", self.svg_layers.len() + 1);
         let layer = SvgLayer {
@@ -1173,6 +1273,11 @@ impl Document {
             text: Some(settings.text),
         };
         object.validate()?;
+        if let Some(target) = self.selected_vector_target()? {
+            self.upsert_vector_object(&target, object)?;
+            self.selected_vector_objects = vec![id];
+            return Ok(());
+        }
         let source = vector_svg(self.width, self.height, std::slice::from_ref(&object));
         if source.len()
             + self
@@ -1273,6 +1378,97 @@ impl Document {
             }
         }
         self.selected_vector_objects = unique;
+        Ok(())
+    }
+
+    pub fn set_vector_object_visibility(
+        &mut self,
+        layer_id: &str,
+        object_id: &str,
+        visible: bool,
+    ) -> Result<(), String> {
+        self.finish();
+        let before = self.vector_history_state();
+        let layer_index = self
+            .svg_layers
+            .iter()
+            .position(|layer| layer.id == layer_id && layer.vector_layer)
+            .ok_or("Vector layer not found")?;
+        if self.svg_layers[layer_index].locked {
+            return Err("Vector layer is locked".into());
+        }
+        let mut updated = self.svg_layers[layer_index].clone();
+        let object = updated
+            .vector_objects
+            .iter_mut()
+            .find(|object| object.id == object_id)
+            .ok_or("Vector object not found")?;
+        if object.visible == visible {
+            return Ok(());
+        }
+        object.visible = visible;
+        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
+        validate_svg_layer(&updated)?;
+        self.svg_layers[layer_index] = updated;
+        if !visible {
+            self.selected_vector_objects.retain(|id| id != object_id);
+        }
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn reorder_vector_objects(
+        &mut self,
+        layer_id: &str,
+        ids_top_to_bottom: &[String],
+    ) -> Result<(), String> {
+        self.finish();
+        let layer_index = self
+            .svg_layers
+            .iter()
+            .position(|layer| layer.id == layer_id && layer.vector_layer)
+            .ok_or("Vector layer not found")?;
+        let layer = &self.svg_layers[layer_index];
+        if layer.locked {
+            return Err("Vector layer is locked".into());
+        }
+        if ids_top_to_bottom.len() != layer.vector_objects.len()
+            || layer
+                .vector_objects
+                .iter()
+                .any(|object| !ids_top_to_bottom.contains(&object.id))
+        {
+            return Err("Vector object order does not match the layer".into());
+        }
+        if layer
+            .vector_objects
+            .iter()
+            .rev()
+            .map(|object| &object.id)
+            .eq(ids_top_to_bottom.iter())
+        {
+            return Ok(());
+        }
+        let before = self.vector_history_state();
+        let mut updated = self.svg_layers[layer_index].clone();
+        updated.vector_objects = ids_top_to_bottom
+            .iter()
+            .rev()
+            .map(|id| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .find(|object| &object.id == id)
+                    .cloned()
+                    .ok_or_else(|| "Vector object not found".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
+        validate_svg_layer(&updated)?;
+        self.svg_layers[layer_index] = updated;
+        self.record_vector_edit(before);
+        self.revision += 1;
         Ok(())
     }
 
@@ -1702,6 +1898,11 @@ impl Document {
             .find(|layer| layer.vector_layer && !layer.locked && layer.visible)
             .map(|layer| layer.id.clone())
     }
+    /// The canvas fill belongs to the fixed background layer.
+    pub fn background_visible(&self) -> bool {
+        self.visible
+    }
+
     pub fn paint_layer_opacity(&self) -> f32 {
         self.layer_opacity
             * mask_factor(
@@ -1927,6 +2128,122 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_layer_routes_text_and_rejects_incompatible_image_without_mutation() {
+        let mut document = Document::default();
+        let first = document.add_vector_layer().unwrap();
+        let second = document.add_vector_layer().unwrap();
+        document.select_layer(first.clone()).unwrap();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: crate::vector::VectorText {
+                    content: "Selected".into(),
+                    ..Default::default()
+                },
+                position: [10.0, 20.0],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        assert_eq!(
+            document
+                .svg_layers()
+                .find(|layer| layer.id == first)
+                .unwrap()
+                .vector_objects
+                .len(),
+            1
+        );
+        assert!(document
+            .svg_layers()
+            .find(|layer| layer.id == second)
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        let snapshot = document.snapshot();
+        let children = &snapshot
+            .layers
+            .iter()
+            .find(|layer| layer.id == first)
+            .unwrap()
+            .objects;
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].kind, VectorObjectKind::Text);
+        assert_eq!(children[0].id, snapshot.text_objects[0].id);
+        assert!(snapshot
+            .layers
+            .iter()
+            .find(|layer| layer.id == second)
+            .unwrap()
+            .objects
+            .is_empty());
+        document
+            .select_vector_objects(vec![children[0].id.clone()])
+            .unwrap();
+        assert_eq!(
+            document.snapshot().selected_vector_objects,
+            vec![children[0].id.clone()]
+        );
+        document
+            .set_vector_object_visibility(&first, &children[0].id, false)
+            .unwrap();
+        let hidden = document.snapshot();
+        assert!(
+            !hidden
+                .layers
+                .iter()
+                .find(|layer| layer.id == first)
+                .unwrap()
+                .objects[0]
+                .visible
+        );
+        assert!(hidden.selected_vector_objects.is_empty());
+        document.undo();
+        assert!(
+            document
+                .snapshot()
+                .layers
+                .iter()
+                .find(|layer| layer.id == first)
+                .unwrap()
+                .objects[0]
+                .visible
+        );
+        let revision = document.revision();
+        assert!(document
+            .import_svg(
+                "Image".into(),
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"/>".into()
+            )
+            .is_err());
+        assert_eq!(document.revision(), revision);
+        document.select_layer("layer-1".into()).unwrap();
+        assert!(document.selected_vector_target().is_err());
+    }
+
+    #[test]
+    fn selected_image_layer_retains_existing_image_and_undo() {
+        let mut document = Document::default();
+        let id = document.add_paint_layer().unwrap();
+        document.select_layer(id.clone()).unwrap();
+        let before = document
+            .svg_layers()
+            .find(|layer| layer.id == id)
+            .unwrap()
+            .source
+            .clone();
+        document.import_svg("Image".into(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>".into()).unwrap();
+        assert_eq!(document.svg_layers().count(), 1);
+        assert!(document
+            .svg_layers()
+            .next()
+            .unwrap()
+            .source
+            .contains("<rect"));
+        document.undo();
+        assert_eq!(document.svg_layers().next().unwrap().source, before);
+    }
 
     #[test]
     fn selection_drag_normalizes_clamps_and_does_not_dirty_document() {
@@ -2320,6 +2637,10 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     .style_segment_origins
                     .get(index)
                     .filter(|origins| origins.len() == segment_starts.len() && origins.len() > 1);
+                let character_origins = text
+                    .character_origins
+                    .get(index)
+                    .filter(|origins| origins.len() == line.chars().count());
                 let segment_widths = segment_origins.zip(text.line_widths.get(index)).and_then(
                     |(origins, line_width)| {
                         let mut widths: Vec<f32> =
@@ -2335,11 +2656,9 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 if measured_origin.is_some() {
                     svg.push_str(r#" text-anchor="start""#);
                 }
-                if let Some(width) = text
-                    .line_widths
-                    .get(index)
-                    .filter(|width| **width > 0.0 && segment_starts.len() == 1)
-                {
+                if let Some(width) = text.line_widths.get(index).filter(|width| {
+                    **width > 0.0 && segment_starts.len() == 1 && character_origins.is_none()
+                }) {
                     let _ = write!(svg, r#" textLength="{width}" lengthAdjust="spacing""#);
                 }
                 svg.push('>');
@@ -2347,6 +2666,8 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 let mut previous = None;
                 let mut offset = start;
                 let mut segment_index = 0;
+                let mut character_index = 0;
+                let mut segment_character_start = 0;
                 for c in line.chars() {
                     let style = text.style_at(offset, color);
                     if previous.as_ref().is_some_and(|old| old != &style) {
@@ -2361,13 +2682,17 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                                 .as_ref()
                                 .and_then(|widths| widths.get(segment_index))
                                 .copied(),
+                            character_origins
+                                .map(|origins| &origins[segment_character_start..character_index]),
                         );
                         segment.clear();
                         segment_index += 1;
+                        segment_character_start = character_index;
                     }
                     segment.push(c);
                     previous = Some(style);
                     offset += c.len_utf16();
+                    character_index += 1;
                 }
                 if let Some(style) = previous {
                     write_text_segment(
@@ -2381,6 +2706,8 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                             .as_ref()
                             .and_then(|widths| widths.get(segment_index))
                             .copied(),
+                        character_origins
+                            .map(|origins| &origins[segment_character_start..character_index]),
                     );
                 }
                 svg.push_str("</tspan>");
@@ -2409,6 +2736,7 @@ fn write_text_segment(
     content: &str,
     x: Option<f32>,
     width: Option<f32>,
+    character_origins: Option<&[f32]>,
 ) {
     use std::fmt::Write;
     let family = match style.font_family.as_str() {
@@ -2424,8 +2752,21 @@ fn write_text_segment(
         _ => "none",
     };
     let [r, g, b] = style.color;
-    let x_attribute = x.map_or_else(String::new, |x| format!(r#" x="{x}""#));
+    let x_attribute = character_origins
+        .filter(|origins| !origins.is_empty())
+        .map_or_else(
+            || x.map_or_else(String::new, |x| format!(r#" x="{x}""#)),
+            |origins| {
+                let positions = origins
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!(r#" x="{positions}""#)
+            },
+        );
     let width_attribute = width
+        .filter(|_| character_origins.is_none())
         .filter(|_| content.chars().count() > 1)
         .map_or_else(String::new, |width| {
             format!(r#" textLength="{width}" lengthAdjust="spacing""#)
@@ -3062,6 +3403,59 @@ mod text_tests {
             color: [24, 80, 160],
         }
     }
+
+    #[test]
+    fn vector_object_reorder_changes_stack_and_is_undoable() {
+        let mut document = Document::default();
+        let layer_id = document.add_vector_layer().unwrap();
+        document.select_layer(layer_id.clone()).unwrap();
+        let mut first = settings();
+        first.text.content = "Back".into();
+        document.set_text_object(first).unwrap();
+        let mut second = settings();
+        second.text.content = "Front".into();
+        document.set_text_object(second).unwrap();
+        let original: Vec<_> = document
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .objects
+            .into_iter()
+            .rev()
+            .map(|object| object.id)
+            .collect();
+        let reordered = vec![original[1].clone(), original[0].clone()];
+        document
+            .reorder_vector_objects(&layer_id, &reordered)
+            .unwrap();
+        let current: Vec<_> = document
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .objects
+            .into_iter()
+            .rev()
+            .map(|object| object.id)
+            .collect();
+        assert_eq!(current, reordered);
+        document.undo();
+        let restored: Vec<_> = document
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .objects
+            .into_iter()
+            .rev()
+            .map(|object| object.id)
+            .collect();
+        assert_eq!(restored, original);
+    }
     #[test]
     fn soft_wraps_preserve_source_offsets_styles_and_saved_layout() {
         let mut edit = settings();
@@ -3214,6 +3608,32 @@ mod text_tests {
         );
         for origins in [vec![42.0], vec![42.0, f32::NAN]] {
             edit.text.line_origins = origins;
+            assert!(edit.text.validate().is_err());
+        }
+    }
+    #[test]
+    fn measured_character_origins_drive_svg_and_survive_save() {
+        let mut edit = settings();
+        edit.text.content = "A😀字".into();
+        edit.text.line_origins = vec![3.0];
+        edit.text.line_widths = vec![90.0];
+        edit.text.character_origins = vec![vec![3.0, 25.5, 64.0]];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        assert!(svg.contains("x=\"3 25.5 64\""));
+        assert!(!svg.contains("textLength=\"90\""));
+        let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.character_origins,
+            edit.text.character_origins
+        );
+        for origins in [
+            vec![vec![3.0, 25.5]],
+            vec![vec![3.0, f32::NAN, 64.0]],
+            vec![vec![3.0, 64.0, 25.5]],
+        ] {
+            edit.text.character_origins = origins;
             assert!(edit.text.validate().is_err());
         }
     }

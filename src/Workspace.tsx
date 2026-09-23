@@ -1,3 +1,4 @@
+import { reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom } from './bridge';
@@ -92,6 +93,7 @@ export function Workspace() {
   const closeColorSettings = useCallback(() => setColorSettingsOpen(false), []);
   const t = workspaceMessages[locale];
   const common = messages[locale];
+  const documentEditable = documentAvailable && documents.find(document => document.id === activeDocumentId)?.format !== 'tiled';
   const updateDocument = useCallback((next: DocumentSnapshot) => {
     setDocumentState(next);
   }, []);
@@ -252,12 +254,12 @@ export function Workspace() {
   }, [updateWorkspace]);
 
   const importSvg = useCallback(async () => {
-    if (!documentAvailable || filePending.current) return;
+    if (!documentEditable || filePending.current) return;
     filePending.current = true; setFileBusy(true); setError('');
     try { updateDocument(await importSvgLayer()); }
     catch (cause) { setError(String(cause)); }
     finally { filePending.current = false; setFileBusy(false); }
-  }, [documentAvailable, updateDocument]);
+  }, [documentEditable, updateDocument]);
 
   const setLayerVisibility = useCallback(async (id: string) => {
     if (!ready || busy) return;
@@ -277,10 +279,10 @@ export function Workspace() {
     try { updateDocument(await deleteLayer(id)); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }, [ready, busy, updateDocument]);
-  const createLayer = useCallback(async () => {
+  const createLayer = useCallback(async (kind: 'paint' | 'vector') => {
     if (!ready || busy) return;
     setBusy(true); setError('');
-    try { updateDocument(await addPaintLayer()); } catch (cause) { setError(String(cause)); }
+    try { updateDocument(await (kind === 'paint' ? addPaintLayer() : addVectorLayer())); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }, [ready, busy, updateDocument]);
   const moveLayer = useCallback(async (ids: string[]) => {
@@ -331,7 +333,7 @@ export function Workspace() {
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentAvailable && ready && !busy && !fileBusy}
+      <WorkspaceMenu locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onFile={action => void file(action)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
         onNew={() => void documentAction('new')} onCloseDocument={() => activeDocumentId !== null && void documentAction('close', activeDocumentId)}
         onColorMode={mode => void setColorMode(mode)}
@@ -351,18 +353,18 @@ export function Workspace() {
       </> : <span className="selection-hint">{canvasTool === 'text' ? textPanelMessages[locale].hint : t.selectionHint}</span>}
       {toolMode === 'animation' && <span className="selection-hint animation-hint">{t.animationHint}</span>}
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
-      <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
+      <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
     <main className="editor-layout">
       <nav className="tool-rail" aria-label={t.tools}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
         <span className="tool-mode-divider" aria-hidden="true" />
         {modeTools[toolMode].map(item => item === 'ellipse' || item === 'vectorEllipse' ? null : item === 'rectangle' ?
-          <SelectionToolMenu key="selection" locale={locale} selected={canvasTool === 'rectangle' || canvasTool === 'ellipse' ? canvasTool : lastSelectionTool} active={canvasTool === 'rectangle' || canvasTool === 'ellipse'} enabled={documentAvailable} onSelect={setTool} onError={setError} /> :
+          <SelectionToolMenu key="selection" locale={locale} selected={canvasTool === 'rectangle' || canvasTool === 'ellipse' ? canvasTool : lastSelectionTool} active={canvasTool === 'rectangle' || canvasTool === 'ellipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
           item === 'vectorRectangle' ?
-          <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentAvailable} onSelect={setTool} onError={setError} /> :
-          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'text' ? 'T' : item === 'brush' ? 'B' : item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : item === 'vectorEllipse' ? 'Shift＋U' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentAvailable} onClick={() => { setTool(item); if (item === 'text') showTextPanel(); }}><Icon name={item} /></button>)}
-        {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentAvailable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
+          <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
+          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'text' ? 'T' : item === 'brush' ? 'B' : item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : item === 'vectorEllipse' ? 'Shift＋U' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={() => { setTool(item); if (item === 'text') showTextPanel(); }}><Icon name={item} /></button>)}
+        {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentEditable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}
         <div className="common-tools">
         <ZoomToolMenu locale={locale} selected={zoomTool ?? lastZoomTool} active={zoomTool !== null} enabled={documentAvailable && ready} onSelect={setTool} onError={setError} />
@@ -387,8 +389,8 @@ export function Workspace() {
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
       {panels && <Inspector textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
-        textEnabled={documentAvailable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentAvailable && ready && !busy}
-        onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onAddLayer={() => void createLayer()} onReorderLayer={ids => void moveLayer(ids)} />}
+        textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
+        onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {settingsOpen && <SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} />}

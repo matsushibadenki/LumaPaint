@@ -18,12 +18,13 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerSnapshot { id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
+export interface LayerObjectSnapshot { id: string; name: string; kind: 'path' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface LayerSnapshot { objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
-  runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; layoutBounds?: [number, number, number, number];
+  runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; characterOrigins?: number[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
@@ -51,7 +52,7 @@ export async function subscribeTextSession(onChange: (settings: TextSettings | n
 }
 
 export interface TextSettings { id: string | null; text: VectorText; position: [number, number]; color: [number, number, number]; selection?: TextSelection; stylePatch?: Partial<TextStyle> }
-export interface TextObjectSnapshot extends Omit<TextSettings, 'id'> { id: string; editable: boolean }
+export interface TextObjectSnapshot extends Omit<TextSettings, 'id'> { id: string; layerId: string; editable: boolean }
 export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_text_object', { settings: { id: settings.id, text: settings.text, position: settings.position, color: settings.color } }));
   canvasQueue = result.then(() => undefined, () => undefined);
@@ -70,7 +71,7 @@ export type BitDepth = 8 | 16 | 32;
 export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
-export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -133,6 +134,16 @@ export function upsertVectorObject(layerId: string, object: VectorObject): Promi
 }
 export function selectVectorObjects(ids: string[]): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_vector_objects', { ids }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function setVectorObjectVisibility(layerId: string, objectId: string, visible: boolean): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_object_visibility', { layerId, objectId, visible }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function reorderVectorObjects(layerId: string, ids: string[]): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('reorder_vector_objects', { layerId, ids }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
@@ -272,4 +283,10 @@ export async function subscribeCanvasColorSwap(onSwap: () => void) {
 export async function subscribeCanvasText(onEdit: () => void) {
   if (!isTauri()) return () => {};
   return listen('canvas-text-edit', onEdit);
+}
+
+export function selectLayer(id: string): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_layer', { id }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
 }

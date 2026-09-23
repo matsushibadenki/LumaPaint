@@ -5,10 +5,10 @@ use super::{
 };
 use lumapaint_core::document::{
     Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
-    PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
+    LayerSnapshot, PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
 };
 use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
-use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
+use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument, TiledRasterState};
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
@@ -442,6 +442,9 @@ impl PaintView {
             }
             return;
         }
+        if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_some()) {
+            return;
+        }
         if phase == 0 {
             if let Err(error) = text_editor::finish(true) {
                 emit_error(error);
@@ -680,7 +683,10 @@ fn vector_pointer(
         }
         _ => return Ok(()),
     };
-    let layer_id = match document.editable_vector_layer_id() {
+    let layer_id = match document
+        .selected_vector_target()?
+        .or_else(|| document.editable_vector_layer_id())
+    {
         Some(id) => id,
         None => document.add_vector_layer()?,
     };
@@ -782,9 +788,11 @@ fn emit_error(error: String) {
 }
 fn emit_document() {
     checkpoint();
-    if let Some(app) = APP.get() {
-        let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
-        let _ = app.emit_to("main", "document-changed", snapshot);
+    if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none()) {
+        if let Some(app) = APP.get() {
+            let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
+            let _ = app.emit_to("main", "document-changed", snapshot);
+        }
     }
     emit_workspace();
 }
@@ -850,14 +858,32 @@ pub fn delete_layer(id: String) -> Result<DocumentSnapshot, String> {
 }
 pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
-    DOCUMENT.with(|doc| doc.borrow_mut().add_paint_layer())?;
+    DOCUMENT.with(|doc| {
+        let mut doc = doc.borrow_mut();
+        let id = doc.add_paint_layer()?;
+        doc.select_layer(id)
+    })?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn select_layer(id: String) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    // Commit against the original destination before changing the selected layer.
+    // A failed commit leaves both the editor and selection intact.
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| doc.borrow_mut().select_layer(id))?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
 pub fn add_vector_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
-    DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer())?;
+    DOCUMENT.with(|doc| {
+        let mut doc = doc.borrow_mut();
+        let id = doc.add_vector_layer()?;
+        doc.select_layer(id)
+    })?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
@@ -883,6 +909,32 @@ pub fn upsert_vector_object(
 pub fn select_vector_objects(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().select_vector_objects(ids))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn set_vector_object_visibility(
+    layer_id: String,
+    object_id: String,
+    visible: bool,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .set_vector_object_visibility(&layer_id, &object_id, visible)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn reorder_vector_objects(
+    layer_id: String,
+    ids: Vec<String>,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().reorder_vector_objects(&layer_id, &ids))?;
+    redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
@@ -947,7 +999,7 @@ pub fn set_document_settings(settings: DocumentSettings) -> Result<DocumentSnaps
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     let Some(path) = rfd::FileDialog::new()
-        .add_filter("SVG", &["svg"])
+        .add_filter("Images", &["svg", "png", "jpg", "jpeg", "webp"])
         .pick_file()
     else {
         return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
@@ -956,7 +1008,29 @@ pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     if metadata.len() > 4 * 1024 * 1024 {
         return Err("SVG must be no larger than 4 MiB".into());
     }
-    let source = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let source = if extension == "svg" {
+        String::from_utf8(bytes).map_err(|error| error.to_string())?
+    } else {
+        use base64::Engine;
+        let mime = match extension.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            _ => return Err("Unsupported image format".into()),
+        };
+        let (width, height) = DOCUMENT.with(|doc| {
+            let snapshot = doc.borrow().snapshot();
+            (snapshot.width, snapshot.height)
+        });
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{width}\" height=\"{height}\"><image width=\"{width}\" height=\"{height}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"data:{mime};base64,{data}\"/></svg>")
+    };
     validate_svg(&source)?;
     let name = path
         .file_stem()
@@ -1005,6 +1079,40 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     if text_editor::active() || VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
         return text_editor::render(canvas);
+    }
+    let tiled = ACTIVE_TILED_DOCUMENT.with(|document| {
+        document.borrow().as_ref().map(|document| {
+            (
+                document.revision,
+                document.state.width,
+                document.state.height,
+            )
+        })
+    });
+    if let Some((revision, width, height)) = tiled {
+        let key = (ACTIVE_DOCUMENT_ID.with(|id| id.get()), revision);
+        if canvas.active_tiled_key != Some(key) {
+            ACTIVE_TILED_DOCUMENT.with(|document| -> Result<(), String> {
+                let document = document.borrow();
+                let state = document
+                    .as_ref()
+                    .ok_or("Missing tiled document")?
+                    .state
+                    .clone();
+                let document = TiledRasterDocument::from_state(state)?;
+                canvas.renderer.install_tiled_preview(&document)
+            })?;
+            canvas.active_tiled_key = Some(key);
+            canvas.tile_cache = None;
+            canvas.tile_ready = None;
+        }
+        canvas.viewport.document_width = width as f32;
+        canvas.viewport.document_height = height as f32;
+        return DOCUMENT
+            .with(|document| canvas.renderer.render(canvas.viewport, &document.borrow()));
+    }
+    if canvas.active_tiled_key.take().is_some() {
+        canvas.renderer.clear_tiled_preview();
     }
     DOCUMENT.with(|document| {
         let document = document.borrow();
@@ -1416,6 +1524,7 @@ struct Canvas {
     tile_ready: Option<TileKey>,
     tile_failure: Option<TileKey>,
     tile_cache: Option<TileCache>,
+    active_tiled_key: Option<(u64, u64)>,
 }
 
 impl Drop for Canvas {
@@ -1427,7 +1536,8 @@ impl Drop for Canvas {
 thread_local! {
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
-    static DOCUMENT: RefCell<Document> = RefCell::new(Document::default());
+    static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); let _ = document.select_layer("layer-1".into()); document });
+    static ACTIVE_TILED_DOCUMENT: RefCell<Option<TiledSession>> = const { RefCell::new(None) };
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
     static TOOL: std::cell::Cell<CanvasTool> = const { std::cell::Cell::new(CanvasTool::Brush) };
     static DOCUMENT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
@@ -1446,9 +1556,72 @@ thread_local! {
 
 struct OpenDocument {
     id: u64,
-    document: Document,
+    content: OpenDocumentContent,
     path: Option<std::path::PathBuf>,
     fingerprint: Option<crate::project_file::FileFingerprint>,
+}
+
+enum OpenDocumentContent {
+    Legacy(Box<Document>),
+    Tiled(TiledSession),
+}
+
+struct TiledSession {
+    state: TiledRasterState,
+    file_name: Option<String>,
+    revision: u64,
+    saved_revision: u64,
+}
+
+impl TiledSession {
+    fn dirty(&self) -> bool {
+        self.revision != self.saved_revision
+    }
+
+    fn snapshot(&self) -> DocumentSnapshot {
+        let mut snapshot = Document::default().snapshot();
+        snapshot.name = self
+            .file_name
+            .clone()
+            .unwrap_or_else(|| "Untitled tiled document".into());
+        snapshot.file_name = self.file_name.clone();
+        snapshot.width = self.state.width;
+        snapshot.height = self.state.height;
+        snapshot.layer_id = "tile-preview".into();
+        snapshot.layer_visible = self.state.layers.iter().any(|layer| layer.visible);
+        snapshot.layers = self
+            .state
+            .layers
+            .iter()
+            .map(|layer| LayerSnapshot {
+                objects: Vec::new(),
+                id: layer.id.clone(),
+                name: layer.name.clone(),
+                kind: "paint",
+                visible: layer.visible,
+                opacity: layer.opacity,
+                locked: true,
+                alpha_locked: layer.alpha_locked,
+                mask_enabled: layer.mask_enabled,
+                mask_inverted: layer.mask_inverted,
+                mask_density: layer.mask_density,
+                deletable: false,
+                stroke_count: 0,
+            })
+            .collect();
+        snapshot.revision = self.revision;
+        snapshot.dirty = self.dirty();
+        snapshot
+    }
+}
+
+impl OpenDocumentContent {
+    fn dirty(&self) -> bool {
+        match self {
+            Self::Legacy(document) => document.snapshot().dirty,
+            Self::Tiled(document) => document.dirty(),
+        }
+    }
 }
 
 fn next_document_id() -> u64 {
@@ -1463,14 +1636,23 @@ fn park_active_document() {
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return;
     }
-    let document = DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    let content = ACTIVE_TILED_DOCUMENT
+        .with(|slot| slot.borrow_mut().take())
+        .map_or_else(
+            || {
+                OpenDocumentContent::Legacy(Box::new(
+                    DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
+                ))
+            },
+            OpenDocumentContent::Tiled,
+        );
     let path = PROJECT_PATH.with(|slot| slot.borrow_mut().take());
     let fingerprint = PROJECT_FINGERPRINT.with(|slot| slot.borrow_mut().take());
     let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
     INACTIVE_DOCUMENTS.with(|documents| {
         documents.borrow_mut().push(OpenDocument {
             id,
-            document,
+            content,
             path,
             fingerprint,
         });
@@ -1479,7 +1661,18 @@ fn park_active_document() {
 
 fn activate_document(entry: OpenDocument) {
     cancel_vector_drag();
-    DOCUMENT.with(|slot| *slot.borrow_mut() = entry.document);
+    match entry.content {
+        OpenDocumentContent::Legacy(mut document) => {
+            let id = document.snapshot().layer_id;
+            let _ = document.select_layer(id);
+            ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow_mut().take());
+            DOCUMENT.with(|slot| *slot.borrow_mut() = *document);
+        }
+        OpenDocumentContent::Tiled(document) => {
+            DOCUMENT.with(|slot| *slot.borrow_mut() = Document::default());
+            ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(document));
+        }
+    }
     PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
     PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
     ACTIVE_DOCUMENT_ID.with(|active| active.set(entry.id));
@@ -1487,13 +1680,23 @@ fn activate_document(entry: OpenDocument) {
     CHECKPOINT_REVISION.with(|last| last.set(None));
 }
 
-fn document_tab(id: u64, document: &Document) -> DocumentTabSnapshot {
-    let snapshot = document.snapshot();
-    DocumentTabSnapshot {
-        id,
-        file_name: snapshot.file_name.or(Some(snapshot.name)),
-        dirty: snapshot.dirty,
-        format: "legacy",
+fn document_tab(id: u64, content: &OpenDocumentContent) -> DocumentTabSnapshot {
+    match content {
+        OpenDocumentContent::Legacy(document) => {
+            let snapshot = document.snapshot();
+            DocumentTabSnapshot {
+                id,
+                file_name: snapshot.file_name.or(Some(snapshot.name)),
+                dirty: snapshot.dirty,
+                format: "legacy",
+            }
+        }
+        OpenDocumentContent::Tiled(document) => DocumentTabSnapshot {
+            id,
+            file_name: document.file_name.clone(),
+            dirty: document.dirty(),
+            format: "tiled",
+        },
     }
 }
 
@@ -1502,18 +1705,26 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
         items
             .borrow()
             .iter()
-            .map(|entry| document_tab(entry.id, &entry.document))
+            .map(|entry| document_tab(entry.id, &entry.content))
             .collect::<Vec<_>>()
     });
     let open = DOCUMENT_OPEN.with(|value| value.get());
     let active_id = open.then(|| ACTIVE_DOCUMENT_ID.with(|value| value.get()));
-    let active = open.then(|| DOCUMENT.with(|doc| doc.borrow().snapshot()));
+    let active_is_tiled = ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_some());
+    let active = open.then(|| {
+        ACTIVE_TILED_DOCUMENT.with(|document| {
+            document.borrow().as_ref().map_or_else(
+                || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+                TiledSession::snapshot,
+            )
+        })
+    });
     if let (Some(id), Some(document)) = (active_id, active.as_ref()) {
         documents.push(DocumentTabSnapshot {
             id,
             file_name: document.file_name.clone().or(Some(document.name.clone())),
             dirty: document.dirty,
-            format: "legacy",
+            format: if active_is_tiled { "tiled" } else { "legacy" },
         });
     }
     documents.sort_by_key(|document| document.id);
@@ -1591,7 +1802,11 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     let tool_changed = TOOL.with(|tool| tool.get()) != request.tool;
     if tool_changed || !request.visible {
         cancel_vector_drag();
-        text_editor::finish(true)?;
+        if let Err(error) = text_editor::finish(true) {
+            // An edit validation error is not a renderer failure. Keep the editor
+            // (and its uncommitted text) alive, and report it through the UI alert.
+            emit_error(error);
+        }
     }
     BRUSH.with(|brush| *brush.borrow_mut() = request.brush);
     TOOL.with(|tool| tool.set(request.tool));
@@ -1617,7 +1832,12 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         .ok_or("Canvas window is not attached")?
         .backingScaleFactor();
     let (pan_x, pan_y) = PAN.with(|pan| pan.get());
-    let document = DOCUMENT.with(|document| document.borrow().snapshot());
+    let document = ACTIVE_TILED_DOCUMENT.with(|tiled| {
+        tiled.borrow().as_ref().map_or_else(
+            || DOCUMENT.with(|document| document.borrow().snapshot()),
+            TiledSession::snapshot,
+        )
+    });
     let viewport = Viewport::new(
         frame.size.width,
         frame.size.height,
@@ -1673,6 +1893,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         tile_ready: None,
                         tile_failure: None,
                         tile_cache: None,
+                        active_tiled_key: None,
                     })
                 }
                 Err(error) => {
@@ -1696,9 +1917,14 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             physical_width: viewport.width,
             physical_height: viewport.height,
             scale_factor: scale,
-            document: DOCUMENT_OPEN
-                .with(|open| open.get())
-                .then(|| DOCUMENT.with(|doc| doc.borrow().snapshot())),
+            document: DOCUMENT_OPEN.with(|open| open.get()).then(|| {
+                ACTIVE_TILED_DOCUMENT.with(|tiled| {
+                    tiled.borrow().as_ref().map_or_else(
+                        || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+                        TiledSession::snapshot,
+                    )
+                })
+            }),
         })
     });
     text_editor::layout()?;
@@ -1889,14 +2115,15 @@ pub fn confirm_discard() -> bool {
         emit_error(error);
         return false;
     }
-    let active_dirty =
-        DOCUMENT_OPEN.with(|open| open.get()) && DOCUMENT.with(|doc| doc.borrow().snapshot().dirty);
-    let inactive_dirty = INACTIVE_DOCUMENTS.with(|documents| {
-        documents
-            .borrow()
-            .iter()
-            .any(|entry| entry.document.snapshot().dirty)
-    });
+    let active_dirty = DOCUMENT_OPEN.with(|open| open.get())
+        && ACTIVE_TILED_DOCUMENT.with(|document| {
+            document.borrow().as_ref().map_or_else(
+                || DOCUMENT.with(|doc| doc.borrow().snapshot().dirty),
+                TiledSession::dirty,
+            )
+        });
+    let inactive_dirty = INACTIVE_DOCUMENTS
+        .with(|documents| documents.borrow().iter().any(|entry| entry.content.dirty()));
     if !active_dirty && !inactive_dirty {
         return true;
     }
@@ -1919,10 +2146,10 @@ fn confirm_unsaved_changes() -> bool {
 fn ensure_document_open() -> Result<(), String> {
     cancel_vector_drag();
     text_editor::finish(true)?;
-    DOCUMENT_OPEN
-        .with(|open| open.get())
-        .then_some(())
-        .ok_or_else(|| "No document is open".into())
+    (DOCUMENT_OPEN.with(|open| open.get())
+        && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none()))
+    .then_some(())
+    .ok_or_else(|| "This document is read-only in the current workspace".into())
 }
 
 pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
@@ -1930,7 +2157,7 @@ pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
-        document: Document::default(),
+        content: OpenDocumentContent::Legacy(Box::default()),
         path: None,
         fingerprint: None,
     });
@@ -1967,11 +2194,17 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
     let is_active = DOCUMENT_OPEN.with(|open| open.get())
         && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id;
     if is_active {
-        let dirty = DOCUMENT.with(|doc| doc.borrow().snapshot().dirty);
+        let dirty = ACTIVE_TILED_DOCUMENT.with(|document| {
+            document.borrow().as_ref().map_or_else(
+                || DOCUMENT.with(|doc| doc.borrow().snapshot().dirty),
+                TiledSession::dirty,
+            )
+        });
         if dirty && !confirm_unsaved_changes() {
             return Ok(workspace_snapshot());
         }
         DOCUMENT.with(|doc| *doc.borrow_mut() = Document::default());
+        ACTIVE_TILED_DOCUMENT.with(|document| document.borrow_mut().take());
         PROJECT_PATH.with(|path| *path.borrow_mut() = None);
         PROJECT_FINGERPRINT.with(|fingerprint| *fingerprint.borrow_mut() = None);
         let next = INACTIVE_DOCUMENTS.with(|documents| documents.borrow_mut().pop());
@@ -1991,7 +2224,7 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
             let Some(index) = documents.iter().position(|entry| entry.id == id) else {
                 return Err("Document not found".into());
             };
-            if documents[index].document.snapshot().dirty && !confirm_unsaved_changes() {
+            if documents[index].content.dirty() && !confirm_unsaved_changes() {
                 return Ok(());
             }
             documents.remove(index);
@@ -2015,29 +2248,32 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             };
             // Validate before replacing anything or asking to discard work.
             let (project, fingerprint) = crate::project_file::read_any_with_fingerprint(&path)?;
-            let loaded = match project {
-                crate::project_file::ProjectData::Legacy(document) => *document,
-                crate::project_file::ProjectData::Tiled(_) => {
-                    return Err(
-                        "This tiled project is valid, but the macOS document workspace cannot edit it yet"
-                            .into(),
-                    );
-                }
-            };
-            for layer in loaded.svg_layers() {
-                validate_svg(&layer.source)?;
-            }
             let name = path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            let mut loaded = loaded;
-            loaded.mark_saved(name);
+            let content = match project {
+                crate::project_file::ProjectData::Legacy(mut document) => {
+                    for layer in document.svg_layers() {
+                        validate_svg(&layer.source)?;
+                    }
+                    document.mark_saved(name);
+                    OpenDocumentContent::Legacy(document)
+                }
+                crate::project_file::ProjectData::Tiled(state) => {
+                    OpenDocumentContent::Tiled(TiledSession {
+                        state,
+                        file_name: Some(name),
+                        revision: 0,
+                        saved_revision: 0,
+                    })
+                }
+            };
             park_active_document();
             activate_document(OpenDocument {
                 id: next_document_id(),
-                document: loaded,
+                content,
                 path: Some(path),
                 fingerprint: Some(fingerprint),
             });
@@ -2077,15 +2313,33 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                         }
                     }
                 }
-                let bytes = DOCUMENT.with(|doc| doc.borrow_mut().encode())?;
-                crate::project_file::write(&path, &bytes)?;
+                let tiled = ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_some());
+                if tiled {
+                    ACTIVE_TILED_DOCUMENT.with(|document| {
+                        let document = document.borrow();
+                        let document = document.as_ref().ok_or("Missing tiled document")?;
+                        crate::project_file::write_tiled(&path, &document.state)
+                    })?;
+                } else {
+                    let bytes = DOCUMENT.with(|doc| doc.borrow_mut().encode())?;
+                    crate::project_file::write(&path, &bytes)?;
+                }
                 let fingerprint = crate::project_file::fingerprint(&path)?;
                 let name = path
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                DOCUMENT.with(|doc| doc.borrow_mut().mark_saved(name));
+                if tiled {
+                    ACTIVE_TILED_DOCUMENT.with(|document| {
+                        if let Some(document) = document.borrow_mut().as_mut() {
+                            document.file_name = Some(name);
+                            document.saved_revision = document.revision;
+                        }
+                    });
+                } else {
+                    DOCUMENT.with(|doc| doc.borrow_mut().mark_saved(name));
+                }
                 PROJECT_PATH.with(|slot| *slot.borrow_mut() = Some(path));
                 PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = Some(fingerprint));
             }
@@ -2201,7 +2455,7 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
-        document: recovered,
+        content: OpenDocumentContent::Legacy(Box::new(recovered)),
         path: None,
         fingerprint: None,
     });

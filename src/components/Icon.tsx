@@ -1,5 +1,10 @@
-type Name = 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 export const iconPaths: Record<Name, string> = {
+  chevronDown: 'M6 9l6 6 6-6', chevronRight: 'M9 6l6 6-6 6',
+  lock: 'M5 10h14v11H5z M8 10V6a4 4 0 0 1 8 0v4 M12 14v3',
+  unlock: 'M5 10h14v11H5z M8 10V6a4 4 0 0 1 8 0 M12 14v3',
+  pixels: 'M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z',
+  image: 'M3 4h18v16H3z M3 16l6-6 5 5 3-3 4 4 M15 8h.01',
   zoomIn: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8 M10 6v8',
   zoomOut: 'M16 16l5 5 M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14 M6 10h8',
   hand: 'M8 14V6a1.5 1.5 0 0 1 3 0v5 M11 11V4a1.5 1.5 0 0 1 3 0v7 M14 11V6a1.5 1.5 0 0 1 3 0v6 M17 12V9a1.5 1.5 0 0 1 3 0v6c0 4-2.5 6-6 6h-2c-2.6 0-4-1-5.3-3L3 12.8a1.5 1.5 0 0 1 2.5-1.7L8 14',

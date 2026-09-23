@@ -137,6 +137,9 @@ pub struct VectorText {
     /// Native pen positions for the style segments on each visual line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub style_segment_origins: Vec<Vec<f32>>,
+    /// Native pen positions for each Unicode scalar on every visual line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub character_origins: Vec<Vec<f32>>,
     /// Glyph enclosure in unscaled, unrotated text-container coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_bounds: Option<[f32; 4]>,
@@ -180,6 +183,7 @@ impl Default for VectorText {
             line_widths: Vec::new(),
             line_origins: Vec::new(),
             style_segment_origins: Vec::new(),
+            character_origins: Vec::new(),
             layout_bounds: None,
             font_family: "sans-serif".into(),
             font_size: 48.0,
@@ -213,6 +217,7 @@ impl VectorText {
         self.line_widths.clear();
         self.line_origins.clear();
         self.style_segment_origins.clear();
+        self.character_origins.clear();
         self.layout_bounds = None;
     }
 
@@ -521,6 +526,20 @@ impl VectorText {
         {
             return Err("Invalid text style segment origins".into());
         }
+        if !self.character_origins.is_empty()
+            && (self.character_origins.len() != self.visual_lines().len()
+                || self.character_origins.iter().zip(self.visual_lines()).any(
+                    |(origins, (_, line, _))| {
+                        origins.len() != line.chars().count()
+                            || origins
+                                .iter()
+                                .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+                            || origins.windows(2).any(|pair| pair[0] > pair[1])
+                    },
+                ))
+        {
+            return Err("Invalid text character origins".into());
+        }
         if self.layout_bounds.is_some_and(|[x, y, width, height]| {
             [x, y, width, height]
                 .iter()
@@ -822,6 +841,7 @@ mod text_style_tests {
             line_widths: vec![80.0, 82.0],
             line_origins: vec![0.0, 0.0],
             style_segment_origins: vec![vec![0.0], vec![0.0]],
+            character_origins: vec![vec![0.0, 40.0], vec![0.0, 41.0]],
             layout_bounds: Some([0.0, 0.0, 100.0, 120.0]),
             ..Default::default()
         };
@@ -845,6 +865,7 @@ mod text_style_tests {
         assert_eq!(text.line_baselines, vec![48.0, 110.0]);
         assert_eq!(text.line_widths, vec![80.0, 82.0]);
         assert_eq!(text.line_origins, vec![0.0, 0.0]);
+        assert_eq!(text.character_origins, original.character_origins);
         assert_eq!(text.layout_bounds, original.layout_bounds);
         assert!(text.style_segment_origins.is_empty());
         text.apply_style(

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
@@ -52,12 +52,16 @@ function Grip() {
   return <svg className="tab-grip" viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1" /><circle cx="6" cy="2" r="1" /><circle cx="2" cy="6" r="1" /><circle cx="6" cy="6" r="1" /><circle cx="2" cy="10" r="1" /><circle cx="6" cy="10" r="1" /></svg>;
 }
 
-export function Inspector({ textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onReorderLayer, enabled }: {
+export function Inspector({ textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  onSelectLayer: (id: string) => void;
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
   onTextChange: (settings: TextSettings) => Promise<void>; onTextBegin: () => void; onTextFinish: (commit: boolean) => void;
   locale: Locale; brush: Brush; onBrush: (brush: Brush) => void; document: DocumentSnapshot; onToggleLayer: (id: string) => void; enabled: boolean;
   backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; colorPanelRequest: number; onBackgroundChange: (color: Brush['color']) => void; onSwapColors: () => void;
-  onDocumentSettings: (settings: DocumentSettings) => void; onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void; onColorProfile: (profile: ColorProfile) => void; onLayerSettings: (settings: LayerSettings) => void; onDeleteLayer: (id: string) => void; onAddLayer: () => void; onReorderLayer: (ids: string[]) => void;
+  onSelectObject: (layerId: string, objectId: string) => void;
+  onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
+  onReorderObjects: (layerId: string, ids: string[]) => void;
+  onDocumentSettings: (settings: DocumentSettings) => void; onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void; onColorProfile: (profile: ColorProfile) => void; onLayerSettings: (settings: LayerSettings) => void; onDeleteLayer: (id: string) => void; onAddLayer: () => void; onAddVectorLayer: () => void; onReorderLayer: (ids: string[]) => void;
 }) {
   const t = workspaceMessages[locale];
   const [order, setOrder] = useState<PanelId[]>(initialPanelOrder);
@@ -68,8 +72,7 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
   const [dropTarget, setDropTarget] = useState<PanelId | null>(null);
   const [settings, setSettings] = useState<DocumentSettings>(() => ({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio }));
   const [displayDimensions, setDisplayDimensions] = useState(() => ({ width: displaySize(document.width, document.unit, document.resolution), height: displaySize(document.height, document.unit, document.resolution) }));
-  const [selectedLayerId, setSelectedLayerId] = useState(document.layers.at(-1)?.id ?? 'layer-1');
-  const previousLayerCount = useRef(document.layers.length);
+  const selectedLayerId = document.layerId;
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels'>('layers');
   const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title };
 
@@ -79,11 +82,6 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
     setSettings({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio });
     setDisplayDimensions({ width: displaySize(document.width, document.unit, document.resolution), height: displaySize(document.height, document.unit, document.resolution) });
   }, [document.name, document.width, document.height, document.unit, document.resolution, document.artboards, document.canvasColor, document.pixelAspectRatio]);
-  useEffect(() => {
-    if (!document.layers.some(layer => layer.id === selectedLayerId)) setSelectedLayerId(document.layers.at(-1)?.id ?? 'layer-1');
-    else if (document.layers.length > previousLayerCount.current) setSelectedLayerId(document.layers.at(-1)?.id ?? 'layer-1');
-    previousLayerCount.current = document.layers.length;
-  }, [document.layers, selectedLayerId]);
   const selectedLayer = document.layers.find(layer => layer.id === selectedLayerId) ?? document.layers.at(-1);
   const layerSettings = (layer: NonNullable<typeof selectedLayer>, changes: Partial<LayerSettings> = {}): LayerSettings => ({ id: layer.id, name: layer.name, opacity: layer.opacity, locked: layer.locked, alphaLocked: layer.alphaLocked, maskEnabled: layer.maskEnabled, maskInverted: layer.maskInverted, maskDensity: layer.maskDensity, ...changes });
   function submitDocument(event: FormEvent) {
@@ -197,10 +195,22 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
         <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><input disabled={!enabled || !selectedLayer} type="range" min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!enabled || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
         {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><input type="range" min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}
-        <LayerList layers={document.layers} selectedId={selectedLayerId} enabled={enabled} locale={locale}
-          onSelect={setSelectedLayerId} onToggle={onToggleLayer} onReorder={onReorderLayer}
+        <LayerList layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
+          selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
+          onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}
           onRename={(layer, name) => onLayerSettings(layerSettings(layer, { name }))} />
-        <div className="layer-actions"><button disabled={!enabled} title={t.addLayer} aria-label={t.addLayer} onClick={onAddLayer}>＋</button><button disabled title={t.layerOptions} aria-label={t.layerOptions}>fx</button><button disabled={!enabled || !selectedLayer} className={selectedLayer?.maskEnabled ? 'active' : ''} title={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} aria-label={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { maskEnabled: !selectedLayer.maskEnabled, maskDensity: 1, maskInverted: false }))}>◐</button><button disabled={!enabled || !selectedLayer?.deletable} title={t.deleteLayer} aria-label={t.deleteLayer} onClick={() => selectedLayer && onDeleteLayer(selectedLayer.id)}>⌫</button></div><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
+        <div className="layer-actions">
+          <div className="layer-action-group">
+            <button disabled={!enabled} title={t.addPixelLayer} aria-label={t.addPixelLayer} onClick={onAddLayer}>＋</button>
+            <button type="button" className="add-vector-layer" disabled={!enabled} title={t.addVectorLayer} aria-label={t.addVectorLayer} onClick={onAddVectorLayer}><Icon name="vector" /><span aria-hidden="true">＋</span></button>
+            <button disabled={!enabled || !selectedLayer?.deletable} title={t.deleteLayer} aria-label={t.deleteLayer} onClick={() => selectedLayer && onDeleteLayer(selectedLayer.id)}>⌫</button>
+          </div>
+          <span className="layer-action-divider" aria-hidden="true" />
+          <div className="layer-action-group">
+            <button disabled title={t.layerOptions} aria-label={t.layerOptions}>fx</button>
+            <button disabled={!enabled || !selectedLayer} className={selectedLayer?.maskEnabled ? 'active' : ''} title={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} aria-label={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { maskEnabled: !selectedLayer.maskEnabled, maskDensity: 1, maskInverted: false }))}>◐</button>
+          </div>
+        </div><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
       </>}
     </section>}
   </aside>;

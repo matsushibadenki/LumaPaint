@@ -315,6 +315,21 @@ pub async fn delete_layer(
     }
 }
 #[tauri::command]
+pub async fn select_layer(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::select_layer(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native editing is unavailable".into())
+    }
+}
+#[tauri::command]
 pub async fn add_paint_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
     #[cfg(target_os = "macos")]
     {
@@ -384,6 +399,46 @@ pub async fn select_vector_objects(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, ids);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn set_vector_object_visibility(
+    window: tauri::WebviewWindow,
+    layer_id: String,
+    object_id: String,
+    visible: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_vector_object_visibility(layer_id, object_id, visible)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, layer_id, object_id, visible);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn reorder_vector_objects(
+    window: tauri::WebviewWindow,
+    layer_id: String,
+    ids: Vec<String>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::reorder_vector_objects(layer_id, ids)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, layer_id, ids);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }

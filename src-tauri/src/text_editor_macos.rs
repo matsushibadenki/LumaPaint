@@ -147,13 +147,14 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
-    let (breaks, baselines, widths, origins, segments, bounds) =
+    let (breaks, baselines, widths, origins, segments, characters, bounds) =
         measured_layout(&session.view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
     settings.text.line_widths = widths;
     settings.text.line_origins = origins;
     settings.text.style_segment_origins = segments;
+    settings.text.character_origins = characters;
     settings.text.layout_bounds = bounds;
     settings
 }
@@ -164,6 +165,7 @@ type MeasuredTextLayout = (
     Vec<f32>,
     Vec<f32>,
     Vec<Vec<f32>>,
+    Vec<Vec<f32>>,
     Option<[f32; 4]>,
 );
 
@@ -173,6 +175,7 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
     let mut widths = Vec::new();
     let mut origins = Vec::new();
     let mut segments = Vec::new();
+    let mut characters = Vec::new();
     let mut bounds = None;
     if let (Some(manager), Some(container)) = (unsafe { view.layoutManager() }, unsafe {
         view.textContainer()
@@ -297,7 +300,46 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
     {
         segments.clear();
     }
-    (breaks, baselines, widths, origins, segments, bounds)
+    if let Some(manager) = unsafe { view.layoutManager() } {
+        for (start, line, _) in measured_text.visual_lines() {
+            let mut line_characters = Vec::with_capacity(line.chars().count());
+            let mut offset = start;
+            for character in line.chars() {
+                let glyph = manager.glyphIndexForCharacterAtIndex(offset);
+                if glyph >= manager.numberOfGlyphs() {
+                    line_characters.clear();
+                    break;
+                }
+                let fragment = unsafe {
+                    manager
+                        .lineFragmentRectForGlyphAtIndex_effectiveRange(glyph, std::ptr::null_mut())
+                };
+                let x = fragment.origin.x
+                    + manager.locationForGlyphAtIndex(glyph).x
+                    + view.textContainerOrigin().x;
+                line_characters.push(x as f32);
+                offset += character.len_utf16();
+            }
+            characters.push(line_characters);
+        }
+    }
+    if characters.len() != measured_text.visual_lines().len()
+        || characters
+            .iter()
+            .zip(measured_text.visual_lines())
+            .any(|(positions, (_, line, _))| {
+                positions.len() != line.chars().count()
+                    || positions
+                        .iter()
+                        .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
+                    || positions.windows(2).any(|pair| pair[0] > pair[1])
+            })
+    {
+        characters.clear();
+    }
+    (
+        breaks, baselines, widths, origins, segments, characters, bounds,
+    )
 }
 
 /// Reflow a committed panel edit with the same AppKit font and paragraph attributes
@@ -305,6 +347,9 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
 pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.clear_measured_layout();
     settings.text.validate()?;
+    if settings.id.is_none() {
+        DOCUMENT.with(|doc| doc.borrow().selected_vector_target())?;
+    }
     let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
     let view = NSTextView::initWithFrame(
         NSTextView::alloc(mtm),
@@ -323,13 +368,14 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
         container.setWidthTracksTextView(true);
     }
     apply_attributes_to_view(&view, settings)?;
-    let (breaks, baselines, widths, origins, segments, bounds) =
+    let (breaks, baselines, widths, origins, segments, characters, bounds) =
         measured_layout(&view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
     settings.text.line_baselines = baselines;
     settings.text.line_widths = widths;
     settings.text.line_origins = origins;
     settings.text.style_segment_origins = segments;
+    settings.text.character_origins = characters;
     settings.text.layout_bounds = bounds;
     settings.text.validate()
 }
@@ -483,6 +529,11 @@ pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
 pub fn begin(settings: TextSettings) -> Result<(), String> {
     finish(true)?;
     settings.text.validate()?;
+    // Reject an incompatible destination before creating an inline editor. Otherwise
+    // the error is deferred until a tool switch commits the text during canvas sync.
+    if settings.id.is_none() {
+        DOCUMENT.with(|doc| doc.borrow().selected_vector_target())?;
+    }
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return Err("No document is open".into());
     }
