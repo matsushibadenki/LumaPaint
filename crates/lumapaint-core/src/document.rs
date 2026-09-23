@@ -1637,6 +1637,46 @@ impl Document {
         }
         Ok(changed)
     }
+    pub fn delete_selected_vector_objects(&mut self) -> Result<bool, String> {
+        self.finish();
+        if self.selected_vector_objects.is_empty() {
+            return Ok(false);
+        }
+        let selected = self.selected_vector_objects.clone();
+        if self.svg_layers.iter().any(|layer| {
+            layer.vector_layer
+                && layer.locked
+                && layer
+                    .vector_objects
+                    .iter()
+                    .any(|object| selected.contains(&object.id))
+        }) {
+            return Err("Selected vector object is on a locked layer".into());
+        }
+        let before = self.vector_history_state();
+        let mut changed = false;
+        for layer in self
+            .svg_layers
+            .iter_mut()
+            .filter(|layer| layer.vector_layer)
+        {
+            let previous_len = layer.vector_objects.len();
+            layer
+                .vector_objects
+                .retain(|object| !selected.contains(&object.id));
+            if layer.vector_objects.len() != previous_len {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+                changed = true;
+            }
+        }
+        if changed {
+            self.selected_vector_objects.clear();
+            self.record_vector_edit(before);
+            self.revision += 1;
+        }
+        Ok(changed)
+    }
     /// Temporary layer content for a drag. The document and its undo history stay untouched.
     pub fn translated_vector_layer(
         &self,
@@ -3105,6 +3145,26 @@ mod persistence_tests {
         assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
         document.redo();
         assert_eq!(document.snapshot().stroke_count, 1);
+
+        assert!(document.delete_selected_vector_objects().unwrap());
+        assert!(document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        assert!(document.snapshot().selected_vector_objects.is_empty());
+        document.undo();
+        assert_eq!(
+            document
+                .svg_layers()
+                .find(|layer| layer.id == layer_id)
+                .unwrap()
+                .vector_objects[0]
+                .id,
+            "shape-1"
+        );
+        assert_eq!(document.snapshot().selected_vector_objects, ["shape-1"]);
     }
 
     #[test]

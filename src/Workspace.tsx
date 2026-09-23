@@ -83,6 +83,7 @@ export function Workspace() {
   const [zoom, setZoom] = useState(1);
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
   const [inlineText, setInlineText] = useState<TextSettings | null>(null);
+  const textSessionActive = useRef(false);
   const [textPanelRequest, setTextPanelRequest] = useState(0);
   const showTextPanel = useCallback(() => { setPanels(true); setTextPanelRequest(value => value + 1); }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -175,6 +176,7 @@ export function Workspace() {
     let active = true; let stop = () => {}; let wasEditing = false;
     subscribeTextSession(settings => {
       if (!active) return;
+      textSessionActive.current = settings !== null;
       setInlineText(settings);
       if (settings && !wasEditing) showTextPanel();
       wasEditing = settings !== null;
@@ -183,13 +185,31 @@ export function Workspace() {
   }, [showTextPanel]);
   const selectedText = documentState.textObjects.find(item => documentState.selectedVectorObjects.includes(item.id)) ?? null;
   const activeText = inlineText ?? selectedText;
-  const changeText = useCallback(async (settings: TextSettings) => { updateDocument(await updateTextEdit(settings)); }, [updateDocument]);
+  const changeText = useCallback(async (settings: TextSettings) => {
+    if (!textSessionActive.current) {
+      textSessionActive.current = true;
+      try {
+        await beginTextEdit(activeText ?? settings);
+      } catch (cause) {
+        textSessionActive.current = false;
+        throw cause;
+      }
+    }
+    updateDocument(await updateTextEdit(settings));
+  }, [activeText, updateDocument]);
   const endText = useCallback((commit: boolean) => {
-    void finishTextEdit(commit).then(updateDocument).catch(cause => setError(String(cause)));
+    void finishTextEdit(commit).then(snapshot => {
+      textSessionActive.current = false;
+      updateDocument(snapshot);
+    }).catch(cause => setError(String(cause)));
   }, [updateDocument]);
   const beginText = () => {
     const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText, content: textMessages[locale].defaultText }, position: [48, 48], color: brush.color };
-    void beginTextEdit(settings).catch(cause => setError(String(cause)));
+    textSessionActive.current = true;
+    void beginTextEdit(settings).catch(cause => {
+      textSessionActive.current = false;
+      setError(String(cause));
+    });
   };
 
   const edit = useCallback(async (action: DocumentEditAction) => {
@@ -312,6 +332,9 @@ export function Workspace() {
           return;
         }
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+          if (!inlineText && (event.key === 'Delete' || event.key === 'Backspace')) {
+            event.preventDefault(); void edit('deleteSelectedObjects'); return;
+          }
           if (key === 'b' || key === 'm') { event.preventDefault(); setTool(key === 'b' ? 'brush' : event.shiftKey ? 'ellipse' : 'rectangle'); }
           if (key === 'v' || key === 'p' || key === 'u') {
             event.preventDefault();
@@ -328,7 +351,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel, inlineText]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">

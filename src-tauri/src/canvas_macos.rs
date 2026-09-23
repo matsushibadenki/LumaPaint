@@ -327,6 +327,11 @@ define_class!(
                     emit_document();
                 } else { report_edit(DocumentAction::Deselect); }
             }
+            else if [51, 117].contains(&event.keyCode())
+                && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option)
+            {
+                report_edit(DocumentAction::DeleteSelectedObjects);
+            }
             else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [11, 46].contains(&event.keyCode()) {
                 let tool = if event.keyCode() == 11 { CanvasTool::Brush }
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
@@ -825,6 +830,9 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             DocumentAction::SelectAll => doc.select_all(),
             DocumentAction::Deselect => doc.deselect(),
             DocumentAction::InvertSelection => doc.invert_selection()?,
+            DocumentAction::DeleteSelectedObjects => {
+                doc.delete_selected_vector_objects()?;
+            }
         }
         Ok::<(), String>(())
     })?;

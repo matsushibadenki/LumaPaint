@@ -1,9 +1,38 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { defaultVectorText, textFonts, type TextSettings, type TextStyle, type VectorText } from '../bridge';
 import type { Locale } from '../i18n';
 import { textPanelMessages } from '../text-panel-i18n';
 import { textMessages } from '../text-i18n';
 import { fromHex, toHex } from './BrushControls';
+
+function NumberField({ label, value, placeholder, min, max, step, unit, onValidChange }: {
+  label: string; value: number | null; placeholder?: string; min: number; max: number; step: number | 'any'; unit: string;
+  onValidChange: (value: number) => void;
+}) {
+  const display = value === null ? '' : String(Number(value.toFixed(2)));
+  const [input, setInput] = useState(display);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setInput(display); }, [display, focused]);
+  return <span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={step} placeholder={placeholder} value={input} onFocus={() => setFocused(true)} onChange={event => {
+    const next = event.currentTarget.value;
+    setInput(next);
+    if (next !== '' && event.currentTarget.validity.valid) onValidChange(Number(next));
+  }} onBlur={event => {
+    setFocused(false);
+    if (event.currentTarget.value === '' || !event.currentTarget.validity.valid) setInput(display);
+  }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>{unit}</span></span>;
+}
+
+function HexColorField({ label, value, onValidChange }: { label: string; value: string; onValidChange: (value: string) => void }) {
+  const [input, setInput] = useState(value);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setInput(value); }, [focused, value]);
+  return <input aria-label={`${label} HEX`} type="text" value={input} pattern="#[0-9a-fA-F]{6}" maxLength={7} spellCheck={false} onFocus={() => setFocused(true)} onChange={event => {
+    const next = event.currentTarget.value;
+    setInput(next);
+    if (/^#[0-9a-fA-F]{6}$/.test(next)) onValidChange(next);
+  }} onBlur={() => { setFocused(false); if (!/^#[0-9a-fA-F]{6}$/.test(input)) setInput(value); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
+}
 
 export function TextPanel({ locale, settings, resolution, enabled, editing, onChange, onBegin, onFinish }: {
   locale: Locale; settings: TextSettings | null; resolution: number; enabled: boolean; editing: boolean;
@@ -13,11 +42,15 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   const [fonts, setFonts] = useState<string[]>([]);
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState('');
-  const [pending, setPending] = useState(false);
+  const pending = useRef(0);
+  const changeQueue = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { let active = true; textFonts().then(value => { if (active) setFonts(value); }).catch(cause => { if (active) setError(String(cause)); }); return () => { active = false; }; }, []);
   // Do not reset fields for unrelated document/recovery updates.
   const signature = JSON.stringify(settings);
-  useEffect(() => { setDraft(settings); setError(''); }, [signature]);
+  useEffect(() => {
+    if (pending.current === 0) setDraft(settings);
+    setError('');
+  }, [signature]);
   const base = draft?.text ?? defaultVectorText;
   const style = draft?.selection?.style ?? (base.runs?.[0]?.start === 0 ? base.runs[0].style : undefined);
   const text = { ...base, ...style, ...draft?.stylePatch };
@@ -27,28 +60,35 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
   const characterKeys = ['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
   const color = draft?.stylePatch?.color ?? style?.color ?? draft?.color ?? [32, 32, 32];
-  const disabled = !enabled || !draft || pending;
+  const disabled = !enabled || !draft;
   const pt = 72 / Math.max(1, resolution);
-  async function apply(next: TextSettings) {
-    setDraft(next); setPending(true); setError('');
-    try { await onChange(next); } catch (cause) { setError(String(cause)); } finally { setPending(false); }
+  function apply(next: TextSettings) {
+    setDraft(next); setError(''); pending.current += 1;
+    const task = changeQueue.current.then(() => onChange(next));
+    changeQueue.current = task.then(() => undefined, cause => { setError(String(cause)); });
+    void task.finally(() => { pending.current -= 1; }).catch(() => {});
   }
-  function change(patch: Partial<VectorText>, commit = true) {
+  function change(patch: Partial<VectorText>) {
     if (!draft) return;
     const isCharacter = Object.keys(patch).every(key => (characterKeys as readonly string[]).includes(key));
     const next = isCharacter
       ? { ...draft, stylePatch: { ...draft.stylePatch, ...patch } as Partial<TextStyle> }
       : { ...draft, stylePatch: undefined, text: { ...draft.text, ...patch } };
-    if (commit) void apply(next); else setDraft(next);
+    apply(next);
+  }
+  async function finish(commit: boolean) {
+    await changeQueue.current;
+    onFinish(commit);
   }
   function numeric(key: keyof VectorText, label: string, icon: string, unit: string, factor = 1, min = -4096, max = 4096, step = 0.1) {
-    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={unit === 'pt' ? 'any' : step} placeholder={mixed.includes(key as keyof TextStyle) ? t.mixed : undefined} value={mixed.includes(key as keyof TextStyle) && !Object.prototype.hasOwnProperty.call(draft?.stylePatch ?? {}, key) ? '' : Number((Number(text[key]) * factor).toFixed(2))} onChange={event => change({ [key]: Number(event.target.value) / factor }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft && (draft.stylePatch || draft.text !== settings?.text)) void apply(draft); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>{unit}</span></span></label>;
+    const isMixed = mixed.includes(key as keyof TextStyle) && !Object.prototype.hasOwnProperty.call(draft?.stylePatch ?? {}, key);
+    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><NumberField label={label} value={isMixed ? null : Number(text[key]) * factor} min={min} max={max} step={unit === 'pt' ? 'any' : step} unit={unit} placeholder={isMixed ? t.mixed : undefined} onValidChange={value => change({ [key]: value / factor })} /></label>;
   }
   return <div className="text-panel">
     <div className="type-panel-status">
       {editing && <p>{t.editing}</p>}
       {settings && <p>{editing ? (draft?.selection?.length ? `${t.selection}: ${draft.selection.characters}` : t.insertion) : t.whole}{mixed.length > 0 ? ` · ${t.mixed}` : ''}</p>}
-      <div className="type-actions">{editing ? <><button onClick={() => onFinish(true)}>{t.done}</button><button onClick={() => onFinish(false)}>{t.cancel}</button></> : <button disabled={!enabled} onClick={onBegin}>{settings ? t.edit : t.add}</button>}</div>
+      <div className="type-actions">{editing ? <><button onClick={() => void finish(true)}>{t.done}</button><button onClick={() => void finish(false)}>{t.cancel}</button></> : <button disabled={!enabled} onClick={onBegin}>{settings ? t.edit : t.add}</button>}</div>
       {!settings && <p>{t.empty}</p>}
       {settings && !enabled && <p>{t.locked}</p>}
       {error && <p role="alert">{error}</p>}
@@ -67,11 +107,11 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
           </select>
           <div className="type-grid">
             {numeric('fontSize', t.size, 'T↕', 'pt', pt, pt, 512 * pt)}
-            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><span className="type-number"><input aria-label={t.leading} type="number" min={Number((base.fontSize * .8 * pt).toFixed(2))} max={Number((base.fontSize * 3 * pt).toFixed(2))} step="any" value={Number((base.fontSize * base.lineHeight * pt).toFixed(2))} onChange={event => change({ lineHeight: Number(event.target.value) / (base.fontSize * pt) }, false)} onBlur={event => { if (event.currentTarget.validity.valid && draft && (draft.stylePatch || draft.text !== settings?.text)) void apply(draft); }} /><span>pt</span></span></label>
+            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><NumberField label={t.leading} value={base.fontSize * base.lineHeight * pt} min={Number((0.1 * pt).toFixed(4))} max={Number((4096 * pt).toFixed(2))} step="any" unit="pt" onValidChange={value => change({ lineHeight: value / (base.fontSize * pt) })} /></label>
             {numeric('scaleY', t.vertical, 'T↕', '%', 100, 10, 400, 1)}
             {numeric('scaleX', t.horizontal, 'T↔', '%', 100, 10, 400, 1)}
             {numeric('tracking', t.tracking, 'VA', '', 1, -100, 1000, 1)}
-            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><input aria-label={t.color} type="color" value={toHex(color)} onChange={event => { if (draft) void apply({ ...draft, stylePatch: { color: fromHex(event.target.value) } }); }} /><input key={toHex(color)} aria-label={`${t.color} HEX`} type="text" defaultValue={toHex(color)} pattern="#[0-9a-fA-F]{6}" maxLength={7} spellCheck={false} onBlur={event => { if (draft && event.currentTarget.validity.valid && /^#[0-9a-fA-F]{6}$/.test(event.target.value) && event.target.value.toLowerCase() !== toHex(color)) void apply({ ...draft, stylePatch: { color: fromHex(event.target.value) } }); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></span></label>
+            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><input aria-label={t.color} type="color" value={toHex(color)} onChange={event => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(event.target.value) } }); }} /><HexColorField label={t.color} value={toHex(color)} onValidChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(value) } }); }} /></span></label>
             {numeric('baselineShift', t.baseline, 'A↟', 'pt', pt, -512 * pt, 512 * pt)}
             {numeric('rotation', t.rotation, 'T↻', '°', 1, -180, 180, 1)}
           </div>

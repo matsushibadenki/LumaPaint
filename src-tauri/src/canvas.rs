@@ -235,6 +235,7 @@ pub enum DocumentAction {
     SelectAll,
     Deselect,
     InvertSelection,
+    DeleteSelectedObjects,
 }
 
 #[tauri::command]

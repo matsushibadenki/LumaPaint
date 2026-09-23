@@ -728,11 +728,6 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
     apply_all_attributes()?;
     let text = SESSION.with(|slot| slot.borrow().as_ref().unwrap().settings.text.clone());
     let attributes = attributes(&text, &typing)?;
-    if patch.is_some() {
-        if let Some(window) = view.window() {
-            window.makeFirstResponder(Some(&view));
-        }
-    }
     unsafe {
         view.setTypingAttributes(&attributes);
     }

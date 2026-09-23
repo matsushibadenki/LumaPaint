@@ -3,7 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
 export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'zoomIn' | 'zoomOut' | 'hand';
-export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection';
+export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface Brush { size: number; hardness: number; color: [number, number, number] }
 export interface DocumentSnapshot {

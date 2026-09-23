@@ -484,7 +484,7 @@ impl VectorText {
             || !self.font_size.is_finite()
             || !(1.0..=512.0).contains(&self.font_size)
             || !self.line_height.is_finite()
-            || !(0.8..=3.0).contains(&self.line_height)
+            || !(0.1..=4096.0).contains(&(self.font_size * self.line_height))
         {
             return Err("Invalid text settings".into());
         }
@@ -1082,5 +1082,22 @@ mod text_style_tests {
             serde_json::from_str::<VectorText>(&serde_json::to_string(&text).unwrap()).unwrap(),
             text
         );
+    }
+
+    #[test]
+    fn leading_accepts_direct_values_smaller_and_larger_than_the_font_size() {
+        let mut text = VectorText {
+            content: "Two\nlines".into(),
+            font_size: 48.0,
+            line_height: 30.0 / 48.0,
+            ..Default::default()
+        };
+        text.validate().unwrap();
+        text.line_height = 240.0 / 48.0;
+        text.validate().unwrap();
+        text.line_height = 0.0;
+        assert!(text.validate().is_err());
+        text.line_height = 5000.0 / 48.0;
+        assert!(text.validate().is_err());
     }
 }
