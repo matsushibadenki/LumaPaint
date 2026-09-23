@@ -11,7 +11,7 @@ const MAGIC: &[u8; 8] = b"LPTILE2\0";
 const VERSION: u32 = 1;
 const HEADER_BYTES: usize = 28;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
-const MAX_CONTAINER_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_TILE_CONTAINER_BYTES: usize = 512 * 1024 * 1024;
 const PIXEL_TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize * 4;
 const MASK_TILE_BYTES: usize = TILE_SIZE as usize * TILE_SIZE as usize;
 
@@ -86,7 +86,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
         .checked_add(manifest.len())
         .and_then(|length| length.checked_add(payload.len()))
         .ok_or("Tile container size overflow")?;
-    if total > MAX_CONTAINER_BYTES {
+    if total > MAX_TILE_CONTAINER_BYTES {
         return Err("Tile container is too large".into());
     }
     let mut output = Vec::with_capacity(total);
@@ -101,7 +101,8 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
-    if bytes.len() < HEADER_BYTES || bytes.len() > MAX_CONTAINER_BYTES || &bytes[..8] != MAGIC {
+    if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TILE_CONTAINER_BYTES || &bytes[..8] != MAGIC
+    {
         return Err("Invalid tile container header".into());
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());

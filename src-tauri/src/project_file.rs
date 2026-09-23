@@ -1,5 +1,6 @@
 //! Bounded reads and same-directory atomic replacement. No path supplied by the WebView.
 use lumapaint_core::document::{Document, MAX_FILE_BYTES};
+use lumapaint_core::{tile_container, tiles::TiledRasterState};
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
@@ -29,11 +30,12 @@ pub fn fingerprint(path: &Path) -> Result<FileFingerprint, String> {
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES as u64 + 1)
+    let limit = MAX_FILE_BYTES.max(tile_container::MAX_TILE_CONTAINER_BYTES);
+    file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err("Project exceeds 8 MiB".into());
+    if bytes.len() > limit {
+        return Err("Project exceeds the supported size limit".into());
     }
     Ok(bytes)
 }
@@ -48,12 +50,27 @@ fn fingerprint_bytes(bytes: &[u8]) -> FileFingerprint {
 }
 
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let limit = MAX_FILE_BYTES.max(tile_container::MAX_TILE_CONTAINER_BYTES);
+    if bytes.len() > limit {
+        return Err("Project exceeds the supported size limit".into());
+    }
     let parent = path.parent().ok_or("Invalid project directory")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     temporary.write_all(bytes).map_err(|e| e.to_string())?;
     temporary.as_file().sync_all().map_err(|e| e.to_string())?;
     temporary.persist(path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Read a next-generation tiled project through the same bounded file boundary.
+pub fn read_tiled(path: &Path) -> Result<TiledRasterState, String> {
+    tile_container::decode(&read_bytes(path)?)
+}
+
+/// Atomically write a next-generation tiled project beside the destination.
+pub fn write_tiled(path: &Path, state: &TiledRasterState) -> Result<(), String> {
+    let bytes = tile_container::encode(state)?;
+    write(path, &bytes)
 }
 
 #[cfg(test)]

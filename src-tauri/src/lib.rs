@@ -158,7 +158,7 @@ mod canvas;
 mod tool_menu;
 
 #[cfg(any(target_os = "macos", test))]
-mod project_file;
+pub mod project_file;
 
 #[cfg(any(target_os = "macos", test))]
 mod recovery;
