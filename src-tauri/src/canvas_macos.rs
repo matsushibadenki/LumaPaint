@@ -8,7 +8,7 @@ use lumapaint_core::document::{
     LayerSnapshot, PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
 };
 use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
-use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument, TiledRasterState};
+use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
@@ -820,6 +820,31 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
         }
         return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
     }
+    if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_some()) {
+        ACTIVE_TILED_DOCUMENT.with(|document| -> Result<(), String> {
+            let mut document = document.borrow_mut();
+            let session = document.as_mut().ok_or("Missing tiled document")?;
+            match action {
+                DocumentAction::Undo => {
+                    session.document.undo()?;
+                }
+                DocumentAction::Redo => {
+                    session.document.redo()?;
+                }
+                _ => return Err("This tiled document operation is not available yet".into()),
+            }
+            Ok(())
+        })?;
+        redraw()?;
+        emit_document();
+        return ACTIVE_TILED_DOCUMENT.with(|document| {
+            document
+                .borrow()
+                .as_ref()
+                .map(TiledSession::snapshot)
+                .ok_or_else(|| "Missing tiled document".into())
+        });
+    }
     ensure_document_open()?;
     DOCUMENT.with(|doc| {
         let mut doc = doc.borrow_mut();
@@ -1090,11 +1115,8 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     let tiled = ACTIVE_TILED_DOCUMENT.with(|document| {
         document.borrow().as_ref().map(|document| {
-            (
-                document.revision,
-                document.state.width,
-                document.state.height,
-            )
+            let (width, height) = document.document.dimensions();
+            (document.document.revision(), width, height)
         })
     });
     if let Some((revision, width, height)) = tiled {
@@ -1102,13 +1124,8 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         if canvas.active_tiled_key != Some(key) {
             ACTIVE_TILED_DOCUMENT.with(|document| -> Result<(), String> {
                 let document = document.borrow();
-                let state = document
-                    .as_ref()
-                    .ok_or("Missing tiled document")?
-                    .state
-                    .clone();
-                let document = TiledRasterDocument::from_state(state)?;
-                canvas.renderer.install_tiled_preview(&document)
+                let document = &document.as_ref().ok_or("Missing tiled document")?.document;
+                canvas.renderer.install_tiled_preview(document)
             })?;
             canvas.active_tiled_key = Some(key);
             canvas.tile_cache = None;
@@ -1575,31 +1592,31 @@ enum OpenDocumentContent {
 }
 
 struct TiledSession {
-    state: TiledRasterState,
+    document: TiledRasterDocument,
     file_name: Option<String>,
-    revision: u64,
     saved_revision: u64,
 }
 
 impl TiledSession {
     fn dirty(&self) -> bool {
-        self.revision != self.saved_revision
+        self.document.revision() != self.saved_revision
     }
 
     fn snapshot(&self) -> DocumentSnapshot {
         let mut snapshot = Document::default().snapshot();
+        let (width, height) = self.document.dimensions();
         snapshot.name = self
             .file_name
             .clone()
             .unwrap_or_else(|| "Untitled tiled document".into());
         snapshot.file_name = self.file_name.clone();
-        snapshot.width = self.state.width;
-        snapshot.height = self.state.height;
+        snapshot.width = width;
+        snapshot.height = height;
         snapshot.layer_id = "tile-preview".into();
-        snapshot.layer_visible = self.state.layers.iter().any(|layer| layer.visible);
+        snapshot.layer_visible = self.document.layers().iter().any(|layer| layer.visible);
         snapshot.layers = self
-            .state
-            .layers
+            .document
+            .layers()
             .iter()
             .map(|layer| LayerSnapshot {
                 objects: Vec::new(),
@@ -1608,7 +1625,7 @@ impl TiledSession {
                 kind: "paint",
                 visible: layer.visible,
                 opacity: layer.opacity,
-                locked: true,
+                locked: layer.locked,
                 alpha_locked: layer.alpha_locked,
                 mask_enabled: layer.mask_enabled,
                 mask_inverted: layer.mask_inverted,
@@ -1617,8 +1634,10 @@ impl TiledSession {
                 stroke_count: 0,
             })
             .collect();
-        snapshot.revision = self.revision;
+        snapshot.revision = self.document.revision();
         snapshot.dirty = self.dirty();
+        snapshot.can_undo = self.document.can_undo();
+        snapshot.can_redo = self.document.can_redo();
         snapshot
     }
 }
@@ -2271,9 +2290,8 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 }
                 crate::project_file::ProjectData::Tiled(state) => {
                     OpenDocumentContent::Tiled(TiledSession {
-                        state,
+                        document: TiledRasterDocument::from_state(state)?,
                         file_name: Some(name),
-                        revision: 0,
                         saved_revision: 0,
                     })
                 }
@@ -2326,7 +2344,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     ACTIVE_TILED_DOCUMENT.with(|document| {
                         let document = document.borrow();
                         let document = document.as_ref().ok_or("Missing tiled document")?;
-                        crate::project_file::write_tiled(&path, &document.state)
+                        crate::project_file::write_tiled(&path, &document.document.state())
                     })?;
                 } else {
                     let bytes = DOCUMENT.with(|doc| doc.borrow_mut().encode())?;
@@ -2342,7 +2360,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     ACTIVE_TILED_DOCUMENT.with(|document| {
                         if let Some(document) = document.borrow_mut().as_mut() {
                             document.file_name = Some(name);
-                            document.saved_revision = document.revision;
+                            document.saved_revision = document.document.revision();
                         }
                     });
                 } else {

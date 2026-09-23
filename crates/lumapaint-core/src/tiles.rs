@@ -686,8 +686,8 @@ fn dab_density(
     Ok(density)
 }
 
-/// Tile-backed document model for the future raster pipeline. This does not
-/// participate in the current v1 stroke/SVG project format or renderer yet.
+/// Tile-backed document model for the next raster pipeline. It has an independent
+/// project format and preview path; legacy stroke/SVG documents remain separate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiledRasterDocument {
     width: u32,
@@ -818,6 +818,14 @@ impl TiledRasterDocument {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     /// Drop import-time edits after replaying a legacy document. This leaves
