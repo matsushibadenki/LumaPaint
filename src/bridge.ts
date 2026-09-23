@@ -62,7 +62,7 @@ export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
 export interface VectorPaint { color: [number, number, number, number] }
 export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
-export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean }
+export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean; format: 'legacy' | 'tiled' }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
 export type ColorMode = 'rgb' | 'cmyk';
 export type ColorProfile = 'srgb' | 'displayP3' | 'adobeRgb1998' | 'japanColor2001Coated';
@@ -186,7 +186,7 @@ export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceS
 }
 
 export async function getDocumentWorkspace(): Promise<DocumentWorkspaceSnapshot> {
-  if (!isTauri()) return { activeId: 1, active: emptyDocument, documents: [{ id: 1, fileName: null, dirty: false }] };
+  if (!isTauri()) return { activeId: 1, active: emptyDocument, documents: [{ id: 1, fileName: null, dirty: false, format: 'legacy' }] };
   return invoke<DocumentWorkspaceSnapshot>('document_workspace');
 }
 
@@ -240,7 +240,7 @@ export function importSvgLayer(): Promise<DocumentSnapshot> {
 
 export interface RecoveryInfo {
   status: { savedRevision: number | null; pending: boolean; error: string | null };
-  candidates: { id: string; modifiedMs: number }[];
+  candidates: { id: string; modifiedMs: number; format: 'legacy' | 'tiled' }[];
 }
 export async function getRecoveryInfo(): Promise<RecoveryInfo | null> {
   return isTauri() ? invoke<RecoveryInfo | null>('recovery_info') : null;

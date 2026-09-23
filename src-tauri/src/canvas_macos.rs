@@ -1493,6 +1493,7 @@ fn document_tab(id: u64, document: &Document) -> DocumentTabSnapshot {
         id,
         file_name: snapshot.file_name.or(Some(snapshot.name)),
         dirty: snapshot.dirty,
+        format: crate::project_file::ProjectFormat::Legacy,
     }
 }
 
@@ -1512,6 +1513,7 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
             id,
             file_name: document.file_name.clone().or(Some(document.name.clone())),
             dirty: document.dirty,
+            format: crate::project_file::ProjectFormat::Legacy,
         });
     }
     documents.sort_by_key(|document| document.id);
@@ -2014,7 +2016,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             // Validate before replacing anything or asking to discard work.
             let (project, fingerprint) = crate::project_file::read_any_with_fingerprint(&path)?;
             let loaded = match project {
-                crate::project_file::ProjectData::Legacy(document) => document,
+                crate::project_file::ProjectData::Legacy(document) => *document,
                 crate::project_file::ProjectData::Tiled(_) => {
                     return Err(
                         "This tiled project is valid, but the macOS document workspace cannot edit it yet"

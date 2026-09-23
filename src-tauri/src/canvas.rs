@@ -91,6 +91,7 @@ pub struct DocumentTabSnapshot {
     pub id: u64,
     pub file_name: Option<String>,
     pub dirty: bool,
+    pub format: crate::project_file::ProjectFormat,
 }
 
 #[derive(Clone, Serialize)]

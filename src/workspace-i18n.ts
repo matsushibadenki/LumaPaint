@@ -8,7 +8,7 @@ export const workspaceMessages = {
     recoverySaved: 'Recovery copy saved · save your project separately', recoveryPending: 'Updating recovery copy…',
     recoveryFailed: 'Recovery copy could not be updated. Save your project manually.', retryRecovery: 'Retry', recoveryDetails: 'Details',
     recoveryFound: 'Recover unfinished work', recoveryHint: 'Restore a local recovery copy as an unsaved project. Your saved file stays unchanged.',
-    recoveryCopy: 'Recovery copy', restoreRecovery: 'Restore', recoveryLater: 'Later', deleteRecovery: 'Delete', deleteAllRecoveries: 'Delete all',
+    recoveryCopy: 'Recovery copy', recoveryLegacy: 'Standard', recoveryTiled: 'Tiled', restoreRecovery: 'Restore', recoveryLater: 'Later', deleteRecovery: 'Delete', deleteAllRecoveries: 'Delete all',
     deleteRecoveryConfirm: 'Delete the selected recovery copy?', deleteAllRecoveriesConfirm: 'Delete all previous recovery copies?',
 
     undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', hardness: 'Hardness', foreground: 'Foreground', background: 'Background', swapColors: 'Swap foreground and background colors',
@@ -29,7 +29,7 @@ export const workspaceMessages = {
     recoverySaved: '復旧用コピーを保存済み · 作品ファイルは別途保存してください', recoveryPending: '復旧用コピーを更新中…',
     recoveryFailed: '復旧用コピーを更新できません。作品を手動で保存してください。', retryRecovery: '再試行', recoveryDetails: '詳細',
     recoveryFound: '前回の作業を復旧', recoveryHint: '復旧用コピーを未保存の作品として開きます。保存済みファイルは変更しません。',
-    recoveryCopy: '復旧用コピー', restoreRecovery: '復旧する', recoveryLater: '後で', deleteRecovery: '削除', deleteAllRecoveries: 'すべて削除',
+    recoveryCopy: '復旧用コピー', recoveryLegacy: '標準形式', recoveryTiled: 'タイル形式', restoreRecovery: '復旧する', recoveryLater: '後で', deleteRecovery: '削除', deleteAllRecoveries: 'すべて削除',
     deleteRecoveryConfirm: '選択した復旧用コピーを削除しますか？', deleteAllRecoveriesConfirm: '過去の復旧用コピーをすべて削除しますか？',
 
     undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', hardness: '硬さ', foreground: '描画色', background: '背景色', swapColors: '描画色と背景色を入れ替え',
@@ -50,7 +50,7 @@ export const workspaceMessages = {
     recoverySaved: '恢复副本已保存 · 请另行保存作品文件', recoveryPending: '正在更新恢复副本…',
     recoveryFailed: '无法更新恢复副本。请手动保存作品。', retryRecovery: '重试', recoveryDetails: '详情',
     recoveryFound: '恢复上次的工作', recoveryHint: '将本地恢复副本作为未保存的作品打开，不会修改已保存的文件。',
-    recoveryCopy: '恢复副本', restoreRecovery: '恢复', recoveryLater: '稍后', deleteRecovery: '删除', deleteAllRecoveries: '全部删除',
+    recoveryCopy: '恢复副本', recoveryLegacy: '标准格式', recoveryTiled: '分块格式', restoreRecovery: '恢复', recoveryLater: '稍后', deleteRecovery: '删除', deleteAllRecoveries: '全部删除',
     deleteRecoveryConfirm: '要删除所选的恢复副本吗？', deleteAllRecoveriesConfirm: '要删除所有以前的恢复副本吗？',
 
     undo: '撤销', redo: '重做', brush: '画笔', size: '大小', hardness: '硬度', foreground: '前景色', background: '背景色', swapColors: '交换前景色和背景色',

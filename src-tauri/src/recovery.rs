@@ -22,6 +22,7 @@ pub struct Status {
 pub struct Candidate {
     pub id: String,
     pub modified_ms: u64,
+    pub format: project_file::ProjectFormat,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +33,7 @@ pub struct Info {
 
 enum Job {
     Save {
-        document: Box<Document>,
+        project: project_file::ProjectData,
         revision: u64,
         source: Option<PathBuf>,
     },
@@ -109,14 +110,19 @@ impl Recovery {
                 };
                 let (result, revision) = match job {
                     Job::Save {
-                        mut document,
+                        project,
                         revision,
                         source,
                     } => {
-                        let result = document
-                            .encode()
-                            .and_then(|bytes| project_file::write(&destination, &bytes))
-                            .and_then(|_| source.as_deref().map_or(Ok(()), remove_if_present));
+                        let result = match project {
+                            project_file::ProjectData::Legacy(mut document) => document
+                                .encode()
+                                .and_then(|bytes| project_file::write(&destination, &bytes)),
+                            project_file::ProjectData::Tiled(state) => {
+                                project_file::write_tiled(&destination, &state)
+                            }
+                        }
+                        .and_then(|_| source.as_deref().map_or(Ok(()), remove_if_present));
                         (result, Some(revision))
                     }
                     Job::Clear { source } => {
@@ -159,10 +165,22 @@ impl Recovery {
     }
     pub fn checkpoint(&self, document: Document) {
         let snapshot = document.snapshot();
-        if snapshot.dirty {
+        self.checkpoint_project(
+            project_file::ProjectData::Legacy(Box::new(document)),
+            snapshot.revision,
+            snapshot.dirty,
+        );
+    }
+    pub fn checkpoint_project(
+        &self,
+        project: project_file::ProjectData,
+        revision: u64,
+        dirty: bool,
+    ) {
+        if dirty {
             self.enqueue(Job::Save {
-                document: Box::new(document),
-                revision: snapshot.revision,
+                project,
+                revision,
                 source: self.source.clone(),
             });
         } else {
@@ -191,7 +209,12 @@ impl Recovery {
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |t| t.as_millis() as u64);
-            candidates.push(Candidate { id, modified_ms });
+            let format = project_file::format(&entry.path())?;
+            candidates.push(Candidate {
+                id,
+                modified_ms,
+                format,
+            });
         }
         candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.modified_ms));
         Ok(Info {
@@ -200,6 +223,14 @@ impl Recovery {
         })
     }
     pub fn read_candidate(&self, id: &str) -> Result<Document, String> {
+        match self.read_candidate_project(id)? {
+            project_file::ProjectData::Legacy(document) => Ok(*document),
+            project_file::ProjectData::Tiled(_) => {
+                Err("This recovery uses the tiled document format".into())
+            }
+        }
+    }
+    pub fn read_candidate_project(&self, id: &str) -> Result<project_file::ProjectData, String> {
         if !candidate_id(id) {
             return Err("Invalid recovery identifier".into());
         }
@@ -212,7 +243,7 @@ impl Recovery {
         {
             return Err("Invalid recovery file".into());
         }
-        project_file::read(&path)
+        project_file::read_any_with_fingerprint(&path).map(|(project, _)| project)
     }
     pub fn delete_candidate(&self, id: &str) -> Result<(), String> {
         if !candidate_id(id) {

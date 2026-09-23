@@ -56,7 +56,7 @@ export function RecoveryControls({ locale, document, onDocument }: {
     {!dismissed && candidates.length > 0 && <section className="recovery-banner" aria-label={t.recoveryFound}>
       <div><strong>{t.recoveryFound}</strong><p>{t.recoveryHint}</p></div>
       <select aria-label={t.recoveryCopy} value={id} disabled={busy} onChange={event => setSelected(event.target.value)}>
-        {candidates.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{index + 1} · {new Date(candidate.modifiedMs).toLocaleString(locale)}</option>)}
+        {candidates.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{index + 1} · {candidate.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} · {new Date(candidate.modifiedMs).toLocaleString(locale)}</option>)}
       </select>
       <button disabled={busy} onClick={() => void run(true)}>{t.restoreRecovery}</button>
       <button disabled={busy} onClick={() => void remove(false)}>{t.deleteRecovery}</button>

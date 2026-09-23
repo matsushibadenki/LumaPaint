@@ -373,8 +373,8 @@ export function Workspace() {
         <div className="document-tabs">
           <div className="document-tab-list" role="tablist" aria-label={t.openDocuments}>
             {documents.map((document, index) => <div key={document.id} className="document-tab-shell" aria-current={document.id === activeDocumentId}>
-              <button type="button" role="tab" aria-selected={document.id === activeDocumentId} className="document-tab" onClick={() => void documentAction('switch', document.id)}>
-                <span>{document.fileName ?? `${t.untitledBase}-${index + 1}`}</span>{document.dirty && <span className="unsaved-dot" aria-label={t.sessionOnly} />}
+              <button type="button" role="tab" aria-selected={document.id === activeDocumentId} className="document-tab" title={document.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} onClick={() => void documentAction('switch', document.id)}>
+                <span>{document.fileName ?? `${t.untitledBase}-${index + 1}`}</span>{document.format === 'tiled' && <span className="document-format" aria-label={t.recoveryTiled}>T</span>}{document.dirty && <span className="unsaved-dot" aria-label={t.sessionOnly} />}
               </button>
               <button type="button" className="document-close" aria-label={`${document.fileName ?? `${t.untitledBase}-${index + 1}`} · ${t.closeDocument}`} onClick={() => void documentAction('close', document.id)}>×</button>
             </div>)}

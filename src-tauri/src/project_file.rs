@@ -1,6 +1,7 @@
 //! Bounded reads and same-directory atomic replacement. No path supplied by the WebView.
 use lumapaint_core::document::{Document, MAX_FILE_BYTES};
 use lumapaint_core::{tile_container, tiles::TiledRasterState};
+use serde::Serialize;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
@@ -13,9 +14,25 @@ pub struct FileFingerprint {
     hash: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectFormat {
+    Legacy,
+    Tiled,
+}
+
 pub enum ProjectData {
-    Legacy(Document),
+    Legacy(Box<Document>),
     Tiled(TiledRasterState),
+}
+
+impl ProjectData {
+    pub fn format(&self) -> ProjectFormat {
+        match self {
+            Self::Legacy(_) => ProjectFormat::Legacy,
+            Self::Tiled(_) => ProjectFormat::Tiled,
+        }
+    }
 }
 
 pub fn read(path: &Path) -> Result<Document, String> {
@@ -25,7 +42,7 @@ pub fn read(path: &Path) -> Result<Document, String> {
 pub fn read_with_fingerprint(path: &Path) -> Result<(Document, FileFingerprint), String> {
     let (project, fingerprint) = read_any_with_fingerprint(path)?;
     match project {
-        ProjectData::Legacy(document) => Ok((document, fingerprint)),
+        ProjectData::Legacy(document) => Ok((*document, fingerprint)),
         ProjectData::Tiled(_) => Err("This project uses the tiled document format".into()),
     }
 }
@@ -36,13 +53,26 @@ pub fn read_any_with_fingerprint(path: &Path) -> Result<(ProjectData, FileFinger
     let project = if tile_container::is_container(&bytes) {
         ProjectData::Tiled(tile_container::decode(&bytes)?)
     } else {
-        ProjectData::Legacy(Document::decode(&bytes)?)
+        ProjectData::Legacy(Box::new(Document::decode(&bytes)?))
     };
     Ok((project, fingerprint))
 }
 
 pub fn fingerprint(path: &Path) -> Result<FileFingerprint, String> {
     read_bytes(path).map(|bytes| fingerprint_bytes(&bytes))
+}
+
+pub fn format(path: &Path) -> Result<ProjectFormat, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut prefix = Vec::with_capacity(8);
+    file.take(8)
+        .read_to_end(&mut prefix)
+        .map_err(|e| e.to_string())?;
+    Ok(if tile_container::is_container(&prefix) {
+        ProjectFormat::Tiled
+    } else {
+        ProjectFormat::Legacy
+    })
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
