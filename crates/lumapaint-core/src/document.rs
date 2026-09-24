@@ -2150,7 +2150,7 @@ impl Document {
             for object in &mut layer.vector_objects {
                 let mut indices: Vec<_> = controls
                     .iter()
-                    .filter(|(id, index)| id == &object.id && index % 3 == 0)
+                    .filter(|(id, index)| id == &object.id && index.is_multiple_of(3))
                     .map(|(_, index)| *index)
                     .collect();
                 if indices.is_empty() {
@@ -2282,7 +2282,7 @@ impl Document {
             .ok_or("Control point not found")?;
         let previous = *control;
         *control = local;
-        if object.kind == VectorObjectKind::Bezier && index % 3 == 0 {
+        if object.kind == VectorObjectKind::Bezier && index.is_multiple_of(3) {
             let delta = [local[0] - previous[0], local[1] - previous[1]];
             let last = object.control_points.len() - 1;
             let closed = object.path.data.trim_end().ends_with('Z');

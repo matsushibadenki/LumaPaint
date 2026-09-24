@@ -2,11 +2,11 @@
 use std::fmt::Write;
 
 pub fn path_data(points: &[[f32; 2]], closed: bool) -> Result<String, String> {
-    if points.is_empty() || (points.len() - 1) % 3 != 0 {
+    if points.is_empty() || !(points.len() - 1).is_multiple_of(3) {
         return Err("Invalid cubic control points".into());
     }
     let mut path = format!("M {} {}", points[0][0], points[0][1]);
-    for segment in points[1..].chunks_exact(3) {
+    for segment in points[1..].as_chunks::<3>().0 {
         let _ = write!(
             path,
             " C {} {} {} {} {} {}",
@@ -30,7 +30,7 @@ pub fn flattened(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     };
     let mut result = vec![first];
     let mut start = first;
-    for segment in points[1..].chunks_exact(3) {
+    for segment in points[1..].as_chunks::<3>().0 {
         // Bound sampling by the control polygon length, including tight curves.
         let length: f32 = [start, segment[0], segment[1], segment[2]]
             .windows(2)
@@ -191,7 +191,7 @@ pub fn control_hit(
     // Prefer anchors when a collapsed handle occupies the same position.
     (0..object.control_points.len())
         .step_by(3)
-        .chain((0..object.control_points.len()).filter(|index| handles && index % 3 != 0))
+        .chain((0..object.control_points.len()).filter(|index| handles && !index.is_multiple_of(3)))
         .find(|&index| {
             distance(world_point(object, object.control_points[index]), point) <= tolerance
         })
@@ -240,7 +240,7 @@ pub fn segment_hit(object: &VectorObject, point: [f32; 2], tolerance: f32) -> Op
 
 /// De Casteljau subdivision preserves the exact shape of the curve.
 pub fn insert(object: &mut VectorObject, start: usize, t: f32) -> Result<(), String> {
-    if start % 3 != 0
+    if !start.is_multiple_of(3)
         || start + 3 >= object.control_points.len()
         || !(0.0..1.0).contains(&t)
         || t == 0.0
@@ -264,7 +264,7 @@ pub fn insert(object: &mut VectorObject, start: usize, t: f32) -> Result<(), Str
 pub fn remove(object: &mut VectorObject, mut index: usize) -> Result<(), String> {
     let closed = object.path.data.trim_end().ends_with(['Z', 'z']);
     let count = (object.control_points.len() - 1) / 3 + usize::from(!closed);
-    if index % 3 != 0 || index >= object.control_points.len() {
+    if !index.is_multiple_of(3) || index >= object.control_points.len() {
         return Err("Invalid anchor".into());
     }
     if count <= if closed { 3 } else { 2 } {
@@ -303,7 +303,7 @@ pub fn convert(
     if index > last {
         return Err("Invalid anchor".into());
     }
-    if index % 3 != 0 {
+    if !index.is_multiple_of(3) {
         if let Some(handle) = handle {
             object.control_points[index] = handle;
         }
@@ -481,7 +481,7 @@ pub fn translate_controls(
         ];
     }
     if !break_smooth {
-        for &index in indices.iter().filter(|&&index| index % 3 != 0) {
+        for &index in indices.iter().filter(|&&index| !index.is_multiple_of(3)) {
             let anchor = if index % 3 == 1 { index - 1 } else { index + 1 };
             if move_indices.contains(&anchor) {
                 continue;

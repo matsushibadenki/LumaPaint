@@ -110,7 +110,7 @@ fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
         } else {
             layer.mask_density
         };
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0.iter_mut() {
         for channel in pixel {
             *channel = (f32::from(*channel) * opacity).round() as u8;
         }
@@ -165,7 +165,7 @@ pub fn action(action: DocumentAction) -> Result<(), String> {
             });
             let (width, height, pixels) = selected_pixels(&candidate)?;
             let mut copied = pixels.clone();
-            for (index, pixel) in copied.chunks_exact_mut(4).enumerate() {
+            for (index, pixel) in copied.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 if !selection.contains(lumapaint_core::document::Point {
                     x: (index as u32 % width) as f32 + 0.5,
                     y: (index as u32 / width) as f32 + 0.5,
@@ -173,7 +173,7 @@ pub fn action(action: DocumentAction) -> Result<(), String> {
                     pixel.fill(0);
                 }
             }
-            if !copied.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+            if !copied.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0) {
                 return Err(
                     "Selected area is empty / 選択範囲に内容がありません / 所选区域为空".into(),
                 );
@@ -200,7 +200,7 @@ pub fn action(action: DocumentAction) -> Result<(), String> {
                     let mut remaining =
                         lumapaint_renderer::vector::rasterize_svg(&layer.source, width, height)?
                             .pixels;
-                    for (index, pixel) in remaining.chunks_exact_mut(4).enumerate() {
+                    for (index, pixel) in remaining.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         if selection.contains(lumapaint_core::document::Point {
                             x: (index as u32 % width) as f32 + 0.5,
                             y: (index as u32 / width) as f32 + 0.5,

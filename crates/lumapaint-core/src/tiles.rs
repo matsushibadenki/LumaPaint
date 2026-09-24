@@ -1318,7 +1318,7 @@ impl TiledRasterDocument {
         for coord in layer.tiles.allocated_coords().collect::<Vec<_>>() {
             let before = layer.tiles.tiles[&coord].clone();
             let mut after = before.clone();
-            for (index, pixel) in after.chunks_exact_mut(4).enumerate() {
+            for (index, pixel) in after.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = coord.x * TILE_SIZE + index as u32 % TILE_SIZE;
                 let y = coord.y * TILE_SIZE + index as u32 / TILE_SIZE;
                 if selection.contains(crate::document::Point {
@@ -1378,7 +1378,7 @@ impl TiledRasterDocument {
                 continue;
             };
             let mut after = before.clone();
-            for (pixel, depth) in after.chunks_exact_mut(4).zip(coverage) {
+            for (pixel, depth) in after.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
                 pixel[3] = (f32::from(pixel[3]) * (-depth).exp()).round() as u8;
                 if pixel[3] == 0 {
                     pixel.fill(0);
