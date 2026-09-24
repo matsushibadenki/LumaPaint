@@ -1,3 +1,5 @@
+import { StrokePanel, strokeLabels } from './StrokePanel';
+import { CompactSlider } from './CompactSlider';
 import { useEffect, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
 import { readPreference, savePreference, type Locale } from '../i18n';
@@ -10,7 +12,7 @@ import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
 
 const swatches = ['#202020', '#808080', '#ffffff', '#e5796b', '#d6a13e', '#6b9c76', '#538fd2', '#a875ce'];
-const panelIds = ['brush', 'color', 'document', 'layers', 'text'] as const;
+const panelIds = ['brush', 'color', 'document', 'layers', 'text', 'stroke'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -48,11 +50,10 @@ function initialPanel(): PanelId {
   return isPanelId(stored) ? stored : 'brush';
 }
 
-function Grip() {
-  return <svg className="tab-grip" viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1" /><circle cx="6" cy="2" r="1" /><circle cx="2" cy="6" r="1" /><circle cx="6" cy="6" r="1" /><circle cx="2" cy="10" r="1" /><circle cx="6" cy="10" r="1" /></svg>;
-}
+const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  onStrokeWidth: (width: number) => Promise<void>;
   onSelectLayer: (id: string) => void;
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
   onTextChange: (settings: TextSettings) => Promise<void>; onTextBegin: () => void; onTextFinish: (commit: boolean) => void;
@@ -74,7 +75,7 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
   const [displayDimensions, setDisplayDimensions] = useState(() => ({ width: displaySize(document.width, document.unit, document.resolution), height: displaySize(document.height, document.unit, document.resolution) }));
   const selectedLayerId = document.layerId;
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels'>('layers');
-  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title };
+  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder', JSON.stringify(order)), [order]);
   useEffect(() => savePreference('inspectorPanel', activePanel), [activePanel]);
@@ -120,10 +121,10 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
   }
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, panel: PanelId) {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     event.preventDefault();
     const index = order.indexOf(panel);
-    const nextIndex = (index + (event.key === 'ArrowRight' ? 1 : -1) + order.length) % order.length;
+    const nextIndex = (index + (event.key === 'ArrowDown' ? 1 : -1) + order.length) % order.length;
     const nextPanel = order[nextIndex];
     if (event.altKey) movePanel(panel, nextPanel);
     else {
@@ -133,17 +134,18 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
   }
 
   return <aside className="inspector" aria-label={t.properties}>
-    <div className="inspector-tabs" role="tablist" aria-label={t.properties}>
+    <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
       {order.map(panel => <button
         key={panel}
         id={`inspector-tab-${panel}`}
-        className={`inspector-tab${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
+        className={`tool-button inspector-tab${activePanel === panel ? ' selected' : ''}${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
         role="tab"
         aria-selected={activePanel === panel}
         aria-controls={`inspector-panel-${panel}`}
         tabIndex={activePanel === panel ? 0 : -1}
         draggable
-        title={t.reorderPanel}
+        title={labels[panel]}
+        aria-label={labels[panel]}
         onClick={() => setActivePanel(panel)}
         onKeyDown={event => handleTabKeyDown(event, panel)}
         onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', panel); setDraggedPanel(panel); }}
@@ -151,9 +153,10 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
         onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }}
         onDrop={event => handleDrop(event, panel)}
         onDragEnd={() => { setDraggedPanel(null); setDropTarget(null); }}
-      ><Grip /><span>{labels[panel]}</span></button>)}
+      ><Icon name={panelIcons[panel]} /></button>)}
     </div>
 
+    {activePanel === 'stroke' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} /></section>}
     {activePanel === 'text' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">
       <TextPanel locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
     </section>}
@@ -163,8 +166,8 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
       <p className="muted small">{t.roundBrush}</p>
-      <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><input id="brush-size" type="range" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
-      <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><input id="brush-hardness" type="range" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
+      <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><CompactSlider id="brush-size" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
+      <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><CompactSlider id="brush-hardness" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
       <div className="swatches" aria-label={t.foreground}>{swatches.map((hex, index) => <button key={hex} className="swatch" title={t.colors[index]} aria-label={t.colors[index]} aria-pressed={toHex(brush.color) === hex} style={{ '--swatch': hex } as CSSProperties} onClick={() => onBrush({ ...brush, color: fromHex(hex) })} />)}</div>
       <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={color => onBrush({ ...brush, color })} />
     </section>}
@@ -192,9 +195,9 @@ export function Inspector({ textPanelRequest, textSettings, textEditing, textEna
       {layerPanelMode === 'channels' ? <div className="channel-list">
         {[t.compositeChannel, 'Red', 'Green', 'Blue', t.alphaChannel].map((channel, index) => <div className={`channel-row${index === 4 ? ' alpha' : ''}`} key={channel}><Icon name="eye" /><span className="channel-thumb">{index === 4 ? 'α' : index === 0 ? 'RGB' : channel[0]}</span><span>{channel}</span></div>)}
       </div> : <>
-        <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><input disabled={!enabled || !selectedLayer} type="range" min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
+        <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><CompactSlider disabled={!enabled || !selectedLayer} min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!enabled || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
-        {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><input type="range" min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}
+        {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}
         <LayerList layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
           selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
           onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}

@@ -42,6 +42,7 @@ export async function toolMenuImages(trigger: HTMLButtonElement, icons: (keyof t
         context.fill();
         // Resolve currentColor before serializing the same SVG used by <Icon>.
         svg.setAttribute('stroke', style.color);
+        svg.querySelector('path')!.setAttribute('fill', tool === 'vectorSelect' ? style.color : 'none');
         svg.setAttribute('width', String(iconRect.width));
         svg.setAttribute('height', String(iconRect.height));
         const image = new Image();

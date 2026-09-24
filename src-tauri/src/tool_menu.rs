@@ -28,7 +28,7 @@ pub async fn icon_tool_menu(
     window: tauri::WebviewWindow,
     request: ToolMenuRequest,
 ) -> Result<ToolMenuResult, String> {
-    if !(2..=8).contains(&request.enabled.len())
+    if !(1..=8).contains(&request.enabled.len())
         || request.selected >= request.enabled.len()
         || request.labels.len() != request.enabled.len()
         || request.images.buttons.len() != request.enabled.len()

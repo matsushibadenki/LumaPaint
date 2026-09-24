@@ -1,6 +1,7 @@
 //! Platform-independent core. No UI, WebView, or OS dependencies belong here.
 
 use serde::Serialize;
+pub mod bezier;
 pub mod document;
 pub mod graph;
 pub mod selection;

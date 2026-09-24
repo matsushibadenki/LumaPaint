@@ -34,6 +34,8 @@ use std::time::{Duration, Instant};
 use std::{cell::RefCell, ffi::c_void, ptr::NonNull};
 use tauri::{Emitter, Manager};
 
+#[path = "clipboard_macos.rs"]
+mod clipboard;
 #[path = "text_editor_macos.rs"]
 mod text_editor;
 
@@ -311,6 +313,10 @@ define_class!(
         fn key_down(&self, event: &NSEvent) {
             if self.isHidden() { return; }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
+            else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
+                if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
+                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", CanvasTool::Eraser); }
+            }
             else if event.keyCode() == 7 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if !event.isARepeat() {
                     if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-swap-colors", ()); }
@@ -318,8 +324,20 @@ define_class!(
             }
             else if event.keyCode() == 17 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if !event.isARepeat() {
+                    if let Err(error) = finish_open_pen() { emit_error(error); return; }
                     if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-text-edit", ()); }
                 }
+            }
+            else if [36, 76].contains(&event.keyCode()) && TOOL.with(|tool| tool.get()) == CanvasTool::VectorPen {
+                if let Err(error) = DOCUMENT.with(|doc| finish_pen(&mut doc.borrow_mut(), false)).and_then(|_| redraw()) { emit_error(error); }
+                emit_document();
+            }
+            else if [123,124,125,126].contains(&event.keyCode()) && TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
+                let amount = if event.modifierFlags().contains(NSEventModifierFlags::Shift) { 10. } else { 1. };
+                let delta = match event.keyCode() { 123 => [-amount,0.], 124 => [amount,0.], 125 => [0.,amount], _ => [0.,-amount] };
+                let points = DIRECT_POINTS.with(|points| points.borrow().clone());
+                if let Err(error) = DOCUMENT.with(|doc| doc.borrow_mut().move_vector_controls(&points,delta,false)).and_then(|_| redraw()) { emit_error(error); }
+                emit_document();
             }
             else if event.keyCode() == 53 {
                 if cancel_vector_drag() || DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
@@ -336,19 +354,19 @@ define_class!(
                 let tool = if event.keyCode() == 11 { CanvasTool::Brush }
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
                     else { CanvasTool::Rectangle };
-                cancel_vector_drag();
-                TOOL.with(|value| value.set(tool));
+                if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
                 if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
             }
-            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [9, 32, 35].contains(&event.keyCode()) {
+            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [0, 9, 32, 35, 45].contains(&event.keyCode()) {
                 let tool = match event.keyCode() {
+                    0 => CanvasTool::VectorDirectSelect,
                     9 => CanvasTool::VectorSelect,
                     35 => CanvasTool::VectorPen,
+                    45 => CanvasTool::VectorPencil,
                     _ if event.modifierFlags().contains(NSEventModifierFlags::Shift) => CanvasTool::VectorEllipse,
                     _ => CanvasTool::VectorRectangle,
                 };
-                cancel_vector_drag();
-                TOOL.with(|value| value.set(tool));
+                if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
                 if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
             }
             else { unsafe { msg_send![super(self), keyDown: event] } }
@@ -362,7 +380,9 @@ define_class!(
         fn key_equivalent(&self, event: &NSEvent) -> bool {
             if self.isHidden() || text_editor::active() { return false.into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
-            if command && [0, 2].contains(&event.keyCode()) {
+            if command && [7,8,9].contains(&event.keyCode()) {
+                report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
+            } else if command && [0, 2].contains(&event.keyCode()) {
                 report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
             } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
                 report_edit(DocumentAction::InvertSelection); true
@@ -416,6 +436,18 @@ impl PaintView {
         };
         let point = viewport.document_point(location.x as f32, location.y as f32);
         let tool = TOOL.with(|tool| tool.get());
+        if tool == CanvasTool::VectorPen
+            && phase == 0
+            && (point.x < 0.0
+                || point.y < 0.0
+                || point.x >= viewport.document_width
+                || point.y >= viewport.document_height)
+        {
+            if let Err(error) = finish_open_pen() {
+                emit_error(error);
+            }
+            return;
+        }
         if matches!(tool, CanvasTool::ZoomIn | CanvasTool::ZoomOut) {
             if phase == 0
                 && point.x >= 0.0
@@ -489,7 +521,12 @@ impl PaintView {
                 if matches!(
                     tool,
                     CanvasTool::VectorSelect
+                        | CanvasTool::VectorDirectSelect
                         | CanvasTool::VectorPen
+                        | CanvasTool::VectorPencil
+                        | CanvasTool::VectorAnchorAdd
+                        | CanvasTool::VectorAnchorDelete
+                        | CanvasTool::VectorAnchorConvert
                         | CanvasTool::VectorRectangle
                         | CanvasTool::VectorEllipse
                 ) {
@@ -513,7 +550,13 @@ impl PaintView {
                 }
                 let result = if phase == 0 {
                     BRUSH
-                        .with(|brush| doc.begin_with_pressure(point, *brush.borrow(), pressure))
+                        .with(|brush| {
+                            if tool == CanvasTool::Eraser {
+                                doc.begin_eraser(point, *brush.borrow(), pressure)
+                            } else {
+                                doc.begin_with_pressure(point, *brush.borrow(), pressure)
+                            }
+                        })
                         .map(|_| ())
                 } else {
                     doc.extend_with_pressure(point, pressure)
@@ -568,6 +611,336 @@ impl PaintView {
     }
 }
 
+#[derive(Clone)]
+struct PenDraft {
+    layer: String,
+    // Anchor and symmetric outgoing handle; incoming is its reflection.
+    nodes: Vec<([f32; 2], [f32; 2])>,
+    brush: Brush,
+}
+
+impl PenDraft {
+    fn object(&self, closed: bool, id: &str) -> Result<VectorObject, String> {
+        let mut controls = vec![self.nodes[0].0];
+        let count = self.nodes.len();
+        for index in 1..count + usize::from(closed) {
+            let (_, outgoing) = self.nodes[(index - 1) % count];
+            let (anchor, handle) = self.nodes[index % count];
+            controls.extend([
+                outgoing,
+                [2.0 * anchor[0] - handle[0], 2.0 * anchor[1] - handle[1]],
+                anchor,
+            ]);
+        }
+        Ok(VectorObject {
+            id: id.into(),
+            name: "Bezier path".into(),
+            text: None,
+            path: VectorPath {
+                data: lumapaint_core::bezier::path_data(&controls, closed)?,
+                fill_rule: FillRule::NonZero,
+            },
+            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill: None,
+            stroke: Some(VectorPaint {
+                color: [
+                    self.brush.color[0],
+                    self.brush.color[1],
+                    self.brush.color[2],
+                    255,
+                ],
+            }),
+            stroke_width: self.brush.size,
+            visible: true,
+            kind: VectorObjectKind::Bezier,
+            control_points: controls,
+        })
+    }
+
+    fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
+        use std::fmt::Write;
+        let mut preview = document.clone();
+        preview.upsert_vector_object(&self.layer, self.object(false, "pen-draft")?)?;
+        let mut guide = self.object(false, "pen-guides")?;
+        guide.kind = VectorObjectKind::Compound;
+        guide.stroke = Some(VectorPaint {
+            color: [60, 160, 255, 255],
+        });
+        guide.stroke_width = 1.0 / zoom;
+        guide.path.data.clear();
+        let radius = 3.0 / zoom;
+        for (anchor, handle) in &self.nodes {
+            let incoming = [2.0 * anchor[0] - handle[0], 2.0 * anchor[1] - handle[1]];
+            let _ = write!(
+                guide.path.data,
+                " M {} {} L {} {}",
+                incoming[0], incoming[1], handle[0], handle[1]
+            );
+            for point in [*anchor, *handle, incoming] {
+                let _ = write!(
+                    guide.path.data,
+                    " M {} {} h {} v {} h {} Z",
+                    point[0] - radius,
+                    point[1] - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                    -radius * 2.0
+                );
+            }
+        }
+        preview.upsert_vector_object(&self.layer, guide)?;
+        Ok(preview)
+    }
+}
+
+fn finish_pen(document: &mut Document, closed: bool) -> Result<(), String> {
+    let draft = PEN_DRAFT.with(|draft| draft.borrow().clone());
+    if let Some(draft) = draft.filter(|draft| draft.nodes.len() >= 2) {
+        // Recheck the target: a panel edit may have locked or hidden it meanwhile.
+        if document.selected_vector_target()?.as_deref() != Some(draft.layer.as_str()) {
+            return Err("Select the original editable vector layer / 元の編集可能なベクターレイヤーを選択してください / 请选择原来的可编辑矢量图层".into());
+        }
+        let serial = NEXT_VECTOR_OBJECT_ID.with(|next| {
+            let id = next.get();
+            next.set(id + 1);
+            id
+        });
+        document.upsert_vector_object(
+            &draft.layer,
+            draft.object(closed, &format!("vector-object-{serial}"))?,
+        )?;
+    }
+    PEN_DRAFT.with(|draft| draft.borrow_mut().take());
+    Ok(())
+}
+
+// Commit once before leaving pen input. Escape remains the explicit cancellation path.
+pub fn finish_open_pen() -> Result<(), String> {
+    if !PEN_DRAFT.with(|draft| draft.borrow().is_some()) {
+        return Ok(());
+    }
+    DOCUMENT.with(|document| finish_pen(&mut document.borrow_mut(), false))?;
+    redraw()?;
+    emit_document();
+    Ok(())
+}
+
+fn switch_canvas_tool(tool: CanvasTool) -> Result<(), String> {
+    if TOOL.with(|current| current.get()) != tool {
+        finish_open_pen()?;
+        cancel_vector_drag();
+        TOOL.with(|current| current.set(tool));
+    }
+    Ok(())
+}
+
+fn bezier_pointer(
+    document: &mut Document,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+) -> Result<(), String> {
+    let position = [point.x, point.y];
+    if phase == 0 {
+        let layer = document
+            .selected_vector_target()?
+            .ok_or("Select a vector layer / ベクターレイヤーを選択してください / 请选择矢量图层")?;
+        let zoom = CANVAS.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map_or(1.0, |canvas| canvas.viewport.zoom)
+        });
+        let close = PEN_DRAFT.with(|draft| {
+            draft.borrow().as_ref().is_some_and(|draft| {
+                draft.nodes.len() >= 2
+                    && (draft.nodes[0].0[0] - point.x).hypot(draft.nodes[0].0[1] - point.y)
+                        <= 6.0 / zoom
+            })
+        });
+        if close {
+            return finish_pen(document, true);
+        }
+        PEN_DRAFT.with(|draft| -> Result<(), String> {
+            let mut draft = draft.borrow_mut();
+            let draft = draft.get_or_insert_with(|| PenDraft { layer: layer.clone(), nodes: vec![], brush: BRUSH.with(|brush| *brush.borrow()) });
+            if draft.layer != layer { return Err("Finish or cancel the current path first / 現在のパスを確定または取り消してください / 请先完成或取消当前路径".into()); }
+            if draft.nodes.len() >= 4096 { return Err("Too many pen anchors".into()); }
+            draft.nodes.push((position, position));
+            Ok(())
+        })?;
+    } else {
+        PEN_DRAFT.with(|draft| {
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                if let Some(node) = draft.nodes.last_mut() {
+                    node.1 = position;
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct AnchorDraft {
+    layer: String,
+    original: VectorObject,
+    object: VectorObject,
+    index: usize,
+    start: [f32; 2],
+}
+
+fn anchor_pointer(
+    document: &mut Document,
+    tool: CanvasTool,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+) -> Result<(), String> {
+    use lumapaint_core::bezier;
+    let position = [point.x, point.y];
+    let tolerance = CANVAS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or(6.0, |canvas| 6.0 / canvas.viewport.zoom)
+    });
+    if phase == 0 {
+        ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take());
+        let Some(layer_id) = document.selected_vector_target()? else {
+            return Ok(());
+        };
+        let candidate = document
+            .svg_layers()
+            .find(|layer| layer.id == layer_id)
+            .and_then(|layer| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .rev()
+                    .filter(|object| object.visible)
+                    .filter_map(bezier::editable)
+                    .find_map(|object| {
+                        if tool == CanvasTool::VectorAnchorAdd {
+                            if bezier::control_hit(&object, position, tolerance, false).is_some() {
+                                return None;
+                            }
+                            bezier::segment_hit(&object, position, tolerance)
+                                .map(|(index, t)| (object, index, t))
+                        } else {
+                            bezier::control_hit(
+                                &object,
+                                position,
+                                tolerance,
+                                tool == CanvasTool::VectorAnchorConvert,
+                            )
+                            .map(|index| (object, index, 0.))
+                        }
+                    })
+            });
+        let Some((mut object, index, t)) = candidate else {
+            return Ok(());
+        };
+        if tool == CanvasTool::VectorAnchorAdd {
+            bezier::insert(&mut object, index, t)?;
+        } else if tool == CanvasTool::VectorAnchorDelete {
+            bezier::remove(&mut object, index)?;
+        } else {
+            let original = object.clone();
+            bezier::convert(&mut object, index, None)?;
+            ANCHOR_DRAFT.with(|draft| {
+                *draft.borrow_mut() = Some(AnchorDraft {
+                    layer: layer_id,
+                    original,
+                    object,
+                    index,
+                    start: position,
+                })
+            });
+            return Ok(());
+        }
+        document.upsert_vector_object(&layer_id, object)?;
+    } else if tool == CanvasTool::VectorAnchorConvert {
+        ANCHOR_DRAFT.with(|draft| -> Result<(), String> {
+            let mut draft = draft.borrow_mut();
+            if let Some(draft) = draft.as_mut() {
+                draft.object = draft.original.clone();
+                let handle = if (position[0] - draft.start[0]).hypot(position[1] - draft.start[1])
+                    > tolerance * 0.5
+                {
+                    Some(bezier::local_point(&draft.object, position)?)
+                } else {
+                    None
+                };
+                bezier::convert(&mut draft.object, draft.index, handle)?;
+            }
+            Ok(())
+        })?;
+        if phase == 2 {
+            if let Some(draft) = ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take()) {
+                if document.selected_vector_target()?.as_deref() != Some(draft.layer.as_str()) {
+                    return Err("Select the original vector layer / 元のベクターレイヤーを選択してください / 请选择原来的矢量图层".into());
+                }
+                if draft.object != draft.original {
+                    document.upsert_vector_object(&draft.layer, draft.object)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl AnchorDraft {
+    fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
+        use std::fmt::Write;
+        let mut preview = document.clone();
+        preview.upsert_vector_object(&self.layer, self.object.clone())?;
+        let mut guide = self.object.clone();
+        guide.id = format!(
+            "guides-{}",
+            self.object.id.chars().take(50).collect::<String>()
+        );
+        guide.kind = VectorObjectKind::Compound;
+        guide.fill = None;
+        guide.stroke = Some(VectorPaint {
+            color: [60, 160, 255, 255],
+        });
+        guide.stroke_width = 1. / zoom;
+        guide.transform = [1., 0., 0., 1., 0., 0.];
+        guide.path.data.clear();
+        let points: Vec<_> = self
+            .object
+            .control_points
+            .iter()
+            .map(|&p| lumapaint_core::bezier::world_point(&self.object, p))
+            .collect();
+        for segment in points.windows(4).step_by(3) {
+            let _ = write!(
+                guide.path.data,
+                " M {} {} L {} {} M {} {} L {} {}",
+                segment[0][0],
+                segment[0][1],
+                segment[1][0],
+                segment[1][1],
+                segment[2][0],
+                segment[2][1],
+                segment[3][0],
+                segment[3][1]
+            );
+        }
+        let r = 3. / zoom;
+        for point in points {
+            let _ = write!(
+                guide.path.data,
+                " M {} {} h {} v {} h {} Z",
+                point[0] - r,
+                point[1] - r,
+                r * 2.,
+                r * 2.,
+                -r * 2.
+            );
+        }
+        preview.upsert_vector_object(&self.layer, guide)?;
+        Ok(preview)
+    }
+}
+
 fn vector_pointer(
     document: &mut Document,
     tool: CanvasTool,
@@ -575,6 +948,20 @@ fn vector_pointer(
     phase: u8,
     modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
+    if matches!(
+        tool,
+        CanvasTool::VectorAnchorAdd
+            | CanvasTool::VectorAnchorDelete
+            | CanvasTool::VectorAnchorConvert
+    ) {
+        return anchor_pointer(document, tool, point, phase);
+    }
+    if tool == CanvasTool::VectorPen {
+        return bezier_pointer(document, point, phase);
+    }
+    if tool == CanvasTool::VectorDirectSelect {
+        return direct_pointer(document, point, phase, modifiers);
+    }
     if tool == CanvasTool::VectorSelect {
         return vector_select_pointer(document, point, phase, modifiers);
     }
@@ -586,7 +973,7 @@ fn vector_pointer(
         });
         return Ok(());
     }
-    if tool == CanvasTool::VectorPen && phase == 1 {
+    if tool == CanvasTool::VectorPencil && phase == 1 {
         VECTOR_DRAFT.with(|draft| {
             let mut draft = draft.borrow_mut();
             if draft
@@ -603,7 +990,7 @@ fn vector_pointer(
     }
 
     let mut points = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
-    if tool == CanvasTool::VectorPen {
+    if tool == CanvasTool::VectorPencil {
         if points
             .last()
             .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= 1.0)
@@ -620,12 +1007,12 @@ fn vector_pointer(
     let end = *points.last().unwrap_or(&start);
     let width = (end.x - start.x).abs();
     let height = (end.y - start.y).abs();
-    if tool != CanvasTool::VectorPen && (width < 1.0 || height < 1.0) {
+    if tool != CanvasTool::VectorPencil && (width < 1.0 || height < 1.0) {
         return Ok(());
     }
 
     let (name, path, fill, stroke, stroke_width, kind, control_points) = match tool {
-        CanvasTool::VectorPen => {
+        CanvasTool::VectorPencil => {
             let mut data = format!("M {} {}", points[0].x, points[0].y);
             for point in points.iter().skip(1) {
                 use std::fmt::Write;
@@ -721,6 +1108,290 @@ fn vector_pointer(
     )
 }
 
+#[derive(Clone)]
+struct DirectGesture {
+    start: [f32; 2],
+    current: [f32; 2],
+    marquee: bool,
+    baseline: Vec<(String, usize)>,
+    break_smooth: bool,
+}
+
+fn direct_objects(document: &Document) -> Vec<(String, VectorObject)> {
+    document
+        .svg_layers()
+        .filter(|layer| layer.vector_layer && layer.visible && !layer.locked)
+        .flat_map(|layer| {
+            layer
+                .vector_objects
+                .iter()
+                .filter(|object| object.visible)
+                .filter_map(|object| {
+                    lumapaint_core::bezier::editable(object)
+                        .map(|object| (layer.id.clone(), object))
+                })
+        })
+        .collect()
+}
+
+fn direct_select_ids(document: &mut Document) -> Result<(), String> {
+    let ids: Vec<String> =
+        DIRECT_POINTS.with(|points| points.borrow().iter().map(|(id, _)| id.clone()).collect());
+    let layer = document
+        .svg_layers()
+        .find(|layer| {
+            layer
+                .vector_objects
+                .iter()
+                .any(|object| ids.contains(&object.id))
+        })
+        .map(|layer| layer.id.clone());
+    if let Some(layer) = layer {
+        document.select_layer(layer)?;
+    }
+    document.select_vector_objects(ids)
+}
+
+fn direct_pointer(
+    document: &mut Document,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+    flags: NSEventModifierFlags,
+) -> Result<(), String> {
+    use lumapaint_core::bezier;
+    let position = [point.x, point.y];
+    if phase == 0 {
+        let objects = direct_objects(document);
+        DIRECT_POINTS.with(|points| {
+            points.borrow_mut().retain(|(id, index)| {
+                document.selected_vector_ids().contains(id)
+                    && objects
+                        .iter()
+                        .any(|(_, object)| &object.id == id && *index < object.control_points.len())
+            })
+        });
+        let tolerance = CANVAS.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map_or(6., |canvas| 6. / canvas.viewport.zoom)
+        });
+        let hit = objects
+            .iter()
+            .rev()
+            .find_map(|(_, object)| {
+                bezier::control_hit(
+                    object,
+                    position,
+                    tolerance,
+                    document.selected_vector_ids().contains(&object.id),
+                )
+                .map(|mut index| {
+                    if index == object.control_points.len() - 1 && object.path.data.ends_with('Z') {
+                        index = 0;
+                    }
+                    vec![(object.id.clone(), index)]
+                })
+            })
+            .or_else(|| {
+                objects.iter().rev().find_map(|(_, object)| {
+                    bezier::segment_hit(object, position, tolerance).map(|(index, _)| {
+                        let end = if index + 3 == object.control_points.len() - 1
+                            && object.path.data.ends_with('Z')
+                        {
+                            0
+                        } else {
+                            index + 3
+                        };
+                        vec![(object.id.clone(), index), (object.id.clone(), end)]
+                    })
+                })
+            });
+        let shift = flags.contains(NSEventModifierFlags::Shift);
+        let marquee = hit.is_none();
+        let baseline = DIRECT_POINTS.with(|points| {
+            if shift {
+                points.borrow().clone()
+            } else {
+                vec![]
+            }
+        });
+        DIRECT_POINTS.with(|points| {
+            let mut points = points.borrow_mut();
+            if let Some(hit) = hit {
+                if !shift && !hit.iter().all(|point| points.contains(point)) {
+                    points.clear();
+                }
+                for point in hit {
+                    if shift && points.contains(&point) {
+                        points.retain(|p| p != &point);
+                    } else if !points.contains(&point) {
+                        points.push(point);
+                    }
+                }
+            } else if !shift {
+                points.clear();
+            }
+        });
+        direct_select_ids(document)?;
+        DIRECT_GESTURE.with(|draft| {
+            *draft.borrow_mut() = Some(DirectGesture {
+                start: position,
+                current: position,
+                marquee,
+                baseline,
+                break_smooth: false,
+            })
+        });
+    } else {
+        DIRECT_GESTURE.with(|draft| {
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                draft.current = position;
+                if flags.contains(NSEventModifierFlags::Shift) && !draft.marquee {
+                    let dx = position[0] - draft.start[0];
+                    let dy = position[1] - draft.start[1];
+                    if dx.abs() > dy.abs() {
+                        draft.current[1] = draft.start[1];
+                    } else {
+                        draft.current[0] = draft.start[0];
+                    }
+                }
+                draft.break_smooth = flags.contains(NSEventModifierFlags::Option);
+            }
+        });
+        if phase == 2 {
+            if let Some(draft) = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take()) {
+                if draft.marquee {
+                    let mut points = draft.baseline;
+                    for (_, object) in direct_objects(document) {
+                        for index in (0..object.control_points.len()).step_by(3) {
+                            if index == object.control_points.len() - 1
+                                && object.path.data.ends_with('Z')
+                            {
+                                continue;
+                            }
+                            let p = bezier::world_point(&object, object.control_points[index]);
+                            if p[0] >= draft.start[0].min(position[0])
+                                && p[0] <= draft.start[0].max(position[0])
+                                && p[1] >= draft.start[1].min(position[1])
+                                && p[1] <= draft.start[1].max(position[1])
+                            {
+                                let selected = (object.id.clone(), index);
+                                if !points.contains(&selected) {
+                                    points.push(selected);
+                                }
+                            }
+                        }
+                    }
+                    DIRECT_POINTS.with(|selected| *selected.borrow_mut() = points);
+                    direct_select_ids(document)?;
+                } else {
+                    let points = DIRECT_POINTS.with(|points| points.borrow().clone());
+                    document.move_vector_controls(
+                        &points,
+                        [
+                            draft.current[0] - draft.start[0],
+                            draft.current[1] - draft.start[1],
+                        ],
+                        draft.break_smooth,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
+    use std::fmt::Write;
+    let mut preview = document.clone();
+    let points = DIRECT_POINTS.with(|points| points.borrow().clone());
+    let gesture = DIRECT_GESTURE.with(|draft| draft.borrow().clone());
+    if let Some(draft) = gesture.as_ref().filter(|draft| !draft.marquee) {
+        preview.move_vector_controls(
+            &points,
+            [
+                draft.current[0] - draft.start[0],
+                draft.current[1] - draft.start[1],
+            ],
+            draft.break_smooth,
+        )?;
+    }
+    let objects = direct_objects(&preview);
+    for (serial, (layer, object)) in objects
+        .into_iter()
+        .filter(|(_, object)| document.selected_vector_ids().contains(&object.id))
+        .enumerate()
+    {
+        let draft = AnchorDraft {
+            layer: layer.clone(),
+            original: object.clone(),
+            object: object.clone(),
+            index: 0,
+            start: [0., 0.],
+        };
+        // Reuse the same anchor/handle guides as the anchor-point tool.
+        preview = draft.preview(&preview, zoom)?;
+        let mut marker = object.clone();
+        marker.id = format!("direct-selected-{serial}");
+        marker.kind = VectorObjectKind::Compound;
+        marker.transform = [1., 0., 0., 1., 0., 0.];
+        marker.stroke = None;
+        marker.fill = Some(VectorPaint {
+            color: [60, 160, 255, 255],
+        });
+        marker.path.data.clear();
+        let r = 3. / zoom;
+        for (_, index) in points
+            .iter()
+            .filter(|(id, index)| id == &object.id && *index < object.control_points.len())
+        {
+            let p = lumapaint_core::bezier::world_point(&object, object.control_points[*index]);
+            let _ = write!(
+                marker.path.data,
+                " M {} {} h {} v {} h {} Z",
+                p[0] - r,
+                p[1] - r,
+                r * 2.,
+                r * 2.,
+                -r * 2.
+            );
+        }
+        if !marker.path.data.is_empty() {
+            preview.upsert_vector_object(&layer, marker)?;
+        }
+    }
+    if let Some(draft) = gesture.filter(|draft| draft.marquee && draft.start != draft.current) {
+        // An overlay-only SVG layer avoids changing or selecting document objects.
+        let x = draft.start[0].min(draft.current[0]);
+        let y = draft.start[1].min(draft.current[1]);
+        let w = (draft.current[0] - draft.start[0]).abs().max(0.1);
+        let h = (draft.current[1] - draft.start[1]).abs().max(0.1);
+        let layer = preview.add_vector_layer()?;
+        preview.upsert_vector_object(
+            &layer,
+            VectorObject {
+                id: "direct-marquee".into(),
+                name: "Selection".into(),
+                text: None,
+                path: VectorPath {
+                    data: format!("M {x} {y} h {w} v {h} h {} Z", -w),
+                    fill_rule: FillRule::NonZero,
+                },
+                transform: [1., 0., 0., 1., 0., 0.],
+                fill: None,
+                stroke: Some(VectorPaint {
+                    color: [60, 160, 255, 255],
+                }),
+                stroke_width: 1. / zoom,
+                visible: true,
+                kind: VectorObjectKind::Compound,
+                control_points: vec![[x, y], [x + w, y + h]],
+            },
+        )?;
+    }
+    Ok(preview)
+}
+
 fn vector_select_pointer(
     document: &mut Document,
     point: lumapaint_core::document::Point,
@@ -729,16 +1400,6 @@ fn vector_select_pointer(
 ) -> Result<(), String> {
     if phase == 0 {
         cancel_vector_drag();
-        VECTOR_CONTROL
-            .with(|control| *control.borrow_mut() = document.selected_control_at(point, 6.0));
-        if VECTOR_CONTROL.with(|control| control.borrow().is_some()) {
-            VECTOR_DRAFT.with(|draft| {
-                let mut draft = draft.borrow_mut();
-                draft.clear();
-                draft.push(point);
-            });
-            return Ok(());
-        }
         let hit =
             document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
         VECTOR_DRAFT.with(|draft| {
@@ -773,7 +1434,10 @@ fn cancel_vector_drag() -> bool {
     let moving = VECTOR_MOVE.with(|offset| offset.replace([0.0, 0.0]) != [0.0, 0.0]);
     VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
     VECTOR_CONTROL.with(|control| control.borrow_mut().take());
-    moving
+    let pen = PEN_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
+    let anchor = ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
+    let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
+    moving || pen || anchor || direct
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -813,11 +1477,21 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             DocumentAction::Undo => text_editor::history(false),
             DocumentAction::Redo => text_editor::history(true),
             DocumentAction::SelectAll => text_editor::select_all(),
+            DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste => {
+                text_editor::clipboard(action)
+            }
             _ => {
                 text_editor::finish(true)?;
                 return edit(action);
             }
         }
+        return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+    }
+    if matches!(
+        action,
+        DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste
+    ) {
+        clipboard::action(action)?;
         return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
     }
     if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_some()) {
@@ -855,8 +1529,16 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             DocumentAction::SelectAll => doc.select_all(),
             DocumentAction::Deselect => doc.deselect(),
             DocumentAction::InvertSelection => doc.invert_selection()?,
+            DocumentAction::ClearLayer => doc.clear_selected_layer()?,
+            DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste => unreachable!(),
             DocumentAction::DeleteSelectedObjects => {
-                doc.delete_selected_vector_objects()?;
+                if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
+                    let points = DIRECT_POINTS.with(|points| points.borrow().clone());
+                    doc.delete_vector_anchors(&points)?;
+                    DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+                } else {
+                    doc.delete_selected_vector_objects()?;
+                }
             }
         }
         Ok::<(), String>(())
@@ -939,6 +1621,18 @@ pub fn upsert_vector_object(
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn set_vector_stroke_width(width: f32, color: [u8; 3]) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|document| {
+        document
+            .borrow_mut()
+            .set_selected_stroke_width(width, color)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|document| document.borrow().snapshot()))
+}
+
 pub fn select_vector_objects(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().select_vector_objects(ids))?;
@@ -1113,6 +1807,23 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if text_editor::active() || VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
         return text_editor::render(canvas);
     }
+    if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect
+        && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none())
+    {
+        let preview =
+            DOCUMENT.with(|document| direct_preview(&document.borrow(), canvas.viewport.zoom))?;
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
+    if let Some(draft) = ANCHOR_DRAFT.with(|draft| draft.borrow().clone()) {
+        let preview =
+            DOCUMENT.with(|document| draft.preview(&document.borrow(), canvas.viewport.zoom))?;
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
+    if let Some(draft) = PEN_DRAFT.with(|draft| draft.borrow().clone()) {
+        let preview =
+            DOCUMENT.with(|document| draft.preview(&document.borrow(), canvas.viewport.zoom))?;
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
     let tiled = ACTIVE_TILED_DOCUMENT.with(|document| {
         document.borrow().as_ref().map(|document| {
             let (width, height) = document.document.dimensions();
@@ -1141,6 +1852,9 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     DOCUMENT.with(|document| {
         let document = document.borrow();
+        if document.visible_strokes().any(|stroke| stroke.eraser) {
+            return canvas.renderer.render(canvas.viewport, &document);
+        }
         refresh_tile_preview(canvas, &document);
         if RASTER_SENDER.get().is_some() {
             schedule_raster_job(canvas, &document)?;
@@ -1574,6 +2288,10 @@ thread_local! {
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static VECTOR_MOVE: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([0.0, 0.0]) };
+    static DIRECT_POINTS: RefCell<Vec<(String,usize)>> = const { RefCell::new(Vec::new()) };
+    static DIRECT_GESTURE: RefCell<Option<DirectGesture>> = const { RefCell::new(None) };
+    static ANCHOR_DRAFT: RefCell<Option<AnchorDraft>> = const { RefCell::new(None) };
+    static PEN_DRAFT: RefCell<Option<PenDraft>> = const { RefCell::new(None) };
     static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
     static VECTOR_CONTROL: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
@@ -1828,7 +2546,12 @@ pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, S
 fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
     let tool_changed = TOOL.with(|tool| tool.get()) != request.tool;
     if tool_changed || !request.visible {
-        cancel_vector_drag();
+        // Report editing errors without treating them as GPU failures or losing the draft.
+        if let Err(error) = finish_open_pen() {
+            emit_error(error);
+        } else {
+            cancel_vector_drag();
+        }
         if let Err(error) = text_editor::finish(true) {
             // An edit validation error is not a renderer failure. Keep the editor
             // (and its uncommitted text) alive, and report it through the UI alert.
@@ -1989,6 +2712,344 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pen_preview_commit_control_edit_and_undo_preserve_cubics() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        let draft = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
+        };
+        let preview = draft.preview(&document, 1.0).unwrap();
+        assert!(document
+            .svg_layers()
+            .next()
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        assert_eq!(preview.svg_layers().next().unwrap().vector_objects.len(), 2);
+        let object = draft.object(false, "curve").unwrap();
+        assert_eq!(object.path.data, "M 10 10 C 10 60 110 60 110 10");
+        document
+            .upsert_vector_object(&layer, object.clone())
+            .unwrap();
+        document
+            .move_vector_control(
+                "curve",
+                0,
+                lumapaint_core::document::Point { x: 20., y: 10. },
+            )
+            .unwrap();
+        let edited = &document.svg_layers().next().unwrap().vector_objects[0];
+        assert_eq!(edited.control_points[1], [20., 60.]);
+        assert!(edited.path.data.contains(" C "));
+        document.undo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            object
+        );
+        document.undo();
+        assert!(document
+            .svg_layers()
+            .next()
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        document.redo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            object
+        );
+        let json = serde_json::to_string(&object).unwrap();
+        assert_eq!(serde_json::from_str::<VectorObject>(&json).unwrap(), object);
+        let closed = draft.object(true, "closed").unwrap();
+        assert!(closed.path.data.ends_with(" Z"));
+        assert_eq!(closed.control_points.first(), closed.control_points.last());
+    }
+
+    #[test]
+    fn anchor_tools_commit_once_preview_cancel_and_undo() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        document.select_layer(layer.clone()).unwrap();
+        let pen = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
+        };
+        let original = pen.object(false, "curve").unwrap();
+        document
+            .upsert_vector_object(&layer, original.clone())
+            .unwrap();
+        let point = |x, y| lumapaint_core::document::Point { x, y };
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorAdd,
+            point(60., 47.5),
+            0,
+        )
+        .unwrap();
+        let inserted = document.svg_layers().next().unwrap().vector_objects[0].clone();
+        assert_eq!(inserted.control_points.len(), 7);
+        document.undo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            original
+        );
+        document.redo();
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorConvert,
+            point(60., 47.5),
+            0,
+        )
+        .unwrap();
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorConvert,
+            point(80., 70.),
+            1,
+        )
+        .unwrap();
+        let preview = ANCHOR_DRAFT
+            .with(|draft| draft.borrow().as_ref().unwrap().preview(&document, 1.))
+            .unwrap();
+        assert_eq!(preview.svg_layers().next().unwrap().vector_objects.len(), 2);
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+        assert!(cancel_vector_drag());
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorConvert,
+            point(60., 47.5),
+            0,
+        )
+        .unwrap();
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorConvert,
+            point(80., 70.),
+            2,
+        )
+        .unwrap();
+        assert_ne!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+        document.undo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+        anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorDelete,
+            point(60., 47.5),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0]
+                .control_points
+                .len(),
+            4
+        );
+        document.undo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+        document.select_layer("layer-1".into()).unwrap();
+        assert!(anchor_pointer(
+            &mut document,
+            CanvasTool::VectorAnchorDelete,
+            point(60., 47.5),
+            0
+        )
+        .is_err());
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            inserted
+        );
+    }
+
+    #[test]
+    fn open_pen_survives_tool_switch_and_outside_commit_once() {
+        for next in [
+            CanvasTool::VectorSelect,
+            CanvasTool::VectorPencil,
+            CanvasTool::Brush,
+            CanvasTool::Eraser,
+            CanvasTool::Text,
+            CanvasTool::Hand,
+        ] {
+            let mut document = Document::default();
+            let layer = document.add_vector_layer().unwrap();
+            document.select_layer(layer.clone()).unwrap();
+            DOCUMENT.with(|slot| *slot.borrow_mut() = document);
+            TOOL.with(|tool| tool.set(CanvasTool::VectorPen));
+            PEN_DRAFT.with(|draft| {
+                *draft.borrow_mut() = Some(PenDraft {
+                    layer,
+                    brush: Brush::default(),
+                    nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
+                })
+            });
+            switch_canvas_tool(next).unwrap();
+            // Outside-click IPC and a later sync must not create another path.
+            finish_open_pen().unwrap();
+            switch_canvas_tool(next).unwrap();
+            assert!(PEN_DRAFT.with(|draft| draft.borrow().is_none()));
+            DOCUMENT.with(|document| {
+                let mut document = document.borrow_mut();
+                let objects = &document.svg_layers().next().unwrap().vector_objects;
+                assert_eq!(objects.len(), 1);
+                assert_eq!(objects[0].path.data, "M 10 10 C 10 60 110 60 110 10");
+                document.undo();
+                assert!(document
+                    .svg_layers()
+                    .next()
+                    .unwrap()
+                    .vector_objects
+                    .is_empty());
+                document.redo();
+                assert_eq!(
+                    document.svg_layers().next().unwrap().vector_objects.len(),
+                    1
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn failed_pen_commit_preserves_draft_for_retry() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        PEN_DRAFT.with(|draft| {
+            *draft.borrow_mut() = Some(PenDraft {
+                layer: layer.clone(),
+                brush: Brush::default(),
+                nodes: vec![([10., 10.], [10., 10.]), ([100., 100.], [100., 100.])],
+            })
+        });
+        document.select_layer("layer-1".into()).unwrap();
+        assert!(finish_pen(&mut document, false).is_err());
+        assert!(PEN_DRAFT.with(|draft| draft.borrow().is_some()));
+        document.select_layer(layer).unwrap();
+        finish_pen(&mut document, false).unwrap();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects.len(),
+            1
+        );
+        assert!(PEN_DRAFT.with(|draft| draft.borrow().is_none()));
+    }
+
+    #[test]
+    fn direct_selection_moves_multiple_anchors_with_preview_and_one_undo() {
+        DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+        DIRECT_GESTURE.with(|draft| draft.borrow_mut().take());
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        let pen = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![
+                ([20., 20.], [20., 30.]),
+                ([100., 20.], [100., 30.]),
+                ([150., 80.], [150., 90.]),
+            ],
+        };
+        let original = pen.object(false, "direct-test").unwrap();
+        document
+            .upsert_vector_object(&layer, original.clone())
+            .unwrap();
+        let p = |x, y| lumapaint_core::document::Point { x, y };
+        let flags = NSEventModifierFlags::empty();
+        direct_pointer(&mut document, p(20., 20.), 0, flags).unwrap();
+        direct_pointer(&mut document, p(20., 20.), 2, flags).unwrap();
+        direct_pointer(&mut document, p(100., 20.), 0, NSEventModifierFlags::Shift).unwrap();
+        direct_pointer(&mut document, p(100., 20.), 2, flags).unwrap();
+        assert_eq!(DIRECT_POINTS.with(|points| points.borrow().len()), 2);
+        direct_pointer(&mut document, p(20., 20.), 0, flags).unwrap();
+        direct_pointer(&mut document, p(30., 35.), 1, flags).unwrap();
+        let preview = direct_preview(&document, 1.).unwrap();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            original
+        );
+        assert_eq!(
+            preview.svg_layers().next().unwrap().vector_objects[0].control_points[0],
+            [30., 35.]
+        );
+        direct_pointer(&mut document, p(30., 35.), 2, flags).unwrap();
+        let edited = document.svg_layers().next().unwrap().vector_objects[0].clone();
+        assert_eq!(edited.control_points[0], [30., 35.]);
+        assert_eq!(edited.control_points[3], [110., 35.]);
+        assert_eq!(edited.control_points[6], original.control_points[6]);
+        document.undo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            original
+        );
+        document.redo();
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            edited
+        );
+        // Empty-space marquee selects only anchors inside its bounds.
+        direct_pointer(&mut document, p(5., 5.), 0, flags).unwrap();
+        direct_pointer(&mut document, p(120., 50.), 1, flags).unwrap();
+        direct_preview(&document, 1.).unwrap();
+        direct_pointer(&mut document, p(120., 50.), 2, flags).unwrap();
+        assert_eq!(DIRECT_POINTS.with(|points| points.borrow().len()), 2);
+        direct_pointer(&mut document, p(30., 35.), 0, flags).unwrap();
+        direct_pointer(&mut document, p(60., 50.), 1, flags).unwrap();
+        assert!(cancel_vector_drag());
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects[0],
+            edited
+        );
+        DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+    }
+
+    #[test]
+    fn pen_click_drag_close_and_cancel() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        document.select_layer(layer).unwrap();
+        let point = |x, y| lumapaint_core::document::Point { x, y };
+        bezier_pointer(&mut document, point(10., 10.), 0).unwrap();
+        bezier_pointer(&mut document, point(10., 50.), 1).unwrap();
+        bezier_pointer(&mut document, point(10., 50.), 2).unwrap();
+        bezier_pointer(&mut document, point(100., 10.), 0).unwrap();
+        bezier_pointer(&mut document, point(100., 10.), 2).unwrap();
+        assert!(document
+            .svg_layers()
+            .next()
+            .unwrap()
+            .vector_objects
+            .is_empty());
+        bezier_pointer(&mut document, point(10., 10.), 0).unwrap();
+        assert!(PEN_DRAFT.with(|draft| draft.borrow().is_none()));
+        assert!(document.svg_layers().next().unwrap().vector_objects[0]
+            .path
+            .data
+            .ends_with(" Z"));
+        bezier_pointer(&mut document, point(50., 50.), 0).unwrap();
+        assert!(cancel_vector_drag());
+        assert_eq!(
+            document.svg_layers().next().unwrap().vector_objects.len(),
+            1
+        );
+    }
 
     #[test]
     fn tile_result_rejects_an_old_document_canvas_or_scale() {
@@ -2171,6 +3232,7 @@ fn confirm_unsaved_changes() -> bool {
 }
 
 fn ensure_document_open() -> Result<(), String> {
+    finish_open_pen()?;
     cancel_vector_drag();
     text_editor::finish(true)?;
     (DOCUMENT_OPEN.with(|open| open.get())

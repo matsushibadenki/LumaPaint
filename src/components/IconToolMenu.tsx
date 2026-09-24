@@ -6,7 +6,7 @@ import { toolMenuImages } from './toolMenuImages';
 
 export interface IconToolChoice { id: string; label: string; icon: keyof typeof import('./Icon').iconPaths; shortcut?: string; enabled?: boolean }
 export function IconToolMenu({ label, choices, selected, active, enabled, selectionShortcuts = false, onSelect, onError }: {
-  label: string; choices: readonly [IconToolChoice, IconToolChoice, ...IconToolChoice[]]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
+  label: string; choices: readonly [IconToolChoice, ...IconToolChoice[]]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
   onSelect: (tool: string) => void; onError: (message: string) => void;
 }) {
   const selectedIndex = Math.max(0, choices.findIndex(choice => choice.id === selected));
@@ -91,7 +91,11 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
     <button ref={trigger} type="button" className={`tool-button selection-tool-trigger${active ? ' selected' : ''}`}
       aria-label={`${label} · ${choice.label}`} title={`${label} · ${choice.label}`}
       aria-pressed={active} aria-haspopup="menu" aria-expanded={open} aria-controls={!native && open ? id : undefined} disabled={!enabled}
-      onClick={() => void show()} onContextMenu={event => { event.preventDefault(); if (!open) void show(); }}
+      onClick={event => {
+        if ((event.target as Element).closest('.tool-menu-corner')) { void show(); return; }
+        close();
+        if (choice.enabled !== false) onSelect(choice.id);
+      }} onContextMenu={event => { event.preventDefault(); if (!open) void show(); }}
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); if (!open) void show(); }
         if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(true); }

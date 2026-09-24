@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { onNativeScaleChange, resetCanvasPan, syncCanvas, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
+import { onNativeScaleChange, finishCanvasPath, resetCanvasPan, syncCanvas, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { textPanelMessages } from './text-panel-i18n';
@@ -35,6 +35,16 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
     settings.current = { zoom, dark, brush, tool, visible };
     schedule.current();
   }, [zoom, dark, brush, tool, visible]);
+
+  useEffect(() => {
+    const finishOutside = (event: PointerEvent) => {
+      if (event.button !== 0 || settings.current.tool !== 'vectorPen' || slot.current?.contains(event.target as Node)) return;
+      // Capture runs before toolbar/panel actions; the bridge serializes with canvas sync.
+      void finishCanvasPath().catch(cause => setError(String(cause)));
+    };
+    document.addEventListener('pointerdown', finishOutside, true);
+    return () => document.removeEventListener('pointerdown', finishOutside, true);
+  }, []);
 
   useEffect(() => onReady(status === 'ready' || status === 'hidden'), [status, onReady]);
 

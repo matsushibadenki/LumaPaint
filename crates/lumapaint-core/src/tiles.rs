@@ -1,5 +1,5 @@
 //! Sparse RGBA8 raster tiles. A fully transparent tile has no allocation.
-use crate::document::{mask_factor, Point};
+use crate::document::{mask_factor, LayerSettings, Point};
 use crate::selection::Selection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -536,6 +536,29 @@ pub struct RasterLayer {
 }
 
 impl RasterLayer {
+    fn settings(&self) -> LayerSettings {
+        LayerSettings {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            opacity: self.opacity,
+            locked: self.locked,
+            alpha_locked: self.alpha_locked,
+            mask_enabled: self.mask_enabled,
+            mask_inverted: self.mask_inverted,
+            mask_density: self.mask_density,
+        }
+    }
+
+    fn apply_settings(&mut self, settings: &LayerSettings) {
+        self.name.clone_from(&settings.name);
+        self.opacity = settings.opacity;
+        self.locked = settings.locked;
+        self.alpha_locked = settings.alpha_locked;
+        self.mask_enabled = settings.mask_enabled;
+        self.mask_inverted = settings.mask_inverted;
+        self.mask_density = settings.mask_density;
+    }
+
     pub fn effective_opacity(&self) -> f32 {
         self.opacity * mask_factor(self.mask_enabled, self.mask_inverted, self.mask_density)
     }
@@ -543,6 +566,10 @@ impl RasterLayer {
 
 #[derive(Clone, Debug, PartialEq)]
 enum RasterEdit {
+    Settings {
+        before: LayerSettings,
+        after: LayerSettings,
+    },
     Pixels {
         layer_id: String,
         changes: Vec<TileChange>,
@@ -1004,6 +1031,48 @@ impl TiledRasterDocument {
         Ok(())
     }
 
+    /// Apply a panel submission as one validated, undoable edit without copying pixels.
+    pub fn set_layer_settings(
+        &mut self,
+        settings: LayerSettings,
+    ) -> Result<Option<TileInvalidation>, String> {
+        if settings.name.trim().is_empty()
+            || settings.name.chars().count() > 255
+            || settings.name.chars().any(char::is_control)
+            || !settings.opacity.is_finite()
+            || !(0.0..=1.0).contains(&settings.opacity)
+            || !settings.mask_density.is_finite()
+            || !(0.0..=1.0).contains(&settings.mask_density)
+        {
+            return Err("Invalid raster layer settings".into());
+        }
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == settings.id)
+            .ok_or("Unknown raster layer")?;
+        let before = layer.settings();
+        if before == settings {
+            return Ok(None);
+        }
+        let affects_pixels = before.opacity != settings.opacity
+            || before.mask_enabled != settings.mask_enabled
+            || before.mask_inverted != settings.mask_inverted
+            || before.mask_density != settings.mask_density;
+        let coords = if affects_pixels {
+            layer.tiles.allocated_coords().collect()
+        } else {
+            Vec::new()
+        };
+        layer.apply_settings(&settings);
+        let layer_id = settings.id.clone();
+        self.record_edit(RasterEdit::Settings {
+            before,
+            after: settings,
+        });
+        Ok(Some(TileInvalidation { layer_id, coords }))
+    }
+
     pub fn set_layer_appearance(
         &mut self,
         layer_id: &str,
@@ -1231,6 +1300,119 @@ impl TiledRasterDocument {
         self.paint_dabs_clipped(layer_id, dabs, color, None)
     }
 
+    pub fn clear_selection(
+        &mut self,
+        layer_id: &str,
+        selection: &Selection,
+    ) -> Result<Option<TileInvalidation>, String> {
+        selection.validate()?;
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        if layer.locked || layer.alpha_locked || !layer.visible {
+            return Err("Raster layer is hidden or locked".into());
+        }
+        let mut changes = vec![];
+        for coord in layer.tiles.allocated_coords().collect::<Vec<_>>() {
+            let before = layer.tiles.tiles[&coord].clone();
+            let mut after = before.clone();
+            for (index, pixel) in after.chunks_exact_mut(4).enumerate() {
+                let x = coord.x * TILE_SIZE + index as u32 % TILE_SIZE;
+                let y = coord.y * TILE_SIZE + index as u32 / TILE_SIZE;
+                if selection.contains(crate::document::Point {
+                    x: x as f32 + 0.5,
+                    y: y as f32 + 0.5,
+                }) {
+                    pixel.fill(0);
+                }
+            }
+            if before == after {
+                continue;
+            }
+            let after = after.iter().any(|b| *b != 0).then_some(after);
+            if let Some(data) = &after {
+                layer.tiles.tiles.insert(coord, data.clone());
+            } else {
+                layer.tiles.tiles.remove(&coord);
+            }
+            changes.push(TileChange {
+                coord,
+                before: Some(before),
+                after,
+            });
+        }
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let coords = changes.iter().map(|change| change.coord).collect();
+        self.record_edit(RasterEdit::Pixels {
+            layer_id: layer_id.into(),
+            changes,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
+        }))
+    }
+
+    pub fn erase_dabs_clipped(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        selection: Option<&Selection>,
+    ) -> Result<Option<TileInvalidation>, String> {
+        let density = dab_density(self.width, self.height, dabs, selection)?;
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        if layer.locked || layer.alpha_locked || !layer.visible {
+            return Err("Raster layer is hidden or locked".into());
+        }
+        let mut changes = Vec::new();
+        for (coord, coverage) in density {
+            let Some(before) = layer.tiles.tiles.get(&coord).cloned() else {
+                continue;
+            };
+            let mut after = before.clone();
+            for (pixel, depth) in after.chunks_exact_mut(4).zip(coverage) {
+                pixel[3] = (f32::from(pixel[3]) * (-depth).exp()).round() as u8;
+                if pixel[3] == 0 {
+                    pixel.fill(0);
+                }
+            }
+            if after == before {
+                continue;
+            }
+            let after = after.iter().any(|byte| *byte != 0).then_some(after);
+            if let Some(bytes) = &after {
+                layer.tiles.tiles.insert(coord, bytes.clone());
+            } else {
+                layer.tiles.tiles.remove(&coord);
+            }
+            changes.push(TileChange {
+                coord,
+                before: Some(before),
+                after,
+            });
+        }
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let coords = changes.iter().map(|change| change.coord).collect();
+        self.record_edit(RasterEdit::Pixels {
+            layer_id: layer_id.into(),
+            changes,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
+        }))
+    }
+
     pub fn paint_dabs_clipped(
         &mut self,
         layer_id: &str,
@@ -1284,6 +1466,35 @@ impl TiledRasterDocument {
             return Ok(None);
         };
         let invalidation = match edit {
+            RasterEdit::Settings { before, after } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|layer| layer.id == before.id)
+                    .ok_or("Raster history layer is missing")?;
+                let (expected, next) = if undo {
+                    (after, before)
+                } else {
+                    (before, after)
+                };
+                if layer.settings() != *expected {
+                    return Err("Raster settings changed outside history".into());
+                }
+                let affects_pixels = before.opacity != after.opacity
+                    || before.mask_enabled != after.mask_enabled
+                    || before.mask_inverted != after.mask_inverted
+                    || before.mask_density != after.mask_density;
+                let coords = if affects_pixels {
+                    layer.tiles.allocated_coords().collect()
+                } else {
+                    Vec::new()
+                };
+                layer.apply_settings(next);
+                TileInvalidation {
+                    layer_id: before.id.clone(),
+                    coords,
+                }
+            }
             RasterEdit::Pixels { layer_id, changes } => {
                 self.layers
                     .iter_mut()
@@ -1413,6 +1624,77 @@ fn div_255(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eraser_removes_alpha_and_undo_restores_pixels() {
+        let mut doc = TiledRasterDocument::new(32, 32).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [10, 10, 1, 1], &[200, 50, 20, 255])
+            .unwrap();
+        let dab = RasterDab {
+            x: 10.5,
+            y: 10.5,
+            radius: 8.0,
+            hardness: 1.0,
+            weight: 1.0,
+        };
+        doc.erase_dabs_clipped("paint", &[dab], None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(10, 10), Some([0, 0, 0, 0]));
+        doc.undo().unwrap();
+        assert_eq!(
+            doc.layers()[0].tiles.pixel(10, 10),
+            Some([200, 50, 20, 255])
+        );
+        doc.redo().unwrap();
+        assert_eq!(doc.layers()[0].tiles.allocated_tile_count(), 0);
+    }
+
+    #[test]
+    fn panel_settings_are_atomic_and_restore_together_without_touching_pixels() {
+        let mut doc = TiledRasterDocument::new(32, 32).unwrap();
+        doc.add_layer("paint".into(), "Original".into()).unwrap();
+        doc.write_rect("paint", [0, 0, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        doc.discard_history();
+        let original = doc.state();
+        let mut settings = doc.layers()[0].settings();
+        settings.name = "Renamed".into();
+        settings.opacity = 0.5;
+        settings.locked = true;
+        settings.mask_enabled = true;
+        settings.mask_density = 0.75;
+        let mut invalid = settings.clone();
+        invalid.mask_density = f32::NAN;
+        assert!(doc.set_layer_settings(invalid).is_err());
+        assert_eq!(doc.state(), original);
+        assert!(!doc.can_undo());
+        assert_eq!(
+            doc.set_layer_settings(settings.clone())
+                .unwrap()
+                .unwrap()
+                .coords
+                .len(),
+            1
+        );
+        assert_eq!(doc.layers()[0].settings(), settings);
+        assert_eq!(doc.state().layers[0].tiles, original.layers[0].tiles);
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), original);
+        assert!(!doc.can_undo());
+        doc.redo().unwrap();
+        assert_eq!(doc.layers()[0].settings(), settings);
+        assert!(doc.set_layer_settings(settings.clone()).unwrap().is_none());
+        settings.name = "Metadata only".into();
+        assert!(doc
+            .set_layer_settings(settings)
+            .unwrap()
+            .unwrap()
+            .coords
+            .is_empty());
+        assert!(doc.undo().unwrap().unwrap().coords.is_empty());
+    }
 
     #[test]
     fn writes_only_touched_tiles_and_restores_each_side_of_boundary() {

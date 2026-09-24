@@ -23,7 +23,7 @@ lumapaint-renderer = { path = "../crates/lumapaint-renderer", features = ["skia"
 pollster = "0.4"
 raw-window-handle = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSColor", "NSCursor", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSButton", "NSButtonCell", "NSImage", "NSText", "NSTextView", "NSTextContainer", "NSTextStorage", "NSFont", "NSFontManager", "NSParagraphStyle", "NSAttributedString", "NSTextInputClient", "NSLayoutManager"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSPasteboard", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSColor", "NSCursor", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSButton", "NSButtonCell", "NSImage", "NSText", "NSTextView", "NSTextContainer", "NSTextStorage", "NSFont", "NSFontManager", "NSParagraphStyle", "NSAttributedString", "NSTextInputClient", "NSLayoutManager"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSData", "NSDate", "NSRunLoop", "NSString", "NSRange", "NSArray", "NSDictionary", "NSAttributedString", "NSValue", "NSUndoManager"] }
 rfd = "0.17.2"
 base64 = "0.22"

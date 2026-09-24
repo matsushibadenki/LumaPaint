@@ -9,6 +9,7 @@ use lumapaint_core::tiles::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
+mod paint_cache;
 pub use wgpu;
 use wgpu::util::DeviceExt;
 
@@ -329,6 +330,22 @@ pub fn paint_stroke_into_tiles(
     layer_id: &str,
     stroke: &Stroke,
 ) -> Result<Option<TileInvalidation>, String> {
+    if stroke.clear {
+        return document.clear_selection(
+            layer_id,
+            stroke
+                .selection
+                .as_ref()
+                .ok_or("Clear stroke requires selection")?,
+        );
+    }
+    if stroke.eraser {
+        return document.erase_dabs_clipped(
+            layer_id,
+            &sampled_raster_dabs(stroke)?,
+            stroke.selection.as_ref(),
+        );
+    }
     document.paint_dabs_clipped(
         layer_id,
         &sampled_raster_dabs(stroke)?,
@@ -367,7 +384,19 @@ pub fn paint_stroke_into_tiles_at_scale(
     if let Some(selection) = &selection {
         selection.validate()?;
     }
-    document.paint_dabs_clipped(layer_id, &dabs, stroke.brush.color, selection.as_ref())
+    if stroke.clear {
+        return document.clear_selection(
+            layer_id,
+            selection
+                .as_ref()
+                .ok_or("Clear stroke requires selection")?,
+        );
+    }
+    if stroke.eraser {
+        document.erase_dabs_clipped(layer_id, &dabs, selection.as_ref())
+    } else {
+        document.paint_dabs_clipped(layer_id, &dabs, stroke.brush.color, selection.as_ref())
+    }
 }
 
 /// Conservative tile bounds for one retained stroke. The two-pixel margin
@@ -388,6 +417,11 @@ pub fn stroke_candidate_tile_coords_at_scale(
         .1
         .checked_mul(scale)
         .ok_or("Tile preview height overflow")?;
+    if stroke.clear {
+        return Ok((0..height.div_ceil(TILE_SIZE))
+            .flat_map(|y| (0..width.div_ceil(TILE_SIZE)).map(move |x| TileCoord { x, y }))
+            .collect());
+    }
     let factor = scale as f32;
     let mut coords = BTreeSet::new();
     for dab in sampled_raster_dabs(stroke)? {
@@ -1095,6 +1129,8 @@ pub struct Renderer {
     svg_sampler: wgpu::Sampler,
     tile_nearest_sampler: wgpu::Sampler,
     tile_preview: Option<TileGpuPreview>,
+    paint_cache: Option<paint_cache::PaintCache>,
+    paint_cache_installed: bool,
     svg_cache: HashMap<String, CachedSvg>,
     drag_cache: HashMap<String, DragLayerCache>,
     uniform_layout: wgpu::BindGroupLayout,
@@ -1382,6 +1418,7 @@ impl Renderer {
         scale: u32,
         uploads: TileUploadSource<'_>,
     ) -> Result<(), String> {
+        self.paint_cache_installed = false;
         if !(1..=2).contains(&scale)
             || document_dimensions.0.checked_mul(scale) != Some(tile_dimensions.0)
             || document_dimensions.1.checked_mul(scale) != Some(tile_dimensions.1)
@@ -1435,6 +1472,7 @@ impl Renderer {
         tile_dimensions: (u32, u32),
         uploads: &[TileUpload],
     ) -> Result<(), String> {
+        self.paint_cache_installed = false;
         let preview = self
             .tile_preview
             .as_ref()
@@ -1449,6 +1487,7 @@ impl Renderer {
         &mut self,
         batch: &ValidatedTileUploads,
     ) -> Result<(), String> {
+        self.paint_cache_installed = false;
         let preview = self
             .tile_preview
             .as_ref()
@@ -1458,6 +1497,7 @@ impl Renderer {
 
     pub fn clear_tiled_preview(&mut self) {
         self.tile_preview = None;
+        self.paint_cache_installed = false;
     }
 
     /// Keep uploaded tile data while the active stroke uses the v1 brush path.
@@ -1772,6 +1812,8 @@ impl Renderer {
             svg_sampler,
             tile_nearest_sampler,
             tile_preview: None,
+            paint_cache: None,
+            paint_cache_installed: false,
             svg_cache: HashMap::new(),
             drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
@@ -1837,6 +1879,38 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
+        if document.visible_strokes().any(|stroke| stroke.eraser) {
+            let started = std::time::Instant::now();
+            let mut cache = match self.paint_cache.take() {
+                Some(cache) => cache,
+                None => paint_cache::PaintCache::new(document.dimensions())?,
+            };
+            let install =
+                !self.paint_cache_installed || cache.dimensions() != document.dimensions();
+            self.paint_cache_installed = false;
+            let uploads = cache.prepare(document, install)?;
+            if install {
+                self.install_tiled_preview_uploads_at_scale(
+                    document.dimensions(),
+                    document.dimensions(),
+                    1,
+                    &uploads,
+                )?;
+            } else if !uploads.is_empty() {
+                self.update_tiled_preview_uploads(document.dimensions(), &uploads)?;
+            }
+            self.set_tiled_preview_visible(true);
+            self.paint_cache_installed = true;
+            if render_metrics_enabled() {
+                eprintln!("LumaPaint paint cache replayed={} uploaded_tiles={} upload_bytes={} prepare_ms={:.2}",cache.replayed,uploads.len(),uploads.iter().map(|u|u.pixels.len()).sum::<usize>(),started.elapsed().as_secs_f64()*1000.);
+            }
+            self.paint_cache = Some(cache);
+        } else {
+            if self.paint_cache_installed {
+                self.clear_tiled_preview();
+            }
+            self.paint_cache = None;
+        }
         if offset
             .iter()
             .any(|v| !v.is_finite() || v.abs() >= 100_000.0)
@@ -2285,6 +2359,8 @@ mod tests {
     #[test]
     fn tile_dabs_share_gpu_curve_spacing_radius_hardness_and_pressure() {
         let stroke = Stroke {
+            eraser: false,
+            clear: false,
             brush: lumapaint_core::document::Brush {
                 size: 32.0,
                 hardness: 0.3,
@@ -2784,6 +2860,8 @@ mod tests {
     #[test]
     fn pressure_changes_brush_radius_along_the_stroke() {
         let stroke = Stroke {
+            eraser: false,
+            clear: false,
             brush: lumapaint_core::document::Brush {
                 size: 40.0,
                 ..Default::default()
@@ -2888,3 +2966,50 @@ mod tests {
 
 #[cfg(test)]
 mod gpu_tests;
+
+#[cfg(test)]
+mod clipboard_pixel_tests {
+    use super::*;
+    #[test]
+    fn cut_clears_only_selected_pixels_and_allows_repainting() {
+        use lumapaint_core::document::{
+            Brush, Point, Selection, SelectionOperation, SelectionRegion, SelectionShape,
+        };
+        let mut selection = Selection::new(SelectionShape::Rectangle, [8., 8., 24., 24.]);
+        selection.regions.push(SelectionRegion {
+            shape: SelectionShape::Ellipse,
+            bounds: [16., 16., 8., 8.],
+            operation: SelectionOperation::Subtract,
+        });
+        let mut document = TiledRasterDocument::new(64, 64).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        document
+            .write_rect("paint", [0, 0, 64, 64], &vec![255; 64 * 64 * 4])
+            .unwrap();
+        let stroke = Stroke {
+            eraser: true,
+            clear: true,
+            brush: Brush::default(),
+            points: vec![Point { x: 0., y: 0. }],
+            pressures: vec![1.],
+            selection: Some(selection),
+        };
+        paint_stroke_into_tiles(&mut document, "paint", &stroke).unwrap();
+        assert_eq!(document.layers()[0].tiles.pixel(10, 10).unwrap(), [0; 4]);
+        assert_eq!(document.layers()[0].tiles.pixel(20, 20).unwrap(), [255; 4]);
+        assert_eq!(document.layers()[0].tiles.pixel(40, 40).unwrap(), [255; 4]);
+        document.undo().unwrap();
+        assert_eq!(document.layers()[0].tiles.pixel(10, 10).unwrap(), [255; 4]);
+        document.redo().unwrap();
+        assert_eq!(document.layers()[0].tiles.pixel(10, 10).unwrap(), [0; 4]);
+        let mut paint = stroke.clone();
+        paint.clear = false;
+        paint.eraser = false;
+        paint.selection = None;
+        paint.points = vec![Point { x: 10., y: 10. }];
+        paint_stroke_into_tiles(&mut document, "paint", &paint).unwrap();
+        assert!(document.layers()[0].tiles.pixel(10, 10).unwrap()[3] > 0);
+        let png = vector::clipboard_png(1, 1, vec![128, 0, 0, 128]).unwrap();
+        assert_eq!(vector::clipboard_png_size(&png).unwrap(), (1, 1));
+    }
+}

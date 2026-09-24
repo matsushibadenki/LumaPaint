@@ -1,5 +1,11 @@
-type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-export const iconPaths: Record<Name, string> = {
+type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type PanelIconName = 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+export const iconPaths: Record<Name | PanelIconName, string> = {
+  stroke: 'M3 5h18 M3 11h18 M3 17h18 M3 19h18 M3 21h18',
+  eraser: 'M3 14l10-11 8 8-10 10H7z M8 9l8 8 M11 21h10',
+  palette: 'M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-4 2 2 0 0 1 1-4h3a3 3 0 0 0 3-3c0-4-4-7-9-7z M7 9h.01 M10 6h.01 M15 7h.01 M6 13h.01',
+  document: 'M5 3h9l5 5v13H5z M14 3v5h5 M8 12h8 M8 16h8',
+  layers: 'M3 8l9-5 9 5-9 5z M3 12l9 5 9-5 M3 16l9 5 9-5',
   chevronDown: 'M6 9l6 6 6-6', chevronRight: 'M9 6l6 6-6 6',
   lock: 'M5 10h14v11H5z M8 10V6a4 4 0 0 1 8 0v4 M12 14v3',
   unlock: 'M5 10h14v11H5z M8 10V6a4 4 0 0 1 8 0 M12 14v3',
@@ -21,8 +27,13 @@ export const iconPaths: Record<Name, string> = {
   saveAs: 'M3 3h12l4 4v4 M7 3v6h8V3 M3 3v18h7 M13 18l6-6 3 3-6 6h-3z',
   brush: 'M14 4l6-2-2 6-7 7-4-4 7-7z M7 13c-5 0-1 7-6 7 8 2 10-4 6-7z',
   vector: 'M5 4h4v4H5z M15 16h4v4h-4z M9 6c6 0 8 3 8 10 M7 8v9h8 M5 15h4v4H5z',
+  vectorDirectSelect: 'M5 3l14 10-7 1-4 7z',
   vectorSelect: 'M5 3l13 9-6 2-3 6z',
-  vectorPen: 'M5 19l2-6L17 3l4 4-10 10z M7 13l4 4',
+  vectorPen: 'M12 3L5 14l4 5h6l4-5L12 3z M12 3v8 M10 13a2 2 0 1 0 4 0a2 2 0 1 0-4 0 M9 21h6',
+  vectorAnchorAdd: 'M4 18L11 4l4 9-5 6z M11 4v7 M17 4h6 M20 1v6',
+  vectorAnchorDelete: 'M4 18L11 4l4 9-5 6z M11 4v7 M17 4h6',
+  vectorAnchorConvert: 'M3 19L12 5l9 14 M9 3h6v5H9z',
+  vectorPencil: 'M5 19l2-6L17 3l4 4-10 10z M7 13l4 4',
   vectorRectangle: 'M4 5h16v14H4z',
   vectorEllipse: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16',
   importVector: 'M4 3h10l5 5v5 M14 3v5h5 M12 18h9 M16.5 13.5v9',
@@ -33,6 +44,6 @@ export const iconPaths: Record<Name, string> = {
   eyeOff: 'M3 3l18 18 M9 5c7-2 13 7 13 7s-1 2-3 4 M6 7c-3 2-4 5-4 5s4 7 10 7c2 0 3 0 4-1',
   panels: 'M3 4h18v16H3z M15 4v16', minus: 'M5 12h14', plus: 'M5 12h14 M12 5v14',
 };
-export function Icon({ name }: { name: Name }) {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
+export function Icon({ name }: { name: Name | PanelIconName }) {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} fill={name === 'vectorSelect' ? 'currentColor' : 'none'} /></svg>;
 }

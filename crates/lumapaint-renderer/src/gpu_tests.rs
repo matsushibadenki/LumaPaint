@@ -404,6 +404,8 @@ fn figure_eight(brush: Brush, count: usize) -> Stroke {
         })
         .collect();
     Stroke {
+        eraser: false,
+        clear: false,
         brush,
         points,
         pressures: vec![],
@@ -443,6 +445,8 @@ fn brush_pixel_difference(v1: &[u8], tiled: &[u8]) -> (f64, u8, u64, u64) {
 fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
     let gpu = Gpu::new();
     let line = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             size: 24.0,
             hardness: 1.0,
@@ -453,6 +457,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         selection: None,
     };
     let arc = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             size: 48.0,
             hardness: 0.0,
@@ -467,6 +473,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         selection: None,
     };
     let crossing = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             size: 32.0,
             hardness: 0.25,
@@ -477,6 +485,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         selection: None,
     };
     let crossing_back = Stroke {
+        eraser: false,
+        clear: false,
         points: vec![Point { x: 140.0, y: 560.0 }, Point { x: 450.0, y: 470.0 }],
         ..crossing.clone()
     };
@@ -503,6 +513,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
     let hard = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             size: 24.0,
             hardness: 1.0,
@@ -513,6 +525,8 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
         selection: None,
     };
     let soft = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             size: 48.0,
             hardness: 0.0,
@@ -832,6 +846,8 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
     for selection in [selection.clone(), selection.translated(60.0, 20.0)] {
         for hardness in [0.0, 1.0] {
             let mut stroke = Stroke {
+                eraser: false,
+                clear: false,
                 brush: Brush {
                     size: 512.0,
                     hardness,
@@ -874,6 +890,8 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
 fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
     let gpu = Gpu::new();
     let white = Stroke {
+        eraser: false,
+        clear: false,
         brush: Brush {
             color: [255, 255, 255],
             ..Brush::default()
@@ -1022,12 +1040,16 @@ fn gpu_brush_sampling_density_does_not_change_width() {
             color: [0, 0, 0],
         };
         let sparse = Stroke {
+            eraser: false,
+            clear: false,
             brush,
             points: vec![Point { x: 80.0, y: 320.0 }, Point { x: 880.0, y: 320.0 }],
             pressures: vec![],
             selection: None,
         };
         let dense = Stroke {
+            eraser: false,
+            clear: false,
             brush,
             points: (0..=800)
                 .map(|i| Point {
@@ -1069,6 +1091,8 @@ fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
         color: [0, 0, 0],
     };
     let line = |reverse: bool| Stroke {
+        eraser: false,
+        clear: false,
         brush,
         points: (0..=120)
             .map(|i| {

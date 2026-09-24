@@ -1,4 +1,5 @@
-import { reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
+import { IconToolMenu, type IconToolChoice } from './components/IconToolMenu';
+import { setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom } from './bridge';
@@ -18,7 +19,7 @@ import { VectorShapeToolMenu, type VectorShapeTool } from './components/VectorSh
 import { textPanelMessages } from './text-panel-i18n';
 import { textMessages } from './text-i18n';
 import { ToolModeSwitch } from './components/ToolModeSwitch';
-import { initialTools, modeForTool, modeLabels, modeTools, type ToolMode } from './tool-modes';
+import { initialTools, isPenTool, penTools, type PenTool, modeForTool, modeLabels, modeTools, type ToolMode } from './tool-modes';
 import { PercentInput, SizeInput, fromHex, toHex } from './components/BrushControls';
 import { ColorPairControl, type ColorTarget } from './components/ColorPanel';
 
@@ -31,6 +32,8 @@ export function Workspace() {
   const [lastZoomTool, setLastZoomTool] = useState<ZoomTool>('zoomIn');
   const canvasTool = zoomTool ?? toolState.tools[toolMode];
   const [lastSelectionTool, setLastSelectionTool] = useState<SelectionTool>('rectangle');
+  const [lastVectorSelectTool, setLastVectorSelectTool] = useState<'vectorSelect' | 'vectorDirectSelect'>('vectorSelect');
+  const [lastPenTool, setLastPenTool] = useState<PenTool>('vectorPen');
   const [lastVectorShapeTool, setLastVectorShapeTool] = useState<VectorShapeTool>('vectorRectangle');
   const setToolMode = useCallback((mode: ToolMode) => {
     setZoomTool(null);
@@ -44,6 +47,8 @@ export function Workspace() {
       return { mode, tools: { ...current.tools, [mode]: next } };
     });
     if (next === 'rectangle' || next === 'ellipse') setLastSelectionTool(next);
+    if (next === 'vectorSelect' || next === 'vectorDirectSelect') setLastVectorSelectTool(next);
+    if (isPenTool(next)) setLastPenTool(next);
     if (next === 'vectorRectangle' || next === 'vectorEllipse') setLastVectorShapeTool(next);
   }, []);
   const [paintState, setPaintState] = useState<{ brush: Brush; backgroundColor: Brush['color'] }>({
@@ -318,6 +323,7 @@ export function Workspace() {
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
         const key = event.key.toLowerCase();
+        if ((event.metaKey || event.ctrlKey) && ['c', 'x', 'v'].includes(key)) { event.preventDefault(); void edit(key === 'c' ? 'copy' : key === 'x' ? 'cut' : 'paste'); return; }
         if (key === 'n') void documentAction('new');
         else if (key === 'w' && activeDocumentId !== null) void documentAction('close', activeDocumentId);
         else void file(key === 'o' ? 'open' : event.shiftKey ? 'saveAs' : 'save');
@@ -335,10 +341,11 @@ export function Workspace() {
           if (!inlineText && (event.key === 'Delete' || event.key === 'Backspace')) {
             event.preventDefault(); void edit('deleteSelectedObjects'); return;
           }
+          if (key === 'e') { event.preventDefault(); setTool('eraser'); }
           if (key === 'b' || key === 'm') { event.preventDefault(); setTool(key === 'b' ? 'brush' : event.shiftKey ? 'ellipse' : 'rectangle'); }
-          if (key === 'v' || key === 'p' || key === 'u') {
+          if (key === 'a' || key === 'v' || key === 'p' || key === 'n' || key === 'u') {
             event.preventDefault();
-            setTool(key === 'v' ? 'vectorSelect' : key === 'p' ? 'vectorPen' : event.shiftKey ? 'vectorEllipse' : 'vectorRectangle');
+            setTool(key === 'a' ? 'vectorDirectSelect' : key === 'v' ? 'vectorSelect' : key === 'p' ? 'vectorPen' : key === 'n' ? 'vectorPencil' : event.shiftKey ? 'vectorEllipse' : 'vectorRectangle');
           }
           if (key === 't') { event.preventDefault(); setTool('text'); showTextPanel(); }
           if (key === 'x' && !event.repeat && !event.isComposing) { event.preventDefault(); swapColors(); }
@@ -369,7 +376,7 @@ export function Workspace() {
     </header>
     <div className="options-bar" aria-label={zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
       <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}</span></span>
-      {zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || documentState.selectedVectorObjects.length !== 2} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : canvasTool === 'brush' ? <>
+      {zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : canvasTool === 'vectorDirectSelect' ? t.directHint : canvasTool.startsWith('vectorAnchor') ? t.anchorHint : canvasTool === 'vectorPen' ? t.penHint : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || documentState.selectedVectorObjects.length !== 2} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : (canvasTool === 'brush' || canvasTool === 'eraser') ? <>
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><input type="color" value={toHex(brush.color)} onChange={event => setBrush(previous => ({ ...previous, color: fromHex(event.target.value) }))} aria-label={t.foreground} /></label>
@@ -382,11 +389,14 @@ export function Workspace() {
       <nav className="tool-rail" aria-label={t.tools}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
         <span className="tool-mode-divider" aria-hidden="true" />
-        {modeTools[toolMode].map(item => item === 'ellipse' || item === 'vectorEllipse' ? null : item === 'rectangle' ?
+        {modeTools[toolMode].map(item => item === 'ellipse' || item === 'vectorEllipse' || item === 'vectorDirectSelect' || (isPenTool(item) && item !== 'vectorPen') ? null : (item === 'brush' || item === 'eraser') && toolMode === 'paint' ?
+          <IconToolMenu key={item} label={item === 'brush' ? t.drawTools : t.eraseTools} selected={item} active={canvasTool === item} enabled={documentEditable} choices={[{ id: item, label: t[item], icon: item, shortcut: item === 'brush' ? 'B' : 'E' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> : item === 'rectangle' ?
           <SelectionToolMenu key="selection" locale={locale} selected={canvasTool === 'rectangle' || canvasTool === 'ellipse' ? canvasTool : lastSelectionTool} active={canvasTool === 'rectangle' || canvasTool === 'ellipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
+          item === 'vectorSelect' ? <IconToolMenu key="vector-selection" label={t.vectorSelect} selected={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect' ? canvasTool : lastVectorSelectTool} active={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect'} enabled={documentEditable} choices={[{ id: 'vectorSelect', label: t.vectorSelect, icon: 'vectorSelect', shortcut: 'V' }, { id: 'vectorDirectSelect', label: t.vectorDirectSelect, icon: 'vectorDirectSelect', shortcut: 'A' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
+          item === 'vectorPen' ? <IconToolMenu key="pen-tools" label={t.penTools} selected={isPenTool(canvasTool) ? canvasTool : lastPenTool} active={isPenTool(canvasTool)} enabled={documentEditable} choices={penTools.map(tool => ({ id: tool, label: t[tool], icon: tool, shortcut: tool === 'vectorPen' ? 'P' : tool === 'vectorPencil' ? 'N' : undefined })) as [IconToolChoice, ...IconToolChoice[]]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
           item === 'vectorRectangle' ?
           <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
-          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'text' ? 'T' : item === 'brush' ? 'B' : item === 'vectorSelect' ? 'V' : item === 'vectorPen' ? 'P' : item === 'vectorEllipse' ? 'Shift＋U' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={() => { setTool(item); if (item === 'text') showTextPanel(); }}><Icon name={item} /></button>)}
+          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]} (${item === 'text' ? 'T' : item === 'brush' ? 'B' : 'U'})`} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={() => { setTool(item); if (item === 'text') showTextPanel(); }}><Icon name={item} /></button>)}
         {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentEditable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}
         <div className="common-tools">
@@ -411,7 +421,7 @@ export function Workspace() {
           footerAccessory={<RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
-      {panels && <Inspector textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>

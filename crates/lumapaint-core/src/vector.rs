@@ -29,6 +29,7 @@ pub struct VectorPaint {
 pub enum VectorObjectKind {
     #[default]
     Path,
+    Bezier,
     Compound,
     Rectangle,
     Ellipse,
@@ -697,6 +698,9 @@ impl VectorObject {
         {
             return Err("Invalid vector object".into());
         }
+        if self.kind == VectorObjectKind::Bezier {
+            crate::bezier::path_data(&self.control_points, false)?;
+        }
         match (&self.kind, &self.text) {
             (VectorObjectKind::Text, Some(text)) => text.validate()?,
             (VectorObjectKind::Text, None) | (_, Some(_)) => {
@@ -749,6 +753,12 @@ impl VectorObject {
                 rx > 0.0
                     && ry > 0.0
                     && ((point[0] - cx) / rx).powi(2) + ((point[1] - cy) / ry).powi(2) <= 1.0
+            }
+            VectorObjectKind::Bezier => {
+                crate::bezier::flattened(&points).windows(2).any(|segment| {
+                    distance_to_segment(point, segment[0], segment[1])
+                        <= tolerance.max(self.stroke_width * 0.5)
+                })
             }
             VectorObjectKind::Path => points.windows(2).any(|segment| {
                 distance_to_segment(point, segment[0], segment[1])

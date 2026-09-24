@@ -977,3 +977,22 @@ fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Resul
     }
     Ok(())
 }
+
+pub fn clipboard(action: super::DocumentAction) {
+    let view = SESSION.with(|slot| slot.borrow().as_ref().map(|session| session.view.clone()));
+    if let Some(view) = view {
+        unsafe {
+            match action {
+                super::DocumentAction::Copy => {
+                    let _: () = msg_send![&*view, copy: std::ptr::null::<AnyObject>()];
+                }
+                super::DocumentAction::Cut => {
+                    let _: () = msg_send![&*view, cut: std::ptr::null::<AnyObject>()];
+                }
+                super::DocumentAction::Paste => view.pasteAsPlainText(None),
+                _ => {}
+            }
+        }
+        publish();
+    }
+}

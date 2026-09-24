@@ -29,10 +29,16 @@ pub struct CanvasRequest {
 pub enum CanvasTool {
     #[default]
     Brush,
+    Eraser,
     Rectangle,
     Ellipse,
     VectorSelect,
+    VectorDirectSelect,
     VectorPen,
+    VectorPencil,
+    VectorAnchorAdd,
+    VectorAnchorDelete,
+    VectorAnchorConvert,
     VectorRectangle,
     VectorEllipse,
     Text,
@@ -214,6 +220,19 @@ pub async fn reset_canvas_pan(window: tauri::WebviewWindow) -> Result<(), String
     }
 }
 
+#[tauri::command]
+pub async fn finish_canvas_path(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::finish_open_pen).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(())
+    }
+}
+
 pub fn destroy() {
     #[cfg(target_os = "macos")]
     platform::destroy();
@@ -236,6 +255,10 @@ pub enum DocumentAction {
     Deselect,
     InvertSelection,
     DeleteSelectedObjects,
+    ClearLayer,
+    Copy,
+    Cut,
+    Paste,
 }
 
 #[tauri::command]
@@ -388,6 +411,26 @@ pub async fn upsert_vector_object(
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
+#[tauri::command]
+pub async fn set_vector_stroke_width(
+    window: tauri::WebviewWindow,
+    width: f32,
+    color: [u8; 3],
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_vector_stroke_width(width, color)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, width, color);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
 #[tauri::command]
 pub async fn select_vector_objects(
     window: tauri::WebviewWindow,

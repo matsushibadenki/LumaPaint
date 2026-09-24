@@ -4,7 +4,9 @@ use crate::selection::SelectionGesture;
 pub use crate::selection::{
     Selection, SelectionMode, SelectionOperation, SelectionRegion, SelectionShape,
 };
-use crate::vector::{PathOperation, VectorObject, VectorObjectKind, VectorPath, VectorText};
+use crate::vector::{
+    PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath, VectorText,
+};
 use serde::{Deserialize, Serialize};
 
 pub const WIDTH: f32 = 960.0;
@@ -75,7 +77,7 @@ impl ColorProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
     pub size: f32,
@@ -110,7 +112,7 @@ impl Brush {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
     pub x: f32,
@@ -129,9 +131,13 @@ impl Point {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stroke {
+    #[serde(default)]
+    pub eraser: bool,
+    #[serde(default)]
+    pub clear: bool,
     pub brush: Brush,
     pub points: Vec<Point>,
     #[serde(default)]
@@ -176,7 +182,7 @@ const fn default_layer_opacity() -> f32 {
     1.0
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerSettings {
     pub id: String,
@@ -196,6 +202,7 @@ pub struct LayerSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerObjectSnapshot {
+    pub stroke_width: f32,
     pub id: String,
     pub name: String,
     pub kind: VectorObjectKind,
@@ -276,8 +283,10 @@ enum HistoryKind {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    selected_layer: Option<String>,
     layers: Vec<SvgLayer>,
     selection: Vec<String>,
+    strokes: Option<Vec<Stroke>>,
 }
 
 /// Minimal state needed to decide whether a projected paint tile cache can be
@@ -465,6 +474,11 @@ impl Document {
                     .vector_objects
                     .iter()
                     .map(|object| LayerObjectSnapshot {
+                        stroke_width: if object.stroke.is_some() {
+                            object.stroke_width
+                        } else {
+                            0.0
+                        },
                         id: object.id.clone(),
                         name: object.name.clone(),
                         kind: object.kind,
@@ -608,6 +622,9 @@ impl Document {
         let mut count = 0;
         for stroke in &file.strokes {
             stroke.brush.validate()?;
+            if stroke.clear && (!stroke.eraser || stroke.selection.is_none()) {
+                return Err("Invalid clear stroke".into());
+            }
             if let Some(selection) = &stroke.selection {
                 selection.validate()?;
             }
@@ -777,6 +794,8 @@ impl Document {
             return Err("Session stroke limit reached. Undo a stroke to continue.".into());
         }
         self.active = Some(Stroke {
+            eraser: false,
+            clear: false,
             brush,
             points: vec![point],
             pressures: vec![pressure],
@@ -784,6 +803,24 @@ impl Document {
         });
         Ok(true)
     }
+    pub fn begin_eraser(
+        &mut self,
+        point: Point,
+        brush: Brush,
+        pressure: f32,
+    ) -> Result<bool, String> {
+        if self.layer_alpha_locked {
+            return Err("透明ピクセル保護を解除してください。\nDisable alpha lock to erase.\n请关闭透明像素锁定。".into());
+        }
+        let started = self.begin_with_pressure(point, brush, pressure)?;
+        if started {
+            if let Some(stroke) = &mut self.active {
+                stroke.eraser = true;
+            }
+        }
+        Ok(started)
+    }
+
     pub fn extend(&mut self, point: Point) -> Result<(), String> {
         self.extend_with_pressure(point, 1.0)
     }
@@ -832,7 +869,11 @@ impl Document {
             }
             Some(HistoryKind::Vector) => {
                 if let Some(previous) = self.vector_undo.pop() {
-                    self.vector_redo.push(self.vector_history_state());
+                    let mut current = self.vector_history_state();
+                    if previous.strokes.is_some() {
+                        current.strokes = Some(self.strokes.clone());
+                    }
+                    self.vector_redo.push(current);
                     self.restore_vector_history(previous);
                     self.redo_order.push(HistoryKind::Vector);
                     self.revision += 1;
@@ -854,7 +895,11 @@ impl Document {
             }
             Some(HistoryKind::Vector) => {
                 if let Some(next) = self.vector_redo.pop() {
-                    self.vector_undo.push(self.vector_history_state());
+                    let mut current = self.vector_history_state();
+                    if next.strokes.is_some() {
+                        current.strokes = Some(self.strokes.clone());
+                    }
+                    self.vector_undo.push(current);
                     self.restore_vector_history(next);
                     self.undo_order.push(HistoryKind::Vector);
                     self.revision += 1;
@@ -918,6 +963,192 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    pub fn cut_paint_selection(&mut self) -> Result<(), String> {
+        if self.selected_layer.as_deref().unwrap_or("layer-1") != "layer-1"
+            || self.layer_locked
+            || self.layer_alpha_locked
+            || !self.visible
+        {
+            return Err("Unlock and show the paint layer first / ピクセルレイヤーのロックを解除してください / 请先解锁并显示像素图层".into());
+        }
+        let selection = self
+            .selection
+            .clone()
+            .ok_or("Select a pixel area first / 範囲を選択してください / 请先选择区域")?;
+        self.finish();
+        if self.point_count >= MAX_POINTS {
+            return Err("Session stroke limit reached".into());
+        }
+        self.active = Some(Stroke {
+            eraser: true,
+            clear: true,
+            brush: Brush::default(),
+            points: vec![Point { x: 0., y: 0. }],
+            pressures: vec![1.],
+            selection: Some(selection),
+        });
+        self.finish();
+        Ok(())
+    }
+
+    pub fn replace_selected_image(&mut self, source: String) -> Result<(), String> {
+        let id = self
+            .selected_layer
+            .as_ref()
+            .ok_or("Select an image layer")?;
+        let index = self
+            .svg_layers
+            .iter()
+            .position(|layer| &layer.id == id)
+            .ok_or("Image layer not found")?;
+        let mut layer = self.svg_layers[index].clone();
+        if layer.locked || layer.alpha_locked || !layer.visible || layer.vector_layer {
+            return Err("Select an unlocked image layer / ロックされていない画像レイヤーを選択してください / 请选择未锁定的图像图层".into());
+        }
+        layer.source = source;
+        validate_svg_layer(&layer)?;
+        let total = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, l)| l.source.len())
+            .sum::<usize>()
+            + layer.source.len();
+        if total > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much image data".into());
+        }
+        let before = self.vector_history_state();
+        self.svg_layers[index] = layer;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn paste_content(
+        &mut self,
+        source: Option<String>,
+        mut objects: Vec<VectorObject>,
+    ) -> Result<(), String> {
+        self.finish();
+        if self.svg_layers.len() >= MAX_SVG_LAYERS
+            || objects.len() > 4096
+            || (source.is_some() == !objects.is_empty())
+        {
+            return Err("Invalid clipboard content or layer limit reached".into());
+        }
+        let mut serial = 1;
+        while self
+            .svg_layers
+            .iter()
+            .any(|layer| layer.id == format!("pasted-layer-{serial}"))
+        {
+            serial += 1;
+        }
+        let id = format!("pasted-layer-{serial}");
+        for (index, object) in objects.iter_mut().enumerate() {
+            let mut suffix = index;
+            while self.svg_layers.iter().any(|layer| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .any(|object| object.id == format!("pasted-{serial}-{suffix}"))
+            }) {
+                suffix += 4096;
+            }
+            object.id = format!("pasted-{serial}-{suffix}");
+            object.validate()?;
+        }
+        let vector = source.is_none();
+        let source = source.unwrap_or_else(|| vector_svg(self.width, self.height, &objects));
+        let layer = SvgLayer {
+            id: id.clone(),
+            name: format!("Pasted {serial}"),
+            visible: true,
+            opacity: 1.,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+            source,
+            paint_layer: !vector,
+            vector_layer: vector,
+            vector_objects: objects,
+        };
+        validate_svg_layer(&layer)?;
+        if self
+            .svg_layers
+            .iter()
+            .map(|layer| layer.source.len())
+            .sum::<usize>()
+            + layer.source.len()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much clipboard data".into());
+        }
+        let before = self.vector_history_state();
+        self.selected_vector_objects = layer
+            .vector_objects
+            .iter()
+            .map(|object| object.id.clone())
+            .collect();
+        self.svg_layers.push(layer);
+        self.selected_layer = Some(id);
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn clear_selected_layer(&mut self) -> Result<(), String> {
+        let id = self
+            .selected_layer
+            .as_deref()
+            .unwrap_or("layer-1")
+            .to_owned();
+        let locked = if id == "layer-1" {
+            self.layer_locked
+        } else {
+            self.svg_layers
+                .iter()
+                .find(|layer| layer.id == id)
+                .ok_or("Layer not found")?
+                .locked
+        };
+        if locked {
+            return Err(
+                "レイヤーのロックを解除してください。\nUnlock the layer first.\n请先解锁图层。"
+                    .into(),
+            );
+        }
+        self.finish();
+        let mut before = self.vector_history_state();
+        if id == "layer-1" {
+            if self.strokes.is_empty() {
+                return Ok(());
+            }
+            before.strokes = Some(std::mem::take(&mut self.strokes));
+            self.point_count = 0;
+        } else {
+            let layer = self
+                .svg_layers
+                .iter_mut()
+                .find(|layer| layer.id == id)
+                .unwrap();
+            let empty = vector_svg(self.width, self.height, &[]);
+            if layer.source == empty && layer.vector_objects.is_empty() {
+                return Ok(());
+            }
+            self.selected_vector_objects
+                .retain(|id| !layer.vector_objects.iter().any(|object| &object.id == id));
+            layer.vector_objects.clear();
+            layer.source = empty;
+        }
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn delete_layer(&mut self, id: &str) -> Result<(), String> {
         self.finish();
         if id == "layer-1" {
@@ -1361,6 +1592,62 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    pub fn set_selected_stroke_width(&mut self, width: f32, color: [u8; 3]) -> Result<(), String> {
+        if !width.is_finite() || !(0.0..=4096.0).contains(&width) {
+            return Err("Invalid stroke width".into());
+        }
+        let mut layers = self.svg_layers.clone();
+        let mut changed = false;
+        let mut found = false;
+        for layer in &mut layers {
+            let mut layer_changed = false;
+            for object in &mut layer.vector_objects {
+                if !self.selected_vector_objects.contains(&object.id) {
+                    continue;
+                }
+                if !layer.visible
+                    || layer.locked
+                    || !object.visible
+                    || object.kind == VectorObjectKind::Text
+                {
+                    return Err("Select unlocked visible vector paths / ロックされていない表示中のパスを選択してください / 请选择未锁定的可见路径".into());
+                }
+                found = true;
+                if object.stroke_width == width && (object.stroke.is_some() || width == 0.0) {
+                    continue;
+                }
+                object.stroke_width = width;
+                if width > 0.0 && object.stroke.is_none() {
+                    object.stroke = Some(VectorPaint {
+                        color: [color[0], color[1], color[2], 255],
+                    });
+                }
+                object.validate()?;
+                layer_changed = true;
+            }
+            if layer_changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+                changed = true;
+            }
+        }
+        if !found {
+            return Err(
+                "Select a vector path / ベクターパスを選択してください / 请选择矢量路径".into(),
+            );
+        }
+        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        if changed {
+            let before = self.vector_history_state();
+            self.svg_layers = layers;
+            self.record_vector_edit(before);
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
     pub fn select_vector_objects(&mut self, ids: Vec<String>) -> Result<(), String> {
         if ids.len() > 4096 {
             return Err("Too many selected vector objects".into());
@@ -1855,6 +2142,101 @@ impl Document {
                     .map(|(index, _)| (object.id.clone(), index))
             })
     }
+    pub fn delete_vector_anchors(&mut self, controls: &[(String, usize)]) -> Result<(), String> {
+        let mut layers = self.svg_layers.clone();
+        let mut changed = false;
+        for layer in &mut layers {
+            let mut layer_changed = false;
+            for object in &mut layer.vector_objects {
+                let mut indices: Vec<_> = controls
+                    .iter()
+                    .filter(|(id, index)| id == &object.id && index % 3 == 0)
+                    .map(|(_, index)| *index)
+                    .collect();
+                if indices.is_empty() {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !object.visible {
+                    return Err("Vector path is hidden or locked".into());
+                }
+                let mut edited = crate::bezier::editable(object)
+                    .ok_or("Path does not support direct selection")?;
+                indices.sort_unstable();
+                indices.dedup();
+                for index in indices.into_iter().rev() {
+                    crate::bezier::remove(&mut edited, index)?;
+                }
+                *object = edited;
+                layer_changed = true;
+            }
+            if layer_changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+                changed = true;
+            }
+        }
+        if changed {
+            let before = self.vector_history_state();
+            self.svg_layers = layers;
+            self.record_vector_edit(before);
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
+    pub fn move_vector_controls(
+        &mut self,
+        controls: &[(String, usize)],
+        delta: [f32; 2],
+        break_smooth: bool,
+    ) -> Result<(), String> {
+        if controls.is_empty() || delta == [0., 0.] {
+            return Ok(());
+        }
+        if delta.iter().any(|n| !n.is_finite()) {
+            return Err("Invalid control movement".into());
+        }
+        let mut layers = self.svg_layers.clone();
+        let mut found = 0;
+        for layer in &mut layers {
+            let mut changed = false;
+            for object in &mut layer.vector_objects {
+                let indices: Vec<_> = controls
+                    .iter()
+                    .filter(|(id, _)| id == &object.id)
+                    .map(|(_, index)| *index)
+                    .collect();
+                if indices.is_empty() {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !layer.vector_layer || !object.visible {
+                    return Err("Vector path is hidden or locked".into());
+                }
+                let mut edited = crate::bezier::editable(object)
+                    .ok_or("Path does not support direct selection")?;
+                crate::bezier::translate_controls(&mut edited, &indices, delta, break_smooth)?;
+                *object = edited;
+                found += indices.len();
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if found != controls.len() {
+            return Err("Control point not found".into());
+        }
+        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn move_vector_control(
         &mut self,
         id: &str,
@@ -1898,7 +2280,28 @@ impl Document {
             .control_points
             .get_mut(index)
             .ok_or("Control point not found")?;
+        let previous = *control;
         *control = local;
+        if object.kind == VectorObjectKind::Bezier && index % 3 == 0 {
+            let delta = [local[0] - previous[0], local[1] - previous[1]];
+            let last = object.control_points.len() - 1;
+            let closed = object.path.data.trim_end().ends_with('Z');
+            let mut neighbors = vec![];
+            if index > 0 {
+                neighbors.push(index - 1);
+            }
+            if index < last {
+                neighbors.push(index + 1);
+            }
+            if closed && (index == 0 || index == last) {
+                object.control_points[if index == 0 { last } else { 0 }] = local;
+                neighbors.push(if index == 0 { last - 1 } else { 1 });
+            }
+            for neighbor in neighbors {
+                object.control_points[neighbor][0] += delta[0];
+                object.control_points[neighbor][1] += delta[1];
+            }
+        }
         rebuild_vector_path(object)?;
         object.validate()?;
         let layer = &mut self.svg_layers[layer_index];
@@ -1910,11 +2313,18 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            selected_layer: self.selected_layer.clone(),
             layers: self.svg_layers.clone(),
             selection: self.selected_vector_objects.clone(),
+            strokes: None,
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        if let Some(strokes) = state.strokes {
+            self.point_count = strokes.iter().map(|stroke| stroke.points.len()).sum();
+            self.strokes = strokes;
+        }
+        self.selected_layer = state.selected_layer;
         self.svg_layers = state.layers;
         self.selected_vector_objects = state.selection;
     }
@@ -2378,6 +2788,46 @@ mod tests {
         doc.extend(Point { x: 100.0, y: 140.0 }).unwrap();
         doc.finish();
     }
+    #[test]
+    fn clear_layer_preserves_identity_and_interleaved_history() {
+        let mut doc = Document::default();
+        doc.begin(Point { x: 20.0, y: 20.0 }, Brush::default())
+            .unwrap();
+        doc.finish();
+        let before = doc.encode().unwrap();
+        doc.clear_selected_layer().unwrap();
+        assert_eq!(doc.snapshot().stroke_count, 0);
+        assert_eq!(doc.snapshot().layer_id, "layer-1");
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.undo();
+        assert_eq!(doc.snapshot().stroke_count, 0);
+        doc.redo();
+        doc.redo();
+        assert_eq!(doc.snapshot().stroke_count, 0);
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.layer_locked = true;
+        assert!(doc.clear_selected_layer().is_err());
+        assert_eq!(doc.snapshot().stroke_count, 1);
+
+        let id = doc.add_paint_layer().unwrap();
+        doc.select_layer(id.clone()).unwrap();
+        doc.svg_layers[0].source =
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"10\" height=\"10\"/></svg>"
+                .into();
+        let original = doc.svg_layers[0].clone();
+        doc.clear_selected_layer().unwrap();
+        assert_eq!(doc.svg_layers.len(), 1);
+        assert_eq!(doc.snapshot().layer_id, id);
+        assert!(!doc.svg_layers[0].source.contains("<rect"));
+        assert_eq!(doc.snapshot().stroke_count, 1);
+        doc.undo();
+        assert_eq!(doc.svg_layers[0].source, original.source);
+        doc.redo();
+        assert!(!doc.svg_layers[0].source.contains("<rect"));
+    }
+
     #[test]
     fn undo_redo_restores_stroke_data_without_image_copies() {
         let mut doc = Document::default();
@@ -2903,6 +3353,10 @@ fn rebuild_vector_path(object: &mut VectorObject) -> Result<(), String> {
         VectorObjectKind::Compound => {
             return Err("Compound paths cannot be rebuilt from control points".into())
         }
+        VectorObjectKind::Bezier => crate::bezier::path_data(
+            &object.control_points,
+            object.path.data.trim_end().ends_with('Z'),
+        )?,
         VectorObjectKind::Path => {
             let Some(first) = object.control_points.first() else {
                 return Err("Path has no control points".into());
@@ -4027,5 +4481,121 @@ mod text_tests {
             settings().text.content
         );
         assert!(!doc.snapshot().text_objects[0].editable);
+    }
+}
+
+#[cfg(test)]
+mod stroke_width_tests {
+    use super::*;
+    #[test]
+    fn selected_stroke_width_is_atomic_undoable_and_keeps_geometry() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        let object = VectorObject {
+            id: "path-a".into(),
+            name: "Path".into(),
+            text: None,
+            path: VectorPath {
+                data: "M 0 0 L 100 100".into(),
+                fill_rule: crate::vector::FillRule::NonZero,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            fill: None,
+            stroke: Some(VectorPaint {
+                color: [10, 20, 30, 255],
+            }),
+            stroke_width: 1.,
+            visible: true,
+            kind: VectorObjectKind::Path,
+            control_points: vec![[0., 0.], [100., 100.]],
+        };
+        document
+            .upsert_vector_object(&layer, object.clone())
+            .unwrap();
+        let mut second = object.clone();
+        second.id = "path-b".into();
+        second.stroke_width = 3.;
+        document.upsert_vector_object(&layer, second).unwrap();
+        document
+            .select_vector_objects(vec!["path-a".into(), "path-b".into()])
+            .unwrap();
+        document
+            .set_selected_stroke_width(12., [255, 0, 0])
+            .unwrap();
+        assert!(document.svg_layers[0]
+            .vector_objects
+            .iter()
+            .all(|object| object.stroke_width == 12.));
+        assert_eq!(document.svg_layers[0].vector_objects[0].path, object.path);
+        assert_eq!(
+            document.svg_layers[0].vector_objects[0].stroke,
+            object.stroke
+        );
+        assert!(document.svg_layers[0]
+            .source
+            .contains("stroke-width=\"12\""));
+        document.undo();
+        assert_eq!(document.svg_layers[0].vector_objects[0].stroke_width, 1.);
+        assert_eq!(document.svg_layers[0].vector_objects[1].stroke_width, 3.);
+        document.redo();
+        assert_eq!(document.snapshot().layers[1].objects[0].stroke_width, 12.);
+        let revision = document.revision;
+        document.svg_layers[0].locked = true;
+        assert!(document.set_selected_stroke_width(5., [0, 0, 0]).is_err());
+        assert_eq!(document.revision, revision);
+        assert!(document.svg_layers[0]
+            .vector_objects
+            .iter()
+            .all(|object| object.stroke_width == 12.));
+        document.svg_layers[0].locked = false;
+        assert!(document
+            .set_selected_stroke_width(f32::NAN, [0, 0, 0])
+            .is_err());
+        document.set_selected_stroke_width(0., [0, 0, 0]).unwrap();
+        assert_eq!(document.svg_layers[0].vector_objects[0].stroke_width, 0.);
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    #[test]
+    fn paste_uses_one_history_entry_and_restores_selection_and_layer() {
+        let mut document = Document::default();
+        document.select_layer("layer-1".into()).unwrap();
+        document.paste_content(Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>".into()),vec![]).unwrap();
+        let id = document.snapshot().layer_id;
+        assert_ne!(id, "layer-1");
+        assert_eq!(document.svg_layers.len(), 1);
+        document.undo();
+        assert_eq!(document.svg_layers.len(), 0);
+        assert_eq!(document.snapshot().layer_id, "layer-1");
+        document.redo();
+        assert_eq!(document.svg_layers.len(), 1);
+        assert_eq!(document.snapshot().layer_id, id);
+        let restored = Document::decode(&document.encode().unwrap()).unwrap();
+        assert_eq!(restored.svg_layers[0].source, document.svg_layers[0].source);
+    }
+    #[test]
+    fn cut_retains_selection_and_is_undoable_and_persisted() {
+        let mut document = Document::default();
+        document
+            .begin(Point { x: 20., y: 20. }, Brush::default())
+            .unwrap();
+        document.finish();
+        document.select_all();
+        document.cut_paint_selection().unwrap();
+        assert_eq!(document.strokes.len(), 2);
+        assert!(document.strokes[1].clear);
+        document.undo();
+        assert_eq!(document.strokes.len(), 1);
+        document.redo();
+        assert_eq!(document.strokes.len(), 2);
+        assert_eq!(document.point_count, 2);
+        let restored = Document::decode(&document.encode().unwrap()).unwrap();
+        assert!(restored.strokes[1].clear);
+        document.layer_locked = true;
+        assert!(document.cut_paint_selection().is_err());
+        assert_eq!(document.strokes.len(), 2);
     }
 }

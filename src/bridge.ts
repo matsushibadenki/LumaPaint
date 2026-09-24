@@ -2,8 +2,8 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export type CanvasTool = 'brush' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorPen' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'zoomIn' | 'zoomOut' | 'hand';
-export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects';
+export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'zoomIn' | 'zoomOut' | 'hand';
+export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface Brush { size: number; hardness: number; color: [number, number, number] }
 export interface DocumentSnapshot {
@@ -18,7 +18,7 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerObjectSnapshot { id: string; name: string; kind: 'path' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface LayerObjectSnapshot { strokeWidth: number; id: string; name: string; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot { objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
@@ -62,7 +62,7 @@ export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot>
 export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
 export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
 export interface VectorPaint { color: [number, number, number, number] }
-export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
+export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean; format: 'legacy' | 'tiled' }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
@@ -221,6 +221,13 @@ export function syncCanvas(request: CanvasRequest): Promise<CanvasInfo | null> {
   return result;
 }
 
+export function finishCanvasPath(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  const result = canvasQueue.then(() => invoke<void>('finish_canvas_path'));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export function resetCanvasPan(): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   const result = canvasQueue.then(() => invoke<void>('reset_canvas_pan'));
@@ -288,6 +295,12 @@ export async function subscribeCanvasText(onEdit: () => void) {
 
 export function selectLayer(id: string): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_layer', { id }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function setVectorStrokeWidth(width: number, color: Brush['color']): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_stroke_width', { width, color }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

@@ -1,5 +1,6 @@
 export const menuMessages = {
   ja: {
+    clearLayer: 'すべてを消す',
     bar: 'アプリケーションメニュー', names: ['ファイル', '編集', 'イメージ', 'レイヤー', '書式', '選択範囲', 'フィルター', '表示', 'プラグイン', 'ウインドウ', 'ヘルプ'],
     new: '新規', closeDocument: 'ドキュメントを閉じる', importSvg: '選択レイヤーに画像を追加…', export: '書き出し…', cut: 'カット', copy: 'コピー', paste: 'ペースト', colorSettings: 'カラー設定…',
     colorMode: 'カラーモード', bitDepth: '階調', imageSize: '画像解像度…', canvasSize: 'カンバスサイズ…', rotate: '画像の回転…',
@@ -11,6 +12,7 @@ export const menuMessages = {
     unavailable: '準備中', guide: '基本操作', drawHint: '描画：キャンバスをドラッグ', saveHint: '保存：ファイル → 保存', recoveryHint: '異常終了後：起動時の復旧案内から復旧',
   },
   en: {
+    clearLayer: 'Clear All',
     bar: 'Application menu', names: ['File', 'Edit', 'Image', 'Layer', 'Type', 'Select', 'Filter', 'View', 'Plugins', 'Window', 'Help'],
     new: 'New', closeDocument: 'Close Document', importSvg: 'Add Image to Selected Layer…', export: 'Export…', cut: 'Cut', copy: 'Copy', paste: 'Paste', colorSettings: 'Color settings…',
     colorMode: 'Color mode', bitDepth: 'Bit depth', imageSize: 'Image size…', canvasSize: 'Canvas size…', rotate: 'Rotate image…',
@@ -22,6 +24,7 @@ export const menuMessages = {
     unavailable: 'Coming later', guide: 'Quick guide', drawHint: 'Draw: drag on the canvas', saveHint: 'Save: File → Save', recoveryHint: 'After a crash: use the recovery prompt at startup',
   },
   'zh-CN': {
+    clearLayer: '全部清除',
     bar: '应用菜单', names: ['文件', '编辑', '图像', '图层', '文字', '选择', '滤镜', '视图', '插件', '窗口', '帮助'],
     new: '新建', closeDocument: '关闭文档', importSvg: '向所选图层添加图像…', export: '导出…', cut: '剪切', copy: '复制', paste: '粘贴', colorSettings: '颜色设置…',
     colorMode: '颜色模式', bitDepth: '位深度', imageSize: '图像大小…', canvasSize: '画布大小…', rotate: '旋转图像…',

@@ -982,3 +982,33 @@ mod tests {
         }
     }
 }
+
+/// Encode premultiplied document pixels for clipboard transfer.
+pub fn clipboard_png(width: u32, height: u32, pixels: Vec<u8>) -> Result<Vec<u8>, String> {
+    if u64::from(width) * u64::from(height) > 16_777_216 {
+        return Err("Clipboard image is too large (16 megapixels maximum)".into());
+    }
+    let size = tiny_skia::IntSize::from_wh(width, height).ok_or("Invalid image size")?;
+    tiny_skia::Pixmap::from_vec(pixels, size)
+        .ok_or("Invalid image pixels")?
+        .encode_png()
+        .map_err(|e| e.to_string())
+}
+
+pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+    if bytes.len() < 24 || bytes.len() > 8 * 1024 * 1024 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("Unsupported clipboard image".into());
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || u64::from(width) * u64::from(height) > 16_777_216
+    {
+        return Err("Clipboard image is too large".into());
+    }
+    let image = tiny_skia::Pixmap::decode_png(bytes).map_err(|e| e.to_string())?;
+    Ok((image.width(), image.height()))
+}
