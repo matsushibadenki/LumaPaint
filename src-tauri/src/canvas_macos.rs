@@ -12,15 +12,19 @@ use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
 use lumapaint_core::vector::{
     FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
 };
+use lumapaint_renderer::frame_cache::FrameRasterCache;
 use lumapaint_renderer::{
-    paint_stroke_into_tiles_at_scale, prepare_svg_layer, project_committed_paint_layer_at_scale,
+    paint_stroke_into_tiles_at_scale, project_committed_paint_layer_at_scale,
     stroke_candidate_tile_coords_at_scale, update_projected_paint_appearance, validate_svg, wgpu,
     PreparedSvgLayer, Renderer, ValidatedTileUploads, Viewport,
 };
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
 };
-use objc2_app_kit::{NSCursor, NSEvent, NSEventModifierFlags, NSEventSubtype, NSView};
+use objc2_app_kit::{
+    NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
+    NSEventModifierFlags, NSEventSubtype, NSView,
+};
 use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -132,6 +136,7 @@ pub fn initialize(app: tauri::AppHandle) {
     if std::thread::Builder::new()
         .name("svg-raster".into())
         .spawn(move || {
+            let mut frame_cache = FrameRasterCache::default();
             while let Ok(mut job) = receiver.recv() {
                 // At most one request waits while a raster is running. Keep the newest.
                 while let Ok(newer) = receiver.try_recv() {
@@ -139,12 +144,21 @@ pub fn initialize(app: tauri::AppHandle) {
                 }
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
+                let before_rasterized = frame_cache.rasterized_frames;
+                let before_reused = frame_cache.reused_frames;
                 let result: Result<Vec<PreparedSvgLayer>, String> = job
                     .layers
                     .iter()
-                    .map(|layer| prepare_svg_layer(layer, job.size.0, job.size.1))
+                    .map(|layer| frame_cache.prepare_layer(layer, job.size.0, job.size.1))
                     .collect();
                 let cpu_time = started.elapsed();
+                if render_metrics_enabled() {
+                    eprintln!(
+                        "LumaPaint text-frame cache rasterized={} reused={}",
+                        frame_cache.rasterized_frames - before_rasterized,
+                        frame_cache.reused_frames - before_reused
+                    );
+                }
                 let _ = app.run_on_main_thread(move || {
                     finish_raster_job(job.key, result, queued_for, cpu_time)
                 });
@@ -293,6 +307,50 @@ define_class!(
                 }
             };
             if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
+            if matches!(TOOL.with(|tool| tool.get()), CanvasTool::VectorSelect | CanvasTool::TextFrame) {
+                let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
+                let selected = DOCUMENT.with(|document| {
+                    let document = document.borrow();
+                    let ids = document.selected_vector_ids();
+                    if ids.len() != 1 { return None; }
+                    let object = document.snapshot().text_objects.into_iter()
+                        .find(|object| object.id == ids[0] && object.editable)?;
+                    object.text.box_height?;
+                    Some(TextSettings { id: Some(object.id), text: object.text,
+                        position: object.position, color: object.color })
+                });
+                if let (Some(viewport), Some(settings)) = (viewport, selected) {
+                    let width = viewport.width as f32 / viewport.scale;
+                    let height = viewport.height as f32 / viewport.scale;
+                    let fit = ((width - 48.0) / viewport.document_width)
+                        .min((height - 48.0) / viewport.document_height).max(0.01) * viewport.zoom;
+                    for xi in 0..3 {
+                        for yi in 0..3 {
+                            if xi == 1 && yi == 1 { continue; }
+                            let local = [settings.text.box_width * xi as f32 * 0.5,
+                                settings.text.box_height.unwrap_or(0.0) * yi as f32 * 0.5];
+                            let [x, y] = text_frame_point(&settings, local);
+                            let screen_x = width * 0.5 + viewport.pan_x + (x - viewport.document_width * 0.5) * fit;
+                            let screen_y = height * 0.5 + viewport.pan_y + (y - viewport.document_height * 0.5) * fit;
+                            let position = match (xi, yi) {
+                                (0, 0) => NSCursorFrameResizePosition::TopLeft,
+                                (1, 0) => NSCursorFrameResizePosition::Top,
+                                (2, 0) => NSCursorFrameResizePosition::TopRight,
+                                (0, 1) => NSCursorFrameResizePosition::Left,
+                                (2, 1) => NSCursorFrameResizePosition::Right,
+                                (0, 2) => NSCursorFrameResizePosition::BottomLeft,
+                                (1, 2) => NSCursorFrameResizePosition::Bottom,
+                                _ => NSCursorFrameResizePosition::BottomRight,
+                            };
+                            let cursor = NSCursor::frameResizeCursorFromPosition_inDirections(
+                                position, NSCursorFrameResizeDirections::All);
+                            self.addCursorRect_cursor(NSRect::new(
+                                NSPoint::new(f64::from(screen_x - 8.0), f64::from(screen_y - 8.0)),
+                                NSSize::new(16.0, 16.0)), &cursor);
+                        }
+                    }
+                }
+            }
         }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
@@ -493,6 +551,9 @@ impl PaintView {
                 && point.y >= 0.0
                 && point.x < viewport.document_width
                 && point.y < viewport.document_height
+                && DOCUMENT.with(|doc| {
+                    selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
+                })
                 && DOCUMENT.with(|doc| doc.borrow().text_at([point.x, point.y]).is_some())
             {
                 if let Err(error) = text_editor::begin_at([point.x, point.y], false) {
@@ -501,7 +562,11 @@ impl PaintView {
                 return;
             }
             if tool == CanvasTool::Text
-                || (tool == CanvasTool::VectorSelect && event.clickCount() == 2)
+                || (tool == CanvasTool::VectorSelect
+                    && event.clickCount() == 2
+                    && DOCUMENT.with(|doc| {
+                        selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
+                    }))
             {
                 if point.x >= 0.0
                     && point.y >= 0.0
@@ -521,13 +586,33 @@ impl PaintView {
             return;
         }
         if TOOL.with(|tool| tool.get()) == CanvasTool::TextFrame {
-            let result = text_frame_pointer(point, phase).and_then(|_| redraw());
+            let resizing = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().is_some())
+                || (phase == 0
+                    && DOCUMENT.with(|doc| {
+                        selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_some()
+                    }));
+            let result = if resizing {
+                DOCUMENT.with(|doc| {
+                    vector_select_pointer(
+                        &mut doc.borrow_mut(),
+                        point,
+                        phase,
+                        event.modifierFlags(),
+                    )
+                })
+            } else {
+                text_frame_pointer(point, phase)
+            }
+            .and_then(|_| redraw());
             if let Err(error) = result {
                 TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take());
                 emit_error(error);
             }
             if phase == 2 {
                 emit_document();
+            }
+            if phase == 0 || phase == 2 {
+                self.refresh_cursor();
             }
             return;
         }
@@ -598,6 +683,9 @@ impl PaintView {
         if phase == 2 {
             emit_document();
         }
+        if phase == 0 || phase == 2 {
+            self.refresh_cursor();
+        }
     }
 
     fn begin_pan(&self, event: &NSEvent) {
@@ -640,6 +728,14 @@ struct PenDraft {
     // Anchor and symmetric outgoing handle; incoming is its reflection.
     nodes: Vec<([f32; 2], [f32; 2])>,
     brush: Brush,
+}
+
+#[derive(Clone)]
+struct TextResizeDraft {
+    original: TextSettings,
+    handle: (i8, i8),
+    start: [f32; 2],
+    current: [f32; 2],
 }
 
 impl PenDraft {
@@ -1423,6 +1519,18 @@ fn vector_select_pointer(
 ) -> Result<(), String> {
     if phase == 0 {
         cancel_vector_drag();
+        if let Some((settings, handle)) = selected_text_resize_handle(document, [point.x, point.y])
+        {
+            TEXT_RESIZE_DRAFT.with(|draft| {
+                *draft.borrow_mut() = Some(TextResizeDraft {
+                    original: settings,
+                    handle,
+                    start: [point.x, point.y],
+                    current: [point.x, point.y],
+                });
+            });
+            return Ok(());
+        }
         let hit =
             document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
         VECTOR_DRAFT.with(|draft| {
@@ -1433,6 +1541,14 @@ fn vector_select_pointer(
             }
         });
     } else if phase == 1 {
+        if TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().is_some()) {
+            TEXT_RESIZE_DRAFT.with(|draft| {
+                if let Some(draft) = draft.borrow_mut().as_mut() {
+                    draft.current = [point.x, point.y];
+                }
+            });
+            return Ok(());
+        }
         if VECTOR_CONTROL.with(|control| control.borrow().is_none()) {
             let start = VECTOR_DRAFT.with(|draft| draft.borrow().first().copied());
             if let Some(start) = start {
@@ -1440,6 +1556,21 @@ fn vector_select_pointer(
             }
         }
     } else if phase == 2 {
+        if let Some(mut draft) = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take()) {
+            draft.current = [point.x, point.y];
+            let mut settings = resized_text_settings(&draft);
+            if settings.position != draft.original.position
+                || settings.text.box_width != draft.original.text.box_width
+                || settings.text.box_height != draft.original.text.box_height
+            {
+                if settings.text.box_width != draft.original.text.box_width {
+                    text_editor::reflow(&mut settings)?;
+                }
+                document.set_text_object(settings)?;
+                hold_vector_commit_frame(document);
+            }
+            return Ok(());
+        }
         VECTOR_MOVE.with(|offset| offset.set([0.0, 0.0]));
         if let Some((id, index)) = VECTOR_CONTROL.with(|control| control.borrow_mut().take()) {
             VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
@@ -1447,10 +1578,186 @@ fn vector_select_pointer(
         }
         let start = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
         if let Some(start) = start.first() {
-            document.move_selected_vectors(point.x - start.x, point.y - start.y)?;
+            let offset = [point.x - start.x, point.y - start.y];
+            if offset != [0.0, 0.0] {
+                // Present the release position with the existing drag textures before
+                // committing. The worker can then prepare the new SVG without a blank frame.
+                CANVAS.with(|slot| -> Result<(), String> {
+                    let mut slot = slot.borrow_mut();
+                    if let Some(canvas) = slot.as_mut() {
+                        let overlay = selected_text_frame_overlay(document).map(|mut overlay| {
+                            for corner in &mut overlay.corners {
+                                corner[0] += offset[0];
+                                corner[1] += offset[1];
+                            }
+                            overlay
+                        });
+                        canvas.renderer.set_frame_overlay(overlay);
+                        canvas
+                            .renderer
+                            .render_vector_drag(canvas.viewport, document, offset)?;
+                    }
+                    Ok(())
+                })?;
+                if document.move_selected_vectors(offset[0], offset[1])? {
+                    hold_vector_commit_frame(document);
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn hold_vector_commit_frame(document: &Document) {
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            canvas.pending_vector_commit = Some(RasterKey {
+                document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                revision: document.revision(),
+                canvas_token: canvas.token,
+            });
+        }
+    });
+}
+
+fn waiting_for_vector_commit(
+    pending: &mut Option<RasterKey>,
+    current: RasterKey,
+    missing_svg: bool,
+) -> bool {
+    if *pending == Some(current) && missing_svg {
+        return true;
+    }
+    *pending = None;
+    false
+}
+
+fn text_frame_point(settings: &TextSettings, local: [f32; 2]) -> [f32; 2] {
+    let angle = settings.text.rotation.to_radians();
+    let x = local[0] * settings.text.scale_x;
+    let y = local[1] * settings.text.scale_y;
+    [
+        settings.position[0] + x * angle.cos() - y * angle.sin(),
+        settings.position[1] + x * angle.sin() + y * angle.cos(),
+    ]
+}
+
+fn selected_text_resize_handle(
+    document: &Document,
+    point: [f32; 2],
+) -> Option<(TextSettings, (i8, i8))> {
+    let selected = document.selected_vector_ids();
+    if selected.len() != 1 {
+        return None;
+    }
+    let snapshot = document.snapshot();
+    let object = snapshot
+        .text_objects
+        .into_iter()
+        .find(|object| object.id == selected[0] && object.editable)?;
+    let height = object.text.box_height?;
+    let settings = TextSettings {
+        id: Some(object.id),
+        text: object.text,
+        position: object.position,
+        color: object.color,
+    };
+    let tolerance = CANVAS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|canvas| {
+                let viewport = canvas.viewport;
+                let width = viewport.width as f32 / viewport.scale;
+                let height = viewport.height as f32 / viewport.scale;
+                let fit = ((width - 48.0) / viewport.document_width)
+                    .min((height - 48.0) / viewport.document_height)
+                    .max(0.01)
+                    * viewport.zoom;
+                8.0 / fit
+            })
+            .unwrap_or(6.0)
+    });
+    let mut nearest = None;
+    for (xi, x) in [
+        (0, 0.0),
+        (1, settings.text.box_width * 0.5),
+        (2, settings.text.box_width),
+    ] {
+        for (yi, y) in [(0, 0.0), (1, height * 0.5), (2, height)] {
+            if xi == 1 && yi == 1 {
+                continue;
+            }
+            let target = text_frame_point(&settings, [x, y]);
+            let distance = (point[0] - target[0]).hypot(point[1] - target[1]);
+            if distance <= tolerance && nearest.is_none_or(|(best, _)| distance < best) {
+                nearest = Some((distance, (xi as i8 - 1, yi as i8 - 1)));
+            }
+        }
+    }
+    for (from, to, handle) in [
+        ([0.0, 0.0], [settings.text.box_width, 0.0], (0, -1)),
+        ([0.0, height], [settings.text.box_width, height], (0, 1)),
+        ([0.0, 0.0], [0.0, height], (-1, 0)),
+        (
+            [settings.text.box_width, 0.0],
+            [settings.text.box_width, height],
+            (1, 0),
+        ),
+    ] {
+        let a = text_frame_point(&settings, from);
+        let b = text_frame_point(&settings, to);
+        let vx = b[0] - a[0];
+        let vy = b[1] - a[1];
+        let t = (((point[0] - a[0]) * vx + (point[1] - a[1]) * vy) / (vx * vx + vy * vy))
+            .clamp(0.0, 1.0);
+        let distance = (point[0] - a[0] - t * vx).hypot(point[1] - a[1] - t * vy);
+        if distance <= tolerance && nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, handle));
+        }
+    }
+    nearest.map(|(_, handle)| (settings, handle))
+}
+
+fn resized_text_settings(draft: &TextResizeDraft) -> TextSettings {
+    let mut settings = draft.original.clone();
+    let text = &settings.text;
+    let angle = text.rotation.to_radians();
+    let dx = draft.current[0] - draft.start[0];
+    let dy = draft.current[1] - draft.start[1];
+    let local_dx = (dx * angle.cos() + dy * angle.sin()) / text.scale_x;
+    let local_dy = (-dx * angle.sin() + dy * angle.cos()) / text.scale_y;
+    let old_width = text.box_width;
+    let old_height = text.box_height.unwrap_or(16.0);
+    let min_width = 16.0_f32
+        .max(text.indent_left + text.indent_right + 0.001)
+        .min(old_width);
+    let left = if draft.handle.0 < 0 {
+        local_dx.clamp(old_width - 8192.0, old_width - min_width)
+    } else {
+        0.0
+    };
+    let top = if draft.handle.1 < 0 {
+        local_dy.clamp(old_height - 8192.0, old_height - 16.0)
+    } else {
+        0.0
+    };
+    let right = if draft.handle.0 > 0 {
+        (old_width + local_dx).clamp(left + min_width, left + 8192.0)
+    } else {
+        old_width
+    };
+    let bottom = if draft.handle.1 > 0 {
+        (old_height + local_dy).clamp(top + 16.0, top + 8192.0)
+    } else {
+        old_height
+    };
+    settings.position = text_frame_point(&draft.original, [left, top]);
+    settings.text.box_width = right - left;
+    settings.text.box_height = Some(bottom - top);
+    if settings.text.box_width != draft.original.text.box_width {
+        settings.text.clear_measured_layout();
+    }
+    settings
 }
 
 fn text_frame_geometry(start: [f32; 2], end: [f32; 2]) -> ([f32; 2], f32, f32) {
@@ -1525,39 +1832,66 @@ fn text_frame_pointer(point: lumapaint_core::document::Point, phase: u8) -> Resu
     })
 }
 
-fn text_frame_preview(
-    document: &Document,
-    start: [f32; 2],
-    end: [f32; 2],
-    zoom: f32,
-) -> Result<Document, String> {
-    let mut preview = document.clone();
-    let layer = match preview.selected_vector_target()? {
-        Some(id) => id,
-        None => preview.add_vector_layer()?,
-    };
-    let (position, width, height) = text_frame_geometry(start, end);
-    let [x, y] = position;
-    let object = VectorObject {
-        id: "text-frame-guide".into(),
-        name: "Text frame guide".into(),
-        path: VectorPath {
-            data: format!("M {x} {y} h {width} v {height} h {} Z", -width),
-            fill_rule: FillRule::NonZero,
-        },
-        transform: [1., 0., 0., 1., 0., 0.],
-        fill: None,
-        stroke: Some(VectorPaint {
-            color: [60, 160, 255, 255],
-        }),
-        stroke_width: 1.0 / zoom,
-        visible: true,
-        kind: VectorObjectKind::Rectangle,
-        control_points: vec![[x, y], [x + width, y + height]],
-        text: None,
-    };
-    preview.upsert_vector_object(&layer, object)?;
-    Ok(preview)
+fn text_frame_overlay(
+    settings: &TextSettings,
+    handles: bool,
+) -> Option<lumapaint_renderer::FrameOverlay> {
+    let height = settings.text.box_height?;
+    let width = settings.text.box_width;
+    Some(lumapaint_renderer::FrameOverlay {
+        corners: [
+            text_frame_point(settings, [0.0, 0.0]),
+            text_frame_point(settings, [width, 0.0]),
+            text_frame_point(settings, [width, height]),
+            text_frame_point(settings, [0.0, height]),
+        ],
+        handles,
+    })
+}
+
+fn draft_frame_overlay(start: [f32; 2], end: [f32; 2]) -> lumapaint_renderer::FrameOverlay {
+    let ([x, y], width, height) = text_frame_geometry(start, end);
+    lumapaint_renderer::FrameOverlay {
+        corners: [
+            [x, y],
+            [x + width, y],
+            [x + width, y + height],
+            [x, y + height],
+        ],
+        handles: false,
+    }
+}
+
+fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer::FrameOverlay> {
+    let id = document.selected_vector_ids().first()?;
+    let object = document
+        .svg_layers()
+        .filter(|layer| layer.visible && !layer.locked && layer.vector_layer)
+        .flat_map(|layer| &layer.vector_objects)
+        .find(|object| &object.id == id && object.visible)?;
+    let text = object.text.as_ref()?;
+    let height = text.box_height?;
+    let angle = text.rotation.to_radians();
+    let corners = [
+        [0.0, 0.0],
+        [text.box_width, 0.0],
+        [text.box_width, height],
+        [0.0, height],
+    ]
+    .map(|[x, y]| {
+        let (x, y) = (x * text.scale_x, y * text.scale_y);
+        lumapaint_core::bezier::world_point(
+            object,
+            [
+                x * angle.cos() - y * angle.sin(),
+                x * angle.sin() + y * angle.cos(),
+            ],
+        )
+    });
+    Some(lumapaint_renderer::FrameOverlay {
+        corners,
+        handles: true,
+    })
 }
 
 fn cancel_vector_drag() -> bool {
@@ -1568,7 +1902,8 @@ fn cancel_vector_drag() -> bool {
     let anchor = ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
-    moving || pen || anchor || direct || text_frame
+    let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
+    moving || pen || anchor || direct || text_frame || text_resize
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -1935,8 +2270,21 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if canvas.view.isHidden() {
         return Ok(());
     }
+    canvas.renderer.set_frame_overlay(None);
     if text_editor::active() || VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
         return text_editor::render(canvas);
+    }
+    if let Some(draft) = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().clone()) {
+        let mut settings = resized_text_settings(&draft);
+        if settings.text.box_width != draft.original.text.box_width {
+            text_editor::reflow(&mut settings)?;
+        }
+        let mut preview = DOCUMENT.with(|document| document.borrow().clone());
+        preview.set_text_object(settings.clone())?;
+        canvas
+            .renderer
+            .set_frame_overlay(text_frame_overlay(&settings, true));
+        return canvas.renderer.render(canvas.viewport, &preview);
     }
     if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect
         && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none())
@@ -1956,38 +2304,17 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some((start, end)) = TEXT_FRAME_DRAFT.with(|draft| *draft.borrow()) {
-        let preview = DOCUMENT.with(|document| {
-            text_frame_preview(&document.borrow(), start, end, canvas.viewport.zoom)
-        })?;
-        return canvas.renderer.render(canvas.viewport, &preview);
+        canvas
+            .renderer
+            .set_frame_overlay(Some(draft_frame_overlay(start, end)));
     }
     if matches!(
         TOOL.with(|tool| tool.get()),
         CanvasTool::VectorSelect | CanvasTool::TextFrame
-    ) {
-        let selected = DOCUMENT.with(|document| {
-            let document = document.borrow();
-            let id = document.selected_vector_ids().first()?;
-            let snapshot = document.snapshot();
-            let object = snapshot
-                .text_objects
-                .iter()
-                .find(|object| &object.id == id)?;
-            let height = object.text.box_height?;
-            Some((
-                object.position,
-                [
-                    object.position[0] + object.text.box_width,
-                    object.position[1] + height,
-                ],
-            ))
-        });
-        if let Some((start, end)) = selected {
-            let preview = DOCUMENT.with(|document| {
-                text_frame_preview(&document.borrow(), start, end, canvas.viewport.zoom)
-            })?;
-            return canvas.renderer.render(canvas.viewport, &preview);
-        }
+    ) && TEXT_FRAME_DRAFT.with(|draft| draft.borrow().is_none())
+    {
+        let overlay = DOCUMENT.with(|document| selected_text_frame_overlay(&document.borrow()));
+        canvas.renderer.set_frame_overlay(overlay);
     }
     let tiled = ACTIVE_TILED_DOCUMENT.with(|document| {
         document.borrow().as_ref().map(|document| {
@@ -2023,6 +2350,20 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         refresh_tile_preview(canvas, &document);
         if RASTER_SENDER.get().is_some() {
             schedule_raster_job(canvas, &document)?;
+            let current = RasterKey {
+                document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                revision: document.revision(),
+                canvas_token: canvas.token,
+            };
+            if waiting_for_vector_commit(
+                &mut canvas.pending_vector_commit,
+                current,
+                !canvas.renderer.svg_layers_ready(&document),
+            ) {
+                // Leave the complete release-position frame on the surface. Do not
+                // present a frame with the changed layer omitted by render_deferred.
+                return Ok(());
+            }
             canvas.renderer.render_deferred(canvas.viewport, &document)
         } else {
             canvas.renderer.render(canvas.viewport, &document)
@@ -2035,7 +2376,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
         canvas.renderer.set_tiled_preview_visible(false);
         return;
     };
-    if document.has_active_stroke() || document.committed_paint_strokes().next().is_none() {
+    if document.committed_paint_strokes().next().is_none() {
         canvas.renderer.set_tiled_preview_visible(false);
         return;
     }
@@ -2049,6 +2390,12 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
     };
     if canvas.tile_ready == Some(key) {
         canvas.renderer.set_tiled_preview_visible(true);
+        return;
+    }
+    // An active stroke does not change the committed revision. Reuse its matching
+    // tile preview, but never install a stale one while the pointer is down.
+    if document.has_active_stroke() {
+        canvas.renderer.set_tiled_preview_visible(false);
         return;
     }
     let state = document.paint_projection_state();
@@ -2424,6 +2771,7 @@ struct Canvas {
     token: u64,
     raster_job: Option<RasterKey>,
     raster_failure: Option<RasterKey>,
+    pending_vector_commit: Option<RasterKey>,
     tile_job: Option<TileKey>,
     tile_ready: Option<TileKey>,
     tile_failure: Option<TileKey>,
@@ -2459,6 +2807,7 @@ thread_local! {
     static PEN_DRAFT: RefCell<Option<PenDraft>> = const { RefCell::new(None) };
     static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
     static TEXT_FRAME_DRAFT: RefCell<Option<([f32; 2], [f32; 2])>> = const { RefCell::new(None) };
+    static TEXT_RESIZE_DRAFT: RefCell<Option<TextResizeDraft>> = const { RefCell::new(None) };
     static VECTOR_CONTROL: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
@@ -2805,6 +3154,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         token: NEXT_CANVAS_TOKEN.fetch_add(1, Ordering::Relaxed),
                         raster_job: None,
                         raster_failure: None,
+                        pending_vector_commit: None,
                         tile_job: None,
                         tile_ready: None,
                         tile_failure: None,
@@ -2880,6 +3230,132 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vector_release_holds_last_frame_until_ready_and_rejects_stale_documents() {
+        let key = RasterKey {
+            document_id: 7,
+            revision: 12,
+            canvas_token: 3,
+        };
+        let mut pending = Some(key);
+        assert!(waiting_for_vector_commit(&mut pending, key, true));
+        assert!(pending == Some(key));
+        assert!(!waiting_for_vector_commit(&mut pending, key, false));
+        assert!(pending.is_none());
+        for changed in [
+            RasterKey {
+                document_id: 8,
+                ..key
+            },
+            RasterKey {
+                revision: 13,
+                ..key
+            },
+            RasterKey {
+                canvas_token: 4,
+                ..key
+            },
+        ] {
+            let mut pending = Some(key);
+            assert!(!waiting_for_vector_commit(&mut pending, changed, true));
+            assert!(pending.is_none());
+        }
+        assert!(!waiting_for_vector_commit(&mut None, key, true));
+    }
+
+    #[test]
+    fn text_frame_handles_resize_edges_and_corners_without_moving_opposite_edges() {
+        let original = TextSettings {
+            id: Some("text-1".into()),
+            text: lumapaint_core::vector::VectorText {
+                box_width: 200.0,
+                box_height: Some(100.0),
+                ..Default::default()
+            },
+            position: [50.0, 40.0],
+            color: [0, 0, 0],
+        };
+        let draft = TextResizeDraft {
+            original: original.clone(),
+            handle: (-1, -1),
+            start: [50.0, 40.0],
+            current: [70.0, 55.0],
+        };
+        let resized = resized_text_settings(&draft);
+        assert_eq!(resized.position, [70.0, 55.0]);
+        assert_eq!(resized.text.box_width, 180.0);
+        assert_eq!(resized.text.box_height, Some(85.0));
+        assert_eq!(text_frame_point(&resized, [180.0, 85.0]), [250.0, 140.0]);
+        let right = resized_text_settings(&TextResizeDraft {
+            handle: (1, 0),
+            current: [90.0, 40.0],
+            ..draft.clone()
+        });
+        assert_eq!(right.position, original.position);
+        assert_eq!(right.text.box_width, 240.0);
+        assert_eq!(right.text.box_height, Some(100.0));
+        let unchanged = resized_text_settings(&TextResizeDraft {
+            current: draft.start,
+            ..draft
+        });
+        assert_eq!(unchanged.position, original.position);
+        assert_eq!(unchanged.text.box_width, original.text.box_width);
+    }
+
+    #[test]
+    fn selected_text_frame_overlay_preserves_text_raster_source() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        document.select_layer(layer).unwrap();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: lumapaint_core::vector::VectorText {
+                    content: "Text".into(),
+                    box_width: 200.0,
+                    box_height: Some(100.0),
+                    ..Default::default()
+                },
+                position: [50.0, 40.0],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let snapshot = document.snapshot();
+        let revision = document.revision();
+        let settings = TextSettings {
+            id: Some(snapshot.text_objects[0].id.clone()),
+            text: snapshot.text_objects[0].text.clone(),
+            position: snapshot.text_objects[0].position,
+            color: snapshot.text_objects[0].color,
+        };
+        let source = document.svg_layers().next().unwrap().source.clone();
+        let overlay = text_frame_overlay(&settings, true).unwrap();
+        assert_eq!(
+            selected_text_resize_handle(&document, [100.0, 40.0]).map(|(_, handle)| handle),
+            Some((0, -1))
+        );
+        assert_eq!(
+            selected_text_resize_handle(&document, [50.0, 40.0]).map(|(_, handle)| handle),
+            Some((-1, -1))
+        );
+        assert_eq!(document.revision(), revision);
+        assert_eq!(document.snapshot().text_objects.len(), 1);
+        assert!(overlay.handles);
+        assert_eq!(
+            overlay.corners,
+            [[50.0, 40.0], [250.0, 40.0], [250.0, 140.0], [50.0, 140.0]]
+        );
+        assert_eq!(document.svg_layers().next().unwrap().source, source);
+        assert_eq!(
+            selected_text_frame_overlay(&document).unwrap().corners,
+            overlay.corners
+        );
+        document.select_vector_objects(Vec::new()).unwrap();
+        assert!(selected_text_frame_overlay(&document).is_none());
+        assert_eq!(document.svg_layers().next().unwrap().source, source);
+        assert_eq!(document.revision(), revision);
+    }
+
+    #[test]
     fn text_frame_drag_handles_reverse_direction_and_keeps_preview_out_of_history() {
         assert_eq!(
             text_frame_geometry([220., 180.], [40., 60.]),
@@ -2893,15 +3369,16 @@ mod tests {
         let layer = document.add_vector_layer().unwrap();
         document.select_layer(layer).unwrap();
         let revision = document.revision();
-        let preview = text_frame_preview(&document, [220., 180.], [40., 60.], 2.).unwrap();
+        let overlay = draft_frame_overlay([220., 180.], [40., 60.]);
         assert_eq!(document.revision(), revision);
         assert!(document
             .svg_layers()
             .all(|layer| layer.vector_objects.is_empty()));
         assert_eq!(
-            preview.svg_layers().next().unwrap().vector_objects[0].stroke_width,
-            0.5
+            overlay.corners,
+            [[40., 60.], [220., 60.], [220., 180.], [40., 180.]]
         );
+        assert!(!overlay.handles);
     }
 
     #[test]

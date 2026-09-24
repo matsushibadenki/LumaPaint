@@ -176,6 +176,33 @@ impl SvgLayer {
     pub fn effective_opacity(&self) -> f32 {
         self.opacity * mask_factor(self.mask_enabled, self.mask_inverted, self.mask_density)
     }
+
+    /// Independent text frames can be rasterized once per object while retaining
+    /// their order. Imported or mixed SVG keeps the full-layer compatibility path.
+    pub fn text_frame_sources(&self, width: u32, height: u32) -> Option<Vec<(String, String)>> {
+        if !self.vector_layer
+            || self.vector_objects.len() < 2
+            || self
+                .vector_objects
+                .iter()
+                .any(|object| object.text.is_none())
+            || self.source != vector_svg(width, height, &self.vector_objects)
+        {
+            return None;
+        }
+        Some(
+            self.vector_objects
+                .iter()
+                .filter(|object| object.visible)
+                .map(|object| {
+                    (
+                        object.id.clone(),
+                        vector_svg(width, height, std::slice::from_ref(object)),
+                    )
+                })
+                .collect(),
+        )
+    }
 }
 
 const fn default_layer_opacity() -> f32 {
@@ -3114,7 +3141,9 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             let color = object.fill.map_or([0, 0, 0], |paint| {
                 [paint.color[0], paint.color[1], paint.color[2]]
             });
-            let mut y = text.font_size + text.space_before;
+            // Character-level font changes must also move the first baseline.
+            // The box's base font size may still be its original default.
+            let mut y = text.style_at(0, color).font_size + text.space_before;
             for (index, (start, line, hard_break_before)) in
                 text.visual_lines().into_iter().enumerate()
             {
@@ -4188,6 +4217,23 @@ mod text_tests {
             edit.text.line_baselines = baselines;
             assert!(edit.text.validate().is_err());
         }
+    }
+    #[test]
+    fn first_line_uses_character_font_size_when_base_size_differs() {
+        let mut edit = settings();
+        edit.text.content = "Hello".into();
+        edit.text.font_size = 48.0;
+        edit.text.line_height = 15.0 / 48.0;
+        let mut style = edit.text.base_style(edit.color);
+        style.font_size = 15.0;
+        edit.text.runs = vec![crate::vector::TextRun {
+            start: 0,
+            end: 5,
+            style,
+        }];
+        let mut doc = Document::default();
+        doc.set_text_object(edit).unwrap();
+        assert!(doc.svg_layers[0].source.contains("y=\"15\""));
     }
     #[test]
     fn measured_line_widths_drive_svg_without_stretching_glyphs() {

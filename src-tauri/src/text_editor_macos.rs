@@ -66,7 +66,20 @@ define_class!(
     }
 );
 
+// The inline NSTextView is a native subview, so WebView/CSS clipping cannot
+// keep long text inside the document. Clip it in the same AppKit hierarchy.
+define_class!(
+    #[unsafe(super(NSView))]
+    #[ivars = ()]
+    struct PageClip;
+    impl PageClip {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool { true }
+    }
+);
+
 struct Session {
+    page_clip: Retained<PageClip>,
     view: Retained<InlineEditor>,
     settings: TextSettings,
     preview: Document,
@@ -97,18 +110,10 @@ pub fn active() -> bool {
 pub fn render(canvas: &mut Canvas) -> Result<(), String> {
     SESSION.with(|slot| {
         if let Some(session) = slot.borrow().as_ref() {
-            if let Some(height) = session.settings.text.box_height {
-                let start = session.settings.position;
-                let end = [
-                    start[0] + session.settings.text.box_width,
-                    start[1] + height,
-                ];
-                let preview =
-                    super::text_frame_preview(&session.preview, start, end, canvas.viewport.zoom)?;
-                canvas.renderer.render(canvas.viewport, &preview)
-            } else {
-                canvas.renderer.render(canvas.viewport, &session.preview)
-            }
+            canvas
+                .renderer
+                .set_frame_overlay(super::text_frame_overlay(&session.settings, false));
+            canvas.renderer.render(canvas.viewport, &session.preview)
         } else {
             DOCUMENT.with(|doc| {
                 canvas.renderer.render_vector_drag(
@@ -206,7 +211,8 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
                 manager.lineFragmentRectForGlyphAtIndex_effectiveRange(0, std::ptr::null_mut())
             };
             let natural_baseline = line.origin.y + manager.locationForGlyphAtIndex(0).y + origin.y;
-            y_correction = f64::from(text.font_size + text.space_before) - natural_baseline;
+            y_correction =
+                f64::from(text.style_at(0, color).font_size + text.space_before) - natural_baseline;
             let candidate = [
                 (rect.origin.x + origin.x) as f32,
                 (rect.origin.y + origin.y + y_correction) as f32,
@@ -632,6 +638,11 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
         undo: NSUndoManager::new(mtm),
     });
     let view: Retained<InlineEditor> = unsafe { msg_send![super(allocated), initWithFrame: frame] };
+    let clip_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+    let allocated = PageClip::alloc(mtm).set_ivars(());
+    let page_clip: Retained<PageClip> =
+        unsafe { msg_send![super(allocated), initWithFrame: clip_frame] };
+    page_clip.setClipsToBounds(true);
     view.setRichText(true);
     view.setImportsGraphics(false);
     if let Some(manager) = unsafe { view.layoutManager() } {
@@ -651,11 +662,13 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     CANVAS.with(|slot| -> Result<(), String> {
         let slot = slot.borrow();
         let canvas = slot.as_ref().ok_or("Canvas is not ready")?;
-        canvas.view.addSubview(&view);
+        canvas.view.addSubview(&page_clip);
+        page_clip.addSubview(&view);
         Ok(())
     })?;
     SESSION.with(|slot| {
         *slot.borrow_mut() = Some(Session {
+            page_clip,
             view: view.clone(),
             settings,
             preview,
@@ -759,7 +772,7 @@ pub fn finish(commit: bool) -> Result<(), String> {
         let Some(session) = slot.as_ref() else {
             return Ok(None);
         };
-        let mut settings = current(session);
+        let mut settings = cached_current(session).unwrap_or_else(|| current(session));
         let base = settings.text.base_style(settings.color);
         settings.text.runs.retain(|run| run.style != base);
         if commit
@@ -777,7 +790,19 @@ pub fn finish(commit: bool) -> Result<(), String> {
             window.makeFirstResponder(canvas.as_deref().map(|view| &***view));
         }
         session.view.ivars().undo.removeAllActions();
-        session.view.removeFromSuperview();
+        // Keep the native glyphs visible until the committed GPU image is ready.
+        // A deferred first frame would otherwise show the text-edit preview,
+        // which intentionally excludes this object.
+        let rendered = CANVAS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(canvas) = slot.as_mut() else {
+                return Ok(());
+            };
+            canvas.renderer.set_frame_overlay(None);
+            DOCUMENT.with(|document| canvas.renderer.render(canvas.viewport, &document.borrow()))
+        });
+        session.page_clip.removeFromSuperview();
+        rendered?;
     }
     publish();
     redraw()?;
@@ -804,15 +829,20 @@ pub fn layout() -> Result<(), String> {
             .min((height - 48.0) / viewport.document_height)
             .max(0.01)
             * viewport.zoom;
-        let x = width * 0.5
-            + viewport.pan_x
-            + (session.settings.position[0] - viewport.document_width * 0.5) * fit;
-        let y = height * 0.5
-            + viewport.pan_y
-            + (session.settings.position[1] - viewport.document_height * 0.5) * fit;
-        let logical_height = text
-            .box_height
-            .unwrap_or_else(|| ((height - y) / (fit * text.scale_y)).max(text.font_size * 2.0));
+        let page_x = width * 0.5 + viewport.pan_x - viewport.document_width * fit * 0.5;
+        let page_y = height * 0.5 + viewport.pan_y - viewport.document_height * fit * 0.5;
+        session.page_clip.setFrame(NSRect::new(
+            NSPoint::new(page_x.into(), page_y.into()),
+            NSSize::new(
+                (viewport.document_width * fit).into(),
+                (viewport.document_height * fit).into(),
+            ),
+        ));
+        let x = session.settings.position[0] * fit;
+        let y = session.settings.position[1] * fit;
+        let logical_height = text.box_height.unwrap_or_else(|| {
+            ((height - page_y - y) / (fit * text.scale_y)).max(text.font_size * 2.0)
+        });
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),
@@ -835,7 +865,9 @@ pub fn layout() -> Result<(), String> {
                     let natural = fragment.origin.y
                         + manager.locationForGlyphAtIndex(0).y
                         + view.textContainerOrigin().y;
-                    let expected = f64::from(text.font_size + text.space_before);
+                    let expected = f64::from(
+                        text.style_at(0, session.settings.color).font_size + text.space_before,
+                    );
                     let correction = (natural - expected) * f64::from(fit * text.scale_y);
                     let angle = f64::from(text.rotation).to_radians();
                     view.setFrameOrigin(NSPoint::new(

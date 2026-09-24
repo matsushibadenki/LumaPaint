@@ -9,6 +9,9 @@ use lumapaint_core::tiles::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
+pub mod frame_cache;
+mod frame_overlay;
+pub use frame_overlay::FrameOverlay;
 mod paint_cache;
 pub use wgpu;
 use wgpu::util::DeviceExt;
@@ -277,6 +280,25 @@ fn linear_color(color: [u8; 3]) -> [f32; 4] {
 fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
     let points = smooth_points(&stroke.points, &stroke.pressures);
     dabs_along_path(&points, stroke.brush, opacity)
+}
+
+/// A matching tile preview already contains every committed stroke. Keep the
+/// live stroke separate so the GPU only samples the points under the pointer.
+fn strokes_for_frame(document: &Document, tiled_preview_visible: bool) -> Vec<&Stroke> {
+    if tiled_preview_visible {
+        if document.has_active_stroke() {
+            document
+                .visible_strokes()
+                .last()
+                .filter(|stroke| !stroke.eraser && !stroke.clear)
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        document.visible_strokes().collect()
+    }
 }
 
 /// Use the same curve and arc-length sampler as the current GPU brush for a
@@ -1118,6 +1140,8 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     selection_pipeline: wgpu::RenderPipeline,
+    frame_overlay_pipeline: wgpu::RenderPipeline,
+    frame_overlay: Option<FrameOverlay>,
     selection_layout: wgpu::BindGroupLayout,
     brush_pipeline: wgpu::RenderPipeline,
     brush_composite_pipeline: wgpu::RenderPipeline,
@@ -1131,6 +1155,7 @@ pub struct Renderer {
     tile_preview: Option<TileGpuPreview>,
     paint_cache: Option<paint_cache::PaintCache>,
     paint_cache_installed: bool,
+    brush_cache: Vec<CachedBrushGpu>,
     svg_cache: HashMap<String, CachedSvg>,
     drag_cache: HashMap<String, DragLayerCache>,
     uniform_layout: wgpu::BindGroupLayout,
@@ -1139,6 +1164,13 @@ pub struct Renderer {
     device_error: Arc<Mutex<Option<String>>>,
     pub adapter_name: String,
     pub backend: String,
+}
+
+struct CachedBrushGpu {
+    source: Stroke,
+    opacity: f32,
+    buffer: wgpu::Buffer,
+    instances: u32,
 }
 
 struct TileGpuPreview {
@@ -1508,6 +1540,18 @@ impl Renderer {
     }
 
     /// Layers that still need CPU preparation for the committed document frame.
+    pub fn svg_layers_ready(&self, document: &Document) -> bool {
+        let size = document.dimensions();
+        document.visible_svg_layers().all(|layer| {
+            self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                cached.source == layer.source
+                    && cached.opacity == layer.effective_opacity()
+                    && cached.size == size
+            })
+        })
+    }
+
+    /// Clone only the layers that need to be sent to the CPU worker.
     pub fn missing_svg_layers(&self, document: &Document) -> Vec<SvgLayer> {
         let size = document.dimensions();
         document
@@ -1715,6 +1759,7 @@ impl Renderer {
             bind_group_layouts: &[&bind_layout],
             push_constant_ranges: &[],
         });
+        let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, format);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GPU preview pattern"),
             source: wgpu::ShaderSource::Wgsl(include_str!("preview.wgsl").into()),
@@ -1801,6 +1846,8 @@ impl Renderer {
             config,
             pipeline,
             selection_pipeline,
+            frame_overlay_pipeline,
+            frame_overlay: None,
             selection_layout,
             brush_pipeline,
             brush_composite_pipeline,
@@ -1814,6 +1861,7 @@ impl Renderer {
             tile_preview: None,
             paint_cache: None,
             paint_cache_installed: false,
+            brush_cache: Vec::new(),
             svg_cache: HashMap::new(),
             drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
@@ -1847,8 +1895,42 @@ impl Renderer {
         }
     }
 
+    fn cache_committed_brushes(&mut self, document: &Document) {
+        let opacity = document.paint_layer_opacity();
+        let committed: Vec<_> = document.committed_paint_strokes().collect();
+        let unchanged = self
+            .brush_cache
+            .iter()
+            .zip(&committed)
+            .take_while(|(cached, stroke)| {
+                cached.opacity.to_bits() == opacity.to_bits() && &cached.source == **stroke
+            })
+            .count();
+        self.brush_cache.truncate(unchanged);
+        for stroke in committed.into_iter().skip(unchanged) {
+            let samples = segments(stroke, opacity);
+            let buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Cached brush dabs"),
+                    contents: bytemuck::cast_slice(&samples),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            self.brush_cache.push(CachedBrushGpu {
+                source: stroke.clone(),
+                opacity,
+                buffer,
+                instances: samples.len() as u32,
+            });
+        }
+    }
+
     pub fn render(&mut self, viewport: Viewport, document: &Document) -> Result<(), String> {
         self.render_vector_drag(viewport, document, [0.0, 0.0])
+    }
+
+    pub fn set_frame_overlay(&mut self, overlay: Option<FrameOverlay>) {
+        self.frame_overlay = overlay;
     }
 
     /// Draw a committed frame without blocking the UI on missing SVG layers.
@@ -1966,8 +2048,13 @@ impl Renderer {
                 selection_bind_group(&self.device, &self.selection_layout, Some(selection))
             })
             .collect::<Vec<_>>();
-        let stroke_selections: Vec<_> = document
-            .visible_strokes()
+        let tiled_preview_visible = self
+            .tile_preview
+            .as_ref()
+            .is_some_and(|preview| preview.visible);
+        let brush_strokes = strokes_for_frame(document, tiled_preview_visible);
+        let stroke_selections: Vec<_> = brush_strokes
+            .iter()
             .map(|stroke| {
                 selection_bind_group(
                     &self.device,
@@ -1979,18 +2066,9 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let view = frame.texture.create_view(&Default::default());
-        let stroke_segments: Vec<_> = if self
-            .tile_preview
-            .as_ref()
-            .is_some_and(|preview| preview.visible)
-        {
-            Vec::new()
-        } else {
-            document
-                .visible_strokes()
-                .map(|stroke| segments(stroke, document.paint_layer_opacity()))
-                .collect()
-        };
+        let frame_overlay = self
+            .frame_overlay
+            .map(|overlay| frame_overlay::buffer(&self.device, overlay, viewport));
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
@@ -2092,17 +2170,41 @@ impl Renderer {
                 }],
             }))
         };
-        let brush_buffers: Vec<_> = stroke_segments
+        let active_visible = document.has_active_stroke() && !brush_strokes.is_empty();
+        if tiled_preview_visible {
+            self.brush_cache.clear();
+        }
+        let committed_count = if tiled_preview_visible {
+            0
+        } else {
+            brush_strokes.len() - usize::from(active_visible)
+        };
+        if committed_count > 0 {
+            self.cache_committed_brushes(document);
+        }
+        let active_samples = active_visible.then(|| {
+            segments(
+                brush_strokes[brush_strokes.len() - 1],
+                document.paint_layer_opacity(),
+            )
+        });
+        let active_buffer = active_samples.as_ref().map(|samples| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Live brush dabs"),
+                    contents: bytemuck::cast_slice(samples),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
+        let mut brush_buffers: Vec<(&wgpu::Buffer, u32)> = self
+            .brush_cache
             .iter()
-            .map(|segments| {
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Brush dabs"),
-                        contents: bytemuck::cast_slice(segments),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
-            })
+            .take(committed_count)
+            .map(|cached| (&cached.buffer, cached.instances))
             .collect();
+        if let (Some(buffer), Some(samples)) = (&active_buffer, &active_samples) {
+            brush_buffers.push((buffer, samples.len() as u32));
+        }
         let brush_mask = (!brush_buffers.is_empty()).then(|| {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Brush paint mask"),
@@ -2180,10 +2282,8 @@ impl Renderer {
             pass.draw(0..6, 0..1);
         }
         if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
-            for ((buffer, segments), selection_group) in brush_buffers
-                .iter()
-                .zip(stroke_segments.iter())
-                .zip(&stroke_selections)
+            for ((buffer, instances), selection_group) in
+                brush_buffers.iter().zip(&stroke_selections)
             {
                 let mut mask_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Brush paint pass"),
@@ -2202,7 +2302,7 @@ impl Renderer {
                 mask_pass.set_bind_group(0, &self.bind_group, &[]);
                 mask_pass.set_bind_group(1, selection_group, &[]);
                 mask_pass.set_vertex_buffer(0, buffer.slice(..));
-                mask_pass.draw(0..6, 0..segments.len() as u32);
+                mask_pass.draw(0..6, 0..*instances);
                 drop(mask_pass);
 
                 let mut composite_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2277,6 +2377,12 @@ impl Renderer {
                 pass.set_bind_group(1, selection_group, &[]);
                 pass.draw(0..3, 0..1);
             }
+            if let Some((buffer, count)) = &frame_overlay {
+                pass.set_pipeline(&self.frame_overlay_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -2299,6 +2405,25 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumapaint_core::document::Brush;
+
+    #[test]
+    fn tiled_preview_renders_only_live_paint_and_keeps_eraser_in_tile() {
+        let mut document = Document::default();
+        let point = Point { x: 20.0, y: 20.0 };
+        document.begin(point, Brush::default()).unwrap();
+        document.finish();
+        assert_eq!(strokes_for_frame(&document, false).len(), 1);
+        assert!(strokes_for_frame(&document, true).is_empty());
+
+        document.begin(point, Brush::default()).unwrap();
+        assert_eq!(strokes_for_frame(&document, false).len(), 2);
+        assert_eq!(strokes_for_frame(&document, true).len(), 1);
+        document.finish();
+
+        document.begin_eraser(point, Brush::default(), 1.0).unwrap();
+        assert!(strokes_for_frame(&document, true).is_empty());
+    }
 
     #[test]
     fn tile_upload_validation_rejects_partial_bad_batches_before_gpu_writes() {

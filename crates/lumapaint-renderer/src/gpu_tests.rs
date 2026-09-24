@@ -1313,3 +1313,79 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
     );
     assert_eq!(alpha(&clipped, 37, 94), 255);
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_text_frame_overlay_pipeline_is_valid() {
+    let gpu = Gpu::new();
+    gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&gpu.uniform_layout],
+            push_constant_ranges: &[],
+        });
+    let pipeline =
+        frame_overlay::pipeline(&gpu.device, &layout, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let viewport = Viewport {
+        width: W,
+        height: H,
+        scale: 1.0,
+        zoom: 1.0,
+        dark: false,
+        pan_x: 0.0,
+        pan_y: 0.0,
+        document_width: 960.0,
+        document_height: 640.0,
+        canvas_color: CanvasColor::White,
+    };
+    let (buffer, count) = frame_overlay::buffer(
+        &gpu.device,
+        FrameOverlay {
+            corners: [[10., 10.], [400., 10.], [400., 200.], [10., 200.]],
+            handles: true,
+        },
+        viewport,
+    );
+    let view = output.create_view(&Default::default());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &gpu.uniforms, &[]);
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        pass.draw(0..count, 0..1);
+    }
+    gpu.queue.submit(Some(encoder.finish()));
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert!(pollster::block_on(gpu.device.pop_error_scope()).is_none());
+}

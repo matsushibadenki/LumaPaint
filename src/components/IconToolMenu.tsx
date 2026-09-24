@@ -16,6 +16,9 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const busy = useRef(false);
+  const press = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const pressTimer = useRef<number | null>(null);
+  const suppressClick = useRef(false);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const close = (focus = false) => { setOpen(false); if (focus) trigger.current?.focus(); };
@@ -40,6 +43,14 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
     } catch (cause) { setOpen(false); onError(String(cause)); }
     finally { busy.current = false; }
   };
+
+  const cancelPress = () => {
+    if (pressTimer.current !== null) window.clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+    press.current = null;
+  };
+
+  useEffect(() => cancelPress, []);
 
   useLayoutEffect(() => {
     if (!open || native || !enabled) return;
@@ -91,12 +102,33 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
     <button ref={trigger} type="button" className={`tool-button selection-tool-trigger${active ? ' selected' : ''}`}
       aria-label={`${label} · ${choice.label}`} title={`${label} · ${choice.label}`}
       aria-pressed={active} aria-haspopup="menu" aria-expanded={open} aria-controls={!native && open ? id : undefined} disabled={!enabled}
+      onPointerDown={event => {
+        suppressClick.current = false;
+        if (event.button !== 0 || open || (event.target as Element).closest('.tool-menu-corner')) return;
+        cancelPress();
+        const pointerId = event.pointerId;
+        press.current = { pointerId, x: event.clientX, y: event.clientY };
+        pressTimer.current = window.setTimeout(() => {
+          pressTimer.current = null;
+          if (press.current?.pointerId !== pointerId) return;
+          suppressClick.current = true;
+          void show();
+        }, 450);
+      }}
+      onPointerMove={event => {
+        const start = press.current;
+        if (start?.pointerId === event.pointerId && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) cancelPress();
+      }}
+      onPointerUp={event => { if (press.current?.pointerId === event.pointerId) cancelPress(); }}
+      onPointerCancel={cancelPress} onPointerLeave={cancelPress}
       onClick={event => {
+        if (suppressClick.current) { suppressClick.current = false; event.preventDefault(); return; }
         if ((event.target as Element).closest('.tool-menu-corner')) { void show(); return; }
         close();
         if (choice.enabled !== false) onSelect(choice.id);
       }} onContextMenu={event => { event.preventDefault(); if (!open) void show(); }}
       onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') suppressClick.current = false;
         if (event.key === 'ArrowDown' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); if (!open) void show(); }
         if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(true); }
       }}><Icon name={choice.icon} /><span className="tool-menu-corner" aria-hidden="true" /></button>
