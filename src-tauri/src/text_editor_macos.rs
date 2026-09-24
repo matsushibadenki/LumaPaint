@@ -97,7 +97,18 @@ pub fn active() -> bool {
 pub fn render(canvas: &mut Canvas) -> Result<(), String> {
     SESSION.with(|slot| {
         if let Some(session) = slot.borrow().as_ref() {
-            canvas.renderer.render(canvas.viewport, &session.preview)
+            if let Some(height) = session.settings.text.box_height {
+                let start = session.settings.position;
+                let end = [
+                    start[0] + session.settings.text.box_width,
+                    start[1] + height,
+                ];
+                let preview =
+                    super::text_frame_preview(&session.preview, start, end, canvas.viewport.zoom)?;
+                canvas.renderer.render(canvas.viewport, &preview)
+            } else {
+                canvas.renderer.render(canvas.viewport, &session.preview)
+            }
         } else {
             DOCUMENT.with(|doc| {
                 canvas.renderer.render_vector_drag(
@@ -751,7 +762,9 @@ pub fn finish(commit: bool) -> Result<(), String> {
         let mut settings = current(session);
         let base = settings.text.base_style(settings.color);
         settings.text.runs.retain(|run| run.style != base);
-        if commit && !settings.text.content.trim().is_empty() {
+        if commit
+            && (!settings.text.content.trim().is_empty() || settings.text.box_height.is_some())
+        {
             DOCUMENT.with(|doc| doc.borrow_mut().set_text_object(settings))?;
         }
         Ok(slot.take())
@@ -797,7 +810,9 @@ pub fn layout() -> Result<(), String> {
         let y = height * 0.5
             + viewport.pan_y
             + (session.settings.position[1] - viewport.document_height * 0.5) * fit;
-        let logical_height = ((height - y) / (fit * text.scale_y)).max(text.font_size * 2.0);
+        let logical_height = text
+            .box_height
+            .unwrap_or_else(|| ((height - y) / (fit * text.scale_y)).max(text.font_size * 2.0));
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),

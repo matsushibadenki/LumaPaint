@@ -104,7 +104,12 @@ h1, h2, h3 { font-style: normal; }
 .inspector { display: grid; grid-template-columns: minmax(0, 1fr) 48px; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; background: var(--color-panel); border-left: 1px solid var(--color-rule); overflow: hidden; overscroll-behavior: contain; touch-action: pan-y; }
 .inspector-tabs { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; align-items: center; gap: var(--space-sm); padding: 10px 4px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; border-left: 1px solid var(--color-rule); background: var(--color-panel); }
 .inspector-tabs::-webkit-scrollbar { display: none; }
-.color-panel-controls { display: grid; gap: 14px; }
+.color-panel-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.color-panel-controls .property-row { flex-wrap: wrap; gap: 6px; }
+.color-panel-controls .hex-input { max-width: 100%; }
+.color-model-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--text-small); color: var(--color-muted); }
+.color-model-select select { width: 96px; min-height: 26px; padding: 2px 6px; }
+.color-model-note { margin: -6px 0 0; font-size: var(--text-small); line-height: 1.5; color: var(--color-muted); overflow-wrap: anywhere; }
 .hsb-header { display: flex; align-items: flex-start; gap: 8px; }
 .color-chips { position: relative; width: 28px; height: 34px; flex: 0 0 28px; margin-top: 4px; }
 .color-chips i, .color-chips span { position: absolute; width: 21px; height: 21px; border: 1px solid #ddd; box-shadow: 0 0 0 1px #222; }

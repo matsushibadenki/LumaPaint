@@ -3075,7 +3075,11 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
     );
-    for object in objects.iter().filter(|object| object.visible) {
+    for (object_index, object) in objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.visible)
+    {
         let [a, b, c, d, e, f] = object.transform;
         let fill = object
             .fill
@@ -3091,9 +3095,22 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             };
             let _ = write!(
                 svg,
-                r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})"><text text-anchor="{anchor}" xml:space="preserve">"#,
+                r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})">"#,
                 text.rotation, text.scale_x, text.scale_y
             );
+            if let Some(frame_height) = text.box_height {
+                let _ = write!(
+                    svg,
+                    r#"<clipPath id="text-frame-{object_index}" clipPathUnits="userSpaceOnUse"><rect width="{}" height="{frame_height}"/></clipPath>"#,
+                    text.box_width
+                );
+                let _ = write!(
+                    svg,
+                    r#"<text text-anchor="{anchor}" xml:space="preserve" clip-path="url(#text-frame-{object_index})">"#
+                );
+            } else {
+                let _ = write!(svg, r#"<text text-anchor="{anchor}" xml:space="preserve">"#);
+            }
             let color = object.fill.map_or([0, 0, 0], |paint| {
                 [paint.color[0], paint.color[1], paint.color[2]]
             });
@@ -3949,6 +3966,47 @@ mod persistence_tests {
 #[cfg(test)]
 mod text_tests {
     use super::*;
+    #[test]
+    fn fixed_text_frame_keeps_empty_content_bounds_and_clipping_across_save_and_undo() {
+        let mut doc = Document::default();
+        let mut frame = settings();
+        frame.text.content.clear();
+        frame.text.box_width = 160.0;
+        frame.text.box_height = Some(80.0);
+        doc.set_text_object(frame).unwrap();
+        let created = doc.snapshot().text_objects[0].clone();
+        assert_eq!(
+            created.text.control_points(),
+            vec![[0.0, 0.0], [160.0, 0.0], [160.0, 80.0], [0.0, 80.0]]
+        );
+        assert_eq!(
+            doc.text_at([created.position[0] + 20.0, created.position[1] + 20.0]),
+            Some(created.id.clone())
+        );
+        let mut edited = TextSettings {
+            id: Some(created.id.clone()),
+            text: created.text.clone(),
+            position: created.position,
+            color: created.color,
+        };
+        edited.text.content = "First line\nSecond line\nThird line".into();
+        doc.set_text_object(edited).unwrap();
+        let svg = &doc.svg_layers().next().unwrap().source;
+        assert!(svg.contains("clipPathUnits=\"userSpaceOnUse\""));
+        assert!(svg.contains("clip-path=\"url(#text-frame-0)\""));
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.snapshot().text_objects[0].text.box_height,
+            Some(80.0)
+        );
+        doc.undo();
+        assert!(doc.snapshot().text_objects[0].text.content.is_empty());
+        doc.redo();
+        assert_eq!(
+            doc.snapshot().text_objects[0].text.content,
+            "First line\nSecond line\nThird line"
+        );
+    }
     fn settings() -> TextSettings {
         TextSettings {
             id: None,

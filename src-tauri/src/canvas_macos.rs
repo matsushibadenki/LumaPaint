@@ -488,6 +488,18 @@ impl PaintView {
                 return;
             }
             let tool = TOOL.with(|tool| tool.get());
+            if tool == CanvasTool::TextFrame
+                && point.x >= 0.0
+                && point.y >= 0.0
+                && point.x < viewport.document_width
+                && point.y < viewport.document_height
+                && DOCUMENT.with(|doc| doc.borrow().text_at([point.x, point.y]).is_some())
+            {
+                if let Err(error) = text_editor::begin_at([point.x, point.y], false) {
+                    emit_error(error);
+                }
+                return;
+            }
             if tool == CanvasTool::Text
                 || (tool == CanvasTool::VectorSelect && event.clickCount() == 2)
             {
@@ -506,6 +518,17 @@ impl PaintView {
             }
         }
         if TOOL.with(|tool| tool.get()) == CanvasTool::Text {
+            return;
+        }
+        if TOOL.with(|tool| tool.get()) == CanvasTool::TextFrame {
+            let result = text_frame_pointer(point, phase).and_then(|_| redraw());
+            if let Err(error) = result {
+                TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take());
+                emit_error(error);
+            }
+            if phase == 2 {
+                emit_document();
+            }
             return;
         }
 
@@ -1430,6 +1453,113 @@ fn vector_select_pointer(
     Ok(())
 }
 
+fn text_frame_geometry(start: [f32; 2], end: [f32; 2]) -> ([f32; 2], f32, f32) {
+    let width = (end[0] - start[0]).abs();
+    let height = (end[1] - start[1]).abs();
+    if width < 3.0 && height < 3.0 {
+        return (start, 240.0, 120.0);
+    }
+    (
+        [start[0].min(end[0]), start[1].min(end[1])],
+        width.max(16.0),
+        height.max(16.0),
+    )
+}
+
+fn text_frame_pointer(point: lumapaint_core::document::Point, phase: u8) -> Result<(), String> {
+    if phase == 0 {
+        DOCUMENT.with(|document| {
+            let document = document.borrow();
+            let (width, height) = document.dimensions();
+            if point.x < 0.0 || point.y < 0.0 || point.x >= width as f32 || point.y >= height as f32 {
+                return Err("Start the text frame inside the document / ドキュメント内から文字枠を作成してください / 请在文档内创建文本框".into());
+            }
+            document.selected_vector_target()?;
+            Ok::<(), String>(())
+        })?;
+        TEXT_FRAME_DRAFT
+            .with(|draft| *draft.borrow_mut() = Some(([point.x, point.y], [point.x, point.y])));
+        return Ok(());
+    }
+    let bounds = DOCUMENT.with(|document| {
+        let document = document.borrow();
+        let (width, height) = document.dimensions();
+        (width as f32, height as f32)
+    });
+    let end = [point.x.clamp(0.0, bounds.0), point.y.clamp(0.0, bounds.1)];
+    if phase == 1 {
+        TEXT_FRAME_DRAFT.with(|draft| {
+            if let Some(frame) = draft.borrow_mut().as_mut() {
+                frame.1 = end;
+            }
+        });
+        return Ok(());
+    }
+    let Some((start, _)) = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take()) else {
+        return Ok(());
+    };
+    let (position, box_width, box_height) = text_frame_geometry(start, end);
+    let settings = TextSettings {
+        id: None,
+        text: lumapaint_core::vector::VectorText {
+            content: String::new(),
+            box_width,
+            box_height: Some(box_height),
+            ..Default::default()
+        },
+        position,
+        color: BRUSH.with(|brush| brush.borrow().color),
+    };
+    DOCUMENT.with(|document| document.borrow_mut().set_text_object(settings))?;
+    let snapshot = DOCUMENT.with(|document| document.borrow().snapshot());
+    let object = snapshot
+        .text_objects
+        .iter()
+        .find(|object| snapshot.selected_vector_objects.contains(&object.id))
+        .ok_or("Text frame was not created")?;
+    text_editor::begin(TextSettings {
+        id: Some(object.id.clone()),
+        text: object.text.clone(),
+        position: object.position,
+        color: object.color,
+    })
+}
+
+fn text_frame_preview(
+    document: &Document,
+    start: [f32; 2],
+    end: [f32; 2],
+    zoom: f32,
+) -> Result<Document, String> {
+    let mut preview = document.clone();
+    let layer = match preview.selected_vector_target()? {
+        Some(id) => id,
+        None => preview.add_vector_layer()?,
+    };
+    let (position, width, height) = text_frame_geometry(start, end);
+    let [x, y] = position;
+    let object = VectorObject {
+        id: "text-frame-guide".into(),
+        name: "Text frame guide".into(),
+        path: VectorPath {
+            data: format!("M {x} {y} h {width} v {height} h {} Z", -width),
+            fill_rule: FillRule::NonZero,
+        },
+        transform: [1., 0., 0., 1., 0., 0.],
+        fill: None,
+        stroke: Some(VectorPaint {
+            color: [60, 160, 255, 255],
+        }),
+        stroke_width: 1.0 / zoom,
+        visible: true,
+        kind: VectorObjectKind::Rectangle,
+        control_points: vec![[x, y], [x + width, y + height]],
+        text: None,
+    };
+    preview.upsert_vector_object(&layer, object)?;
+    Ok(preview)
+}
+
 fn cancel_vector_drag() -> bool {
     let moving = VECTOR_MOVE.with(|offset| offset.replace([0.0, 0.0]) != [0.0, 0.0]);
     VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
@@ -1437,7 +1567,8 @@ fn cancel_vector_drag() -> bool {
     let pen = PEN_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let anchor = ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
-    moving || pen || anchor || direct
+    let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
+    moving || pen || anchor || direct || text_frame
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -1823,6 +1954,40 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         let preview =
             DOCUMENT.with(|document| draft.preview(&document.borrow(), canvas.viewport.zoom))?;
         return canvas.renderer.render(canvas.viewport, &preview);
+    }
+    if let Some((start, end)) = TEXT_FRAME_DRAFT.with(|draft| *draft.borrow()) {
+        let preview = DOCUMENT.with(|document| {
+            text_frame_preview(&document.borrow(), start, end, canvas.viewport.zoom)
+        })?;
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
+    if matches!(
+        TOOL.with(|tool| tool.get()),
+        CanvasTool::VectorSelect | CanvasTool::TextFrame
+    ) {
+        let selected = DOCUMENT.with(|document| {
+            let document = document.borrow();
+            let id = document.selected_vector_ids().first()?;
+            let snapshot = document.snapshot();
+            let object = snapshot
+                .text_objects
+                .iter()
+                .find(|object| &object.id == id)?;
+            let height = object.text.box_height?;
+            Some((
+                object.position,
+                [
+                    object.position[0] + object.text.box_width,
+                    object.position[1] + height,
+                ],
+            ))
+        });
+        if let Some((start, end)) = selected {
+            let preview = DOCUMENT.with(|document| {
+                text_frame_preview(&document.borrow(), start, end, canvas.viewport.zoom)
+            })?;
+            return canvas.renderer.render(canvas.viewport, &preview);
+        }
     }
     let tiled = ACTIVE_TILED_DOCUMENT.with(|document| {
         document.borrow().as_ref().map(|document| {
@@ -2293,6 +2458,7 @@ thread_local! {
     static ANCHOR_DRAFT: RefCell<Option<AnchorDraft>> = const { RefCell::new(None) };
     static PEN_DRAFT: RefCell<Option<PenDraft>> = const { RefCell::new(None) };
     static VECTOR_DRAFT: RefCell<Vec<lumapaint_core::document::Point>> = const { RefCell::new(Vec::new()) };
+    static TEXT_FRAME_DRAFT: RefCell<Option<([f32; 2], [f32; 2])>> = const { RefCell::new(None) };
     static VECTOR_CONTROL: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
@@ -2712,6 +2878,31 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_frame_drag_handles_reverse_direction_and_keeps_preview_out_of_history() {
+        assert_eq!(
+            text_frame_geometry([220., 180.], [40., 60.]),
+            ([40., 60.], 180., 120.)
+        );
+        assert_eq!(
+            text_frame_geometry([40., 60.], [40., 60.]),
+            ([40., 60.], 240., 120.)
+        );
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        document.select_layer(layer).unwrap();
+        let revision = document.revision();
+        let preview = text_frame_preview(&document, [220., 180.], [40., 60.], 2.).unwrap();
+        assert_eq!(document.revision(), revision);
+        assert!(document
+            .svg_layers()
+            .all(|layer| layer.vector_objects.is_empty()));
+        assert_eq!(
+            preview.svg_layers().next().unwrap().vector_objects[0].stroke_width,
+            0.5
+        );
+    }
 
     #[test]
     fn pen_preview_commit_control_edit_and_undo_preserve_cubics() {

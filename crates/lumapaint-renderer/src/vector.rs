@@ -509,6 +509,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixed_height_text_frame_clips_overflow_in_raster_output() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::VectorText;
+        let mut document = Document::default();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "MMMM\nMMMM".into(),
+                    font_size: 28.0,
+                    line_height: 1.5,
+                    box_width: 150.0,
+                    box_height: Some(38.0),
+                    ..Default::default()
+                },
+                position: [20.0, 20.0],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let source = &document.svg_layers().next().unwrap().source;
+        let raster = rasterize_svg(source, 960, 640).unwrap();
+        let alpha_at = |x: usize, y: usize| raster.pixels[(y * 960 + x) * 4 + 3];
+        assert!((20..58).any(|y| (20..170).any(|x| alpha_at(x, y) != 0)));
+        assert!((60..110).all(|y| (20..170).all(|x| alpha_at(x, y) == 0)));
+    }
+
+    #[test]
     fn installed_sans_font_repairs_missing_generic_family() {
         let mut fonts = usvg::fontdb::Database::new();
         fonts.load_system_fonts();

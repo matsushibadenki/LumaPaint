@@ -42,6 +42,7 @@ pub enum CanvasTool {
     VectorRectangle,
     VectorEllipse,
     Text,
+    TextFrame,
     ZoomIn,
     ZoomOut,
     Hand,

@@ -170,6 +170,9 @@ pub struct VectorText {
     pub strikethrough: bool,
     pub alignment: TextAlignment,
     pub box_width: f32,
+    /// A fixed-height layout frame. None keeps legacy point text at automatic height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub box_height: Option<f32>,
     pub indent_left: f32,
     pub indent_right: f32,
     pub indent_first: f32,
@@ -213,6 +216,7 @@ impl Default for VectorText {
             strikethrough: false,
             alignment: TextAlignment::Left,
             box_width: 480.0,
+            box_height: None,
             indent_left: 0.0,
             indent_right: 0.0,
             indent_first: 0.0,
@@ -460,7 +464,7 @@ impl VectorText {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.content.trim().is_empty()
+        if (self.content.trim().is_empty() && self.box_height.is_none())
             || self.content.chars().count() > 4096
             || self.content.split('\n').count() > 64
             || self
@@ -476,6 +480,9 @@ impl VectorText {
             || !(-512.0..=512.0).contains(&self.baseline_shift)
             || !(-180.0..=180.0).contains(&self.rotation)
             || !(16.0..=8192.0).contains(&self.box_width)
+            || self
+                .box_height
+                .is_some_and(|height| !(16.0..=8192.0).contains(&height))
             || !(0.0..=4096.0).contains(&self.indent_left)
             || !(0.0..=4096.0).contains(&self.indent_right)
             || !(-4096.0..=4096.0).contains(&self.indent_first)
@@ -639,10 +646,14 @@ impl VectorText {
         let top = -highest_shift - (max_size - self.font_size).max(0.0);
         let bottom = height - lowest_shift + (max_size - self.font_size).max(0.0);
         let angle = self.rotation.to_radians();
-        let [left, top, right, bottom] = self.layout_bounds.map_or(
-            [0.0, top, self.box_width, bottom],
-            |[x, y, width, height]| [x, y, x + width, y + height],
-        );
+        let [left, top, right, bottom] = if let Some(frame_height) = self.box_height {
+            [0.0, 0.0, self.box_width, frame_height]
+        } else {
+            self.layout_bounds.map_or(
+                [0.0, top, self.box_width, bottom],
+                |[x, y, width, height]| [x, y, x + width, y + height],
+            )
+        };
         [[left, top], [right, top], [right, bottom], [left, bottom]]
             .into_iter()
             .map(|[x, y]| {

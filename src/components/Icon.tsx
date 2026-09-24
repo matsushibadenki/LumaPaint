@@ -1,4 +1,4 @@
-type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textFrame' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 type PanelIconName = 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   stroke: 'M3 5h18 M3 11h18 M3 17h18 M3 19h18 M3 21h18',
@@ -17,6 +17,7 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   layout: 'M3 3h18v18H3z M3 9h18 M10 9v12',
   animation: 'M3 4h18v16H3z M3 8h18 M7 4v4 M13 4v4 M19 4v4 M10 11l5 3-5 3z',
   text: 'M4 4h16 M12 4v16 M8 20h8 M4 4v3 M20 4v3',
+  textFrame: 'M3 4h18v16H3z M7 8h10 M12 8v8 M9 16h6 M7 8v2 M17 8v2',
   timeline: 'M4 4v16h17 M4 8h17 M4 14h17 M10 6v4 M16 12v4',
   rectangle: 'M3 3h4 M10 3h4 M17 3h4v4 M21 10v4 M21 17v4h-4 M14 21h-4 M7 21H3v-4 M3 14v-4 M3 7V3',
   ellipse: 'M10 3a9 9 0 0 1 4 0 M18 5a9 9 0 0 1 3 5 M21 14a9 9 0 0 1-3 5 M14 21a9 9 0 0 1-4 0 M6 19a9 9 0 0 1-3-5 M3 10a9 9 0 0 1 3-5',

@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'zoomIn' | 'zoomOut' | 'hand';
+export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textFrame' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface Brush { size: number; hardness: number; color: [number, number, number] }
@@ -29,7 +29,7 @@ export interface VectorText {
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
-  boxWidth: number; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
+  boxWidth: number; boxHeight?: number | null; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
 }
 export const defaultVectorText: VectorText = {
   content: 'Text', runs: [], softBreaks: [], fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
