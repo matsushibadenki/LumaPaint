@@ -123,7 +123,11 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
       <section className="type-section">
         <h3>{t.paragraph}<span aria-hidden="true">☰</span></h3>
         <div className="type-section-body">
-          <div className="type-alignments">{(['left', 'center', 'right'] as const).map(align => <button type="button" aria-label={t[align]} title={t[align]} aria-pressed={text.alignment === align} onClick={() => change({ alignment: align })} key={align}><svg width="24" height="22" viewBox="0 0 24 22" aria-hidden="true">{[3,7,11,15,19].map((y, i) => <path key={y} d={`M${align === 'right' && i % 2 ? 8 : align === 'center' && i % 2 ? 5 : 2} ${y}h${i % 2 ? 14 : 20}`} stroke="currentColor" />)}</svg></button>)}</div>
+          <div className="type-alignments">{(['left', 'center', 'right', 'justify'] as const).map(align => <button type="button" aria-label={t[align]} title={t[align]} aria-pressed={text.alignment === align} onClick={() => change({ alignment: align })} key={align}><svg width="24" height="22" viewBox="0 0 24 22" aria-hidden="true">{[3,7,11,15,19].map((y, i) => { const inset = align === 'right' && i % 2 ? 6 : align === 'center' && i % 2 ? 3 : 0; return <path key={y} d={`M${2 + inset} ${y}h${align === 'justify' ? 20 : 20 - inset * 2}`} stroke="currentColor" />; })}</svg></button>)}</div>
+          <div className="type-list-controls" role="group" aria-label={t.lists}>
+            <button type="button" aria-label={t.bullets} title={t.bullets} aria-pressed={text.listStyle === 'bullets'} onClick={() => change({ listStyle: text.listStyle === 'bullets' ? 'none' : 'bullets' })}><span aria-hidden="true">•</span><span aria-hidden="true">☰</span></button>
+            <button type="button" aria-label={t.numbers} title={t.numbers} aria-pressed={text.listStyle === 'numbers'} onClick={() => change({ listStyle: text.listStyle === 'numbers' ? 'none' : 'numbers' })}><span aria-hidden="true">1.</span><span aria-hidden="true">☰</span></button>
+          </div>
           <div className="type-grid">
             {numeric('indentLeft', t.indentLeft, '↦', 'pt', pt, 0, 4096 * pt)}
             {numeric('indentRight', t.indentRight, '↤', 'pt', pt, 0, 4096 * pt)}
@@ -133,6 +137,9 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
             {numeric('spaceBefore', t.before, '↥', 'pt', pt, 0, 512 * pt)}
             {numeric('spaceAfter', t.after, '↧', 'pt', pt, 0, 512 * pt)}
           </div>
+          <label className="type-select-row"><span>{t.kinsoku}</span><select value={text.kinsoku} onChange={event => change({ kinsoku: event.target.value as VectorText['kinsoku'] })}><option value="none">{t.none}</option><option value="standard">{t.standard}</option><option value="strict">{t.strict}</option></select></label>
+          <label className="type-select-row"><span>{t.mojikumi}</span><select value={text.mojikumi} onChange={event => change({ mojikumi: event.target.value as VectorText['mojikumi'] })}><option value="none">{t.none}</option><option value="japanese">{t.japanese}</option></select></label>
+          <label className="type-check"><input type="checkbox" checked={text.hyphenation} onChange={event => change({ hyphenation: event.target.checked })} />{t.hyphenation}</label>
           <p className="type-hint">{t.paragraphHint}</p>
         </div>
       </section>

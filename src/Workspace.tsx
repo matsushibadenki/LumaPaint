@@ -3,7 +3,7 @@ import { setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVec
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom } from './bridge';
-import { beginTextEdit, updateTextEdit, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathOperation } from './bridge';
+import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { RecoveryControls } from './components/RecoveryControls';
@@ -65,19 +65,6 @@ export function Workspace() {
   const setBackgroundColor = useCallback((color: Brush['color']) => {
     setPaintState(current => ({ ...current, backgroundColor: color }));
   }, []);
-  const swapColors = useCallback(() => {
-    setPaintState(current => ({
-      brush: { ...current.brush, color: current.backgroundColor }, backgroundColor: current.brush.color,
-    }));
-  }, []);
-  useEffect(() => {
-    let active = true;
-    let stop = () => {};
-    subscribeCanvasColorSwap(() => { if (active) swapColors(); })
-      .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
-      .catch(cause => { if (active) setError(String(cause)); });
-    return () => { active = false; stop(); };
-  }, [swapColors]);
   const [documentState, setDocumentState] = useState(emptyDocument);
   const [documents, setDocuments] = useState<DocumentTabSnapshot[]>([]);
   const [activeDocumentId, setActiveDocumentId] = useState<number | null>(null);
@@ -91,6 +78,7 @@ export function Workspace() {
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
   const [inlineText, setInlineText] = useState<TextSettings | null>(null);
   const textSessionActive = useRef(false);
+  const textSessionId = useRef<string | null>(null);
   const [textPanelRequest, setTextPanelRequest] = useState(0);
   const showTextPanel = useCallback(() => { setPanels(true); setTextPanelRequest(value => value + 1); }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -184,12 +172,36 @@ export function Workspace() {
     subscribeTextSession(settings => {
       if (!active) return;
       textSessionActive.current = settings !== null;
+      textSessionId.current = settings?.id ?? null;
       setInlineText(settings);
       if (settings && !wasEditing) showTextPanel();
       wasEditing = settings !== null;
     }).then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); }).catch(cause => setError(String(cause)));
     return () => { active = false; stop(); };
   }, [showTextPanel]);
+  const applyTextColor = useCallback((color: Brush['color']) => {
+    if (textSessionActive.current) {
+      void setTextEditColor(textSessionId.current, color).catch(cause => setError(String(cause)));
+    }
+  }, []);
+  const changeForeground = useCallback((color: Brush['color']) => {
+    setBrush(previous => ({ ...previous, color }));
+    applyTextColor(color);
+  }, [setBrush, applyTextColor]);
+  const swapColors = useCallback(() => {
+    setPaintState(current => ({
+      brush: { ...current.brush, color: current.backgroundColor }, backgroundColor: current.brush.color,
+    }));
+    applyTextColor(backgroundColor);
+  }, [applyTextColor, backgroundColor]);
+  useEffect(() => {
+    let active = true;
+    let stop = () => {};
+    subscribeCanvasColorSwap(() => { if (active) swapColors(); })
+      .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
+      .catch(cause => { if (active) setError(String(cause)); });
+    return () => { active = false; stop(); };
+  }, [swapColors]);
   const selectedText = documentState.textObjects.find(item => documentState.selectedVectorObjects.includes(item.id)) ?? null;
   const activeText = inlineText ?? selectedText;
   const changeText = useCallback(async (settings: TextSettings) => {
@@ -230,6 +242,20 @@ export function Workspace() {
     if (!ready || busy || documentState.selectedVectorObjects.length !== 2) return;
     setBusy(true); setError('');
     try { updateDocument(await combineSelectedVectors(operation)); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }, [ready, busy, documentState.selectedVectorObjects.length, updateDocument]);
+  const changeGroup = useCallback(async (action: 'group' | 'ungroup' | 'ungroupAll') => {
+    if (!ready || busy) return;
+    setBusy(true); setError('');
+    try { updateDocument(action === 'group' ? await groupSelectedVectors() : await ungroupSelectedVectors(action === 'ungroupAll')); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }, [ready, busy, updateDocument]);
+  const editPath = useCallback(async (action: PathEditAction) => {
+    if (!ready || busy || documentState.selectedVectorObjects.length === 0) return;
+    setBusy(true); setError('');
+    try { updateDocument(await editSelectedPaths(action)); }
     catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }, [ready, busy, documentState.selectedVectorObjects.length, updateDocument]);
@@ -335,6 +361,10 @@ export function Workspace() {
       if (target.closest('input, textarea, select, [contenteditable=true]')) return;
       if (documentAvailable && !settingsOpen && !colorSettingsOpen) {
         const key = event.key.toLowerCase();
+        if ((event.metaKey || event.ctrlKey) && key === 'g') {
+          event.preventDefault(); void changeGroup(event.shiftKey ? 'ungroup' : 'group');
+          return;
+        }
         if ((event.metaKey || event.ctrlKey) && (key === 'a' || key === 'd' || (key === 'i' && event.shiftKey))) {
           event.preventDefault(); void edit(key === 'a' ? 'selectAll' : key === 'd' ? 'deselect' : 'invertSelection');
           return;
@@ -360,13 +390,15 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel, inlineText]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
       <WorkspaceMenu locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onFile={action => void file(action)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
+        onGroup={action => void changeGroup(action)}
+        onPathEdit={action => void editPath(action)}
         onNew={() => void documentAction('new')} onCloseDocument={() => activeDocumentId !== null && void documentAction('close', activeDocumentId)}
         onColorMode={mode => void setColorMode(mode)}
         onBitDepth={depth => void setBitDepth(depth)}
@@ -381,7 +413,7 @@ export function Workspace() {
       {zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : canvasTool === 'vectorDirectSelect' ? t.directHint : canvasTool.startsWith('vectorAnchor') ? t.anchorHint : canvasTool === 'vectorPen' ? t.penHint : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || documentState.selectedVectorObjects.length !== 2} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : (canvasTool === 'brush' || canvasTool === 'eraser') ? <>
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
-      <label className="color-control"><span>{t.foreground}</span><input type="color" value={toHex(brush.color)} onChange={event => setBrush(previous => ({ ...previous, color: fromHex(event.target.value) }))} aria-label={t.foreground} /></label>
+      <label className="color-control"><span>{t.foreground}</span><input type="color" value={toHex(brush.color)} onChange={event => changeForeground(fromHex(event.target.value))} aria-label={t.foreground} /></label>
       </> : <span className="selection-hint">{canvasTool === 'text' ? textPanelMessages[locale].hint : canvasTool === 'textFrame' ? t.textFrameHint : t.selectionHint}</span>}
       {toolMode === 'animation' && <span className="selection-hint animation-hint">{t.animationHint}</span>}
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
@@ -425,7 +457,7 @@ export function Workspace() {
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
       {panels && <Inspector onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
-        textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
+        textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}

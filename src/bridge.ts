@@ -18,7 +18,7 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerObjectSnapshot { strokeWidth: number; id: string; name: string; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface LayerObjectSnapshot { strokeWidth: number; id: string; name: string; groupPath: string[]; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot { objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
@@ -28,14 +28,16 @@ export interface VectorText {
   runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; characterOrigins?: number[][]; glyphClusters?: TextGlyphCluster[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
-  rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right';
+  rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right' | 'justify';
   boxWidth: number; boxHeight?: number | null; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
+  listStyle: 'none' | 'bullets' | 'numbers'; kinsoku: 'none' | 'standard' | 'strict'; mojikumi: 'none' | 'japanese'; hyphenation: boolean;
 }
 export const defaultVectorText: VectorText = {
   content: 'Text', runs: [], softBreaks: [], fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
   italic: false, tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
   underline: false, strikethrough: false, alignment: 'left', boxWidth: 480,
   indentLeft: 0, indentRight: 0, indentFirst: 0, spaceBefore: 0, spaceAfter: 0,
+  listStyle: 'none', kinsoku: 'none', mojikumi: 'none', hyphenation: false,
 };
 export function textFonts(): Promise<string[]> { return isTauri() ? invoke('text_fonts') : Promise.resolve([]); }
 function textCommand<T>(command: string, args: Record<string, unknown>): Promise<T> {
@@ -46,6 +48,7 @@ function textCommand<T>(command: string, args: Record<string, unknown>): Promise
 function textPayload(settings: TextSettings) { return { id: settings.id, text: settings.text, position: settings.position, color: settings.color }; }
 export function beginTextEdit(settings: TextSettings) { return textCommand<void>('begin_text_edit', { settings: textPayload(settings) }); }
 export function updateTextEdit(settings: TextSettings) { return textCommand<DocumentSnapshot>('update_text_edit', { settings: textPayload(settings), patch: settings.stylePatch ?? null }); }
+export function setTextEditColor(id: string | null, color: Brush['color']) { return textCommand<void>('set_text_edit_color', { id, color }); }
 export function finishTextEdit(commit: boolean) { return textCommand<DocumentSnapshot>('finish_text_edit', { commit }); }
 export async function subscribeTextSession(onChange: (settings: TextSettings | null) => void) {
   if (!isTauri()) return () => {};
@@ -61,6 +64,7 @@ export function setTextObject(settings: TextSettings): Promise<DocumentSnapshot>
 }
 export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
 export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
+export type PathEditAction = 'join' | 'average' | 'outline' | 'offset' | 'reverse' | 'simplify' | 'smooth' | 'addAnchors' | 'removeAnchors' | 'divideBelow' | 'splitGrid' | 'cleanUp';
 export interface VectorPaint { color: [number, number, number, number] }
 export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
@@ -150,6 +154,21 @@ export function reorderVectorObjects(layerId: string, ids: string[]): Promise<Do
 }
 export function combineSelectedVectors(operation: PathOperation): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('combine_selected_vectors', { operation }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function groupSelectedVectors(): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('group_selected_vectors'));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function ungroupSelectedVectors(all = false): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('ungroup_selected_vectors', { all }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export function editSelectedPaths(action: PathEditAction): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('edit_selected_paths', { action }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

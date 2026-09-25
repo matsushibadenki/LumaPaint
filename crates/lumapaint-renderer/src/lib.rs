@@ -2838,6 +2838,7 @@ mod tests {
                     VectorObject {
                         id: id.into(),
                         name: id.into(),
+                        group_path: Vec::new(),
                         text: None,
                         path: VectorPath {
                             data: "M 0 0 H 30 V 30 H 0 Z".into(),

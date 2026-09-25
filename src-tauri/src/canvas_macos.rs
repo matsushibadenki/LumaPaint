@@ -10,7 +10,8 @@ use lumapaint_core::document::{
 use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
 use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
 use lumapaint_core::vector::{
-    FillRule, PathOperation, VectorObject, VectorObjectKind, VectorPaint, VectorPath,
+    FillRule, PathEditAction, PathOperation, VectorObject, VectorObjectKind, VectorPaint,
+    VectorPath,
 };
 use lumapaint_renderer::frame_cache::FrameRasterCache;
 use lumapaint_renderer::{
@@ -19,11 +20,12 @@ use lumapaint_renderer::{
     PreparedSvgLayer, Renderer, ValidatedTileUploads, Viewport,
 };
 use objc2::{
-    define_class, msg_send, rc::Retained, runtime::AnyObject, MainThreadMarker, MainThreadOnly,
+    class, define_class, msg_send, rc::Retained, runtime::AnyObject, AnyThread, MainThreadMarker,
+    MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
-    NSEventModifierFlags, NSEventSubtype, NSView,
+    NSColor, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
+    NSEventModifierFlags, NSEventSubtype, NSImage, NSView,
 };
 use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
 use raw_window_handle::{
@@ -303,7 +305,11 @@ define_class!(
                     CanvasTool::ZoomIn => Some(NSCursor::zoomInCursor()),
                     CanvasTool::ZoomOut => Some(NSCursor::zoomOutCursor()),
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
-                    _ => None,
+                    CanvasTool::Text | CanvasTool::TextFrame => Some(NSCursor::IBeamCursor()),
+                    CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
+                    CanvasTool::VectorDirectSelect => Some(NSCursor::crosshairCursor()),
+                    CanvasTool::Brush | CanvasTool::Eraser => BRUSH_CURSOR.with(|cursor| cursor.borrow().clone()).or_else(|| Some(NSCursor::crosshairCursor())),
+                    _ => Some(NSCursor::crosshairCursor()),
                 }
             };
             if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
@@ -754,6 +760,7 @@ impl PenDraft {
         Ok(VectorObject {
             id: id.into(),
             name: "Bezier path".into(),
+            group_path: Vec::new(),
             text: None,
             path: VectorPath {
                 data: lumapaint_core::bezier::path_data(&controls, closed)?,
@@ -1212,6 +1219,7 @@ fn vector_pointer(
             text: None,
             id: format!("vector-object-{serial}"),
             name: format!("{name} {serial}"),
+            group_path: Vec::new(),
             path: VectorPath {
                 data: path,
                 fill_rule: FillRule::NonZero,
@@ -1491,6 +1499,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
             VectorObject {
                 id: "direct-marquee".into(),
                 name: "Selection".into(),
+                group_path: Vec::new(),
                 text: None,
                 path: VectorPath {
                     data: format!("M {x} {y} h {w} v {h} h {} Z", -w),
@@ -2144,6 +2153,61 @@ pub fn combine_selected_vectors(operation: PathOperation) -> Result<DocumentSnap
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn group_selected_vectors() -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().group_selected_vectors())?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn ungroup_selected_vectors(all: bool) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().ungroup_selected_vectors(all))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn edit_selected_paths(action: PathEditAction) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        let mut document = doc.borrow_mut();
+        match action {
+            PathEditAction::Join => document.join_selected_paths(),
+            PathEditAction::Average => {
+                let controls = DIRECT_POINTS.with(|points| points.borrow().clone());
+                document.average_vector_controls(&controls)
+            }
+            PathEditAction::Outline => document.replace_selected_path_geometry(
+                |object| {
+                    lumapaint_renderer::vector::skia_paths::SkiaPathEngine.outline_object(object)
+                },
+                true,
+            ),
+            PathEditAction::Offset => document.replace_selected_path_geometry(
+                |object| {
+                    lumapaint_renderer::vector::skia_paths::SkiaPathEngine
+                        .offset_object(object, 10.0)
+                },
+                false,
+            ),
+            PathEditAction::DivideBelow => document.combine_selected_vectors(
+                PathOperation::Difference,
+                |back, front, operation| {
+                    lumapaint_renderer::vector::skia_paths::SkiaPathEngine
+                        .combine_objects(back, front, operation)
+                },
+            ),
+            PathEditAction::SplitGrid => document.split_selected_paths(|object| {
+                lumapaint_renderer::vector::skia_paths::SkiaPathEngine
+                    .split_object_grid(object, 2, 2)
+            }),
+            _ => document.edit_selected_paths(action),
+        }
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
 pub fn reorder_layers(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().reorder_layers(&ids))?;
@@ -2345,6 +2409,10 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     DOCUMENT.with(|document| {
         let document = document.borrow();
         if document.visible_strokes().any(|stroke| stroke.eraser) {
+            if RASTER_SENDER.get().is_some() {
+                schedule_raster_job(canvas, &document)?;
+                return canvas.renderer.render_deferred(canvas.viewport, &document);
+            }
             return canvas.renderer.render(canvas.viewport, &document);
         }
         refresh_tile_preview(canvas, &document);
@@ -2786,6 +2854,8 @@ impl Drop for Canvas {
 }
 
 thread_local! {
+    static BRUSH_CURSOR: RefCell<Option<Retained<NSCursor>>> = const { RefCell::new(None) };
+    static BRUSH_CURSOR_KEY: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
     static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); let _ = document.select_layer("layer-1".into()); document });
@@ -3047,6 +3117,60 @@ pub fn reset_pan() -> Result<(), String> {
     redraw()
 }
 
+// AppKit composites this cursor independently of the document GPU surface.
+// Cache by screen diameter so pointer movement never rasterizes the document.
+#[allow(deprecated)]
+fn update_brush_cursor(viewport: Viewport) -> bool {
+    let width = viewport.width as f32 / viewport.scale;
+    let height = viewport.height as f32 / viewport.scale;
+    let fit = ((width - 48.0) / viewport.document_width)
+        .min((height - 48.0) / viewport.document_height)
+        .max(0.01)
+        * viewport.zoom;
+    let diameter = BRUSH.with(|brush| brush.borrow().size * fit).max(1.0);
+    let eraser = TOOL.with(|tool| tool.get() == CanvasTool::Eraser);
+    let key = (diameter.to_bits(), eraser);
+    if BRUSH_CURSOR_KEY.with(|cached| cached.get() == key) {
+        return false;
+    }
+    let side = f64::from(diameter) + 8.0;
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(side, side));
+    image.lockFocus();
+    // SAFETY: AppKit drawing is on the main thread with the image's context current.
+    unsafe {
+        let ring: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: NSRect::new(NSPoint::new(4.0, 4.0), NSSize::new(diameter.into(), diameter.into()))];
+        NSColor::whiteColor().setStroke();
+        let _: () = msg_send![&*ring, setLineWidth: 3.0f64];
+        let _: () = msg_send![&*ring, stroke];
+        NSColor::blackColor().setStroke();
+        let _: () = msg_send![&*ring, setLineWidth: 1.0f64];
+        let _: () = msg_send![&*ring, stroke];
+        let marker: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+        let center = side * 0.5;
+        let _: () = msg_send![&*marker, moveToPoint: NSPoint::new(center - 2.5, center)];
+        let _: () = msg_send![&*marker, lineToPoint: NSPoint::new(center + 2.5, center)];
+        if !eraser {
+            let _: () = msg_send![&*marker, moveToPoint: NSPoint::new(center, center - 2.5)];
+            let _: () = msg_send![&*marker, lineToPoint: NSPoint::new(center, center + 2.5)];
+        }
+        NSColor::whiteColor().setStroke();
+        let _: () = msg_send![&*marker, setLineWidth: 3.0f64];
+        let _: () = msg_send![&*marker, stroke];
+        NSColor::blackColor().setStroke();
+        let _: () = msg_send![&*marker, setLineWidth: 1.0f64];
+        let _: () = msg_send![&*marker, stroke];
+    }
+    image.unlockFocus();
+    let cursor = NSCursor::initWithImage_hotSpot(
+        NSCursor::alloc(),
+        &image,
+        NSPoint::new(side * 0.5, side * 0.5),
+    );
+    BRUSH_CURSOR.with(|cached| *cached.borrow_mut() = Some(cursor));
+    BRUSH_CURSOR_KEY.with(|cached| cached.set(key));
+    true
+}
+
 pub fn sync(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo, String> {
     if SHUTTING_DOWN.with(|flag| flag.get()) {
         return Ok(CanvasInfo::inactive("hidden"));
@@ -3172,7 +3296,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
         canvas.view.setHidden(false);
-        if tool_changed {
+        if update_brush_cursor(viewport) || tool_changed {
             canvas.view.refresh_cursor();
         }
         render_canvas(canvas)?;
@@ -3618,6 +3742,62 @@ mod tests {
             1
         );
         assert!(PEN_DRAFT.with(|draft| draft.borrow().is_none()));
+    }
+
+    #[test]
+    fn edited_shape_can_be_reselected_by_its_fill_and_moved() {
+        use lumapaint_core::document::Point;
+        for (tool, anchor) in [
+            (CanvasTool::VectorRectangle, [40.0, 40.0]),
+            (CanvasTool::VectorEllipse, [240.0, 140.0]),
+        ] {
+            cancel_vector_drag();
+            DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+            let mut document = Document::default();
+            document.add_vector_layer().unwrap();
+            let flags = NSEventModifierFlags::empty();
+            let point = |x, y| Point { x, y };
+            vector_pointer(&mut document, tool, point(40.0, 40.0), 0, flags).unwrap();
+            vector_pointer(&mut document, tool, point(240.0, 240.0), 2, flags).unwrap();
+            let id = document.svg_layers().next().unwrap().vector_objects[0]
+                .id
+                .clone();
+            direct_pointer(&mut document, point(anchor[0], anchor[1]), 0, flags).unwrap();
+            direct_pointer(
+                &mut document,
+                point(anchor[0] + 20.0, anchor[1] + 10.0),
+                1,
+                flags,
+            )
+            .unwrap();
+            direct_pointer(
+                &mut document,
+                point(anchor[0] + 20.0, anchor[1] + 10.0),
+                2,
+                flags,
+            )
+            .unwrap();
+            let edited = document.svg_layers().next().unwrap().vector_objects[0].clone();
+            assert_eq!(edited.kind, VectorObjectKind::Bezier);
+            vector_select_pointer(&mut document, point(400.0, 400.0), 0, flags).unwrap();
+            vector_select_pointer(&mut document, point(400.0, 400.0), 2, flags).unwrap();
+            assert!(document.selected_vector_ids().is_empty());
+            vector_select_pointer(&mut document, point(140.0, 140.0), 0, flags).unwrap();
+            assert_eq!(document.selected_vector_ids(), &[id]);
+            vector_select_pointer(&mut document, point(160.0, 170.0), 2, flags).unwrap();
+            let moved = document.svg_layers().next().unwrap().vector_objects[0].clone();
+            assert_eq!(&moved.transform[4..], &[20.0, 30.0]);
+            document.undo();
+            assert_eq!(
+                document.svg_layers().next().unwrap().vector_objects[0],
+                edited
+            );
+            document.redo();
+            assert_eq!(
+                document.svg_layers().next().unwrap().vector_objects[0],
+                moved
+            );
+        }
     }
 
     #[test]
@@ -4232,6 +4412,9 @@ pub fn text_fonts() -> Result<Vec<String>, String> {
 }
 pub fn begin_text_edit(settings: TextSettings) -> Result<(), String> {
     text_editor::begin(settings)
+}
+pub fn set_text_edit_color(id: Option<String>, color: [u8; 3]) -> Result<(), String> {
+    text_editor::set_color(id, color)
 }
 pub fn update_text_edit(
     mut settings: TextSettings,

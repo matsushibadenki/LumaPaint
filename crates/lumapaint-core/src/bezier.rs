@@ -333,6 +333,171 @@ fn rebuild(object: &mut VectorObject) -> Result<(), String> {
     object.validate()
 }
 
+pub fn reverse(object: &mut VectorObject) -> Result<(), String> {
+    let mut edited = editable(object).ok_or("Path cannot be edited")?;
+    let original = edited.control_points.clone();
+    let mut reversed = vec![*original.last().ok_or("Missing path points")?];
+    for segment in original.windows(4).step_by(3).rev() {
+        reversed.extend([segment[2], segment[1], segment[0]]);
+    }
+    edited.control_points = reversed;
+    rebuild(&mut edited)?;
+    *object = edited;
+    Ok(())
+}
+
+pub fn subdivide_all(object: &mut VectorObject) -> Result<(), String> {
+    let mut edited = editable(object).ok_or("Path cannot be edited")?;
+    let starts: Vec<_> = (0..edited.control_points.len().saturating_sub(3))
+        .step_by(3)
+        .collect();
+    for start in starts.into_iter().rev() {
+        insert(&mut edited, start, 0.5)?;
+    }
+    *object = edited;
+    Ok(())
+}
+
+pub fn remove_alternate_anchors(object: &mut VectorObject) -> Result<(), String> {
+    let mut edited = editable(object).ok_or("Path cannot be edited")?;
+    let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
+    let anchors = (edited.control_points.len() - 1) / 3 + usize::from(!closed);
+    let minimum = if closed { 3 } else { 2 };
+    let mut indices: Vec<_> = (3..edited.control_points.len().saturating_sub(1))
+        .step_by(6)
+        .take(anchors.saturating_sub(minimum))
+        .collect();
+    for index in indices.drain(..).rev() {
+        remove(&mut edited, index)?;
+    }
+    *object = edited;
+    Ok(())
+}
+
+fn point_line_distance(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length2 = delta[0] * delta[0] + delta[1] * delta[1];
+    if length2 <= f32::EPSILON {
+        return distance(point, start);
+    }
+    let t = (((point[0] - start[0]) * delta[0] + (point[1] - start[1]) * delta[1]) / length2)
+        .clamp(0.0, 1.0);
+    distance(point, [start[0] + delta[0] * t, start[1] + delta[1] * t])
+}
+
+fn rdp(points: &[[f32; 2]], tolerance: f32) -> Vec<[f32; 2]> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut furthest = (0usize, 0.0f32);
+    for (index, point) in points[1..points.len() - 1].iter().enumerate() {
+        let value = point_line_distance(*point, points[0], points[points.len() - 1]);
+        if value > furthest.1 {
+            furthest = (index + 1, value);
+        }
+    }
+    if furthest.1 <= tolerance {
+        return vec![points[0], points[points.len() - 1]];
+    }
+    let mut left = rdp(&points[..=furthest.0], tolerance);
+    left.pop();
+    left.extend(rdp(&points[furthest.0..], tolerance));
+    left
+}
+
+fn rebuild_polyline(
+    object: &mut VectorObject,
+    points: &[[f32; 2]],
+    closed: bool,
+) -> Result<(), String> {
+    if points.len() < if closed { 3 } else { 2 } {
+        return Err("Path has too few anchors".into());
+    }
+    let mut controls = vec![points[0]];
+    for pair in points.windows(2) {
+        controls.extend([pair[0], pair[1], pair[1]]);
+    }
+    if closed && points.last() != points.first() {
+        controls.extend([*points.last().unwrap(), points[0], points[0]]);
+    }
+    object.control_points = controls;
+    object.kind = VectorObjectKind::Bezier;
+    object.path.data = path_data(&object.control_points, closed)?;
+    object.validate()
+}
+
+pub fn simplify(object: &mut VectorObject, tolerance: f32) -> Result<(), String> {
+    let edited = editable(object).ok_or("Path cannot be edited")?;
+    let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
+    let mut samples = flattened(&edited.control_points);
+    if closed && samples.last() == samples.first() {
+        samples.pop();
+    }
+    let simplified = rdp(&samples, tolerance.max(0.01));
+    let mut result = edited;
+    rebuild_polyline(&mut result, &simplified, closed)?;
+    *object = result;
+    Ok(())
+}
+
+pub fn smooth(object: &mut VectorObject) -> Result<(), String> {
+    let mut edited = editable(object).ok_or("Path cannot be edited")?;
+    let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
+    let last = edited.control_points.len() - 1;
+    let anchors: Vec<_> = (0..=last)
+        .step_by(3)
+        .map(|index| edited.control_points[index])
+        .collect();
+    let unique = if closed {
+        &anchors[..anchors.len() - 1]
+    } else {
+        &anchors[..]
+    };
+    if unique.len() < 2 {
+        return Err("Path has too few anchors".into());
+    }
+    for index in 0..unique.len() {
+        let control = index * 3;
+        let previous = if index > 0 {
+            unique[index - 1]
+        } else if closed {
+            unique[unique.len() - 1]
+        } else {
+            unique[index]
+        };
+        let next = if index + 1 < unique.len() {
+            unique[index + 1]
+        } else if closed {
+            unique[0]
+        } else {
+            unique[index]
+        };
+        let tangent = [(next[0] - previous[0]) / 6.0, (next[1] - previous[1]) / 6.0];
+        if control > 0 {
+            edited.control_points[control - 1] =
+                [unique[index][0] - tangent[0], unique[index][1] - tangent[1]];
+        }
+        if control < last {
+            edited.control_points[control + 1] =
+                [unique[index][0] + tangent[0], unique[index][1] + tangent[1]];
+        }
+    }
+    if closed {
+        edited.control_points[last] = edited.control_points[0];
+        edited.control_points[last - 1] = [
+            edited.control_points[0][0] - (unique[1][0] - unique[unique.len() - 1][0]) / 6.0,
+            edited.control_points[0][1] - (unique[1][1] - unique[unique.len() - 1][1]) / 6.0,
+        ];
+    }
+    rebuild(&mut edited)?;
+    *object = edited;
+    Ok(())
+}
+
+pub fn clean_up(object: &mut VectorObject) -> Result<(), String> {
+    simplify(object, 0.05)
+}
+
 #[cfg(test)]
 mod anchor_tests {
     use super::*;
@@ -342,6 +507,7 @@ mod anchor_tests {
         VectorObject {
             id: "curve".into(),
             name: "Curve".into(),
+            group_path: Vec::new(),
             text: None,
             path: VectorPath {
                 data: path_data(&points, false).unwrap(),
@@ -441,6 +607,33 @@ mod anchor_tests {
         assert_eq!(object.control_points.last(), Some(&[20., 0.]));
         assert!(remove(&mut object, 0).is_err());
     }
+
+    #[test]
+    fn whole_path_edits_preserve_valid_geometry() {
+        let original = curve();
+        let mut reversed = original.clone();
+        reverse(&mut reversed).unwrap();
+        assert_eq!(
+            reversed.control_points.first(),
+            original.control_points.last()
+        );
+        reverse(&mut reversed).unwrap();
+        assert_eq!(reversed.control_points, original.control_points);
+
+        let mut subdivided = original.clone();
+        subdivide_all(&mut subdivided).unwrap();
+        assert_eq!(subdivided.control_points.len(), 7);
+        remove_alternate_anchors(&mut subdivided).unwrap();
+        assert_eq!(subdivided.control_points.len(), 4);
+
+        let mut smoothed = editable(&original).unwrap();
+        smooth(&mut smoothed).unwrap();
+        smoothed.validate().unwrap();
+        simplify(&mut smoothed, 2.0).unwrap();
+        smoothed.validate().unwrap();
+        clean_up(&mut smoothed).unwrap();
+        smoothed.validate().unwrap();
+    }
 }
 
 /// Move anchors with their attached handles, or move an individual direction handle.
@@ -533,6 +726,7 @@ mod direct_tests {
         VectorObject {
             id: "shape".into(),
             name: "Shape".into(),
+            group_path: Vec::new(),
             text: None,
             path: VectorPath {
                 data: "M 0 0 H 100 V 100 H 0 Z".into(),

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type DragEvent, type PointerEvent } from 'react';
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from 'react';
 import type { LayerSnapshot, TextObjectSnapshot } from '../bridge';
 import type { Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
@@ -23,6 +23,7 @@ export function LayerList({ layers, textObjects, selectedId, enabled, locale, on
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [objectDrag, setObjectDrag] = useState<{ layerId: string; objectId: string; targetId: string } | null>(null);
   const textLayers = new Set(textObjects.map(object => object.layerId));
   const displayed = [...layers].reverse();
@@ -134,6 +135,51 @@ export function LayerList({ layers, textObjects, selectedId, enabled, locale, on
     if (next.some((id, index) => id !== ids[index])) onReorderObjects(layer.id, next);
   }
 
+  function renderObjects(layer: LayerSnapshot) {
+    const rows: ReactNode[] = [];
+    let previousPath: string[] = [];
+    for (const object of [...layer.objects].reverse()) {
+      let shared = 0;
+      while (shared < previousPath.length && shared < object.groupPath.length && previousPath[shared] === object.groupPath[shared]) shared += 1;
+      for (let depth = shared; depth < object.groupPath.length; depth += 1) {
+        if (object.groupPath.slice(0, depth).some(groupId => collapsedGroups.has(`${layer.id}:${groupId}`))) break;
+        const groupId = object.groupPath[depth];
+        const key = `${layer.id}:${groupId}`;
+        const collapsed = collapsedGroups.has(key);
+        rows.push(<button type="button" className="layer-group-row" style={{ '--group-depth': depth } as CSSProperties} key={`group:${key}`}
+          aria-expanded={!collapsed} onClick={() => setCollapsedGroups(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })}>
+          <Icon name={collapsed ? 'chevronRight' : 'chevronDown'} /><span>{t.vectorGroup}</span>
+        </button>);
+      }
+      previousPath = object.groupPath;
+      if (object.groupPath.some(groupId => collapsedGroups.has(`${layer.id}:${groupId}`))) continue;
+      rows.push(<div className={`layer-object-row${objectDrag?.targetId === object.id ? ' object-drop-target' : ''}`} style={{ '--group-depth': object.groupPath.length } as CSSProperties} role="listitem" key={object.id}
+        draggable={enabled && !layer.locked && object.groupPath.length === 0} onDragStart={event => {
+          event.stopPropagation();
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', object.id);
+          setObjectDrag({ layerId: layer.id, objectId: object.id, targetId: object.id });
+        }} onDragOver={event => {
+          if (objectDrag?.layerId !== layer.id || object.groupPath.length > 0) return;
+          event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+          if (objectDrag.targetId !== object.id) setObjectDrag({ ...objectDrag, targetId: object.id });
+        }} onDrop={event => dropObject(event, layer, object.id)} onDragEnd={() => setObjectDrag(null)}>
+        <button type="button" className="icon-button object-visibility" disabled={!enabled || layer.locked || !layer.visible}
+          title={object.visible ? t.hideObject : t.showObject} aria-label={`${object.visible ? t.hideObject : t.showObject}: ${object.name}`}
+          aria-pressed={object.visible} onClick={() => onToggleObject(layer.id, object.id, !object.visible)}>
+          <Icon name={object.visible ? 'eye' : 'eyeOff'} />
+        </button>
+        <button type="button" className="layer-object-select" disabled={!enabled || layer.locked || !layer.visible || !object.visible}
+          aria-pressed={selectedObjects.includes(object.id)} onClick={() => onSelectObject(layer.id, object.id)}>
+          <Icon name={object.kind === 'text' ? 'text' : object.kind === 'rectangle' ? 'vectorRectangle' : object.kind === 'ellipse' ? 'vectorEllipse' : 'vector'} />
+          <span>{object.name}</span>
+          <span className="object-target" aria-hidden="true" />
+        </button>
+      </div>);
+    }
+    return rows;
+  }
+
   return <div ref={list} className={`layer-list${draggedId ? ' is-dragging' : ''}`} role="list" aria-label={t.layers}
     onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}
     onPointerLeave={() => { if (!gesture.current?.dragging) cancel(); }}
@@ -185,29 +231,7 @@ export function LayerList({ layers, textObjects, selectedId, enabled, locale, on
       </div>
     </div>
     {isExpanded && objects.length > 0 && <div className="layer-children" role="list" aria-label={displayName}>
-      {[...objects].reverse().map(object => <div className={`layer-object-row${objectDrag?.targetId === object.id ? ' object-drop-target' : ''}`} role="listitem" key={object.id}
-        draggable={enabled && !layer.locked} onDragStart={event => {
-          event.stopPropagation();
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData('text/plain', object.id);
-          setObjectDrag({ layerId: layer.id, objectId: object.id, targetId: object.id });
-        }} onDragOver={event => {
-          if (objectDrag?.layerId !== layer.id) return;
-          event.preventDefault(); event.dataTransfer.dropEffect = 'move';
-          if (objectDrag.targetId !== object.id) setObjectDrag({ ...objectDrag, targetId: object.id });
-        }} onDrop={event => dropObject(event, layer, object.id)} onDragEnd={() => setObjectDrag(null)}>
-        <button type="button" className="icon-button object-visibility" disabled={!enabled || layer.locked || !layer.visible}
-          title={object.visible ? t.hideObject : t.showObject} aria-label={`${object.visible ? t.hideObject : t.showObject}: ${object.name}`}
-          aria-pressed={object.visible} onClick={() => onToggleObject(layer.id, object.id, !object.visible)}>
-          <Icon name={object.visible ? 'eye' : 'eyeOff'} />
-        </button>
-        <button type="button" className="layer-object-select" disabled={!enabled || layer.locked || !layer.visible || !object.visible}
-          aria-pressed={selectedObjects.includes(object.id)} onClick={() => onSelectObject(layer.id, object.id)}>
-          <Icon name={object.kind === 'text' ? 'text' : object.kind === 'rectangle' ? 'vectorRectangle' : object.kind === 'ellipse' ? 'vectorEllipse' : 'vector'} />
-          <span>{object.name}</span>
-          <span className="object-target" aria-hidden="true" />
-        </button>
-      </div>)}
+      {renderObjects(layer)}
     </div>}
     </Fragment>; })}
   </div>;

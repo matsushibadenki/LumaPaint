@@ -505,6 +505,53 @@ pub async fn combine_selected_vectors(
         Err("Vector path operations are not supported on this platform yet".into())
     }
 }
+
+#[tauri::command]
+pub async fn group_selected_vectors(
+    window: tauri::WebviewWindow,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::group_selected_vectors).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Vector grouping is pending on this platform / このプラットフォームのグループ機能は保留中です / 此平台的矢量分组功能尚待实现".into())
+    }
+}
+
+#[tauri::command]
+pub async fn ungroup_selected_vectors(
+    window: tauri::WebviewWindow,
+    all: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::ungroup_selected_vectors(all)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, all);
+        Err("Vector grouping is pending on this platform / このプラットフォームのグループ機能は保留中です / 此平台的矢量分组功能尚待实现".into())
+    }
+}
+
+#[tauri::command]
+pub async fn edit_selected_paths(
+    window: tauri::WebviewWindow,
+    action: lumapaint_core::vector::PathEditAction,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_selected_paths(action)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, action);
+        Err("Path editing is pending on this platform / このプラットフォームのパス編集は保留中です / 此平台的路径编辑尚待实现".into())
+    }
+}
 #[tauri::command]
 pub async fn reorder_layers(
     window: tauri::WebviewWindow,
@@ -837,6 +884,22 @@ pub async fn begin_text_edit(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, settings);
+        Err("Inline editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn set_text_edit_color(
+    window: tauri::WebviewWindow,
+    id: Option<String>,
+    color: [u8; 3],
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_text_edit_color(id, color)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, color);
         Err("Inline editing is not supported on this platform yet".into())
     }
 }

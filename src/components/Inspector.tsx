@@ -2,6 +2,7 @@ import { StrokePanel, strokeLabels } from './StrokePanel';
 import { CompactSlider } from './CompactSlider';
 import { useEffect, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
+import { BrushPresets } from './BrushPresets';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput, fromHex, toHex } from './BrushControls';
@@ -52,12 +53,13 @@ function initialPanel(): PanelId {
 
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   onStrokeWidth: (width: number) => Promise<void>;
   onSelectLayer: (id: string) => void;
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
   onTextChange: (settings: TextSettings) => Promise<void>; onTextBegin: () => void; onTextFinish: (commit: boolean) => void;
   locale: Locale; brush: Brush; onBrush: (brush: Brush) => void; document: DocumentSnapshot; onToggleLayer: (id: string) => void; enabled: boolean;
+  onForegroundChange: (color: Brush['color']) => void;
   backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; colorPanelRequest: number; onBackgroundChange: (color: Brush['color']) => void; onSwapColors: () => void;
   onSelectObject: (layerId: string, objectId: string) => void;
   onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
@@ -162,14 +164,14 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
     </section>}
 
     {activePanel === 'color' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">
-      <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={color => onBrush({ ...brush, color })} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
+      <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
-      <p className="muted small">{t.roundBrush}</p>
+      <BrushPresets locale={locale} brush={brush} enabled={enabled} onChange={onBrush} />
       <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><CompactSlider id="brush-size" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
       <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><CompactSlider id="brush-hardness" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
-      <div className="swatches" aria-label={t.foreground}>{swatches.map((hex, index) => <button key={hex} className="swatch" title={t.colors[index]} aria-label={t.colors[index]} aria-pressed={toHex(brush.color) === hex} style={{ '--swatch': hex } as CSSProperties} onClick={() => onBrush({ ...brush, color: fromHex(hex) })} />)}</div>
-      <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={color => onBrush({ ...brush, color })} />
+      <div className="swatches" aria-label={t.foreground}>{swatches.map((hex, index) => <button key={hex} className="swatch" title={t.colors[index]} aria-label={t.colors[index]} aria-pressed={toHex(brush.color) === hex} style={{ '--swatch': hex } as CSSProperties} onClick={() => onForegroundChange(fromHex(hex))} />)}</div>
+      <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={onForegroundChange} />
     </section>}
 
     {activePanel === 'document' && <section className="inspector-panel document-settings-panel" role="tabpanel" id="inspector-panel-document" aria-labelledby="inspector-tab-document">

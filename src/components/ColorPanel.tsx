@@ -4,6 +4,7 @@ import type { Locale } from '../i18n';
 import { HexInput, toHex } from './BrushControls';
 import { cmykToRgb, rgbToCmyk, type CmykColor } from '../color-models';
 import { workspaceMessages } from '../workspace-i18n';
+import { ColorSwatches } from './ColorSwatches';
 
 export const colorPanelLabels = {
   ja: { color: 'カラー', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
@@ -169,5 +170,6 @@ export function ColorPanel({ locale, color: foregroundColor, backgroundColor, ac
       <span className="color-wheel-marker" style={{ left: (29 + 62 * c) + '%', top: (50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
     <HexInput key={activeColor} color={color} onChange={onChange} label={`${w[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
+    <ColorSwatches locale={locale} color={color} targetLabel={w[activeColor]} onChange={onChange} />
   </div>;
 }

@@ -1,6 +1,8 @@
 //! Skia PathOps adapter; callers exchange only portable SVG path data and fill rules.
-use lumapaint_core::vector::{FillRule, PathOperation, VectorObject, VectorPath, VectorPathEngine};
-use skia_safe::{Matrix, Path, PathFillType, PathOp};
+use lumapaint_core::vector::{
+    FillRule, PathOperation, PortablePathGeometry, VectorObject, VectorPath, VectorPathEngine,
+};
+use skia_safe::{paint, Matrix, Paint, Path, PathBuilder, PathFillType, PathOp, Rect, StrokeRec};
 
 pub struct SkiaPathEngine;
 
@@ -59,6 +61,110 @@ impl VectorPathEngine for SkiaPathEngine {
 }
 
 impl SkiaPathEngine {
+    fn transformed(object: &VectorObject) -> Result<Path, String> {
+        let [a, b, c, d, e, f] = object.transform;
+        let matrix = Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0);
+        let path = parse(&object.path)?.with_transform(&matrix);
+        if !path.is_finite() || path.count_points() > 65536 {
+            return Err("Invalid transformed vector geometry".into());
+        }
+        Ok(path)
+    }
+
+    fn portable(path: Path) -> Result<(VectorPath, Vec<[f32; 2]>), String> {
+        let points = path
+            .points()
+            .iter()
+            .map(|point| [point.x, point.y])
+            .collect();
+        let output = VectorPath {
+            data: path.to_svg(),
+            fill_rule: FillRule::NonZero,
+        };
+        parse(&output)?;
+        Ok((output, points))
+    }
+
+    pub fn outline_object(
+        &self,
+        object: &VectorObject,
+    ) -> Result<(VectorPath, Vec<[f32; 2]>), String> {
+        let width = object.stroke_width.max(1.0);
+        let mut paint = Paint::default();
+        paint
+            .set_style(paint::Style::Stroke)
+            .set_stroke_width(width);
+        let stroke = StrokeRec::from_paint(&paint, paint::Style::Stroke, 1.0);
+        let mut builder = PathBuilder::default();
+        if !stroke.apply_to_path(&mut builder, &Self::transformed(object)?) {
+            return Err("Could not outline this path".into());
+        }
+        Self::portable(builder.into())
+    }
+
+    pub fn offset_object(
+        &self,
+        object: &VectorObject,
+        distance: f32,
+    ) -> Result<(VectorPath, Vec<[f32; 2]>), String> {
+        let source = Self::transformed(object)?;
+        let mut paint = Paint::default();
+        paint
+            .set_style(paint::Style::Stroke)
+            .set_stroke_width(distance.abs() * 2.0);
+        let stroke = StrokeRec::from_paint(&paint, paint::Style::Stroke, 1.0);
+        let mut builder = PathBuilder::default();
+        if !stroke.apply_to_path(&mut builder, &source) {
+            return Err("Could not offset this path".into());
+        }
+        let outline: Path = builder.into();
+        let result = skia_safe::op(
+            &source,
+            &outline,
+            if distance >= 0.0 {
+                PathOp::Union
+            } else {
+                PathOp::Difference
+            },
+        )
+        .ok_or("Skia offset operation failed")?;
+        Self::portable(result)
+    }
+
+    pub fn split_object_grid(
+        &self,
+        object: &VectorObject,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Vec<PortablePathGeometry>, String> {
+        if rows == 0 || columns == 0 || rows > 32 || columns > 32 {
+            return Err("Invalid grid dimensions".into());
+        }
+        let source = Self::transformed(object)?;
+        let bounds = *source.bounds();
+        let width = bounds.width() / columns as f32;
+        let height = bounds.height() / rows as f32;
+        let mut pieces = Vec::new();
+        for row in 0..rows {
+            for column in 0..columns {
+                let left = bounds.left + column as f32 * width;
+                let top = bounds.top + row as f32 * height;
+                let mut builder = PathBuilder::default();
+                builder.add_rect(Rect::from_xywh(left, top, width, height), None, None);
+                let cell: Path = builder.into();
+                if let Some(piece) = skia_safe::op(&source, &cell, PathOp::Intersect) {
+                    if !piece.is_empty() {
+                        pieces.push(Self::portable(piece)?);
+                    }
+                }
+            }
+        }
+        if pieces.is_empty() {
+            return Err("Grid did not intersect the selected path".into());
+        }
+        Ok(pieces)
+    }
+
     /// Combine filled objects in document coordinates, including their SVG transforms.
     pub fn combine_objects(
         &self,
@@ -66,18 +172,9 @@ impl SkiaPathEngine {
         front: &VectorObject,
         operation: PathOperation,
     ) -> Result<(VectorPath, Vec<[f32; 2]>), String> {
-        let transformed = |object: &VectorObject| -> Result<Path, String> {
-            let [a, b, c, d, e, f] = object.transform;
-            let matrix = Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0);
-            let path = parse(&object.path)?.with_transform(&matrix);
-            if !path.is_finite() || path.count_points() > 65536 {
-                return Err("Invalid transformed vector geometry".into());
-            }
-            Ok(path)
-        };
         let result = skia_safe::op(
-            &transformed(back)?,
-            &transformed(front)?,
+            &Self::transformed(back)?,
+            &Self::transformed(front)?,
             match operation {
                 PathOperation::Union => PathOp::Union,
                 PathOperation::Difference => PathOp::Difference,
@@ -139,6 +236,36 @@ mod tests {
     }
 
     #[test]
+    fn outline_offset_and_grid_return_portable_geometry() {
+        let object = VectorObject {
+            id: "shape".into(),
+            name: "Shape".into(),
+            group_path: Vec::new(),
+            text: None,
+            path: path("M0 0H20V20H0Z"),
+            transform: [1., 0., 0., 1., 4., 6.],
+            fill: Some(VectorPaint {
+                color: [20, 40, 60, 255],
+            }),
+            stroke: Some(VectorPaint {
+                color: [0, 0, 0, 255],
+            }),
+            stroke_width: 4.,
+            visible: true,
+            kind: VectorObjectKind::Rectangle,
+            control_points: vec![[0., 0.], [20., 20.]],
+        };
+        let engine = SkiaPathEngine;
+        let (outline, _) = engine.outline_object(&object).unwrap();
+        assert!(!outline.data.is_empty());
+        let (offset, _) = engine.offset_object(&object, 3.).unwrap();
+        assert!(!offset.data.is_empty());
+        let pieces = engine.split_object_grid(&object, 2, 2).unwrap();
+        assert_eq!(pieces.len(), 4);
+        assert!(pieces.iter().all(|(path, _)| !path.data.is_empty()));
+    }
+
+    #[test]
     fn supports_holes_curves_and_empty_results() {
         let mut hole = path("M0 0H20V20H0Z M5 5H15V15H5Z");
         hole.fill_rule = FillRule::EvenOdd;
@@ -178,6 +305,7 @@ mod tests {
         let shape = |id: &str, x: f32| VectorObject {
             id: id.into(),
             name: id.into(),
+            group_path: Vec::new(),
             path: path("M0 0H20V20H0Z"),
             transform: [1.0, 0.0, 0.0, 1.0, x, 0.0],
             fill: Some(VectorPaint {

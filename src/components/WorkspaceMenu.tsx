@@ -9,7 +9,7 @@ import type { Locale } from '../i18n';
 import { messages } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { menuMessages } from '../menu-i18n';
-import type { BitDepth, ColorMode, DocumentEditAction, DocumentSnapshot } from '../bridge';
+import type { BitDepth, ColorMode, DocumentEditAction, DocumentSnapshot, PathEditAction } from '../bridge';
 
 type EntryItem = { label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
 type Entry = EntryItem | null;
@@ -22,14 +22,20 @@ type Props = {
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
+  onGroup: (action: 'group' | 'ungroup' | 'ungroupAll') => void;
+  onPathEdit: (action: PathEditAction) => void;
   onEdit: (action: DocumentEditAction) => void; onZoom: (value: number) => void;
   onColorMode: (mode: ColorMode) => void; onBitDepth: (depth: BitDepth) => void;
   onColorSettings: () => void; onPanels: () => void; onReset: () => void; onError: (error: string) => void;
 };
 
 export function WorkspaceMenu(props: Props) {
-  const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
+  const selectedObjects = doc.layers.flatMap(layer => layer.objects.filter(object => doc.selectedVectorObjects.includes(object.id)).map(object => ({ layer, object })));
+  const selectedEntities = new Set(selectedObjects.map(item => `${item.layer.id}:${item.object.groupPath[0] ?? item.object.id}`));
+  const canGroup = canEdit && selectedEntities.size >= 2 && new Set(selectedObjects.map(item => item.layer.id)).size === 1;
+  const canUngroup = canEdit && selectedObjects.some(item => item.object.groupPath.length > 0);
   const future = (label: string): Entry => ({ label, planned: true });
   const menus: Entry[][] = [
     [{ label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
@@ -44,7 +50,24 @@ export function WorkspaceMenu(props: Props) {
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
+    [{ label: t.path, enabled: canEdit, children: [
+      { label: t.pathJoin, enabled: selectedObjects.length === 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
+      { label: t.pathAverage, enabled: selectedObjects.length > 0, action: () => onPathEdit('average') }, null,
+      { label: t.pathOutline, enabled: selectedObjects.length > 0, action: () => onPathEdit('outline') },
+      { label: t.pathOffset, enabled: selectedObjects.length > 0, action: () => onPathEdit('offset') },
+      { label: t.pathReverse, enabled: selectedObjects.length > 0, action: () => onPathEdit('reverse') }, null,
+      { label: t.pathSimplify, enabled: selectedObjects.length > 0, action: () => onPathEdit('simplify') },
+      { label: t.pathSmooth, enabled: selectedObjects.length > 0, action: () => onPathEdit('smooth') },
+      { label: t.pathAddAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('addAnchors') },
+      { label: t.pathRemoveAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('removeAnchors') },
+      { label: t.pathDivideBelow, enabled: selectedObjects.length === 2, action: () => onPathEdit('divideBelow') }, null,
+      { label: t.pathSplitGrid, enabled: selectedObjects.length > 0, action: () => onPathEdit('splitGrid') }, null,
+      { label: t.pathCleanUp, enabled: selectedObjects.length > 0, action: () => onPathEdit('cleanUp') },
+    ]}],
     [future(t.newLayer), future(t.duplicateLayer), future(t.deleteLayer), null,
+      { label: t.group, enabled: canGroup, shortcut: 'CmdOrCtrl+G', action: () => onGroup('group') },
+      { label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
+      { label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
       { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
     [future(t.font), future(t.fontSize), future(t.paragraph)],
     [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },

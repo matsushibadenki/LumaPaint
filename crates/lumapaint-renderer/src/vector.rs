@@ -98,6 +98,7 @@ pub fn reflow_text_with_system_fonts(
             lumapaint_core::vector::TextAlignment::Right => {
                 candidate.box_width - candidate.indent_right - width
             }
+            lumapaint_core::vector::TextAlignment::Justify => candidate.indent_left + first_indent,
         };
         let starts = candidate.style_segment_starts(start, line, color);
         let mut line_segments = Vec::with_capacity(starts.len());

@@ -18,6 +18,8 @@ pub struct VectorPath {
     pub fill_rule: FillRule,
 }
 
+pub type PortablePathGeometry = (VectorPath, Vec<[f32; 2]>);
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VectorPaint {
@@ -178,6 +180,10 @@ pub struct VectorText {
     pub indent_first: f32,
     pub space_before: f32,
     pub space_after: f32,
+    pub list_style: ParagraphListStyle,
+    pub kinsoku: KinsokuMode,
+    pub mojikumi: MojikumiMode,
+    pub hyphenation: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +193,33 @@ pub enum TextAlignment {
     Left,
     Center,
     Right,
+    Justify,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParagraphListStyle {
+    #[default]
+    None,
+    Bullets,
+    Numbers,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KinsokuMode {
+    #[default]
+    None,
+    Standard,
+    Strict,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MojikumiMode {
+    #[default]
+    None,
+    Japanese,
 }
 
 impl Default for VectorText {
@@ -222,6 +255,10 @@ impl Default for VectorText {
             indent_first: 0.0,
             space_before: 0.0,
             space_after: 0.0,
+            list_style: ParagraphListStyle::None,
+            kinsoku: KinsokuMode::None,
+            mojikumi: MojikumiMode::None,
+            hyphenation: false,
         }
     }
 }
@@ -673,6 +710,9 @@ impl VectorText {
 pub struct VectorObject {
     pub id: String,
     pub name: String,
+    /// Group identifiers from the outermost group to the innermost group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_path: Vec<String>,
     pub path: VectorPath,
     /// SVG-compatible affine matrix: [a, b, c, d, e, f].
     pub transform: [f32; 6],
@@ -694,6 +734,19 @@ impl VectorObject {
             || self.id.len() > 64
             || self.name.trim().is_empty()
             || self.name.chars().count() > 120
+            || self.group_path.len() > 64
+            || self.group_path.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 64
+                    || id
+                        .chars()
+                        .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+            })
+            || self
+                .group_path
+                .iter()
+                .enumerate()
+                .any(|(index, id)| self.group_path[..index].contains(id))
             || self.path.data.is_empty()
             || self.path.data.len() > 1024 * 1024
             || self.transform.iter().any(|value| !value.is_finite())
@@ -765,17 +818,66 @@ impl VectorObject {
                     && ry > 0.0
                     && ((point[0] - cx) / rx).powi(2) + ((point[1] - cy) / ry).powi(2) <= 1.0
             }
-            VectorObjectKind::Bezier => {
-                crate::bezier::flattened(&points).windows(2).any(|segment| {
-                    distance_to_segment(point, segment[0], segment[1])
-                        <= tolerance.max(self.stroke_width * 0.5)
-                })
+            VectorObjectKind::Bezier | VectorObjectKind::Path => {
+                let flattened;
+                let outline = if self.kind == VectorObjectKind::Bezier {
+                    flattened = crate::bezier::flattened(&points);
+                    &flattened[..]
+                } else {
+                    &points[..]
+                };
+                path_hit_test(
+                    outline,
+                    point,
+                    tolerance.max(self.stroke_width * 0.5),
+                    self.fill.map(|_| self.path.fill_rule),
+                    self.path.data.trim_end().ends_with(['Z', 'z']),
+                )
             }
-            VectorObjectKind::Path => points.windows(2).any(|segment| {
-                distance_to_segment(point, segment[0], segment[1])
-                    <= tolerance.max(self.stroke_width * 0.5)
-            }),
         }
+    }
+}
+
+/// The same outline is used for curve proximity and fill containment. SVG fills
+/// implicitly close open contours; an unfilled open path keeps only its segments.
+fn path_hit_test(
+    points: &[[f32; 2]],
+    point: [f32; 2],
+    tolerance: f32,
+    fill_rule: Option<FillRule>,
+    closed: bool,
+) -> bool {
+    if points
+        .windows(2)
+        .any(|edge| distance_to_segment(point, edge[0], edge[1]) <= tolerance)
+    {
+        return true;
+    }
+    if points.len() < 2 {
+        return false;
+    }
+    if (closed || fill_rule.is_some())
+        && distance_to_segment(point, points[points.len() - 1], points[0]) <= tolerance
+    {
+        return true;
+    }
+    let Some(fill_rule) = fill_rule else {
+        return false;
+    };
+    // Half-open edge intervals count vertices once, including self-intersections.
+    let mut winding = 0i64;
+    for (a, b) in points.iter().zip(points.iter().cycle().skip(1)) {
+        let side = (f64::from(b[0]) - f64::from(a[0])) * (f64::from(point[1]) - f64::from(a[1]))
+            - (f64::from(point[0]) - f64::from(a[0])) * (f64::from(b[1]) - f64::from(a[1]));
+        if a[1] <= point[1] && b[1] > point[1] && side > 0.0 {
+            winding += 1;
+        } else if a[1] > point[1] && b[1] <= point[1] && side < 0.0 {
+            winding -= 1;
+        }
+    }
+    match fill_rule {
+        FillRule::NonZero => winding != 0,
+        FillRule::EvenOdd => winding % 2 != 0,
     }
 }
 
@@ -822,6 +924,23 @@ pub enum PathOperation {
     Difference,
     Intersection,
     Xor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PathEditAction {
+    Join,
+    Average,
+    Outline,
+    Offset,
+    Reverse,
+    Simplify,
+    Smooth,
+    AddAnchors,
+    RemoveAnchors,
+    DivideBelow,
+    SplitGrid,
+    CleanUp,
 }
 
 /// Boolean operations act on filled areas. Difference means left minus right.
@@ -1120,5 +1239,97 @@ mod text_style_tests {
         assert!(text.validate().is_err());
         text.line_height = 5000.0 / 48.0;
         assert!(text.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod path_hit_tests {
+    use super::*;
+
+    fn path(points: Vec<[f32; 2]>) -> VectorObject {
+        let mut data = format!("M {} {}", points[0][0], points[0][1]);
+        for [x, y] in &points[1..] {
+            data.push_str(&format!(" L {x} {y}"));
+        }
+        VectorObject {
+            id: "hit-test".into(),
+            name: "Path".into(),
+            group_path: Vec::new(),
+            path: VectorPath {
+                data,
+                fill_rule: FillRule::NonZero,
+            },
+            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill: Some(VectorPaint {
+                color: [30, 60, 90, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.0,
+            visible: true,
+            kind: VectorObjectKind::Path,
+            control_points: points,
+            text: None,
+        }
+    }
+
+    #[test]
+    fn concave_fill_uses_edited_outline_and_transform_not_just_bounds() {
+        let mut object = path(vec![
+            [0., 0.],
+            [100., 0.],
+            [100., 100.],
+            [60., 100.],
+            [60., 40.],
+            [0., 40.],
+        ]);
+        object.path.data.push_str(" Z");
+        object.transform = [0., 2., -2., 0., 300., 100.];
+        let inside = crate::bezier::world_point(&object, [80., 80.]);
+        let notch = crate::bezier::world_point(&object, [30., 80.]);
+        for object in [object.clone(), crate::bezier::editable(&object).unwrap()] {
+            assert!(object.hit_test(inside, 1.));
+            assert!(!object.hit_test(notch, 1.));
+            assert!(!object.hit_test([500., 500.], 1.));
+        }
+    }
+
+    #[test]
+    fn filled_paths_respect_winding_rule_after_bezier_conversion() {
+        let object = path(vec![
+            [0., 0.],
+            [100., 0.],
+            [100., 100.],
+            [0., 100.],
+            [0., 0.],
+            [100., 0.],
+            [100., 100.],
+            [0., 100.],
+            [0., 0.],
+        ]);
+        for mut object in [object.clone(), crate::bezier::editable(&object).unwrap()] {
+            assert!(object.hit_test([50., 50.], 1.));
+            object.path.fill_rule = FillRule::EvenOdd;
+            assert!(!object.hit_test([50., 50.], 1.));
+            assert!(object.hit_test([50., 0.], 1.));
+        }
+    }
+
+    #[test]
+    fn open_strokes_have_no_fill_hit_but_svg_fill_implicitly_closes() {
+        let object = path(vec![[0., 0.], [100., 0.], [100., 100.]]);
+        for mut object in [object.clone(), crate::bezier::editable(&object).unwrap()] {
+            assert!(object.hit_test([75., 25.], 1.));
+            assert!(!object.hit_test([25., 75.], 1.));
+            object.fill = None;
+            object.stroke = Some(VectorPaint {
+                color: [0, 0, 0, 255],
+            });
+            object.stroke_width = 4.;
+            assert!(!object.hit_test([75., 25.], 1.));
+            assert!(!object.hit_test([50., 50.], 1.));
+            assert!(object.hit_test([50., 1.5], 1.));
+            object.path.data.push_str(" z ");
+            assert!(object.hit_test([50., 50.], 1.));
+        }
     }
 }

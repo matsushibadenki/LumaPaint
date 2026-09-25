@@ -1,17 +1,19 @@
 //! Native inline input: IME and selection stay in AppKit, one commit enters document history.
 use super::*;
 use lumapaint_core::vector::{
-    TextAlignment, TextGlyphCluster, TextRun, TextStyle, TextStylePatch, VectorText,
+    KinsokuMode, MojikumiMode, ParagraphListStyle, TextAlignment, TextGlyphCluster, TextRun,
+    TextStyle, TextStylePatch, VectorText,
 };
-use objc2::{runtime::AnyObject, DefinedClass};
+use objc2::{runtime::AnyObject, AnyThread, DefinedClass};
 use objc2_app_kit::{
     NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName, NSFontManager,
     NSFontTraitMask, NSForegroundColorAttributeName, NSKernAttributeName, NSLineBreakMode,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSSelectionAffinity,
-    NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient, NSTextView,
+    NSLineBreakStrategy, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSSelectionAffinity, NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient,
+    NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextListOptions, NSTextView,
     NSUnderlineStyleAttributeName,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
+use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
 
 struct EditorState {
     undo: Retained<NSUndoManager>,
@@ -687,6 +689,27 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// Color controls send only a color and object identity. The live AppKit selection
+/// and text stay in Rust, including drafts that have not entered the document yet.
+pub fn set_color(id: Option<String>, color: [u8; 3]) -> Result<(), String> {
+    let settings = SESSION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|session| session.settings.id == id)
+            .map(|session| session.settings.clone())
+    });
+    if let Some(settings) = settings {
+        update(
+            settings,
+            Some(TextStylePatch {
+                color: Some(color),
+                ..Default::default()
+            }),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(), String> {
     let prepared = SESSION.with(|slot| -> Result<_, String> {
         let slot = slot.borrow();
@@ -750,6 +773,9 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
         }
     });
     apply_all_attributes()?;
+    // Attribute replacement must not turn the selected range into an insertion
+    // point when focus is in a WebView color field or the system color picker.
+    view.setSelectedRange(range);
     let text = SESSION.with(|slot| slot.borrow().as_ref().unwrap().settings.text.clone());
     let attributes = attributes(&text, &typing)?;
     unsafe {
@@ -953,6 +979,7 @@ fn attributes(
         TextAlignment::Left => NSTextAlignment::Left,
         TextAlignment::Center => NSTextAlignment::Center,
         TextAlignment::Right => NSTextAlignment::Right,
+        TextAlignment::Justify => NSTextAlignment::Justified,
     });
     paragraph.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
     paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
@@ -962,6 +989,29 @@ fn attributes(
     paragraph.setTailIndent((-text.indent_right).into());
     paragraph.setParagraphSpacingBefore(text.space_before.into());
     paragraph.setParagraphSpacing(text.space_after.into());
+    paragraph.setHyphenationFactor(if text.hyphenation { 1.0 } else { 0.0 });
+    paragraph.setUsesDefaultHyphenation(text.hyphenation);
+    paragraph.setLineBreakStrategy(match text.kinsoku {
+        KinsokuMode::None => NSLineBreakStrategy::None,
+        KinsokuMode::Standard => NSLineBreakStrategy::PushOut,
+        KinsokuMode::Strict => NSLineBreakStrategy::Standard,
+    });
+    paragraph
+        .setAllowsDefaultTighteningForTruncation(matches!(text.mojikumi, MojikumiMode::Japanese));
+    if !matches!(text.list_style, ParagraphListStyle::None) {
+        let marker = match text.list_style {
+            ParagraphListStyle::Bullets => unsafe { NSTextListMarkerDisc },
+            ParagraphListStyle::Numbers => unsafe { NSTextListMarkerDecimal },
+            ParagraphListStyle::None => unreachable!(),
+        };
+        let list = NSTextList::initWithMarkerFormat_options_startingItemNumber(
+            NSTextList::alloc(),
+            marker,
+            NSTextListOptions::empty(),
+            1,
+        );
+        paragraph.setTextLists(&NSArray::from_slice(&[&*list]));
+    }
     let kern = NSNumber::new_f64((style.tracking * style.font_size / 1000.0).into());
     let baseline = NSNumber::new_f64(style.baseline_shift.into());
     let underline = NSNumber::new_i32(i32::from(style.underline));

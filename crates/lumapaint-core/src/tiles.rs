@@ -653,6 +653,16 @@ fn dab_density(
     dabs: &[RasterDab],
     selection: Option<&Selection>,
 ) -> Result<BTreeMap<TileCoord, Vec<f32>>, String> {
+    dab_density_on_tiles(width, height, dabs, selection, None)
+}
+
+fn dab_density_on_tiles(
+    width: u32,
+    height: u32,
+    dabs: &[RasterDab],
+    selection: Option<&Selection>,
+    occupied: Option<&BTreeMap<TileCoord, Vec<u8>>>,
+) -> Result<BTreeMap<TileCoord, Vec<f32>>, String> {
     if dabs.len() > 65_536 {
         return Err("Too many raster brush dabs".into());
     }
@@ -677,36 +687,41 @@ fn dab_density(
             .max(0) as u32;
         let inner = dab.radius * dab.hardness;
         for y in top..bottom {
-            for x in left..right {
-                if selection.is_some_and(|selection| {
-                    !selection.contains(Point {
-                        x: x as f32 + 0.5,
-                        y: y as f32 + 0.5,
-                    })
-                }) {
-                    continue;
-                }
-                let dx = x as f32 + 0.5 - dab.x;
-                let dy = y as f32 + 0.5 - dab.y;
-                let distance = dx.hypot(dy);
-                // At 1:1 zoom, fwidth(distance) is approximately the L1 norm
-                // of the radial distance gradient used by the GPU brush.
-                let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01);
-                let edge = (inner + aa).max(dab.radius + aa);
-                let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
-                let profile = 1.0 - t * t * (3.0 - 2.0 * t);
-                if profile <= 0.0 {
-                    continue;
-                }
+            for tile_x in left / TILE_SIZE..right.div_ceil(TILE_SIZE) {
                 let coord = TileCoord {
-                    x: x / TILE_SIZE,
+                    x: tile_x,
                     y: y / TILE_SIZE,
                 };
-                let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
-                density
+                if occupied.is_some_and(|tiles| !tiles.contains_key(&coord)) {
+                    continue;
+                }
+                let coverage = density
                     .entry(coord)
-                    .or_insert_with(|| vec![0.0; TILE_BYTES / 4])[index] +=
-                    (4.0 + 12.0 * dab.hardness) * dab.weight * profile;
+                    .or_insert_with(|| vec![0.0; TILE_BYTES / 4]);
+                for x in left.max(tile_x * TILE_SIZE)..right.min((tile_x + 1) * TILE_SIZE) {
+                    if selection.is_some_and(|selection| {
+                        !selection.contains(Point {
+                            x: x as f32 + 0.5,
+                            y: y as f32 + 0.5,
+                        })
+                    }) {
+                        continue;
+                    }
+                    let dx = x as f32 + 0.5 - dab.x;
+                    let dy = y as f32 + 0.5 - dab.y;
+                    let distance = dx.hypot(dy);
+                    // At 1:1 zoom, fwidth(distance) is approximately the L1 norm
+                    // of the radial distance gradient used by the GPU brush.
+                    let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01);
+                    let edge = (inner + aa).max(dab.radius + aa);
+                    let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
+                    let profile = 1.0 - t * t * (3.0 - 2.0 * t);
+                    if profile <= 0.0 {
+                        continue;
+                    }
+                    let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                    coverage[index] += (4.0 + 12.0 * dab.hardness) * dab.weight * profile;
+                }
             }
         }
     }
@@ -1363,7 +1378,6 @@ impl TiledRasterDocument {
         dabs: &[RasterDab],
         selection: Option<&Selection>,
     ) -> Result<Option<TileInvalidation>, String> {
-        let density = dab_density(self.width, self.height, dabs, selection)?;
         let layer = self
             .layers
             .iter_mut()
@@ -1372,6 +1386,13 @@ impl TiledRasterDocument {
         if layer.locked || layer.alpha_locked || !layer.visible {
             return Err("Raster layer is hidden or locked".into());
         }
+        let density = dab_density_on_tiles(
+            self.width,
+            self.height,
+            dabs,
+            selection,
+            Some(&layer.tiles.tiles),
+        )?;
         let mut changes = Vec::new();
         for (coord, coverage) in density {
             let Some(before) = layer.tiles.tiles.get(&coord).cloned() else {
@@ -1624,6 +1645,31 @@ fn div_255(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_eraser_density_matches_full_density_without_allocating_empty_tiles() {
+        let coord = TileCoord { x: 0, y: 0 };
+        let occupied = BTreeMap::from([(coord, vec![255; TILE_BYTES])]);
+        let dabs = [RasterDab {
+            x: TILE_SIZE as f32,
+            y: TILE_SIZE as f32,
+            radius: 80.0,
+            hardness: 0.35,
+            weight: 1.0,
+        }];
+        let full = dab_density(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None).unwrap();
+        let sparse =
+            dab_density_on_tiles(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None, Some(&occupied))
+                .unwrap();
+        assert_eq!(sparse.len(), 1);
+        assert_eq!(sparse[&coord], full[&coord]);
+        let empty = BTreeMap::new();
+        assert!(
+            dab_density_on_tiles(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None, Some(&empty))
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn eraser_removes_alpha_and_undo_restores_pixels() {
