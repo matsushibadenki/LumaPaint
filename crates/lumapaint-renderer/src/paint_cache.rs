@@ -118,6 +118,8 @@ mod tests {
     use lumapaint_core::document::Brush;
     fn stroke(document: &mut Document, x: f32, erase: bool) {
         let brush = Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 20.,
             hardness: 0.5,
             color: [20, 40, 60],

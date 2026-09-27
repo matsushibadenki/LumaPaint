@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { onNativeScaleChange, finishCanvasPath, resetCanvasPan, syncCanvas, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
+import { onNativeScaleChange, finishCanvasPath, resetCanvasPan, syncCanvas, type DisplayChannel, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { textPanelMessages } from './text-panel-i18n';
@@ -7,9 +7,9 @@ import { Icon } from './components/Icon';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, tool, zoom, channel = 0, visible = true, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
-  visible?: boolean; hasDocument?: boolean; footerAccessory?: ReactNode;
+  channel?: DisplayChannel; visible?: boolean; hasDocument?: boolean; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
   const t = messages[locale];
@@ -20,7 +20,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const dark = theme === 'dark' || (theme === 'system' && systemDark);
-  const settings = useRef({ zoom, dark, brush, tool, visible });
+  const settings = useRef({ zoom, dark, brush, tool, visible, channel });
   const schedule = useRef<() => void>(() => {});
   const retry = () => { setError(''); setStatus('loading'); setAttempt(value => value + 1); };
 
@@ -32,9 +32,9 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
   }, []);
 
   useEffect(() => {
-    settings.current = { zoom, dark, brush, tool, visible };
+    settings.current = { zoom, dark, brush, tool, visible, channel };
     schedule.current();
-  }, [zoom, dark, brush, tool, visible]);
+  }, [zoom, dark, brush, tool, visible, channel]);
 
   useEffect(() => {
     const finishOutside = (event: PointerEvent) => {
@@ -89,13 +89,23 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, visible = true
         fail(cause);
       } finally {
         busy = false;
-        if (active && dirty && !failed) requestRender();
+        // A setting may have changed while the failed request was in flight.
+        // Do not discard the queued valid brush (for example, envelope disabled).
+        if (active && dirty) {
+          failed = false;
+          requestRender();
+        }
       }
     };
     const requestRender = () => {
       if (active && !frame) frame = requestAnimationFrame(() => { void render(); });
     };
-    schedule.current = requestRender;
+    schedule.current = () => {
+      // A validation/render error must not permanently disconnect later settings.
+      // Retry on an explicit settings change, rather than continuously retrying.
+      failed = false;
+      requestRender();
+    };
     const observer = new ResizeObserver(requestRender);
     observer.observe(element);
     window.addEventListener('resize', requestRender);

@@ -11,6 +11,8 @@ mod platform;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanvasRequest {
+    #[serde(default)]
+    pub channel: u32,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -50,6 +52,9 @@ pub enum CanvasTool {
 
 impl CanvasRequest {
     fn validate(&self) -> Result<(), String> {
+        if self.channel > 8 {
+            return Err("Invalid display channel".into());
+        }
         self.brush.validate()?;
         if ![self.x, self.y, self.width, self.height, self.zoom]
             .iter()
@@ -131,14 +136,15 @@ pub async fn document_workspace(
 #[tauri::command]
 pub async fn new_document(
     window: tauri::WebviewWindow,
+    settings: lumapaint_core::document::NewDocumentSettings,
 ) -> Result<DocumentWorkspaceSnapshot, String> {
     #[cfg(target_os = "macos")]
     {
-        on_main(window, platform::new_document).await
+        on_main(window, move || platform::new_document(settings)).await
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = window;
+        let _ = (window, settings);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
@@ -672,6 +678,7 @@ mod tests {
     #[test]
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
+            channel: 0,
             x: 0.0,
             y: 0.0,
             width: 640.0,

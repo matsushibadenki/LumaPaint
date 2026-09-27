@@ -186,7 +186,7 @@ struct Segment {
     radius: f32,
     hardness: f32,
     weight: f32,
-    padding: f32,
+    texture: f32,
 }
 
 #[repr(C)]
@@ -279,7 +279,12 @@ fn linear_color(color: [u8; 3]) -> [f32; 4] {
 // vertex would reintroduce dark knots. A partial final interval has less weight.
 fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
     let points = smooth_points(&stroke.points, &stroke.pressures);
-    dabs_along_path(&points, stroke.brush, opacity)
+    let mut brush = stroke.brush;
+    if stroke.eraser {
+        brush.simulation = Default::default();
+        brush.envelope.enabled = false;
+    }
+    dabs_along_path(&points, brush, opacity)
 }
 
 /// A matching tile preview already contains every committed stroke. Keep the
@@ -331,9 +336,16 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     if !length.is_finite() || length > f64::from(spacing) * 65_535.0 {
         return Err("Stroke exceeds tile dab limit".into());
     }
-    let dabs = dabs_along_path(&points, stroke.brush, 1.0)
+    let mut brush = stroke.brush;
+    if stroke.eraser {
+        brush.simulation = Default::default();
+        brush.envelope.enabled = false;
+    }
+    let dabs = dabs_along_path(&points, brush, 1.0)
         .into_iter()
         .map(|segment| RasterDab {
+            texture: segment.texture,
+            texture_scale: 1.0,
             x: segment.ends[0],
             y: segment.ends[1],
             radius: segment.radius,
@@ -393,6 +405,7 @@ pub fn paint_stroke_into_tiles_at_scale(
         dab.x *= factor;
         dab.y *= factor;
         dab.radius *= factor;
+        dab.texture_scale = factor;
     }
     let selection = stroke.selection.as_ref().map(|selection| {
         let mut scaled = selection.clone();
@@ -877,16 +890,27 @@ fn dabs_along_path(
     let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
     let color = linear_color(brush.color);
     let mut result = Vec::new();
-    let mut emit = |p: Point, pressure: f32, length: f32| {
+    let mut emit = |p: Point, pressure: f32, length: f32, distance: f32| {
         let radius = base_radius * pressure.max(0.05);
+        let level = brush.envelope.level(distance);
+        let base_texture = match brush.simulation {
+            lumapaint_core::document::BrushSimulation::Pencil => 1.0,
+            lumapaint_core::document::BrushSimulation::DryBrush => 2.0,
+            _ => 0.0,
+        };
+        let dryness = if brush.envelope.enabled {
+            (1.0 - level) * brush.envelope.dryness
+        } else {
+            0.0
+        };
         result.push(Segment {
             ends: [p.x, p.y, p.x, p.y],
             color,
             radius,
             hardness: brush.hardness,
             // Optical depth per unit arc length; the shader converts it to alpha.
-            weight: length / radius * opacity,
-            padding: 0.0,
+            weight: length / radius * opacity * level,
+            texture: base_texture + (2.0 - base_texture) * dryness,
         })
     };
     let mut traversed = 0.0;
@@ -907,6 +931,7 @@ fn dabs_along_path(
                 },
                 pressure_a + (pressure_b - pressure_a) * t,
                 spacing,
+                next,
             );
             next += spacing;
         }
@@ -915,16 +940,29 @@ fn dabs_along_path(
     if let Some((last, pressure)) = points.last() {
         if traversed < spacing * 0.5 {
             // A click still produces a round mark.
-            emit(*last, *pressure, base_radius);
+            emit(*last, *pressure, base_radius, traversed);
         } else {
             // Correct the last quadrature cell instead of adding a full end dab.
             let covered = next - spacing * 0.5;
             let remainder = traversed - covered;
             if remainder > 0.0 {
-                emit(*last, *pressure, remainder);
+                emit(*last, *pressure, remainder, traversed);
             } else if let Some(last_dab) = result.last_mut() {
-                last_dab.weight += remainder / base_radius;
+                // Preserve the envelope multiplier when correcting the final cell.
+                last_dab.weight += remainder / base_radius * brush.envelope.level(next - spacing);
             }
+        }
+    }
+    if brush.simulation == lumapaint_core::document::BrushSimulation::Ink && traversed > spacing {
+        // Arc-length taper is independent of input-event density and tablet frequency.
+        let taper_length = (brush.size * 2.0).min(traversed * 0.3).max(spacing);
+        for (index, dab) in result.iter_mut().enumerate() {
+            let distance = (index as f32 + 0.5) * spacing;
+            let factor =
+                (distance.min((traversed - distance).max(0.0)) / taper_length).clamp(0.12, 1.0);
+            let old_radius = dab.radius;
+            dab.radius = (dab.radius * factor).max(0.025);
+            dab.weight *= old_radius / dab.radius;
         }
     }
     result
@@ -994,7 +1032,7 @@ fn create_brush_pipeline(
             vertex: wgpu::VertexState {
                 module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32] }],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32] }],
             },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
@@ -1134,6 +1172,9 @@ pub fn validate_svg(source: &str) -> Result<(), String> {
 
 /// The host must keep the native surface target alive until this renderer is dropped.
 pub struct Renderer {
+    pub channel: u32,
+    channel_pipeline: wgpu::RenderPipeline,
+    channel_target: Option<(wgpu::Texture, wgpu::BindGroup)>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1812,6 +1853,14 @@ impl Renderer {
             include_str!("tile.wgsl"),
             "Tile paint layer",
         );
+        let channel_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            format,
+            include_str!("channel.wgsl"),
+            "Channel inspection",
+        );
         let svg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -1840,6 +1889,9 @@ impl Renderer {
         });
         surface.configure(&device, &config);
         Ok(Self {
+            channel: 0,
+            channel_pipeline,
+            channel_target: None,
             surface,
             device,
             queue,
@@ -2031,7 +2083,11 @@ impl Renderer {
         if !document.background_visible() {
             background_viewport.canvas_color = CanvasColor::Transparent;
         }
-        let uniforms = Self::uniforms(background_viewport);
+        let mut uniforms = Self::uniforms(background_viewport);
+        uniforms.appearance[0] += self.channel as f32 * 2.0;
+        if self.channel == 4 && background_viewport.canvas_color == CanvasColor::Transparent {
+            uniforms.appearance[3] = 2.0;
+        }
         if self
             .tile_preview
             .as_ref()
@@ -2065,7 +2121,51 @@ impl Renderer {
             .collect();
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
-        let view = frame.texture.create_view(&Default::default());
+        let surface_view = frame.texture.create_view(&Default::default());
+        if self.channel != 0
+            && self.channel_target.as_ref().is_none_or(|(texture, _)| {
+                texture.width() != viewport.width || texture.height() != viewport.height
+            })
+        {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Channel composite"),
+                size: wgpu::Extent3d {
+                    width: viewport.width,
+                    height: viewport.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let texture_view = texture.create_view(&Default::default());
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Channel composite"),
+                layout: &self.svg_bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.svg_sampler),
+                    },
+                ],
+            });
+            self.channel_target = Some((texture, group));
+        }
+        if self.channel == 0 {
+            self.channel_target = None;
+        }
+        let view = self.channel_target.as_ref().map_or_else(
+            || frame.texture.create_view(&Default::default()),
+            |(texture, _)| texture.create_view(&Default::default()),
+        );
         let frame_overlay = self
             .frame_overlay
             .map(|overlay| frame_overlay::buffer(&self.device, overlay, viewport));
@@ -2371,6 +2471,39 @@ impl Renderer {
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
+            drop(pass);
+            if let Some((_, group)) = &self.channel_target {
+                let mut channel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Channel display"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &surface_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                channel_pass.set_pipeline(&self.channel_pipeline);
+                channel_pass.set_bind_group(0, &self.bind_group, &[]);
+                channel_pass.set_bind_group(1, group, &[]);
+                channel_pass.draw(0..3, 0..1);
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Channel independent selection overlays"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
             for selection_group in &outline_selections {
                 pass.set_pipeline(&self.selection_pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
@@ -2405,6 +2538,119 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulation_shader_validates_without_a_gpu() {
+        let source = format!(
+            "{}\n{}",
+            include_str!("selection_common.wgsl"),
+            include_str!("brush.wgsl")
+        );
+        let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
+
+    #[test]
+    fn envelope_sampling_is_distance_based_and_shared_with_gpu() {
+        use lumapaint_core::document::{Brush, BrushEnvelope};
+        let mut stroke = Stroke {
+            brush: Brush {
+                envelope: BrushEnvelope {
+                    enabled: true,
+                    attack: 10.0,
+                    decay: 20.0,
+                    sustain: 0.5,
+                    hold: 30.0,
+                    release: 40.0,
+                    dryness: 1.0,
+                },
+                ..Brush::default()
+            },
+            points: vec![Point { x: 0.0, y: 20.0 }, Point { x: 200.0, y: 20.0 }],
+            pressures: vec![],
+            eraser: false,
+            clear: false,
+            selection: None,
+        };
+        let cpu = sampled_raster_dabs(&stroke).unwrap();
+        let gpu = segments(&stroke, 1.0);
+        for (a, b) in cpu.iter().zip(&gpu) {
+            assert_eq!(a.weight, b.weight);
+            assert_eq!(a.texture, b.texture);
+        }
+        assert!(gpu
+            .iter()
+            .filter(|d| d.ends[0] >= 100.0)
+            .all(|d| d.weight == 0.0));
+        assert!(gpu.iter().any(|d| d.weight > 0.0 && d.texture > 0.0));
+        let dense: Vec<_> = (0..=20)
+            .map(|i| {
+                (
+                    Point {
+                        x: i as f32 * 10.0,
+                        y: 20.0,
+                    },
+                    1.0,
+                )
+            })
+            .collect();
+        let dense = dabs_along_path(&dense, stroke.brush, 1.0);
+        assert_eq!(dense.len(), gpu.len());
+        for (a, b) in dense.iter().zip(&gpu) {
+            assert!((a.weight - b.weight).abs() < 0.00001);
+        }
+        stroke.eraser = true;
+        assert!(sampled_raster_dabs(&stroke)
+            .unwrap()
+            .iter()
+            .all(|d| d.weight > 0.0 && d.texture == 0.0));
+    }
+
+    #[test]
+    fn simulation_taper_texture_and_eraser_share_the_tile_sampler() {
+        use lumapaint_core::document::{Brush, BrushSimulation};
+        let mut stroke = Stroke {
+            eraser: false,
+            clear: false,
+            selection: None,
+            brush: Brush {
+                size: 20.0,
+                simulation: BrushSimulation::Ink,
+                ..Brush::default()
+            },
+            points: vec![Point { x: 10.0, y: 30.0 }, Point { x: 210.0, y: 30.0 }],
+            pressures: vec![1.0, 1.0],
+        };
+        let ink = sampled_raster_dabs(&stroke).unwrap();
+        assert!(ink.first().unwrap().radius < ink[ink.len() / 2].radius * 0.3);
+        assert!(ink.last().unwrap().radius < ink[ink.len() / 2].radius * 0.3);
+        for simulation in [
+            BrushSimulation::Round,
+            BrushSimulation::Ink,
+            BrushSimulation::Pencil,
+            BrushSimulation::DryBrush,
+        ] {
+            stroke.brush.simulation = simulation;
+            let cpu = sampled_raster_dabs(&stroke).unwrap();
+            let gpu = segments(&stroke, 1.0);
+            assert_eq!(cpu.len(), gpu.len());
+            for (cpu, gpu) in cpu.iter().zip(&gpu) {
+                assert_eq!(cpu.radius, gpu.radius);
+                assert_eq!(cpu.texture, gpu.texture);
+                assert_eq!(cpu.weight, gpu.weight);
+            }
+        }
+        stroke.eraser = true;
+        assert!(sampled_raster_dabs(&stroke)
+            .unwrap()
+            .iter()
+            .all(|dab| dab.texture == 0.0 && dab.radius == 10.0));
+    }
     use lumapaint_core::document::Brush;
 
     #[test]
@@ -2487,6 +2733,8 @@ mod tests {
             eraser: false,
             clear: false,
             brush: lumapaint_core::document::Brush {
+                simulation: Default::default(),
+                envelope: Default::default(),
                 size: 32.0,
                 hardness: 0.3,
                 color: [20, 80, 200],
@@ -2585,6 +2833,8 @@ mod tests {
             .begin(
                 Point { x: 30.0, y: 30.0 },
                 Brush {
+                    simulation: Default::default(),
+                    envelope: Default::default(),
                     size: 20.0,
                     hardness: 0.5,
                     color: [180, 40, 20],
@@ -2634,6 +2884,8 @@ mod tests {
             .begin(
                 Point { x: 39.0, y: 30.0 },
                 Brush {
+                    simulation: Default::default(),
+                    envelope: Default::default(),
                     size: 24.0,
                     hardness: 1.0,
                     color: [0, 0, 0],
@@ -2654,6 +2906,8 @@ mod tests {
         use lumapaint_core::document::Brush;
         let mut source = Document::default();
         let brush = Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 32.0,
             hardness: 0.4,
             color: [30, 90, 180],
@@ -2690,6 +2944,8 @@ mod tests {
         use lumapaint_core::document::Brush;
         let mut source = Document::default();
         let brush = Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 24.0,
             hardness: 0.25,
             color: [20, 40, 80],
@@ -2989,6 +3245,8 @@ mod tests {
             eraser: false,
             clear: false,
             brush: lumapaint_core::document::Brush {
+                simulation: Default::default(),
+                envelope: Default::default(),
                 size: 40.0,
                 ..Default::default()
             },

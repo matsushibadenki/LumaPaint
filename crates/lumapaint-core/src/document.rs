@@ -69,6 +69,15 @@ pub struct DocumentSettings {
     pub pixel_aspect_ratio: f32,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NewDocumentSettings {
+    pub document: DocumentSettings,
+    pub color_mode: ColorMode,
+    pub color_profile: ColorProfile,
+    pub bit_depth: u8,
+}
+
 impl ColorProfile {
     fn mode(self) -> ColorMode {
         match self {
@@ -81,20 +90,101 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
+    #[serde(default)]
+    pub envelope: BrushEnvelope,
+    #[serde(default)]
+    pub simulation: BrushSimulation,
     pub size: f32,
     #[serde(default = "default_hardness")]
     pub hardness: f32,
     pub color: [u8; 3],
 }
 
+/// Distance-based ADSR. Zero-length stages are skipped; no timing data is required.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrushEnvelope {
+    pub enabled: bool,
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub hold: f32,
+    pub release: f32,
+    pub dryness: f32,
+}
+
+impl Default for BrushEnvelope {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            attack: 20.0,
+            decay: 100.0,
+            sustain: 0.6,
+            hold: 200.0,
+            release: 200.0,
+            dryness: 0.5,
+        }
+    }
+}
+
+impl BrushEnvelope {
+    pub fn level(self, mut distance: f32) -> f32 {
+        if !self.enabled {
+            return 1.0;
+        }
+        distance = distance.max(0.0);
+        if distance < self.attack {
+            return distance / self.attack;
+        }
+        distance -= self.attack;
+        if distance < self.decay {
+            return 1.0 - (1.0 - self.sustain) * distance / self.decay;
+        }
+        distance -= self.decay;
+        if distance < self.hold {
+            return self.sustain;
+        }
+        distance -= self.hold;
+        if distance < self.release {
+            return self.sustain * (1.0 - distance / self.release);
+        }
+        0.0
+    }
+
+    fn validate(self) -> Result<(), String> {
+        if [self.attack, self.decay, self.hold, self.release]
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=10000.0).contains(v))
+            || [self.sustain, self.dryness]
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err("Invalid brush envelope".into());
+        }
+        Ok(())
+    }
+}
+
 const fn default_hardness() -> f32 {
     1.0
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BrushSimulation {
+    #[default]
+    Round,
+    Ink,
+    Pencil,
+    DryBrush,
 }
 
 impl Default for Brush {
     fn default() -> Self {
         Self {
             size: 16.0,
+            envelope: BrushEnvelope::default(),
+            simulation: BrushSimulation::Round,
             hardness: default_hardness(),
             color: [32, 32, 32],
         }
@@ -103,6 +193,7 @@ impl Default for Brush {
 
 impl Brush {
     pub fn validate(&self) -> Result<(), String> {
+        self.envelope.validate()?;
         if !self.size.is_finite() || !(1.0..=MAX_BRUSH_SIZE).contains(&self.size) {
             return Err("Brush size must be between 1 and 512 px".into());
         }
@@ -783,6 +874,16 @@ impl Document {
         self.pixel_aspect_ratio = settings.pixel_aspect_ratio;
         self.revision += 1;
         Ok(())
+    }
+    /// Validate the complete preset before installing it in a workspace.
+    pub fn from_preset(settings: NewDocumentSettings) -> Result<Self, String> {
+        let mut document = Self::default();
+        document.set_document_settings(settings.document)?;
+        document.set_color_mode(settings.color_mode);
+        document.set_color_profile(settings.color_profile)?;
+        document.set_bit_depth(settings.bit_depth)?;
+        document.select_layer("layer-1".into())?;
+        Ok(document)
     }
     pub fn replace_loaded(&mut self, mut document: Self, name: String) {
         document.revision = self.revision + 1;
@@ -3485,6 +3586,106 @@ mod tests {
     }
 
     #[test]
+    fn new_document_preset_validates_and_round_trips() {
+        let preset = NewDocumentSettings {
+            document: DocumentSettings {
+                name: "A4 print".into(),
+                width: 2480,
+                height: 3508,
+                unit: DocumentUnit::Millimeters,
+                resolution: 300,
+                artboards: true,
+                canvas_color: CanvasColor::Transparent,
+                pixel_aspect_ratio: 1.0,
+            },
+            color_mode: ColorMode::Cmyk,
+            color_profile: ColorProfile::JapanColor2001Coated,
+            bit_depth: 16,
+        };
+        let mut doc = Document::from_preset(preset.clone()).unwrap();
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap().snapshot();
+        assert_eq!(
+            (loaded.width, loaded.height, loaded.resolution),
+            (2480, 3508, 300)
+        );
+        assert_eq!(loaded.color_mode, ColorMode::Cmyk);
+        assert_eq!(loaded.color_profile, ColorProfile::JapanColor2001Coated);
+        assert_eq!(loaded.bit_depth, 16);
+        assert_eq!(loaded.canvas_color, CanvasColor::Transparent);
+        assert!(loaded.artboards);
+        let mut invalid = preset.clone();
+        invalid.document.width = 8193;
+        assert!(Document::from_preset(invalid).is_err());
+        let mut invalid = preset.clone();
+        invalid.color_profile = ColorProfile::Srgb;
+        assert!(Document::from_preset(invalid).is_err());
+        let mut invalid = preset;
+        invalid.bit_depth = 12;
+        assert!(Document::from_preset(invalid).is_err());
+    }
+
+    #[test]
+    fn brush_envelope_stages_validation_and_persistence() {
+        let envelope = BrushEnvelope {
+            enabled: true,
+            attack: 10.0,
+            decay: 20.0,
+            sustain: 0.5,
+            hold: 30.0,
+            release: 40.0,
+            dryness: 0.75,
+        };
+        for (distance, expected) in [
+            (0.0, 0.0),
+            (5.0, 0.5),
+            (10.0, 1.0),
+            (20.0, 0.75),
+            (30.0, 0.5),
+            (60.0, 0.5),
+            (80.0, 0.25),
+            (100.0, 0.0),
+            (500.0, 0.0),
+        ] {
+            assert_eq!(envelope.level(distance), expected);
+        }
+        let zero = BrushEnvelope {
+            attack: 0.0,
+            decay: 0.0,
+            hold: 0.0,
+            release: 0.0,
+            ..envelope
+        };
+        assert_eq!(zero.level(0.0), 0.0);
+        let mut brush = Brush {
+            envelope,
+            ..Brush::default()
+        };
+        let old: Brush = serde_json::from_str(r#"{"size":16,"color":[0,0,0]}"#).unwrap();
+        assert!(!old.envelope.enabled);
+        let mut doc = Document::default();
+        doc.begin(Point { x: 10.0, y: 10.0 }, brush).unwrap();
+        doc.finish();
+        let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.visible_strokes().next().unwrap().brush.envelope,
+            envelope
+        );
+        loaded.undo();
+        loaded.redo();
+        assert_eq!(
+            loaded.visible_strokes().next().unwrap().brush.envelope,
+            envelope
+        );
+        brush.envelope.release = f32::NAN;
+        assert!(brush.validate().is_err());
+        brush.envelope = BrushEnvelope {
+            sustain: 1.1,
+            ..envelope
+        };
+        assert!(brush.validate().is_err());
+    }
+
+    #[test]
     fn document_settings_change_bounds_and_round_trip() {
         let mut doc = Document::default();
         doc.set_document_settings(DocumentSettings {
@@ -3514,6 +3715,8 @@ mod tests {
     #[test]
     fn brush_accepts_sizes_up_to_512_px() {
         assert!(Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 512.0,
             hardness: 1.0,
             color: [0, 0, 0]
@@ -3521,6 +3724,8 @@ mod tests {
         .validate()
         .is_ok());
         assert!(Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 513.0,
             hardness: 1.0,
             color: [0, 0, 0]
@@ -3528,6 +3733,8 @@ mod tests {
         .validate()
         .is_err());
         assert!(Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 16.0,
             hardness: 1.01,
             color: [0, 0, 0]
@@ -4007,6 +4214,8 @@ mod persistence_tests {
             .begin(
                 Point { x: 20.0, y: 40.0 },
                 Brush {
+                    simulation: Default::default(),
+                    envelope: Default::default(),
                     size: 37.0,
                     hardness: 0.35,
                     color: [12, 34, 56],
@@ -4379,6 +4588,42 @@ mod persistence_tests {
             .remove("hardness");
         let loaded = Document::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(loaded.visible_strokes().next().unwrap().brush.hardness, 1.0);
+    }
+
+    #[test]
+    fn simulated_brush_round_trip_history_and_legacy_default() {
+        let old: Brush =
+            serde_json::from_str(r#"{"size":16,"hardness":1,"color":[0,0,0]}"#).unwrap();
+        assert_eq!(old.simulation, BrushSimulation::Round);
+        for simulation in [
+            BrushSimulation::Ink,
+            BrushSimulation::Pencil,
+            BrushSimulation::DryBrush,
+        ] {
+            let mut document = Document::default();
+            document
+                .begin(
+                    Point { x: 20., y: 30. },
+                    Brush {
+                        simulation,
+                        ..Brush::default()
+                    },
+                )
+                .unwrap();
+            document.finish();
+            let loaded = Document::decode(&document.encode().unwrap()).unwrap();
+            assert_eq!(
+                loaded.visible_strokes().next().unwrap().brush.simulation,
+                simulation
+            );
+            document.undo();
+            assert_eq!(document.visible_strokes().count(), 0);
+            document.redo();
+            assert_eq!(
+                document.visible_strokes().next().unwrap().brush.simulation,
+                simulation
+            );
+        }
     }
     #[test]
     fn rejects_unknown_versions_invalid_brush_and_truncated_files() {

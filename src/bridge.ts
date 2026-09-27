@@ -5,7 +5,8 @@ import { listen } from '@tauri-apps/api/event';
 export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textFrame' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
-export interface Brush { size: number; hardness: number; color: [number, number, number] }
+export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
+export interface Brush { size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface DocumentSnapshot {
   selection: Selection | null;
   name: string;
@@ -76,6 +77,7 @@ export type BitDepth = 8 | 16 | 32;
 export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
+export interface NewDocumentSettings { document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
 export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
@@ -84,7 +86,9 @@ export interface RuntimeInfo {
   architecture: string;
 }
 
+export type DisplayChannel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export interface CanvasRequest {
+  channel?: DisplayChannel;
   x: number; y: number; width: number; height: number;
   zoom: number; dark: boolean; visible: boolean;
   brush?: Brush;
@@ -217,7 +221,7 @@ export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceS
 }
 
 export async function getDocumentWorkspace(): Promise<DocumentWorkspaceSnapshot> {
-  if (!isTauri()) return { activeId: 1, active: emptyDocument, documents: [{ id: 1, fileName: null, dirty: false, format: 'legacy' }] };
+  if (!isTauri()) return { activeId: null, active: null, documents: [] };
   return invoke<DocumentWorkspaceSnapshot>('document_workspace');
 }
 
@@ -227,7 +231,15 @@ function documentCommand(command: 'new_document' | 'switch_document' | 'close_do
   return result;
 }
 
-export const createDocument = () => documentCommand('new_document');
+export function createDocument(settings: NewDocumentSettings): Promise<DocumentWorkspaceSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentWorkspaceSnapshot>('new_document', { settings }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export async function subscribeNewDocument(onNew: () => void) {
+  if (!isTauri()) return () => {};
+  return listen('new-document-requested', onNew);
+}
 export const switchDocument = (id: number) => documentCommand('switch_document', id);
 export const closeDocument = (id: number) => documentCommand('close_document', id);
 

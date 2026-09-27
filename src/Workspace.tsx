@@ -22,6 +22,8 @@ import { ToolModeSwitch } from './components/ToolModeSwitch';
 import { initialTools, isPenTool, penTools, type PenTool, modeForTool, modeLabels, modeTools, type ToolMode } from './tool-modes';
 import { PercentInput, SizeInput, fromHex, toHex } from './components/BrushControls';
 import { ColorPairControl, type ColorTarget } from './components/ColorPanel';
+import { NewDocumentDialog } from './components/NewDocumentDialog';
+import { subscribeNewDocument, type NewDocumentSettings, type DisplayChannel } from './bridge';
 
 export function Workspace() {
   const [locale, setLocale] = useState<Locale>(initialLocale);
@@ -75,6 +77,8 @@ export function Workspace() {
   const filePending = useRef(false);
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
+  const [channel, setChannel] = useState<DisplayChannel>(0);
+  useEffect(() => setChannel(0), [activeDocumentId, documentState.colorMode]);
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
   const [inlineText, setInlineText] = useState<TextSettings | null>(null);
   const textSessionActive = useRef(false);
@@ -82,6 +86,8 @@ export function Workspace() {
   const [textPanelRequest, setTextPanelRequest] = useState(0);
   const showTextPanel = useCallback(() => { setPanels(true); setTextPanelRequest(value => value + 1); }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newDocumentOpen, setNewDocumentOpen] = useState(false);
+  const startupChecked = useRef(false);
   const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -129,12 +135,19 @@ export function Workspace() {
   useEffect(() => {
     let active = true;
     let stop = () => {};
-    getDocumentWorkspace().then(next => { if (active) updateWorkspace(next); }).catch(cause => { if (active) setError(String(cause)); });
-    subscribeDocuments(next => { if (active) updateWorkspace(next); })
+    getDocumentWorkspace().then(next => { if (active) { updateWorkspace(next); if (!startupChecked.current) { startupChecked.current = true; setNewDocumentOpen(next.documents.length === 0); } } }).catch(cause => { if (active) setError(String(cause)); });
+    subscribeDocuments(next => { if (active) { updateWorkspace(next); if (next.active) setNewDocumentOpen(false); } })
       .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
   }, [updateWorkspace]);
+
+  useEffect(() => {
+    let active = true;
+    let stop = () => {};
+    subscribeNewDocument(() => { if (active) setNewDocumentOpen(true); }).then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); }).catch(cause => setError(String(cause)));
+    return () => { active = false; stop(); };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -298,11 +311,19 @@ export function Workspace() {
 
   const documentAction = useCallback(async (action: 'new' | 'switch' | 'close', id?: number) => {
     if (filePending.current) return;
+    if (action === 'new') { setNewDocumentOpen(true); return; }
     filePending.current = true; setFileBusy(true); setError('');
     try {
-      const next = action === 'new' ? await createDocument() : action === 'switch' ? await switchDocument(id!) : await closeDocument(id!);
+      const next = action === 'switch' ? await switchDocument(id!) : await closeDocument(id!);
       updateWorkspace(next);
     } catch (cause) { setError(String(cause)); }
+    finally { filePending.current = false; setFileBusy(false); }
+  }, [updateWorkspace]);
+
+  const createFromPreset = useCallback(async (settings: NewDocumentSettings) => {
+    if (filePending.current) throw new Error('Another file operation is in progress');
+    filePending.current = true; setFileBusy(true);
+    try { updateWorkspace(await createDocument(settings)); setZoom(1); }
     finally { filePending.current = false; setFileBusy(false); }
   }, [updateWorkspace]);
 
@@ -347,6 +368,7 @@ export function Workspace() {
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
+      if (newDocumentOpen) return;
 
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
@@ -390,7 +412,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
@@ -452,16 +474,17 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen}
+        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen}
           footerAccessory={<RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
-      {panels && <Inspector onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector channel={channel} onChannel={setChannel} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {settingsOpen && <SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} />}
+    {newDocumentOpen && <NewDocumentDialog locale={locale} onCreate={createFromPreset} onClose={() => setNewDocumentOpen(false)} />}
     {colorSettingsOpen && <ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} />}
   </div>;
 }

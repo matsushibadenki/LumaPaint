@@ -1,19 +1,20 @@
 import { StrokePanel, strokeLabels } from './StrokePanel';
+import { ChannelsPanel } from './ChannelsPanel';
 import { CompactSlider } from './CompactSlider';
-import { useEffect, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
-import type { BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
+import { Fragment, useEffect, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
+import type { DisplayChannel, BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
 import { BrushPresets } from './BrushPresets';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
-import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput, fromHex, toHex } from './BrushControls';
+import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput } from './BrushControls';
+import { ColorSwatches } from './ColorSwatches';
 import { Icon } from './Icon';
 import { LayerList } from './LayerList';
 import { TextPanel } from './TextPanel';
 import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
 
-const swatches = ['#202020', '#808080', '#ffffff', '#e5796b', '#d6a13e', '#6b9c76', '#538fd2', '#a875ce'];
-const panelIds = ['brush', 'color', 'document', 'layers', 'text', 'stroke'] as const;
+const panelIds = ['color', 'brush', 'stroke', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -34,13 +35,13 @@ function isPanelId(value: unknown): value is PanelId {
 }
 
 function initialPanelOrder(): PanelId[] {
-  const stored = readPreference('inspectorOrder');
+  const stored = readPreference('inspectorOrder-grouped-v1');
   if (!stored) return [...panelIds];
   try {
     const parsed: unknown = JSON.parse(stored);
     if (Array.isArray(parsed) && parsed.every(isPanelId)) {
       const stored = [...new Set<PanelId>(parsed)];
-      return [...stored, ...panelIds.filter(panel => !stored.includes(panel))];
+      return ['color', ...[...stored, ...panelIds.filter(panel => !stored.includes(panel))].filter(panel => panel !== 'color' && panel !== 'document'), 'document'];
     }
   } catch { /* Use the default order when an old preference cannot be read. */ }
   return [...panelIds];
@@ -53,7 +54,8 @@ function initialPanel(): PanelId {
 
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  channel: DisplayChannel; onChannel: (channel: DisplayChannel) => void;
   onStrokeWidth: (width: number) => Promise<void>;
   onSelectLayer: (id: string) => void;
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
@@ -68,6 +70,7 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
 }) {
   const t = workspaceMessages[locale];
   const [order, setOrder] = useState<PanelId[]>(initialPanelOrder);
+  useEffect(() => setOrder(initialPanelOrder()), []);
   const [activePanel, setActivePanel] = useState<PanelId>(() => textPanelRequest > 0 ? 'text' : colorPanelRequest > 0 ? 'color' : initialPanel());
   useEffect(() => { if (textPanelRequest > 0) setActivePanel('text'); }, [textPanelRequest]);
   useEffect(() => { if (colorPanelRequest > 0) setActivePanel('color'); }, [colorPanelRequest]);
@@ -79,7 +82,7 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels'>('layers');
   const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title };
 
-  useEffect(() => savePreference('inspectorOrder', JSON.stringify(order)), [order]);
+  useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
   useEffect(() => savePreference('inspectorPanel', activePanel), [activePanel]);
   useEffect(() => {
     setSettings({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio });
@@ -103,7 +106,7 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
   }
 
   function movePanel(source: PanelId, target: PanelId) {
-    if (source === target) return;
+    if (source === target || source === 'color' || source === 'document' || target === 'color' || target === 'document') return;
     setOrder(current => {
       const targetIndex = current.indexOf(target);
       const next = current.filter(panel => panel !== source);
@@ -137,15 +140,14 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
 
   return <aside className="inspector" aria-label={t.properties}>
     <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
-      {order.map(panel => <button
-        key={panel}
+      {order.map(panel => <Fragment key={panel}><button
         id={`inspector-tab-${panel}`}
-        className={`tool-button inspector-tab${activePanel === panel ? ' selected' : ''}${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
+        className={`tool-button inspector-tab${panel === 'document' ? ' inspector-tab-bottom' : ''}${activePanel === panel ? ' selected' : ''}${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
         role="tab"
         aria-selected={activePanel === panel}
         aria-controls={`inspector-panel-${panel}`}
         tabIndex={activePanel === panel ? 0 : -1}
-        draggable
+        draggable={panel !== 'color' && panel !== 'document'}
         title={labels[panel]}
         aria-label={labels[panel]}
         onClick={() => setActivePanel(panel)}
@@ -155,7 +157,7 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
         onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }}
         onDrop={event => handleDrop(event, panel)}
         onDragEnd={() => { setDraggedPanel(null); setDropTarget(null); }}
-      ><Icon name={panelIcons[panel]} /></button>)}
+      ><Icon name={panelIcons[panel]} /></button>{panel === 'color' && <span className="inspector-tab-separator" aria-hidden="true" />}</Fragment>)}
     </div>
 
     {activePanel === 'stroke' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} /></section>}
@@ -167,10 +169,10 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
       <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
-      <BrushPresets locale={locale} brush={brush} enabled={enabled} onChange={onBrush} />
+      <ColorSwatches locale={locale} color={brush.color} targetLabel={t.foreground} onChange={onForegroundChange} />
       <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><CompactSlider id="brush-size" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
       <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><CompactSlider id="brush-hardness" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
-      <div className="swatches" aria-label={t.foreground}>{swatches.map((hex, index) => <button key={hex} className="swatch" title={t.colors[index]} aria-label={t.colors[index]} aria-pressed={toHex(brush.color) === hex} style={{ '--swatch': hex } as CSSProperties} onClick={() => onForegroundChange(fromHex(hex))} />)}</div>
+      <BrushPresets locale={locale} brush={brush} enabled={enabled} onChange={onBrush} />
       <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={onForegroundChange} />
     </section>}
 
@@ -194,9 +196,7 @@ export function Inspector({ onStrokeWidth, textPanelRequest, textSettings, textE
 
     {activePanel === 'layers' && <section className="inspector-panel layer-panel" role="tabpanel" id="inspector-panel-layers" aria-labelledby="inspector-tab-layers">
       <div className="layer-subtabs"><button className={layerPanelMode === 'layers' ? 'active' : ''} onClick={() => setLayerPanelMode('layers')}>{t.layers}</button><button className={layerPanelMode === 'channels' ? 'active' : ''} onClick={() => setLayerPanelMode('channels')}>{t.channels}</button><button disabled>{t.paths}</button></div>
-      {layerPanelMode === 'channels' ? <div className="channel-list">
-        {[t.compositeChannel, 'Red', 'Green', 'Blue', t.alphaChannel].map((channel, index) => <div className={`channel-row${index === 4 ? ' alpha' : ''}`} key={channel}><Icon name="eye" /><span className="channel-thumb">{index === 4 ? 'α' : index === 0 ? 'RGB' : channel[0]}</span><span>{channel}</span></div>)}
-      </div> : <>
+      {layerPanelMode === 'channels' ? <ChannelsPanel locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
         <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><CompactSlider disabled={!enabled || !selectedLayer} min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!enabled || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
         {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}

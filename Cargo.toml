@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lumapaint-core", "crates/lumapaint-renderer", "src-tauri"]
+members = ["crates/lumapaint-core", "crates/lumapaint-mcp", "crates/lumapaint-renderer", "src-tauri"]
 resolver = "2"
 
 [workspace.package]

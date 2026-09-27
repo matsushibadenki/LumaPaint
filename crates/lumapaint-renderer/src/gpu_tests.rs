@@ -448,6 +448,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 24.0,
             hardness: 1.0,
             color: [0, 0, 0],
@@ -460,6 +462,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 48.0,
             hardness: 0.0,
             color: [30, 90, 180],
@@ -476,6 +480,8 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 32.0,
             hardness: 0.25,
             color: [0, 0, 0],
@@ -516,6 +522,8 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 24.0,
             hardness: 1.0,
             color: [0, 0, 0],
@@ -528,6 +536,8 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 48.0,
             hardness: 0.0,
             color: [30, 90, 180],
@@ -849,6 +859,8 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
                 eraser: false,
                 clear: false,
                 brush: Brush {
+                    simulation: Default::default(),
+                    envelope: Default::default(),
                     size: 512.0,
                     hardness,
                     color: [0, 0, 0],
@@ -893,6 +905,8 @@ fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
         eraser: false,
         clear: false,
         brush: Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             color: [255, 255, 255],
             ..Brush::default()
         },
@@ -949,6 +963,8 @@ fn gpu_selection_clips_brush_footprint_and_survives_reload() {
                 doc.begin(
                     Point { x: 80.0, y: 300.0 },
                     Brush {
+                        simulation: Default::default(),
+                        envelope: Default::default(),
                         size: 512.0,
                         hardness,
                         color: [0, 0, 0],
@@ -1003,6 +1019,8 @@ fn gpu_brush_self_crossing_matches_separate_strokes() {
         for hardness in [0.0, 0.5, 1.0] {
             let brush = Brush {
                 size,
+                simulation: Default::default(),
+                envelope: Default::default(),
                 hardness,
                 color: [32, 32, 32],
             };
@@ -1035,6 +1053,8 @@ fn gpu_brush_sampling_density_does_not_change_width() {
     let gpu = Gpu::new();
     for hardness in [0.0, 0.5, 1.0] {
         let brush = Brush {
+            simulation: Default::default(),
+            envelope: Default::default(),
             size: 32.0,
             hardness,
             color: [0, 0, 0],
@@ -1086,6 +1106,8 @@ fn gpu_brush_sampling_density_does_not_change_width() {
 fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
     let gpu = Gpu::new();
     let brush = Brush {
+        simulation: Default::default(),
+        envelope: Default::default(),
         size: 64.0,
         hardness: 0.0,
         color: [0, 0, 0],
@@ -1388,4 +1410,151 @@ fn gpu_text_frame_overlay_pipeline_is_valid() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     assert!(pollster::block_on(gpu.device.pop_error_scope()).is_none());
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn gpu_channel_components_and_alpha() {
+    let gpu = Gpu::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+    let pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        format,
+        include_str!("channel.wgsl"),
+        "Channel test",
+    );
+    let size = wgpu::Extent3d {
+        width: 1,
+        height: 1,
+        depth_or_array_layers: 1,
+    };
+    let texture = |usage| {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let source = texture(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+    let output = texture(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+    gpu.queue.write_texture(
+        source.as_image_copy(),
+        &[255, 0, 0, 128],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        size,
+    );
+    let source_view = source.create_view(&Default::default());
+    let output_view = output.create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&Default::default());
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    for (mode, expected) in [
+        (1, 255),
+        (2, 0),
+        (3, 0),
+        (4, 128),
+        (5, 255),
+        (6, 0),
+        (7, 0),
+        (8, 255),
+    ] {
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&Uniforms {
+                    viewport: [1., 1., 1., 1.],
+                    appearance: [(mode * 2) as f32, 0., 0., 0.],
+                    document: [1., 1., 0., 0.],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniforms = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniforms, &[]);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            size,
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let bytes = readback.slice(..).get_mapped_range();
+        for value in &bytes[..3] {
+            assert!(
+                (i32::from(*value) - expected).abs() <= 1,
+                "mode {mode}: {bytes:?}"
+            );
+        }
+        assert_eq!(bytes[3], 255);
+    }
 }

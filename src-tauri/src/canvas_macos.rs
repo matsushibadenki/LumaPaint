@@ -451,7 +451,7 @@ define_class!(
             } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
                 report_edit(DocumentAction::InvertSelection); true
             } else if command && event.keyCode() == 45 {
-                if let Err(error) = new_document() { emit_error(error); }
+                if let Some(app) = APP.get() { let _ = app.emit_to("main", "new-document-requested", ()); }
                 true
             } else if command && event.keyCode() == 13 {
                 if DOCUMENT_OPEN.with(|open| open.get()) {
@@ -2862,7 +2862,7 @@ thread_local! {
     static ACTIVE_TILED_DOCUMENT: RefCell<Option<TiledSession>> = const { RefCell::new(None) };
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
     static TOOL: std::cell::Cell<CanvasTool> = const { std::cell::Cell::new(CanvasTool::Brush) };
-    static DOCUMENT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static DOCUMENT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ACTIVE_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
     static NEXT_DOCUMENT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(2) };
     static INACTIVE_DOCUMENTS: RefCell<Vec<OpenDocument>> = const { RefCell::new(Vec::new()) };
@@ -3295,6 +3295,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         let canvas = slot.as_mut().ok_or("Canvas initialization failed")?;
         canvas.view.setFrame(frame);
         canvas.viewport = viewport;
+        canvas.renderer.channel = request.channel;
         canvas.view.setHidden(false);
         if update_brush_cursor(viewport) || tool_changed {
             canvas.view.refresh_cursor();
@@ -3995,6 +3996,7 @@ mod tests {
             right: 0.0,
         };
         let request = CanvasRequest {
+            channel: 0,
             x: 79.0,
             y: 228.0,
             width: 1042.0,
@@ -4022,6 +4024,7 @@ mod tests {
             right: 0.0,
         };
         let mut request = CanvasRequest {
+            channel: 0,
             x: -10.0,
             y: 400.0,
             width: 700.0,
@@ -4089,12 +4092,15 @@ fn ensure_document_open() -> Result<(), String> {
     .ok_or_else(|| "This document is read-only in the current workspace".into())
 }
 
-pub fn new_document() -> Result<DocumentWorkspaceSnapshot, String> {
+pub fn new_document(
+    settings: lumapaint_core::document::NewDocumentSettings,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    let document = Document::from_preset(settings)?;
     text_editor::finish(true)?;
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
-        content: OpenDocumentContent::Legacy(Box::default()),
+        content: OpenDocumentContent::Legacy(Box::new(document)),
         path: None,
         fingerprint: None,
     });
