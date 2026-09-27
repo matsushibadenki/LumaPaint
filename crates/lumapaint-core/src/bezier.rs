@@ -508,6 +508,8 @@ mod anchor_tests {
             id: "curve".into(),
             name: "Curve".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: VectorPath {
                 data: path_data(&points, false).unwrap(),
@@ -727,6 +729,8 @@ mod direct_tests {
             id: "shape".into(),
             name: "Shape".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: VectorPath {
                 data: "M 0 0 H 100 V 100 H 0 Z".into(),

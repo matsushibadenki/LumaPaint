@@ -713,6 +713,11 @@ pub struct VectorObject {
     /// Group identifiers from the outermost group to the innermost group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_path: Vec<String>,
+    /// Group clipped by this object; its original styling is retained for release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipping_group: Option<String>,
+    #[serde(default)]
+    pub bounds_reset: bool,
     pub path: VectorPath,
     /// SVG-compatible affine matrix: [a, b, c, d, e, f].
     pub transform: [f32; 6],
@@ -730,6 +735,13 @@ pub struct VectorObject {
 
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .clipping_group
+            .as_ref()
+            .is_some_and(|id| !self.group_path.contains(id))
+        {
+            return Err("Clipping group must belong to the mask".into());
+        }
         if self.id.is_empty()
             || self.id.len() > 64
             || self.name.trim().is_empty()
@@ -1255,6 +1267,8 @@ mod path_hit_tests {
             id: "hit-test".into(),
             name: "Path".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             path: VectorPath {
                 data,
                 fill_rule: FillRule::NonZero,

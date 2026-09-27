@@ -329,6 +329,7 @@ pub struct LayerObjectSnapshot {
     pub id: String,
     pub name: String,
     pub group_path: Vec<String>,
+    pub clipping_mask: bool,
     pub kind: VectorObjectKind,
     pub visible: bool,
 }
@@ -606,6 +607,7 @@ impl Document {
                         id: object.id.clone(),
                         name: object.name.clone(),
                         group_path: object.group_path.clone(),
+                        clipping_mask: object.clipping_group.is_some(),
                         kind: object.kind,
                         visible: object.visible,
                     })
@@ -1617,6 +1619,8 @@ impl Document {
             id: id.clone(),
             name: format!("Text {serial}"),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             path: crate::vector::VectorPath {
                 data: "M0 0".into(),
                 fill_rule: crate::vector::FillRule::NonZero,
@@ -1827,6 +1831,217 @@ impl Document {
         expanded
     }
 
+    pub fn compound_path<F>(&mut self, release: bool, operation: F) -> Result<(), String>
+    where
+        F: FnOnce(&[VectorObject]) -> Result<Vec<PortablePathGeometry>, String>,
+    {
+        let selected = &self.selected_vector_objects;
+        let indices: Vec<_> = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.vector_objects.iter().any(|o| selected.contains(&o.id)))
+            .map(|(i, _)| i)
+            .collect();
+        if indices.len() != 1 {
+            return Err("Select paths on one vector layer / 同じベクターレイヤーのパスを選択してください / 请选择同一矢量图层中的路径".into());
+        }
+        let index = indices[0];
+        let mut layer = self.svg_layers[index].clone();
+        let objects: Vec<_> = layer
+            .vector_objects
+            .iter()
+            .filter(|o| selected.contains(&o.id))
+            .cloned()
+            .collect();
+        if layer.locked
+            || !layer.visible
+            || objects.iter().any(|o| {
+                !o.visible
+                    || o.text.is_some()
+                    || o.clipping_group.is_some()
+                    || !o.group_path.is_empty()
+            })
+        {
+            return Err("Select visible ungrouped paths on an unlocked layer / ロックされていないレイヤーの、グループ外の表示中パスを選択してください / 请选择未锁定图层中可见且未分组的路径".into());
+        }
+        if (!release && objects.len() < 2)
+            || (release && (objects.len() != 1 || objects[0].kind != VectorObjectKind::Compound))
+        {
+            return Err("Select two paths to make, or one compound path to release / 作成は2つ以上のパス、削除は1つの複合パスを選択してください / 建立需选择至少两条路径，释放需选择一条复合路径".into());
+        }
+        let geometry = operation(&objects)?;
+        if geometry.is_empty()
+            || (!release && geometry.len() != 1)
+            || geometry.len() > 4096
+            || layer.vector_objects.len() - objects.len() + geometry.len() > 4096
+        {
+            return Err("Invalid compound path result".into());
+        }
+        let insertion = layer
+            .vector_objects
+            .iter()
+            .position(|o| selected.contains(&o.id))
+            .unwrap();
+        let mut output = Vec::new();
+        for (n, (path, points)) in geometry.into_iter().enumerate() {
+            let mut object = objects[0].clone();
+            if n > 0 {
+                let mut suffix = n;
+                loop {
+                    let candidate = format!("compound-{}-{suffix}", self.revision + 1);
+                    if !self
+                        .svg_layers
+                        .iter()
+                        .any(|l| l.vector_objects.iter().any(|o| o.id == candidate))
+                    {
+                        object.id = candidate;
+                        break;
+                    }
+                    suffix += 4096;
+                }
+            }
+            object.path = path;
+            object.control_points = points;
+            object.transform = [1., 0., 0., 1., 0., 0.];
+            object.kind = VectorObjectKind::Compound;
+            object.validate()?;
+            output.push(object);
+        }
+        let ids = output.iter().map(|o| o.id.clone()).collect();
+        layer.vector_objects.retain(|o| !selected.contains(&o.id));
+        layer.vector_objects.splice(insertion..insertion, output);
+        layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+        validate_svg_layer(&layer)?;
+        if self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, l)| l.source.len())
+            .sum::<usize>()
+            + layer.source.len()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[index] = layer;
+        self.selected_vector_objects = ids;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn clipping_path(&mut self, action: &str) -> Result<(), String> {
+        let selected = self.selected_vector_objects.clone();
+        let indices: Vec<_> = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.vector_objects.iter().any(|o| selected.contains(&o.id)))
+            .map(|(i, _)| i)
+            .collect();
+        if indices.len() != 1 {
+            return Err("Select objects on one vector layer / 同じベクターレイヤーで選択してください / 请在同一矢量图层中选择对象".into());
+        }
+        let index = indices[0];
+        let mut layer = self.svg_layers[index].clone();
+        if !layer.visible || layer.locked {
+            return Err(
+                "Layer is locked or hidden / レイヤーがロックまたは非表示です / 图层已锁定或隐藏"
+                    .into(),
+            );
+        }
+        if action == "create" {
+            let members: Vec<_> = layer
+                .vector_objects
+                .iter()
+                .filter(|o| selected.contains(&o.id))
+                .collect();
+            if members.len() < 2 || members.iter().any(|o| !o.visible) {
+                return Err("Select at least two visible objects / 表示中のオブジェクトを2つ以上選択してください / 请选择至少两个可见对象".into());
+            }
+            let mask = members.last().unwrap();
+            if mask.text.is_some()
+                || !mask.group_path.is_empty()
+                || mask.path.data.trim().is_empty()
+            {
+                return Err("The frontmost object must be an ungrouped path / 最前面にはグループ外のパスを選択してください / 最前面的对象必须是未分组路径".into());
+            }
+            let mask_id = mask.id.clone();
+            let group = format!("clip-{}", self.revision + 1);
+            if layer
+                .vector_objects
+                .iter()
+                .any(|o| o.group_path.contains(&group))
+            {
+                return Err("Clipping group ID conflict".into());
+            }
+            let front = layer
+                .vector_objects
+                .iter()
+                .rposition(|o| selected.contains(&o.id))
+                .unwrap();
+            let insertion = layer.vector_objects[..front]
+                .iter()
+                .filter(|o| !selected.contains(&o.id))
+                .count();
+            let mut grouped = Vec::new();
+            layer.vector_objects.retain_mut(|o| {
+                if !selected.contains(&o.id) {
+                    return true;
+                }
+                o.group_path.insert(0, group.clone());
+                if o.id == mask_id {
+                    o.clipping_group = Some(group.clone());
+                }
+                grouped.push(o.clone());
+                false
+            });
+            layer.vector_objects.splice(insertion..insertion, grouped);
+        } else if action == "release" || action == "edit" {
+            let masks: Vec<_> = layer
+                .vector_objects
+                .iter()
+                .filter(|o| {
+                    o.clipping_group.as_ref().is_some_and(|g| {
+                        layer
+                            .vector_objects
+                            .iter()
+                            .any(|m| selected.contains(&m.id) && m.group_path.contains(g))
+                    })
+                })
+                .map(|o| (o.id.clone(), o.clipping_group.clone().unwrap()))
+                .collect();
+            if masks.len() != 1 {
+                return Err("Select one clipping group / クリッピンググループを1つ選択してください / 请选择一个剪切组".into());
+            }
+            let (mask_id, group) = &masks[0];
+            if action == "edit" {
+                self.selected_vector_objects = vec![mask_id.clone()];
+                return Ok(());
+            }
+            for o in &mut layer.vector_objects {
+                o.group_path.retain(|g| g != group);
+                if o.id == *mask_id {
+                    o.clipping_group = None;
+                }
+            }
+        } else {
+            return Err("Unknown clipping action".into());
+        }
+        layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+        validate_svg_layer(&layer)?;
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[index] = layer;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn group_selected_vectors(&mut self) -> Result<(), String> {
         if self.selected_vector_objects.len() < 2 {
             return Err("Select at least two vector objects / 2つ以上のベクターオブジェクトを選択してください / 请选择至少两个矢量对象".into());
@@ -1959,6 +2174,20 @@ impl Document {
                         object.group_path.remove(0);
                     }
                 }
+            }
+        }
+        for layer in &mut self.svg_layers {
+            for object in &mut layer.vector_objects {
+                if object
+                    .clipping_group
+                    .as_ref()
+                    .is_some_and(|g| !object.group_path.contains(g))
+                {
+                    object.clipping_group = None;
+                }
+            }
+            if layer.vector_layer {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
             }
         }
         self.record_vector_edit(before);
@@ -2505,6 +2734,346 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    /// One oriented bounding box shared by the selected objects.
+    pub fn selected_vector_box(&self) -> Option<[[f32; 2]; 4]> {
+        let objects: Vec<_> = self
+            .svg_layers
+            .iter()
+            .filter(|l| l.visible && !l.locked)
+            .flat_map(|l| &l.vector_objects)
+            .filter(|o| o.visible && self.selected_vector_objects.contains(&o.id))
+            .collect();
+        if let Some(first) = objects.first().filter(|o| !o.bounds_reset) {
+            let [a, b, c, d, e, f] = first.transform;
+            let det = a * d - b * c;
+            if det.abs() > 1e-8 && objects.iter().all(|o| !o.bounds_reset) {
+                let mut bounds = [
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                ];
+                for object in &objects {
+                    for p in transformed_control_points(object) {
+                        let x = (d * (p.x - e) - c * (p.y - f)) / det;
+                        let y = (-b * (p.x - e) + a * (p.y - f)) / det;
+                        bounds[0] = bounds[0].min(x);
+                        bounds[1] = bounds[1].min(y);
+                        bounds[2] = bounds[2].max(x);
+                        bounds[3] = bounds[3].max(y);
+                    }
+                }
+                if bounds.iter().all(|v| v.is_finite()) {
+                    let [x, y, r, bottom] = bounds;
+                    return Some(
+                        [[x, y], [r, y], [r, bottom], [x, bottom]]
+                            .map(|[x, y]| [a * x + c * y + e, b * x + d * y + f]),
+                    );
+                }
+            }
+        }
+        self.selected_vector_bounds()
+            .map(|[x, y, r, b]| [[x, y], [r, y], [r, b], [x, b]])
+    }
+
+    pub fn transform_selected_vectors(
+        &mut self,
+        action: &str,
+        values: [f32; 4],
+    ) -> Result<bool, String> {
+        if values.iter().any(|v| !v.is_finite() || v.abs() > 100_000.) {
+            return Err("Invalid transform values".into());
+        }
+        let Some([x, y, r, b]) = self.selected_vector_bounds() else {
+            return Err("Select objects / オブジェクトを選択してください / 请选择对象".into());
+        };
+        if ![
+            "move",
+            "rotate",
+            "reflect",
+            "scale",
+            "shear",
+            "individual",
+            "reset",
+        ]
+        .contains(&action)
+        {
+            return Err("Unknown transform".into());
+        }
+        if matches!(action, "scale" | "individual")
+            && (!(0.01..=100.).contains(&values[0]) || !(0.01..=100.).contains(&values[1]))
+        {
+            return Err(
+                "Scale must be 1–10000% / 倍率は1〜10000%です / 缩放比例应为1–10000%".into(),
+            );
+        }
+        if action == "shear" && values[0].abs() >= 89. {
+            return Err("Shear angle must be between -89 and 89 degrees".into());
+        }
+        let selected = self.expand_group_selection(&self.selected_vector_objects);
+        let mut layers = self.svg_layers.clone();
+        for l in &mut layers {
+            let mut changed = false;
+            for o in &mut l.vector_objects {
+                if !selected.contains(&o.id) {
+                    continue;
+                }
+                if l.locked || !l.visible || !o.visible {
+                    return Err("Selected object is locked or hidden".into());
+                }
+                if action == "reset" {
+                    o.bounds_reset = true;
+                    changed = true;
+                    continue;
+                }
+                let mut center = [(x + r) * 0.5, (y + b) * 0.5];
+                if action == "individual" {
+                    let points: Vec<_> = self
+                        .svg_layers
+                        .iter()
+                        .filter(|source| source.id == l.id)
+                        .flat_map(|source| &source.vector_objects)
+                        .filter(|member| {
+                            o.group_path.first().map_or(member.id == o.id, |root| {
+                                member.group_path.first() == Some(root)
+                            })
+                        })
+                        .flat_map(transformed_control_points)
+                        .collect();
+                    let minx = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+                    let maxx = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+                    let miny = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                    let maxy = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                    center = [(minx + maxx) * 0.5, (miny + maxy) * 0.5];
+                }
+                let [mut a, mut b, mut c, mut d] = [1., 0., 0., 1.];
+                let mut offset = [0., 0.];
+                match action {
+                    "move" => offset = [values[0], values[1]],
+                    "scale" => {
+                        a = values[0];
+                        d = values[1];
+                    }
+                    "rotate" | "individual" => {
+                        let (sn, cs) = values[if action == "rotate" { 0 } else { 2 }]
+                            .to_radians()
+                            .sin_cos();
+                        let sx = if action == "individual" {
+                            values[0]
+                        } else {
+                            1.
+                        };
+                        let sy = if action == "individual" {
+                            values[1]
+                        } else {
+                            1.
+                        };
+                        a = cs * sx;
+                        b = sn * sx;
+                        c = -sn * sy;
+                        d = cs * sy;
+                    }
+                    "reflect" => {
+                        let (sn, cs) = (2. * values[0].to_radians()).sin_cos();
+                        a = cs;
+                        b = sn;
+                        c = sn;
+                        d = -cs;
+                    }
+                    "shear" => c = values[0].to_radians().tan(),
+                    _ => {}
+                }
+                let [oa, ob, oc, od, oe, of] = o.transform;
+                o.transform = [
+                    a * oa + c * ob,
+                    b * oa + d * ob,
+                    a * oc + c * od,
+                    b * oc + d * od,
+                    center[0] + a * (oe - center[0]) + c * (of - center[1]) + offset[0],
+                    center[1] + b * (oe - center[0]) + d * (of - center[1]) + offset[1],
+                ];
+                o.bounds_reset = false;
+                o.validate()?;
+                changed = true;
+            }
+            if changed {
+                l.source = vector_svg(self.width, self.height, &l.vector_objects);
+                validate_svg_layer(l)?;
+            }
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(true)
+    }
+
+    pub fn selected_vector_bounds(&self) -> Option<[f32; 4]> {
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for object in self
+            .svg_layers
+            .iter()
+            .filter(|l| l.vector_layer && l.visible && !l.locked)
+            .flat_map(|l| &l.vector_objects)
+            .filter(|o| o.visible && self.selected_vector_objects.contains(&o.id))
+        {
+            for p in transformed_control_points(object) {
+                bounds[0] = bounds[0].min(p.x);
+                bounds[1] = bounds[1].min(p.y);
+                bounds[2] = bounds[2].max(p.x);
+                bounds[3] = bounds[3].max(p.y);
+            }
+        }
+        bounds.iter().all(|v| v.is_finite()).then_some(bounds)
+    }
+
+    pub fn scale_selected_vectors(&mut self, center: [f32; 2], scale: f32) -> Result<bool, String> {
+        if !scale.is_finite()
+            || !(0.01..=100.).contains(&scale)
+            || center.iter().any(|v| !v.is_finite())
+        {
+            return Err("Invalid object scale".into());
+        }
+        if (scale - 1.).abs() < f32::EPSILON || self.selected_vector_objects.is_empty() {
+            return Ok(false);
+        }
+        let selected = self.expand_group_selection(&self.selected_vector_objects);
+        let mut layers = self.svg_layers.clone();
+        for layer in &mut layers {
+            let mut changed = false;
+            for o in &mut layer.vector_objects {
+                if !selected.contains(&o.id) {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !o.visible {
+                    return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
+                }
+                for v in &mut o.transform[..4] {
+                    *v *= scale;
+                }
+                o.transform[4] = center[0] + (o.transform[4] - center[0]) * scale;
+                o.transform[5] = center[1] + (o.transform[5] - center[1]) * scale;
+                o.bounds_reset = false;
+                o.validate()?;
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(true)
+    }
+
+    pub fn rotate_selected_vectors(
+        &mut self,
+        center: [f32; 2],
+        angle: f32,
+    ) -> Result<bool, String> {
+        if !angle.is_finite() || angle.abs() > 100_000. || center.iter().any(|v| !v.is_finite()) {
+            return Err("Invalid object rotation".into());
+        }
+        if angle.abs() < f32::EPSILON || self.selected_vector_objects.is_empty() {
+            return Ok(false);
+        }
+        let selected = self.expand_group_selection(&self.selected_vector_objects);
+        let mut layers = self.svg_layers.clone();
+        for layer in &mut layers {
+            let mut changed = false;
+            for o in &mut layer.vector_objects {
+                if !selected.contains(&o.id) {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !o.visible {
+                    return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
+                }
+                let (sin, cos) = angle.sin_cos();
+                let [a, b, c, d, e, f] = o.transform;
+                o.transform = [
+                    cos * a - sin * b,
+                    sin * a + cos * b,
+                    cos * c - sin * d,
+                    sin * c + cos * d,
+                    center[0] + cos * (e - center[0]) - sin * (f - center[1]),
+                    center[1] + sin * (e - center[0]) + cos * (f - center[1]),
+                ];
+                o.bounds_reset = false;
+                o.validate()?;
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(true)
+    }
+
+    pub fn select_vectors_in_rect(
+        &mut self,
+        start: Point,
+        end: Point,
+        additive: bool,
+    ) -> Result<(), String> {
+        if !start.valid() || !end.valid() {
+            return Err("Invalid selection rectangle".into());
+        }
+        let min = [start.x.min(end.x), start.y.min(end.y)];
+        let max = [start.x.max(end.x), start.y.max(end.y)];
+        let mut ids = if additive {
+            self.selected_vector_objects.clone()
+        } else {
+            Vec::new()
+        };
+        if max[0] - min[0] >= 1. && max[1] - min[1] >= 1. {
+            for layer in self
+                .svg_layers
+                .iter()
+                .filter(|l| l.vector_layer && l.visible && !l.locked)
+            {
+                for object in layer
+                    .vector_objects
+                    .iter()
+                    .filter(|o| o.visible && !o.control_points.is_empty())
+                {
+                    if transformed_control_points(object)
+                        .iter()
+                        .all(|p| p.x >= min[0] && p.x <= max[0] && p.y >= min[1] && p.y <= max[1])
+                        && !ids.contains(&object.id)
+                    {
+                        ids.push(object.id.clone());
+                    }
+                }
+            }
+        }
+        self.select_vector_objects(ids)
+    }
+
     pub fn select_vector_at(
         &mut self,
         point: Point,
@@ -2536,6 +3105,90 @@ impl Document {
         }
         hit
     }
+    pub fn duplicate_selected_vectors(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000. || dy.abs() >= 100_000. {
+            return Err("Invalid duplicate offset".into());
+        }
+        let selected = self.expand_group_selection(&self.selected_vector_objects);
+        if selected.is_empty() {
+            return Ok(false);
+        }
+        let mut layers = self.svg_layers.clone();
+        let mut ids = Vec::new();
+        let mut serial = 0u64;
+        let mut groups = std::collections::HashMap::new();
+        let mut occupied: std::collections::HashSet<String> = self
+            .svg_layers
+            .iter()
+            .flat_map(|l| l.vector_objects.iter())
+            .flat_map(|o| std::iter::once(o.id.clone()).chain(o.group_path.iter().cloned()))
+            .collect();
+        let mut fresh = || loop {
+            serial += 1;
+            let id = format!("duplicate-{}-{serial}", self.revision + 1);
+            if occupied.insert(id.clone()) {
+                break id;
+            }
+        };
+        for layer in &mut layers {
+            let originals: Vec<_> = layer
+                .vector_objects
+                .iter()
+                .filter(|o| selected.contains(&o.id))
+                .cloned()
+                .collect();
+            if originals.is_empty() {
+                continue;
+            }
+            if layer.locked || !layer.visible || originals.iter().any(|o| !o.visible) {
+                return Err("Select visible objects on unlocked layers / 表示中でロックされていないオブジェクトを選択してください / 请选择可见且未锁定的对象".into());
+            }
+            if layer.vector_objects.len() + originals.len() > 4096 {
+                return Err("Too many vector objects".into());
+            }
+            let insertion = layer
+                .vector_objects
+                .iter()
+                .rposition(|o| selected.contains(&o.id))
+                .unwrap()
+                + 1;
+            let mut copies = Vec::new();
+            for mut object in originals {
+                object.id = fresh();
+                for group in &mut object.group_path {
+                    *group = groups
+                        .entry((layer.id.clone(), group.clone()))
+                        .or_insert_with(&mut fresh)
+                        .clone();
+                }
+                if let Some(group) = &mut object.clipping_group {
+                    *group = groups
+                        .get(&(layer.id.clone(), group.clone()))
+                        .ok_or("Missing clipping group")?
+                        .clone();
+                }
+                object.transform[4] += dx;
+                object.transform[5] += dy;
+                object.validate()?;
+                ids.push(object.id.clone());
+                copies.push(object);
+            }
+            layer.vector_objects.splice(insertion..insertion, copies);
+            layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+            validate_svg_layer(layer)?;
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.selected_vector_objects = ids;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(true)
+    }
+
     pub fn move_selected_vectors(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
         if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
             return Err("Invalid vector translation".into());
@@ -2666,7 +3319,14 @@ impl Document {
     /// composed from stationary and translated textures. Group opacity requires
     /// compositing the whole layer first, so those layers use the regular path.
     pub fn vector_drag_runs(&self, layer: &SvgLayer) -> Option<Vec<(bool, SvgLayer)>> {
-        if !layer.vector_layer || !layer.visible || layer.locked || layer.effective_opacity() != 1.0
+        if layer
+            .vector_objects
+            .iter()
+            .any(|o| o.clipping_group.is_some())
+            || !layer.vector_layer
+            || !layer.visible
+            || layer.locked
+            || layer.effective_opacity() != 1.0
         {
             return None;
         }
@@ -3829,11 +4489,42 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
     );
+    for (i, mask) in objects
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.clipping_group.is_some())
+    {
+        let [a, b, c, d, e, f] = mask.transform;
+        let rule = if mask.path.fill_rule == crate::vector::FillRule::EvenOdd {
+            "evenodd"
+        } else {
+            "nonzero"
+        };
+        let _ = write!(
+            svg,
+            r#"<defs><clipPath id="clip-{i}" clipPathUnits="userSpaceOnUse"><path d="{}" transform="matrix({a} {b} {c} {d} {e} {f})" clip-rule="{rule}"/></clipPath></defs>"#,
+            escape_xml(&mask.path.data)
+        );
+    }
     for (object_index, object) in objects
         .iter()
         .enumerate()
         .filter(|(_, object)| object.visible)
     {
+        if object.clipping_group.is_some() {
+            continue;
+        }
+        let mut clips = 0;
+        for (i, mask) in objects.iter().enumerate() {
+            if mask
+                .clipping_group
+                .as_ref()
+                .is_some_and(|g| object.group_path.contains(g))
+            {
+                let _ = write!(svg, r#"<g clip-path="url(#clip-{i})">"#);
+                clips += 1;
+            }
+        }
         let [a, b, c, d, e, f] = object.transform;
         let fill = object
             .fill
@@ -4019,6 +4710,9 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 svg.push_str("</tspan>");
             }
             svg.push_str("</text></g>");
+            for _ in 0..clips {
+                svg.push_str("</g>");
+            }
             continue;
         }
         let rule = match object.path.fill_rule {
@@ -4031,6 +4725,9 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             escape_xml(&object.path.data),
             object.stroke_width
         );
+        for _ in 0..clips {
+            svg.push_str("</g>");
+        }
     }
     svg.push_str("</svg>");
     svg
@@ -4255,6 +4952,8 @@ mod persistence_tests {
                     id: "shape-1".into(),
                     name: "Blue triangle".into(),
                     group_path: Vec::new(),
+                    clipping_group: None,
+                    bounds_reset: false,
                     path: VectorPath {
                         data: "M 10 10 L 80 10 L 40 70 Z".into(),
                         fill_rule: FillRule::EvenOdd,
@@ -4300,6 +4999,8 @@ mod persistence_tests {
                         id: id.into(),
                         name: id.into(),
                         group_path: Vec::new(),
+                        clipping_group: None,
+                        bounds_reset: false,
                         path: VectorPath {
                             data: "M 10 10 H 60 V 60 H 10 Z".into(),
                             fill_rule: FillRule::NonZero,
@@ -4358,6 +5059,8 @@ mod persistence_tests {
                     id: "shape-1".into(),
                     name: "Shape".into(),
                     group_path: Vec::new(),
+                    clipping_group: None,
+                    bounds_reset: false,
                     path: VectorPath {
                         data: "M 0 0 L 20 0 L 20 20 Z".into(),
                         fill_rule: FillRule::NonZero,
@@ -4433,6 +5136,8 @@ mod persistence_tests {
                     id: "rectangle-1".into(),
                     name: "Rectangle".into(),
                     group_path: Vec::new(),
+                    clipping_group: None,
+                    bounds_reset: false,
                     path: VectorPath {
                         data: "M 10 10 H 30 V 40 H 10 Z".into(),
                         fill_rule: FillRule::NonZero,
@@ -4501,6 +5206,8 @@ mod persistence_tests {
             id: id.into(),
             name: id.into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: VectorPath {
                 data: "M 0 0 H 20 V 20 H 0 Z".into(),
@@ -5588,6 +6295,8 @@ mod stroke_width_tests {
             id: "path-a".into(),
             name: "Path".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: VectorPath {
                 data: "M 0 0 L 100 100".into(),
@@ -5691,5 +6400,67 @@ mod clipboard_tests {
         document.layer_locked = true;
         assert!(document.cut_paint_selection().is_err());
         assert_eq!(document.strokes.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod transform_menu_tests {
+    use super::*;
+    #[test]
+    fn transforms_follow_oriented_box_and_reset_without_changing_artwork() {
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Transform".into(),
+                box_width: 100.,
+                ..Default::default()
+            },
+            position: [100., 100.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let original = doc.svg_layers().next().unwrap().vector_objects[0].clone();
+        doc.transform_selected_vectors("rotate", [45., 0., 0., 0.])
+            .unwrap();
+        let corners = doc.selected_vector_box().unwrap();
+        assert!((corners[1][1] - corners[0][1]).abs() > 1.);
+        let artwork = doc.svg_layers().next().unwrap().source.clone();
+        doc.transform_selected_vectors("reset", [0.; 4]).unwrap();
+        let reset = doc.selected_vector_box().unwrap();
+        assert_eq!(reset[0][1], reset[1][1]);
+        assert_eq!(doc.svg_layers().next().unwrap().source, artwork);
+        doc.undo();
+        assert_eq!(doc.selected_vector_box().unwrap(), corners);
+        doc.undo();
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], original);
+        for (action, values) in [
+            ("move", [20., 30., 0., 0.]),
+            ("reflect", [90., 0., 0., 0.]),
+            ("scale", [2., 0.5, 0., 0.]),
+            ("shear", [20., 0., 0., 0.]),
+            ("individual", [1.5, 0.5, 30., 0.]),
+        ] {
+            doc.transform_selected_vectors(action, values).unwrap();
+            let changed = doc.svg_layers().next().unwrap().vector_objects[0].clone();
+            assert_ne!(changed.transform, original.transform);
+            let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+            assert_eq!(
+                loaded.svg_layers().next().unwrap().vector_objects[0],
+                changed
+            );
+            doc.undo();
+            assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], original);
+            doc.redo();
+            assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], changed);
+            doc.undo();
+        }
+        assert!(doc
+            .transform_selected_vectors("scale", [0., 1., 0., 0.])
+            .is_err());
+        assert!(doc
+            .transform_selected_vectors("shear", [90., 0., 0., 0.])
+            .is_err());
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], original);
     }
 }

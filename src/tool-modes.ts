@@ -6,9 +6,9 @@ export type ModeTool = Exclude<CanvasTool, 'zoomIn' | 'zoomOut' | 'hand'>;
 
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
   paint: ['brush', 'eraser', 'rectangle', 'ellipse'],
-  vector: ['vectorSelect', 'vectorDirectSelect', 'vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
-  layout: ['vectorSelect', 'vectorDirectSelect', 'vectorRectangle', 'vectorEllipse', 'text', 'textFrame'],
-  animation: ['brush', 'rectangle', 'ellipse', 'vectorSelect', 'vectorDirectSelect'],
+  vector: ['vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate', 'vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
+  layout: ['vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate', 'vectorRectangle', 'vectorEllipse', 'text', 'textFrame'],
+  animation: ['brush', 'rectangle', 'ellipse', 'vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate'],
 };
 export const modeLabels = {
   paint: 'paintTools', vector: 'vectorTools', layout: 'layoutTools', animation: 'animationTools',

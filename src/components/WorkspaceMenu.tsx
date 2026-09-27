@@ -1,3 +1,5 @@
+import { transformLabels } from './TransformDialog';
+import type { TransformAction } from '../bridge';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
@@ -22,6 +24,9 @@ type Props = {
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
+  onTransform: (action: TransformAction) => void;
+  onCompound: (release: boolean) => void;
+  onClipping: (action: 'create' | 'release' | 'edit') => void;
   onGroup: (action: 'group' | 'ungroup' | 'ungroupAll') => void;
   onPathEdit: (action: PathEditAction) => void;
   onEdit: (action: DocumentEditAction) => void; onZoom: (value: number) => void;
@@ -31,6 +36,7 @@ type Props = {
 
 export function WorkspaceMenu(props: Props) {
   const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const clip = { ja: ['クリッピングパス', '作成', '削除', 'マスクを編集'], en: ['Clipping Path', 'Make', 'Release', 'Edit Mask'], 'zh-CN': ['剪切路径', '建立', '释放', '编辑蒙版'] }[locale];
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
   const selectedObjects = doc.layers.flatMap(layer => layer.objects.filter(object => doc.selectedVectorObjects.includes(object.id)).map(object => ({ layer, object })));
   const selectedEntities = new Set(selectedObjects.map(item => `${item.layer.id}:${item.object.groupPath[0] ?? item.object.id}`));
@@ -50,7 +56,7 @@ export function WorkspaceMenu(props: Props) {
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
-    [{ label: t.path, enabled: canEdit, children: [
+    [{ label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
       { label: t.pathJoin, enabled: selectedObjects.length === 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
       { label: t.pathAverage, enabled: selectedObjects.length > 0, action: () => onPathEdit('average') }, null,
       { label: t.pathOutline, enabled: selectedObjects.length > 0, action: () => onPathEdit('outline') },
@@ -63,6 +69,13 @@ export function WorkspaceMenu(props: Props) {
       { label: t.pathDivideBelow, enabled: selectedObjects.length === 2, action: () => onPathEdit('divideBelow') }, null,
       { label: t.pathSplitGrid, enabled: selectedObjects.length > 0, action: () => onPathEdit('splitGrid') }, null,
       { label: t.pathCleanUp, enabled: selectedObjects.length > 0, action: () => onPathEdit('cleanUp') },
+    ]}, { label: clip[0], enabled: canEdit, children: [
+      { label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onClipping('create') },
+      { label: clip[2], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('release') },
+      { label: clip[3], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('edit') },
+    ]}, { label: { ja: '複合パス', en: 'Compound Path', 'zh-CN': '复合路径' }[locale], enabled: canEdit, children: [
+      { label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onCompound(false) },
+      { label: clip[2], enabled: selectedObjects.length === 1 && selectedObjects[0].object.kind === 'compound', action: () => props.onCompound(true) },
     ]}],
     [future(t.newLayer), future(t.duplicateLayer), future(t.deleteLayer), null,
       { label: t.group, enabled: canGroup, shortcut: 'CmdOrCtrl+G', action: () => onGroup('group') },

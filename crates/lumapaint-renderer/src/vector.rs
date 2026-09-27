@@ -1040,3 +1040,103 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod clipping_tests {
+    use super::*;
+    use lumapaint_core::{
+        document::Document,
+        vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath},
+    };
+    #[test]
+    fn clipping_create_edit_release_undo_and_save_render_correctly() {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let shape = |id: &str, size: f32, color| VectorObject {
+            id: id.into(),
+            name: id.into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            path: VectorPath {
+                data: format!("M0 0H{size}V{size}H0Z"),
+                fill_rule: FillRule::NonZero,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            fill: Some(VectorPaint { color }),
+            stroke: None,
+            stroke_width: 0.,
+            visible: true,
+            kind: VectorObjectKind::Rectangle,
+            control_points: vec![[0., 0.], [size, size]],
+            text: None,
+        };
+        doc.upsert_vector_object(&layer, shape("art", 80., [255, 0, 0, 255]))
+            .unwrap();
+        doc.upsert_vector_object(&layer, shape("mask", 40., [0, 0, 255, 255]))
+            .unwrap();
+        doc.select_vector_objects(vec!["mask".into(), "art".into()])
+            .unwrap();
+        let original = doc.svg_layers().next().unwrap().source.clone();
+        doc.select_vector_objects(vec!["mask".into()]).unwrap();
+        assert!(doc.clipping_path("create").is_err());
+        assert_eq!(doc.svg_layers().next().unwrap().source, original);
+        doc.select_vector_objects(vec!["mask".into(), "art".into()])
+            .unwrap();
+        doc.clipping_path("create").unwrap();
+        let source = doc.svg_layers().next().unwrap().source.clone();
+        let (w, h) = doc.dimensions();
+        let raster = rasterize_svg(&source, w, h).unwrap();
+        let pixel = |x: usize, y: usize| {
+            &raster.pixels[(y * w as usize + x) * 4..(y * w as usize + x) * 4 + 4]
+        };
+        assert_eq!(pixel(20, 20), &[255, 0, 0, 255]);
+        assert_eq!(pixel(60, 20)[3], 0);
+        assert!(doc
+            .vector_drag_runs(doc.svg_layers().next().unwrap())
+            .is_none());
+        let mut reopened = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(reopened.svg_layers().next().unwrap().source, source);
+        reopened.select_vector_objects(vec!["art".into()]).unwrap();
+        reopened.clipping_path("edit").unwrap();
+        assert_eq!(reopened.selected_vector_ids(), &["mask"]);
+        reopened.move_selected_vectors(20., 0.).unwrap();
+        assert_ne!(reopened.svg_layers().next().unwrap().source, source);
+        let moved = rasterize_svg(&reopened.svg_layers().next().unwrap().source, w, h).unwrap();
+        assert_eq!(moved.pixels[(20 * w as usize + 10) * 4 + 3], 0);
+        assert_eq!(moved.pixels[(20 * w as usize + 50) * 4 + 3], 255);
+        reopened.undo();
+        assert_eq!(reopened.svg_layers().next().unwrap().source, source);
+        let mut duplicated = doc.clone();
+        duplicated.duplicate_selected_vectors(100., 0.).unwrap();
+        let copied = &duplicated.svg_layers().next().unwrap().vector_objects;
+        assert_eq!(copied.len(), 4);
+        assert_ne!(copied[0].group_path, copied[2].group_path);
+        assert_eq!(
+            copied[3].clipping_group.as_ref(),
+            copied[2].group_path.first()
+        );
+        assert_eq!(copied[0].transform[4], 0.);
+        assert_eq!(copied[2].transform[4], 100.);
+        let selected = duplicated.selected_vector_ids().to_vec();
+        assert_eq!(selected.len(), 2);
+        duplicated.undo();
+        assert_eq!(
+            duplicated.svg_layers().next().unwrap().vector_objects.len(),
+            2
+        );
+        duplicated.redo();
+        assert_eq!(duplicated.selected_vector_ids(), selected);
+        let loaded = Document::decode(&duplicated.encode().unwrap()).unwrap();
+        assert_eq!(loaded.svg_layers().next().unwrap().vector_objects.len(), 4);
+        doc.clipping_path("release").unwrap();
+        assert_eq!(doc.svg_layers().next().unwrap().source, original);
+        doc.undo();
+        assert_eq!(doc.svg_layers().next().unwrap().source, source);
+        doc.redo();
+        assert_eq!(doc.svg_layers().next().unwrap().source, original);
+        doc.undo();
+        doc.ungroup_selected_vectors(true).unwrap();
+        assert_eq!(doc.svg_layers().next().unwrap().source, original);
+    }
+}

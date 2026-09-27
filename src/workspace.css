@@ -471,3 +471,6 @@ button.channel-row.active { background: var(--color-active, #36546e); color: #ff
 button.channel-row:hover:not(:disabled) { background: var(--color-hover, #454545); }
 .channel-symbol { display: grid; place-items: center; height: 36px; font-size: 11px; border: 1px solid var(--color-rule); background: linear-gradient(135deg, #777, #252525); color: white; }
 .channel-hint { padding: 4px 12px; font-size: 11px; line-height: 1.6; opacity: .75; }
+.transform-dialog { width: min(360px, calc(100vw - 48px)); padding: 20px; background: var(--color-panel, #303030); color: var(--color-text); border: 1px solid var(--color-rule); border-radius: 6px; }
+.transform-dialog::backdrop { background: #0006; }
+.transform-dialog input { width: 100%; box-sizing: border-box; }

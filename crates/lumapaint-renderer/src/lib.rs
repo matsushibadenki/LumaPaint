@@ -2095,7 +2095,7 @@ impl Renderer {
         {
             self.tile_preview = None;
         }
-        let vector_overlays = document.vector_overlay_selections_at_offset(offset[0], offset[1]);
+        let vector_overlays: Vec<lumapaint_core::document::Selection> = Vec::new();
         let outline_selections = document
             .selection()
             .into_iter()
@@ -2168,6 +2168,12 @@ impl Renderer {
         );
         let frame_overlay = self
             .frame_overlay
+            .or_else(|| {
+                document.selected_vector_box().map(|corners| FrameOverlay {
+                    corners: corners.map(|p| [p[0] + offset[0], p[1] + offset[1]]),
+                    handles: false,
+                })
+            })
             .map(|overlay| frame_overlay::buffer(&self.device, overlay, viewport));
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
@@ -3095,6 +3101,8 @@ mod tests {
                         id: id.into(),
                         name: id.into(),
                         group_path: Vec::new(),
+                        clipping_group: None,
+                        bounds_reset: false,
                         text: None,
                         path: VectorPath {
                             data: "M 0 0 H 30 V 30 H 0 Z".into(),

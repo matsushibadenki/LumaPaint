@@ -1,4 +1,4 @@
-type Name = 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textFrame' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textFrame' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 type PanelIconName = 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   stroke: 'M3 5h18 M3 11h18 M3 17h18 M3 19h18 M3 21h18',
@@ -29,6 +29,13 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   brush: 'M14 4l6-2-2 6-7 7-4-4 7-7z M7 13c-5 0-1 7-6 7 8 2 10-4 6-7z',
   vector: 'M5 4h4v4H5z M15 16h4v4h-4z M9 6c6 0 8 3 8 10 M7 8v9h8 M5 15h4v4H5z',
   vectorDirectSelect: 'M5 3l14 10-7 1-4 7z',
+  vectorRotate: 'M20 9a8 8 0 1 0 0 7M20 3v6h-6',
+  transformMove: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
+  transformReflect: 'M12 2v20M3 18l6-12v12zM21 18L15 6v12z',
+  transformShear: 'M7 4h14l-4 16H3z',
+  transformEach: 'M3 3h7v7H3zM14 14h7v7h-7zM14 3h7v7M21 3l-7 7',
+  transformReset: 'M4 4h16v16H4zM8 8h8v8H8z',
+  vectorScale: 'M4 13v7h7M4 20L20 4M13 4h7v7',
   vectorSelect: 'M5 3l13 9-6 2-3 6z',
   vectorPen: 'M12 3L5 14l4 5h6l4-5L12 3z M12 3v8 M10 13a2 2 0 1 0 4 0a2 2 0 1 0-4 0 M9 21h6',
   vectorAnchorAdd: 'M4 18L11 4l4 9-5 6z M11 4v7 M17 4h6 M20 1v6',

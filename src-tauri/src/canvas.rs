@@ -36,6 +36,8 @@ pub enum CanvasTool {
     Ellipse,
     VectorSelect,
     VectorDirectSelect,
+    VectorScale,
+    VectorRotate,
     VectorPen,
     VectorPencil,
     VectorAnchorAdd,
@@ -939,5 +941,54 @@ pub async fn finish_text_edit(
     {
         let _ = (window, commit);
         Err("Inline editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn clipping_path(
+    window: tauri::WebviewWindow,
+    action: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::clipping_path(&action)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, action);
+        Err("Clipping paths are pending on this platform / このプラットフォームでは保留中です / 此平台尚待实现".into())
+    }
+}
+
+#[tauri::command]
+pub async fn compound_path(
+    window: tauri::WebviewWindow,
+    release: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::compound_path(release)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, release);
+        Err("Compound paths are pending on this platform / このプラットフォームでは保留中です / 此平台尚待实现".into())
+    }
+}
+
+#[tauri::command]
+pub async fn transform_objects(
+    window: tauri::WebviewWindow,
+    action: String,
+    values: [f32; 4],
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::transform_objects(&action, values)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, action, values);
+        Err("Transforms are pending on this platform".into())
     }
 }

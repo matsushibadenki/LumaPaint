@@ -61,6 +61,61 @@ impl VectorPathEngine for SkiaPathEngine {
 }
 
 impl SkiaPathEngine {
+    pub fn compound_objects(
+        &self,
+        objects: &[VectorObject],
+    ) -> Result<PortablePathGeometry, String> {
+        let mut builder = PathBuilder::new();
+        for object in objects {
+            builder.add_path(&Self::transformed(object)?, None);
+        }
+        let (mut path, points) = Self::portable(builder.detach())?;
+        path.fill_rule = FillRule::EvenOdd;
+        Ok((path, points))
+    }
+
+    pub fn split_compound(
+        &self,
+        object: &VectorObject,
+    ) -> Result<Vec<PortablePathGeometry>, String> {
+        use skia_safe::PathVerb;
+        let path = Self::transformed(object)?;
+        let mut parts = Vec::new();
+        let mut builder = PathBuilder::new();
+        let mut started = false;
+        for item in path.iter() {
+            let p = item.points();
+            match item.verb() {
+                PathVerb::Move => {
+                    if started {
+                        parts.push(Self::portable(builder.detach())?);
+                    }
+                    builder.move_to(p[0]);
+                    started = true;
+                }
+                PathVerb::Line => {
+                    builder.line_to(p[1]);
+                }
+                PathVerb::Quad => {
+                    builder.quad_to(p[1], p[2]);
+                }
+                PathVerb::Conic => {
+                    builder.conic_to(p[1], p[2], item.conic_weight());
+                }
+                PathVerb::Cubic => {
+                    builder.cubic_to(p[1], p[2], p[3]);
+                }
+                PathVerb::Close => {
+                    builder.close();
+                }
+            }
+        }
+        if started {
+            parts.push(Self::portable(builder.detach())?);
+        }
+        Ok(parts)
+    }
+
     fn transformed(object: &VectorObject) -> Result<Path, String> {
         let [a, b, c, d, e, f] = object.transform;
         let matrix = Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0);
@@ -217,6 +272,92 @@ mod tests {
     }
 
     #[test]
+    fn compound_holes_release_transforms_history_and_save() {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let shape = |id: &str, data: &str| VectorObject {
+            id: id.into(),
+            name: id.into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            path: path(data),
+            transform: [1., 0., 0., 1., 10., 20.],
+            fill: Some(VectorPaint {
+                color: [255, 0, 0, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.,
+            visible: true,
+            kind: VectorObjectKind::Compound,
+            control_points: vec![[0., 0.], [100., 100.]],
+            text: None,
+        };
+        doc.upsert_vector_object(&layer, shape("outer", "M0 0H100V100H0Z"))
+            .unwrap();
+        doc.upsert_vector_object(&layer, shape("inner", "M25 25H75V75H25Z"))
+            .unwrap();
+        doc.select_vector_objects(vec!["inner".into(), "outer".into()])
+            .unwrap();
+        doc.compound_path(false, |o| {
+            SkiaPathEngine.compound_objects(o).map(|p| vec![p])
+        })
+        .unwrap();
+        let combined = doc.svg_layers().next().unwrap().vector_objects[0].clone();
+        assert!(SkiaPathEngine.contains(&combined.path, [20., 30.]).unwrap());
+        assert!(!SkiaPathEngine.contains(&combined.path, [60., 70.]).unwrap());
+        let mut reopened = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            reopened.svg_layers().next().unwrap().vector_objects[0],
+            combined
+        );
+        reopened
+            .select_vector_objects(vec![combined.id.clone()])
+            .unwrap();
+        reopened.move_selected_vectors(30., 0.).unwrap();
+        reopened
+            .compound_path(true, |o| SkiaPathEngine.split_compound(&o[0]))
+            .unwrap();
+        let objects = &reopened.svg_layers().next().unwrap().vector_objects;
+        assert_eq!(objects.len(), 2);
+        assert!(SkiaPathEngine
+            .contains(&objects[1].path, [90., 70.])
+            .unwrap());
+        assert!(!SkiaPathEngine
+            .contains(&objects[1].path, [40., 70.])
+            .unwrap());
+        reopened.undo();
+        assert_eq!(
+            reopened.svg_layers().next().unwrap().vector_objects.len(),
+            1
+        );
+        reopened.redo();
+        assert_eq!(
+            reopened.svg_layers().next().unwrap().vector_objects.len(),
+            2
+        );
+        doc.undo();
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects.len(), 2);
+        doc.redo();
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], combined);
+        let before = doc.snapshot().revision;
+        assert!(doc
+            .compound_path(false, |_| panic!("invalid selection must not reach engine"))
+            .is_err());
+        assert_eq!(doc.snapshot().revision, before);
+        let curved = shape(
+            "curves",
+            "M0 0Q20 40 40 0Z M60 0C70 30 80 30 90 0Z M110 0A10 10 0 1 1 130 0Z",
+        );
+        let pieces = SkiaPathEngine.split_compound(&curved).unwrap();
+        assert_eq!(pieces.len(), 3);
+        for (part, _) in pieces {
+            assert!(!part.data.is_empty());
+            parse(&part).unwrap();
+        }
+    }
+
+    #[test]
     fn boolean_operations_preserve_coverage_and_inputs() {
         let left = path("M0 0H20V20H0Z");
         let right = path("M10 0H30V20H10Z");
@@ -241,6 +382,8 @@ mod tests {
             id: "shape".into(),
             name: "Shape".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: path("M0 0H20V20H0Z"),
             transform: [1., 0., 0., 1., 4., 6.],
@@ -306,6 +449,8 @@ mod tests {
             id: id.into(),
             name: id.into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             path: path("M0 0H20V20H0Z"),
             transform: [1.0, 0.0, 0.0, 1.0, x, 0.0],
             fill: Some(VectorPaint {

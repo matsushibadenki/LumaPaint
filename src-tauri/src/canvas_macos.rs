@@ -307,6 +307,7 @@ define_class!(
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
                     CanvasTool::Text | CanvasTool::TextFrame => Some(NSCursor::IBeamCursor()),
                     CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
+                    CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(NSCursor::crosshairCursor()),
                     CanvasTool::VectorDirectSelect => Some(NSCursor::crosshairCursor()),
                     CanvasTool::Brush | CanvasTool::Eraser => BRUSH_CURSOR.with(|cursor| cursor.borrow().clone()).or_else(|| Some(NSCursor::crosshairCursor())),
                     _ => Some(NSCursor::crosshairCursor()),
@@ -635,6 +636,8 @@ impl PaintView {
                 if matches!(
                     tool,
                     CanvasTool::VectorSelect
+                        | CanvasTool::VectorScale
+                        | CanvasTool::VectorRotate
                         | CanvasTool::VectorDirectSelect
                         | CanvasTool::VectorPen
                         | CanvasTool::VectorPencil
@@ -761,6 +764,8 @@ impl PenDraft {
             id: id.into(),
             name: "Bezier path".into(),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             text: None,
             path: VectorPath {
                 data: lumapaint_core::bezier::path_data(&controls, closed)?,
@@ -1018,6 +1023,8 @@ impl AnchorDraft {
         let mut preview = document.clone();
         preview.upsert_vector_object(&self.layer, self.object.clone())?;
         let mut guide = self.object.clone();
+        guide.clipping_group = None;
+        guide.group_path.clear();
         guide.id = format!(
             "guides-{}",
             self.object.id.chars().take(50).collect::<String>()
@@ -1087,6 +1094,12 @@ fn vector_pointer(
     }
     if tool == CanvasTool::VectorDirectSelect {
         return direct_pointer(document, point, phase, modifiers);
+    }
+    if tool == CanvasTool::VectorRotate {
+        return rotate_pointer(document, point, phase, modifiers);
+    }
+    if tool == CanvasTool::VectorScale {
+        return scale_pointer(document, point, phase);
     }
     if tool == CanvasTool::VectorSelect {
         return vector_select_pointer(document, point, phase, modifiers);
@@ -1220,6 +1233,8 @@ fn vector_pointer(
             id: format!("vector-object-{serial}"),
             name: format!("{name} {serial}"),
             group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
             path: VectorPath {
                 data: path,
                 fill_rule: FillRule::NonZero,
@@ -1459,6 +1474,8 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
         // Reuse the same anchor/handle guides as the anchor-point tool.
         preview = draft.preview(&preview, zoom)?;
         let mut marker = object.clone();
+        marker.clipping_group = None;
+        marker.group_path.clear();
         marker.id = format!("direct-selected-{serial}");
         marker.kind = VectorObjectKind::Compound;
         marker.transform = [1., 0., 0., 1., 0., 0.];
@@ -1500,6 +1517,8 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                 id: "direct-marquee".into(),
                 name: "Selection".into(),
                 group_path: Vec::new(),
+                clipping_group: None,
+                bounds_reset: false,
                 text: None,
                 path: VectorPath {
                     data: format!("M {x} {y} h {w} v {h} h {} Z", -w),
@@ -1520,6 +1539,106 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
     Ok(preview)
 }
 
+#[derive(Clone, Copy)]
+struct ScaleDraft {
+    center: [f32; 2],
+    start: [f32; 2],
+    scale: f32,
+}
+fn scale_pointer(
+    document: &mut Document,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+) -> Result<(), String> {
+    if phase == 0 {
+        cancel_vector_drag();
+        if document.selected_vector_ids().is_empty() {
+            document.select_vector_at(point, 6., false);
+        }
+        if let Some([x, y, right, bottom]) = document.selected_vector_bounds() {
+            SCALE_DRAFT.with(|draft| {
+                *draft.borrow_mut() = Some(ScaleDraft {
+                    center: [(x + right) * 0.5, (y + bottom) * 0.5],
+                    start: [point.x, point.y],
+                    scale: 1.,
+                })
+            });
+        }
+    } else {
+        SCALE_DRAFT.with(|draft| {
+            if let Some(draft) = draft.borrow_mut().as_mut() {
+                let initial =
+                    (draft.start[0] - draft.center[0]).hypot(draft.start[1] - draft.center[1]);
+                draft.scale = if initial >= 1. {
+                    ((point.x - draft.center[0]).hypot(point.y - draft.center[1]) / initial)
+                        .clamp(0.01, 100.)
+                } else {
+                    ((point.x - draft.start[0]) / 100.).exp().clamp(0.01, 100.)
+                };
+            }
+        });
+        if phase == 2 {
+            if let Some(draft) = SCALE_DRAFT.with(|d| d.borrow_mut().take()) {
+                document.scale_selected_vectors(draft.center, draft.scale)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct RotateDraft {
+    center: [f32; 2],
+    start: [f32; 2],
+    angle: f32,
+}
+fn rotate_pointer(
+    document: &mut Document,
+    point: lumapaint_core::document::Point,
+    phase: u8,
+    modifiers: NSEventModifierFlags,
+) -> Result<(), String> {
+    if phase == 0 {
+        cancel_vector_drag();
+        if document.selected_vector_ids().is_empty() {
+            document.select_vector_at(point, 6., false);
+        }
+        if let Some([x, y, right, bottom]) = document.selected_vector_bounds() {
+            let center = [(x + right) * 0.5, (y + bottom) * 0.5];
+            if (point.x - center[0]).hypot(point.y - center[1]) >= 1. {
+                ROTATE_DRAFT.with(|d| {
+                    *d.borrow_mut() = Some(RotateDraft {
+                        center,
+                        start: [point.x, point.y],
+                        angle: 0.,
+                    })
+                });
+            }
+        }
+    } else {
+        ROTATE_DRAFT.with(|d| {
+            if let Some(d) = d.borrow_mut().as_mut() {
+                if (point.x - d.center[0]).hypot(point.y - d.center[1]) >= 1. {
+                    d.angle = (point.y - d.center[1]).atan2(point.x - d.center[0])
+                        - (d.start[1] - d.center[1]).atan2(d.start[0] - d.center[0]);
+                    if modifiers.contains(NSEventModifierFlags::Shift) {
+                        let step = std::f32::consts::PI / 12.;
+                        d.angle = (d.angle / step).round() * step;
+                    }
+                }
+            }
+        });
+        if phase == 2 {
+            if let Some(d) = ROTATE_DRAFT.with(|d| d.borrow_mut().take()) {
+                document.rotate_selected_vectors(d.center, d.angle)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+type VectorMarquee = ([f32; 2], [f32; 2], bool);
+
 fn vector_select_pointer(
     document: &mut Document,
     point: lumapaint_core::document::Point,
@@ -1529,6 +1648,7 @@ fn vector_select_pointer(
     if phase == 0 {
         cancel_vector_drag();
         if let Some((settings, handle)) = selected_text_resize_handle(document, [point.x, point.y])
+            .filter(|_| !modifiers.contains(NSEventModifierFlags::Option))
         {
             TEXT_RESIZE_DRAFT.with(|draft| {
                 *draft.borrow_mut() = Some(TextResizeDraft {
@@ -1540,8 +1660,27 @@ fn vector_select_pointer(
             });
             return Ok(());
         }
-        let hit =
+        let previous = document.selected_vector_ids().to_vec();
+        let mut probe = document.clone();
+        let hit = probe.select_vector_at(point, 6.0, false);
+        if hit.is_none() {
+            VECTOR_MARQUEE.with(|draft| {
+                *draft.borrow_mut() = Some((
+                    [point.x, point.y],
+                    [point.x, point.y],
+                    modifiers.contains(NSEventModifierFlags::Shift),
+                ))
+            });
+            return Ok(());
+        }
+        if !hit.as_ref().is_some_and(|id| previous.contains(id))
+            || modifiers.contains(NSEventModifierFlags::Shift)
+        {
             document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
+        }
+        VECTOR_DUPLICATE.with(|value| {
+            value.set(hit.is_some() && modifiers.contains(NSEventModifierFlags::Option))
+        });
         VECTOR_DRAFT.with(|draft| {
             let mut draft = draft.borrow_mut();
             draft.clear();
@@ -1550,6 +1689,17 @@ fn vector_select_pointer(
             }
         });
     } else if phase == 1 {
+        if VECTOR_MARQUEE.with(|draft| {
+            if let Some((_, current, _)) = draft.borrow_mut().as_mut() {
+                *current = [point.x, point.y];
+                true
+            } else {
+                false
+            }
+        }) {
+            return Ok(());
+        }
+
         if TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().is_some()) {
             TEXT_RESIZE_DRAFT.with(|draft| {
                 if let Some(draft) = draft.borrow_mut().as_mut() {
@@ -1565,6 +1715,17 @@ fn vector_select_pointer(
             }
         }
     } else if phase == 2 {
+        if let Some((start, _, additive)) = VECTOR_MARQUEE.with(|draft| draft.borrow_mut().take()) {
+            return document.select_vectors_in_rect(
+                lumapaint_core::document::Point {
+                    x: start[0],
+                    y: start[1],
+                },
+                point,
+                additive,
+            );
+        }
+
         if let Some(mut draft) = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take()) {
             draft.current = [point.x, point.y];
             let mut settings = resized_text_settings(&draft);
@@ -1581,6 +1742,7 @@ fn vector_select_pointer(
             return Ok(());
         }
         VECTOR_MOVE.with(|offset| offset.set([0.0, 0.0]));
+        let duplicate = VECTOR_DUPLICATE.with(|value| value.replace(false));
         if let Some((id, index)) = VECTOR_CONTROL.with(|control| control.borrow_mut().take()) {
             VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
             return document.move_vector_control(&id, index, point);
@@ -1602,13 +1764,25 @@ fn vector_select_pointer(
                             overlay
                         });
                         canvas.renderer.set_frame_overlay(overlay);
-                        canvas
-                            .renderer
-                            .render_vector_drag(canvas.viewport, document, offset)?;
+                        if duplicate {
+                            let mut preview = document.clone();
+                            preview.duplicate_selected_vectors(offset[0], offset[1])?;
+                            canvas.renderer.render(canvas.viewport, &preview)?;
+                        } else {
+                            canvas.renderer.render_vector_drag(
+                                canvas.viewport,
+                                document,
+                                offset,
+                            )?;
+                        }
                     }
                     Ok(())
                 })?;
-                if document.move_selected_vectors(offset[0], offset[1])? {
+                if if duplicate {
+                    document.duplicate_selected_vectors(offset[0], offset[1])?
+                } else {
+                    document.move_selected_vectors(offset[0], offset[1])?
+                } {
                     hold_vector_commit_frame(document);
                 }
             }
@@ -1872,6 +2046,9 @@ fn draft_frame_overlay(start: [f32; 2], end: [f32; 2]) -> lumapaint_renderer::Fr
 }
 
 fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer::FrameOverlay> {
+    if document.selected_vector_ids().len() != 1 {
+        return None;
+    }
     let id = document.selected_vector_ids().first()?;
     let object = document
         .svg_layers()
@@ -1879,6 +2056,14 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
         .flat_map(|layer| &layer.vector_objects)
         .find(|object| &object.id == id && object.visible)?;
     let text = object.text.as_ref()?;
+    if object.bounds_reset {
+        return document
+            .selected_vector_box()
+            .map(|corners| lumapaint_renderer::FrameOverlay {
+                corners,
+                handles: false,
+            });
+    }
     let height = text.box_height?;
     let angle = text.rotation.to_radians();
     let corners = [
@@ -1904,6 +2089,10 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
 }
 
 fn cancel_vector_drag() -> bool {
+    let rotating = ROTATE_DRAFT.with(|d| d.borrow_mut().take().is_some());
+    let scaling = SCALE_DRAFT.with(|d| d.borrow_mut().take().is_some());
+    let marquee = VECTOR_MARQUEE.with(|draft| draft.borrow_mut().take().is_some());
+    VECTOR_DUPLICATE.with(|value| value.set(false));
     let moving = VECTOR_MOVE.with(|offset| offset.replace([0.0, 0.0]) != [0.0, 0.0]);
     VECTOR_DRAFT.with(|draft| draft.borrow_mut().clear());
     VECTOR_CONTROL.with(|control| control.borrow_mut().take());
@@ -1912,7 +2101,7 @@ fn cancel_vector_drag() -> bool {
     let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
-    moving || pen || anchor || direct || text_frame || text_resize
+    rotating || scaling || marquee || moving || pen || anchor || direct || text_frame || text_resize
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -2335,6 +2524,46 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return Ok(());
     }
     canvas.renderer.set_frame_overlay(None);
+    if matches!(
+        TOOL.with(|t| t.get()),
+        CanvasTool::VectorScale | CanvasTool::VectorRotate
+    ) {
+        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
+        if let Some(draft) = ROTATE_DRAFT.with(|d| *d.borrow()) {
+            preview.rotate_selected_vectors(draft.center, draft.angle)?;
+        }
+        if let Some(draft) = SCALE_DRAFT.with(|d| *d.borrow()) {
+            preview.scale_selected_vectors(draft.center, draft.scale)?;
+        }
+        if let Some(corners) = preview.selected_vector_box() {
+            canvas
+                .renderer
+                .set_frame_overlay(Some(lumapaint_renderer::FrameOverlay {
+                    corners,
+                    handles: false,
+                }));
+        }
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
+    if let Some((start, end, _)) = VECTOR_MARQUEE.with(|draft| *draft.borrow()) {
+        if start != end {
+            canvas
+                .renderer
+                .set_frame_overlay(Some(draft_frame_overlay(start, end)));
+        }
+        return DOCUMENT.with(|doc| canvas.renderer.render(canvas.viewport, &doc.borrow()));
+    }
+    if VECTOR_DUPLICATE.with(|value| value.get()) {
+        let offset = VECTOR_MOVE.with(|value| value.get());
+        if offset != [0., 0.] {
+            let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
+            preview.duplicate_selected_vectors(offset[0], offset[1])?;
+            canvas
+                .renderer
+                .set_frame_overlay(selected_text_frame_overlay(&preview));
+            return canvas.renderer.render(canvas.viewport, &preview);
+        }
+    }
     if text_editor::active() || VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
         return text_editor::render(canvas);
     }
@@ -2870,6 +3099,10 @@ thread_local! {
     static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ROTATE_DRAFT: RefCell<Option<RotateDraft>> = const { RefCell::new(None) };
+    static SCALE_DRAFT: RefCell<Option<ScaleDraft>> = const { RefCell::new(None) };
+    static VECTOR_MARQUEE: RefCell<Option<VectorMarquee>> = const { RefCell::new(None) };
+    static VECTOR_DUPLICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static VECTOR_MOVE: std::cell::Cell<[f32; 2]> = const { std::cell::Cell::new([0.0, 0.0]) };
     static DIRECT_POINTS: RefCell<Vec<(String,usize)>> = const { RefCell::new(Vec::new()) };
     static DIRECT_GESTURE: RefCell<Option<DirectGesture>> = const { RefCell::new(None) };
@@ -3967,6 +4200,199 @@ mod tests {
     }
 
     #[test]
+    fn option_drag_copies_text_once_and_cancel_keeps_original() {
+        use lumapaint_core::{document::Point, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Copy".into(),
+                ..Default::default()
+            },
+            position: [100., 100.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let flags = NSEventModifierFlags::Option;
+        vector_select_pointer(&mut doc, Point { x: 110., y: 110. }, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, Point { x: 150., y: 130. }, 1, flags).unwrap();
+        assert_eq!(doc.snapshot().text_objects.len(), 1);
+        assert!(VECTOR_DUPLICATE.with(|v| v.get()));
+        vector_select_pointer(&mut doc, Point { x: 150., y: 130. }, 2, flags).unwrap();
+        let objects = doc.snapshot().text_objects;
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].position, [100., 100.]);
+        assert_eq!(objects[1].position, [140., 120.]);
+        doc.undo();
+        assert_eq!(doc.snapshot().text_objects.len(), 1);
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects.len(), 2);
+        doc.undo();
+        vector_select_pointer(&mut doc, Point { x: 110., y: 110. }, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, Point { x: 180., y: 180. }, 1, flags).unwrap();
+        cancel_vector_drag();
+        vector_select_pointer(&mut doc, Point { x: 180., y: 180. }, 2, flags).unwrap();
+        assert_eq!(doc.snapshot().text_objects.len(), 1);
+        assert!(!VECTOR_DUPLICATE.with(|v| v.get()));
+    }
+
+    #[test]
+    fn vector_marquee_selects_multiple_adds_and_cancels() {
+        use lumapaint_core::{document::Point, vector::VectorText};
+        let mut doc = Document::default();
+        for x in [100., 500.] {
+            doc.set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "Box".into(),
+                    box_width: 100.,
+                    ..Default::default()
+                },
+                position: [x, 100.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        }
+        let original = doc.selected_vector_ids().to_vec();
+        let revision = doc.revision();
+        let flags = NSEventModifierFlags::empty();
+        let start = Point { x: 10., y: 10. };
+        let end = Point { x: 900., y: 600. };
+        vector_select_pointer(&mut doc, start, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, end, 1, flags).unwrap();
+        assert!(VECTOR_MARQUEE.with(|d| d.borrow().is_some()));
+        assert_eq!(doc.selected_vector_ids(), original);
+        vector_select_pointer(&mut doc, end, 2, flags).unwrap();
+        assert_eq!(doc.selected_vector_ids().len(), 2);
+        assert_eq!(doc.revision(), revision);
+        let all = doc.selected_vector_ids().to_vec();
+        vector_select_pointer(&mut doc, start, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, Point { x: 20., y: 20. }, 1, flags).unwrap();
+        assert!(cancel_vector_drag());
+        vector_select_pointer(&mut doc, Point { x: 20., y: 20. }, 2, flags).unwrap();
+        assert_eq!(doc.selected_vector_ids(), all);
+        // Reverse-direction marquee and Shift addition use the same core geometry.
+        doc.select_vector_objects(original.clone()).unwrap();
+        vector_select_pointer(&mut doc, end, 0, NSEventModifierFlags::Shift).unwrap();
+        vector_select_pointer(&mut doc, start, 2, NSEventModifierFlags::Shift).unwrap();
+        assert_eq!(doc.selected_vector_ids().len(), 2);
+        vector_select_pointer(&mut doc, start, 0, flags).unwrap();
+        vector_select_pointer(&mut doc, start, 2, flags).unwrap();
+        assert!(doc.selected_vector_ids().is_empty());
+    }
+
+    #[test]
+    fn scale_drag_previews_then_commits_once_and_cancels() {
+        use lumapaint_core::{document::Point, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Scale".into(),
+                box_width: 100.,
+                ..Default::default()
+            },
+            position: [100., 100.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let [x, y, right, bottom] = doc.selected_vector_bounds().unwrap();
+        let center = [(x + right) * 0.5, (y + bottom) * 0.5];
+        let start = Point {
+            x: right,
+            y: center[1],
+        };
+        let end = Point {
+            x: center[0] + 2. * (right - center[0]),
+            y: center[1],
+        };
+        let revision = doc.revision();
+        scale_pointer(&mut doc, start, 0).unwrap();
+        scale_pointer(&mut doc, end, 1).unwrap();
+        assert_eq!(doc.revision(), revision);
+        assert_eq!(SCALE_DRAFT.with(|d| d.borrow().unwrap().scale), 2.);
+        scale_pointer(&mut doc, end, 2).unwrap();
+        let scaled = doc.selected_vector_bounds().unwrap();
+        assert!(((scaled[2] - scaled[0]) / (right - x) - 2.).abs() < 0.001);
+        assert_eq!(doc.revision(), revision + 1);
+        doc.undo();
+        assert_eq!(doc.selected_vector_bounds().unwrap(), [x, y, right, bottom]);
+        doc.redo();
+        assert_eq!(doc.selected_vector_bounds().unwrap(), scaled);
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.svg_layers().next().unwrap().vector_objects[0].transform,
+            doc.svg_layers().next().unwrap().vector_objects[0].transform
+        );
+        scale_pointer(&mut doc, start, 0).unwrap();
+        scale_pointer(&mut doc, end, 1).unwrap();
+        cancel_vector_drag();
+        scale_pointer(&mut doc, end, 2).unwrap();
+        assert_eq!(doc.selected_vector_bounds().unwrap(), scaled);
+    }
+
+    #[test]
+    fn rotate_drag_preserves_center_and_undo_cancel() {
+        use lumapaint_core::{document::Point, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Rotate".into(),
+                box_width: 100.,
+                ..Default::default()
+            },
+            position: [100., 100.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let [x, y, r, b] = doc.selected_vector_bounds().unwrap();
+        let c = [(x + r) * 0.5, (y + b) * 0.5];
+        let original = doc.svg_layers().next().unwrap().vector_objects[0].transform;
+        let revision = doc.revision();
+        let start = Point {
+            x: c[0] + 100.,
+            y: c[1],
+        };
+        let end = Point {
+            x: c[0],
+            y: c[1] + 100.,
+        };
+        rotate_pointer(&mut doc, start, 0, NSEventModifierFlags::Shift).unwrap();
+        rotate_pointer(&mut doc, end, 1, NSEventModifierFlags::Shift).unwrap();
+        assert_eq!(doc.revision(), revision);
+        rotate_pointer(&mut doc, end, 2, NSEventModifierFlags::Shift).unwrap();
+        let [nx, ny, nr, nb] = doc.selected_vector_bounds().unwrap();
+        assert!(((nr - nx) - (b - y)).abs() < 0.001);
+        assert!(((nb - ny) - (r - x)).abs() < 0.001);
+        assert!(((nx + nr) * 0.5 - c[0]).abs() < 0.001);
+        let rotated = doc.svg_layers().next().unwrap().vector_objects[0].transform;
+        doc.undo();
+        assert_eq!(
+            doc.svg_layers().next().unwrap().vector_objects[0].transform,
+            original
+        );
+        doc.redo();
+        assert_eq!(
+            doc.svg_layers().next().unwrap().vector_objects[0].transform,
+            rotated
+        );
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.svg_layers().next().unwrap().vector_objects[0].transform,
+            rotated
+        );
+        rotate_pointer(&mut doc, start, 0, NSEventModifierFlags::empty()).unwrap();
+        rotate_pointer(&mut doc, end, 1, NSEventModifierFlags::empty()).unwrap();
+        cancel_vector_drag();
+        rotate_pointer(&mut doc, end, 2, NSEventModifierFlags::empty()).unwrap();
+        assert_eq!(
+            doc.svg_layers().next().unwrap().vector_objects[0].transform,
+            rotated
+        );
+    }
+
+    #[test]
     fn selection_modifiers_route_native_drags() {
         assert_eq!(
             selection_mode(NSEventModifierFlags::empty()),
@@ -4444,4 +4870,42 @@ pub fn update_text_edit(
 pub fn finish_text_edit(commit: bool) -> Result<DocumentSnapshot, String> {
     text_editor::finish(commit)?;
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn clipping_path(action: &str) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().clipping_path(action))?;
+    if action == "edit" {
+        DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+        TOOL.with(|tool| tool.set(CanvasTool::VectorDirectSelect));
+    }
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn compound_path(release: bool) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut().compound_path(release, |objects| {
+            let engine = lumapaint_renderer::vector::skia_paths::SkiaPathEngine;
+            if release {
+                engine.split_compound(&objects[0])
+            } else {
+                engine.compound_objects(objects).map(|path| vec![path])
+            }
+        })
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    cancel_vector_drag();
+    DOCUMENT.with(|d| d.borrow_mut().transform_selected_vectors(action, values))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
