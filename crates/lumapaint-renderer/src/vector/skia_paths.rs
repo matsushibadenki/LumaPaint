@@ -327,6 +327,9 @@ mod tests {
         document
             .select_vector_objects(vec!["front".into(), "back".into()])
             .unwrap();
+        // Group expansion normalizes selection into document stacking order.
+        let original_selection = document.snapshot().selected_vector_objects;
+        assert_eq!(original_selection, ["back", "front"]);
         let original = document
             .svg_layers()
             .find(|layer| layer.id == layer_id)
@@ -359,7 +362,7 @@ mod tests {
         assert_eq!(restored.source, original.source);
         assert_eq!(
             document.snapshot().selected_vector_objects,
-            ["front", "back"]
+            original_selection
         );
         document.redo();
         assert_eq!(
