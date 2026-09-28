@@ -22,17 +22,24 @@ function rgb(h: number, s: number, v: number): Brush['color'] {
   const channels = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return channels.map(n => Math.round((n + m) * 255)) as Brush['color'];
 }
+export interface VectorColorControls {
+  fill: Brush['color']; stroke: Brush['color']; fillStatus: 'none'|'mixed'|null; strokeStatus: 'none'|'mixed'|null;
+  change: (target: 'fill'|'stroke', color: Brush['color']|null)=>void; swap:()=>void;
+}
+const vectorLabels = {ja:{foreground:'塗り色',background:'線の色',none:'なし',mixed:'混在'},en:{foreground:'Fill',background:'Stroke',none:'None',mixed:'Mixed'},'zh-CN':{foreground:'填色',background:'描边色',none:'无',mixed:'混合'}};
 export type ColorTarget = 'foreground' | 'background';
 
-export function ColorPairControl({ locale, foreground, background, compact = false, activeColor, onSelectColor, onSwap }: {
-  locale: Locale; foreground: Brush['color']; background: Brush['color']; compact?: boolean;
+export function ColorPairControl({ foregroundStatus, backgroundStatus, labels, locale, foreground, background, compact = false, activeColor, onSelectColor, onSwap }: {
+  foregroundStatus?: 'none'|'mixed'|null; backgroundStatus?: 'none'|'mixed'|null;
+  labels?: {foreground:string;background:string}; locale: Locale; foreground: Brush['color']; background: Brush['color']; compact?: boolean;
   activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onSwap: () => void;
 }) {
-  const t = workspaceMessages[locale];
+  const t = {...workspaceMessages[locale],...labels};
+  const paintBackground = (color: Brush['color'], status?: 'none'|'mixed'|null) => status === 'none' ? 'linear-gradient(135deg, white 44%, #dc3232 45%, #dc3232 55%, white 56%)' : status === 'mixed' ? 'linear-gradient(90deg, #888 50%, #ddd 50%)' : toHex(color);
   return <div className={`color-pair${compact ? ' compact' : ''}`} role="group" aria-label={`${t.foreground} · ${t.background}`}>
-    <button type="button" className="background-color" style={{ background: toHex(background) }} aria-label={t.background} aria-pressed={activeColor === 'background'} title={`${t.background}: ${toHex(background)}`} onClick={() => onSelectColor('background')} />
-    <button type="button" className="foreground-color" style={{ background: toHex(foreground) }} aria-label={t.foreground} aria-pressed={activeColor === 'foreground'} title={`${t.foreground}: ${toHex(foreground)}`} onClick={() => onSelectColor('foreground')} />
-    <button type="button" className="swap-colors" onClick={onSwap} title={`${t.swapColors} (X)`} aria-label={t.swapColors}>↔</button>
+    <button type="button" className="background-color" style={{ background: paintBackground(background, backgroundStatus) }} aria-label={t.background} aria-pressed={activeColor === 'background'} title={`${t.background}: ${toHex(background)}`} onClick={() => onSelectColor('background')} />
+    <button type="button" className="foreground-color" style={{ background: paintBackground(foreground, foregroundStatus) }} aria-label={t.foreground} aria-pressed={activeColor === 'foreground'} title={`${t.foreground}: ${toHex(foreground)}`} onClick={() => onSelectColor('foreground')} />
+    <button type="button" className="swap-colors" onClick={onSwap} title={`${t.swapColors}${labels ? '' : ' (X)'}`} aria-label={t.swapColors}>↔</button>
   </div>;
 }
 
@@ -58,13 +65,16 @@ function ChannelNumber({ value, max, label, onChange }: { value: number; max: nu
     onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
 }
 
-export function ColorPanel({ locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap }: { locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void }) {
+export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
   const [colorModel, setColorModel] = useState<ColorModel>('hsb');
   const [cmykEdits, setCmykEdits] = useState<Partial<Record<ColorTarget, { hex: string; values: CmykColor }>>>({});
   const [rememberedHue, setRememberedHue] = useState(0);
-  const color = activeColor === 'background' ? backgroundColor : foregroundColor;
-  const onChange = activeColor === 'background' ? onBackgroundChange : onForegroundChange;
+  const labels = vectorColors ? vectorLabels[locale] : workspaceMessages[locale];
+  const fill = vectorColors?.fill ?? foregroundColor, stroke = vectorColors?.stroke ?? backgroundColor;
+  const status = vectorColors ? (activeColor === 'foreground' ? vectorColors.fillStatus : vectorColors.strokeStatus) : null;
+  const color = activeColor === 'background' ? stroke : fill;
+  const onChange = vectorColors ? (color: Brush['color'])=>vectorColors.change(activeColor === 'foreground' ? 'fill' : 'stroke', color) : activeColor === 'background' ? onBackgroundChange : onForegroundChange;
   const savedCmyk = cmykEdits[activeColor];
   // Preserve the chosen black/ink separation: RGB alone cannot reconstruct it.
   const cmyk = savedCmyk?.hex === toHex(color) ? savedCmyk.values : rgbToCmyk(color);
@@ -152,7 +162,7 @@ export function ColorPanel({ locale, color: foregroundColor, backgroundColor, ac
       <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option>
     </select></label>
     <div className="hsb-header">
-      <ColorPairControl locale={locale} foreground={foregroundColor} background={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={onSwap} />
+      <ColorPairControl foregroundStatus={vectorColors?.fillStatus} backgroundStatus={vectorColors?.strokeStatus} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />
       <div className="hsb-sliders">{channels.map(item => <div className="color-slider" key={activeColor + item.key}>
         <span title={t[item.key]}>{item.short}</span><input aria-label={t[item.key]} type="range" min="0" max={item.max} value={Math.round(item.value)} style={{ background: item.background }} onChange={event => setChannel(item.key, Number(event.target.value))} />
         <ChannelNumber label={t[item.key] + ' (' + item.short + ')'} max={item.max} value={item.value} onChange={next => setChannel(item.key, next)} /><span>{item.unit}</span>
@@ -169,7 +179,8 @@ export function ColorPanel({ locale, color: foregroundColor, backgroundColor, ac
       <span className="color-wheel-marker" style={{ left: (50 + 46 * Math.cos(h * Math.PI / 180)) + '%', top: (50 - 46 * Math.sin(h * Math.PI / 180)) + '%' }} />
       <span className="color-wheel-marker" style={{ left: (29 + 62 * c) + '%', top: (50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
-    <HexInput key={activeColor} color={color} onChange={onChange} label={`${w[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
-    <ColorSwatches locale={locale} color={color} targetLabel={w[activeColor]} onChange={onChange} />
+    {vectorColors && <div><span>{labels[activeColor]}{status ? ` · ${vectorLabels[locale][status]}` : ''}</span> <button type="button" onClick={()=>vectorColors.change(activeColor==='foreground'?'fill':'stroke',null)}>{vectorLabels[locale].none}</button></div>}
+    <HexInput key={activeColor} color={color} onChange={onChange} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
+    <ColorSwatches locale={locale} color={color} targetLabel={labels[activeColor]} onChange={onChange} />
   </div>;
 }

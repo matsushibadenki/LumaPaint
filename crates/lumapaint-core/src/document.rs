@@ -325,6 +325,8 @@ pub struct LayerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerObjectSnapshot {
+    pub fill_color: Option<[u8; 4]>,
+    pub stroke_color: Option<[u8; 4]>,
     pub stroke_width: f32,
     pub id: String,
     pub name: String,
@@ -599,6 +601,8 @@ impl Document {
                     .vector_objects
                     .iter()
                     .map(|object| LayerObjectSnapshot {
+                        fill_color: object.fill.map(|p| p.color),
+                        stroke_color: object.stroke.map(|p| p.color),
                         stroke_width: if object.stroke.is_some() {
                             object.stroke_width
                         } else {
@@ -1929,6 +1933,68 @@ impl Document {
         let before = self.vector_history_state();
         self.svg_layers[index] = layer;
         self.selected_vector_objects = ids;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn set_selected_vector_paint(
+        &mut self,
+        ids: &[String],
+        target: &str,
+        color: Option<[u8; 3]>,
+    ) -> Result<(), String> {
+        if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+            || ids.is_empty()
+            || ids.len() != self.selected_vector_objects.len()
+            || !ids
+                .iter()
+                .all(|id| self.selected_vector_objects.contains(id))
+        {
+            return Err("Selection changed / 選択が変更されました / 选区已更改".into());
+        }
+        if !["fill", "stroke", "swap"].contains(&target) {
+            return Err("Invalid paint target".into());
+        }
+        let mut layers = self.svg_layers.clone();
+        for layer in &mut layers {
+            let mut changed = false;
+            for object in &mut layer.vector_objects {
+                if !ids.contains(&object.id) {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !object.visible || object.text.is_some() {
+                    return Err("Select visible paths on unlocked layers / ロックされていない表示中のパスを選択してください / 请选择未锁定且可见的路径".into());
+                }
+                if target == "swap" {
+                    std::mem::swap(&mut object.fill, &mut object.stroke);
+                } else {
+                    let paint = if target == "fill" {
+                        &mut object.fill
+                    } else {
+                        &mut object.stroke
+                    };
+                    *paint = color.map(|[r, g, b]| VectorPaint {
+                        color: [r, g, b, paint.map_or(255, |p| p.color[3])],
+                    });
+                }
+                if object.stroke.is_some() && object.stroke_width <= 0. {
+                    object.stroke_width = 1.;
+                }
+                object.validate()?;
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
         self.record_vector_edit(before);
         self.revision += 1;
         Ok(())
@@ -3886,6 +3952,83 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_paints_update_selection_preserve_alpha_and_undo() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        let shape = |id: &str, x: f32| VectorObject {
+            id: id.into(),
+            name: id.into(),
+            group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
+            text: None,
+            path: VectorPath {
+                data: "M 0 0 H 20 V 20 H 0 Z".into(),
+                fill_rule: crate::vector::FillRule::NonZero,
+            },
+            transform: [1., 0., 0., 1., x, 10.],
+            fill: Some(VectorPaint {
+                color: [40, 80, 160, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.,
+            visible: true,
+            kind: VectorObjectKind::Rectangle,
+            control_points: vec![[0., 0.], [20., 20.]],
+        };
+        document
+            .upsert_vector_object(&layer, shape("a", 0.))
+            .unwrap();
+        document
+            .upsert_vector_object(&layer, shape("b", 30.))
+            .unwrap();
+        let ids = vec!["a".into(), "b".into()];
+        document.select_vector_objects(ids.clone()).unwrap();
+        assert!(document
+            .set_selected_vector_paint(&["a".into(), "a".into()], "fill", None)
+            .is_err());
+        document
+            .set_selected_vector_paint(&ids, "stroke", Some([200, 30, 10]))
+            .unwrap();
+        for object in &document.svg_layers[0].vector_objects {
+            assert_eq!(object.stroke.unwrap().color, [200, 30, 10, 255]);
+            assert_eq!(object.stroke_width, 1.);
+        }
+        document
+            .set_selected_vector_paint(&ids, "swap", None)
+            .unwrap();
+        assert_eq!(
+            document.snapshot().layers[1].objects[0].fill_color,
+            Some([200, 30, 10, 255])
+        );
+        document
+            .set_selected_vector_paint(&ids, "fill", None)
+            .unwrap();
+        assert!(document.svg_layers[0].vector_objects[0].fill.is_none());
+        document.undo();
+        assert_eq!(
+            document.svg_layers[0].vector_objects[0].fill.unwrap().color,
+            [200, 30, 10, 255]
+        );
+        document.svg_layers[0].vector_objects[0]
+            .fill
+            .as_mut()
+            .unwrap()
+            .color[3] = 100;
+        document
+            .set_selected_vector_paint(&ids, "fill", Some([1, 2, 3]))
+            .unwrap();
+        assert_eq!(
+            document.svg_layers[0].vector_objects[0].fill.unwrap().color,
+            [1, 2, 3, 100]
+        );
+        document.select_vector_objects(vec!["a".into()]).unwrap();
+        assert!(document
+            .set_selected_vector_paint(&ids, "fill", None)
+            .is_err());
+    }
 
     #[test]
     fn selected_layer_routes_text_and_rejects_incompatible_image_without_mutation() {

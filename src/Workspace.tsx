@@ -1,3 +1,5 @@
+import { setVectorPaint } from './bridge';
+import type { VectorColorControls } from './components/ColorPanel';
 import { TransformDialog, transformLabels } from './components/TransformDialog';
 import { transformObjects, type TransformAction } from './bridge';
 import { clippingPath, compoundPath } from './bridge';
@@ -221,6 +223,15 @@ export function Workspace() {
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
   }, [swapColors]);
+  const selectedPaths = documentState.layers.flatMap(layer=>layer.objects).filter(object=>documentState.selectedVectorObjects.includes(object.id));
+  const vectorColorMode = !inlineText && selectedPaths.length > 0 && selectedPaths.every(object=>object.kind!=='text');
+  const pathColor = (key:'fillColor'|'strokeColor') => (selectedPaths[0]?.[key]?.slice(0,3) ?? [0,0,0]) as Brush['color'];
+  const pathStatus = (key:'fillColor'|'strokeColor'): 'none'|'mixed'|null => selectedPaths.some(object=>JSON.stringify(object[key])!==JSON.stringify(selectedPaths[0]?.[key])) ? 'mixed' : selectedPaths[0]?.[key] == null ? 'none' : null;
+  const vectorColors: VectorColorControls | undefined = vectorColorMode ? {
+    fill:pathColor('fillColor'),stroke:pathColor('strokeColor'),fillStatus:pathStatus('fillColor'),strokeStatus:pathStatus('strokeColor'),
+    change:(target,color)=>{void setVectorPaint([...documentState.selectedVectorObjects],target,color).then(updateDocument).catch(cause=>setError(String(cause)));},
+    swap:()=>{void setVectorPaint([...documentState.selectedVectorObjects],'swap',null).then(updateDocument).catch(cause=>setError(String(cause)));},
+  } : undefined;
   const selectedText = documentState.textObjects.find(item => documentState.selectedVectorObjects.includes(item.id)) ?? null;
   const activeText = inlineText ?? selectedText;
   const changeText = useCallback(async (settings: TextSettings) => {
@@ -489,7 +500,7 @@ export function Workspace() {
           footerAccessory={<RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
-      {panels && <Inspector channel={channel} onChannel={setChannel} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>

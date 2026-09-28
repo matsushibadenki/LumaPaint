@@ -4909,3 +4909,15 @@ pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnaps
     emit_document();
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
+
+pub fn set_vector_paint(
+    ids: &[String],
+    target: &str,
+    color: Option<[u8; 3]>,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|d| d.borrow_mut().set_selected_vector_paint(ids, target, color))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}

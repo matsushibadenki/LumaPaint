@@ -19,7 +19,7 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerObjectSnapshot { strokeWidth: number; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface LayerObjectSnapshot { fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot { objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
@@ -351,6 +351,12 @@ export function compoundPath(release: boolean): Promise<DocumentSnapshot> {
 export type TransformAction = 'move' | 'rotate' | 'reflect' | 'scale' | 'shear' | 'individual' | 'reset';
 export function transformObjects(action: TransformAction, values: number[]): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('transform_objects', { action, values }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function setVectorPaint(ids: string[], target: 'fill'|'stroke'|'swap', color: Brush['color'] | null): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_paint', { ids, target, color }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

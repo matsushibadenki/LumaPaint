@@ -12,7 +12,7 @@ import { Icon } from './Icon';
 import { LayerList } from './LayerList';
 import { TextPanel } from './TextPanel';
 import { textPanelMessages } from '../text-panel-i18n';
-import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
+import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
 const panelIds = ['color', 'brush', 'stroke', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
@@ -54,7 +54,8 @@ function initialPanel(): PanelId {
 
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ vectorColors, channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  vectorColors?: VectorColorControls;
   channel: DisplayChannel; onChannel: (channel: DisplayChannel) => void;
   onStrokeWidth: (width: number) => Promise<void>;
   onSelectLayer: (id: string) => void;
@@ -166,7 +167,7 @@ export function Inspector({ channel, onChannel, onStrokeWidth, textPanelRequest,
     </section>}
 
     {activePanel === 'color' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">
-      <ColorPanel locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
+      <ColorPanel vectorColors={vectorColors} locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
     </section>}
     {activePanel === 'brush' && <section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
       <ColorSwatches locale={locale} color={brush.color} targetLabel={t.foreground} onChange={onForegroundChange} />

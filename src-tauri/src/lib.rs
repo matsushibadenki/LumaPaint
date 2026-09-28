@@ -116,6 +116,7 @@ pub fn run() {
             canvas::clipping_path,
             canvas::compound_path,
             canvas::transform_objects,
+            canvas::set_vector_paint,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,
             canvas::reorder_layers,

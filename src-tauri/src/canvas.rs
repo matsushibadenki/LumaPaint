@@ -992,3 +992,24 @@ pub async fn transform_objects(
         Err("Transforms are pending on this platform".into())
     }
 }
+
+#[tauri::command]
+pub async fn set_vector_paint(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+    target: String,
+    color: Option<[u8; 3]>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_vector_paint(&ids, &target, color)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids, target, color);
+        Err("Vector paint is pending on this platform".into())
+    }
+}

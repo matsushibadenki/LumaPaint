@@ -1558,3 +1558,83 @@ fn gpu_channel_components_and_alpha() {
         assert_eq!(bytes[3], 255);
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_svg_rect_upload_matches_full_image_after_move_clear_and_undo() {
+    let gpu = Gpu::new();
+    let (width, height) = (257u32, 7u32);
+    let stride = width as usize * 4;
+    let empty = vec![0; stride * height as usize];
+    let texture = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: Some("SVG differential upload regression"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &empty,
+    );
+    let mut first = empty.clone();
+    first[stride + 7 * 4..stride + 7 * 4 + 4].copy_from_slice(&[64, 32, 16, 128]);
+    let mut moved = empty.clone();
+    moved[6 * stride + 256 * 4..6 * stride + 257 * 4].copy_from_slice(&[1, 0, 0, 1]);
+    let mut previous = empty.clone();
+    for next in [&first, &moved, &empty, &first, &first] {
+        let rect = changed_svg_rect(&previous, next, stride);
+        upload_svg_rect(&gpu.queue, &texture, next, stride, rect);
+        let pitch = 1280;
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SVG readback"),
+            size: pitch * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(pitch as u32),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let data = buffer.slice(..).get_mapped_range();
+        for y in 0..height as usize {
+            assert_eq!(
+                &data[y * pitch as usize..y * pitch as usize + stride],
+                &next[y * stride..(y + 1) * stride]
+            );
+        }
+        drop(data);
+        buffer.unmap();
+        previous.clone_from(next);
+    }
+}

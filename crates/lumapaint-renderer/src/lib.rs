@@ -1314,7 +1314,86 @@ fn create_textured_layer_pipeline(
     })
 }
 
+/// Exact comparison avoids hash collisions; include cleared old pixels as well as new ink.
+fn changed_svg_rect(previous: &[u8], next: &[u8], stride: usize) -> Option<[usize; 4]> {
+    if previous.len() != next.len() {
+        return Some([0, 0, stride / 4, next.len() / stride]);
+    }
+    let first = previous
+        .chunks_exact(stride)
+        .zip(next.chunks_exact(stride))
+        .position(|(a, b)| a != b)?;
+    let last = previous
+        .chunks_exact(stride)
+        .zip(next.chunks_exact(stride))
+        .rposition(|(a, b)| a != b)
+        .unwrap();
+    let mut left = stride / 4;
+    let mut right = 0;
+    for row in first..=last {
+        let start = row * stride;
+        let old = &previous[start..start + stride];
+        let new = &next[start..start + stride];
+        if old == new {
+            continue;
+        }
+        let pairs = || old.as_chunks::<4>().0.iter().zip(new.as_chunks::<4>().0);
+        left = left.min(pairs().position(|(a, b)| a != b).unwrap());
+        right = right.max(pairs().rposition(|(a, b)| a != b).unwrap() + 1);
+    }
+    Some([left, first, right - left, last - first + 1])
+}
+
+fn pack_svg_rect(pixels: &[u8], stride: usize, rect: [usize; 4]) -> std::borrow::Cow<'_, [u8]> {
+    let [x, y, width, height] = rect;
+    if x == 0 && width * 4 == stride {
+        return std::borrow::Cow::Borrowed(&pixels[y * stride..(y + height) * stride]);
+    }
+    let mut packed = Vec::with_capacity(width * height * 4);
+    for row in y..y + height {
+        let start = row * stride + x * 4;
+        packed.extend_from_slice(&pixels[start..start + width * 4]);
+    }
+    std::borrow::Cow::Owned(packed)
+}
+
+fn upload_svg_rect(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    pixels: &[u8],
+    stride: usize,
+    rect: Option<[usize; 4]>,
+) {
+    if let Some([x, y, width, height]) = rect {
+        let packed = pack_svg_rect(pixels, stride, [x, y, width, height]);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: x as u32,
+                    y: y as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &packed,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((width * 4) as u32),
+                rows_per_image: Some(height as u32),
+            },
+            wgpu::Extent3d {
+                width: width as u32,
+                height: height as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
 struct CachedSvg {
+    comparison_pixels: Vec<u8>,
     fully_contained: bool,
     source: String,
     opacity: f32,
@@ -1612,7 +1691,52 @@ impl Renderer {
     /// before installing a result produced by a worker.
     pub fn install_prepared_svg(&mut self, prepared: PreparedSvgLayer) -> Result<(), String> {
         let id = prepared.id.clone();
-        let cached = self.make_cached_svg(prepared)?;
+        let expected = u64::from(prepared.size.0) * u64::from(prepared.size.1) * 4;
+        if prepared.size.0 == 0 || prepared.size.1 == 0 || expected != prepared.pixels.len() as u64
+        {
+            return Err("Invalid prepared SVG pixels".into());
+        }
+        let retained: usize = self
+            .svg_cache
+            .iter()
+            .filter(|(key, _)| **key != id)
+            .map(|(_, entry)| entry.comparison_pixels.len())
+            .sum();
+        let keep = prepared.pixels.len() <= (32usize * 1024 * 1024).saturating_sub(retained);
+        if let Some(cached) = self
+            .svg_cache
+            .get_mut(&id)
+            .filter(|entry| entry.size == prepared.size)
+        {
+            let stride = prepared.size.0 as usize * 4;
+            let rect = changed_svg_rect(&cached.comparison_pixels, &prepared.pixels, stride);
+            upload_svg_rect(
+                &self.queue,
+                &cached._texture,
+                &prepared.pixels,
+                stride,
+                rect,
+            );
+            if render_metrics_enabled() {
+                eprintln!(
+                    "SVG upload: {} / {} bytes",
+                    rect.map_or(0, |[_, _, w, h]| w * h * 4),
+                    prepared.pixels.len()
+                );
+            }
+            cached.source = prepared.source;
+            cached.opacity = prepared.opacity;
+            cached.fully_contained = prepared.fully_contained;
+            cached.comparison_pixels = if keep { prepared.pixels } else { Vec::new() };
+            return Ok(());
+        }
+        let pixels = if keep {
+            prepared.pixels.clone()
+        } else {
+            Vec::new()
+        };
+        let mut cached = self.make_cached_svg(prepared)?;
+        cached.comparison_pixels = pixels;
         self.svg_cache.insert(id, cached);
         Ok(())
     }
@@ -1667,6 +1791,7 @@ impl Renderer {
             ],
         });
         Ok(CachedSvg {
+            comparison_pixels: Vec::new(),
             fully_contained: prepared.fully_contained,
             source: prepared.source,
             opacity: prepared.opacity,
@@ -2178,6 +2303,7 @@ impl Renderer {
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
+        let mut deferred_layers = std::collections::HashSet::new();
         let mut translated_layers = std::collections::HashSet::new();
         let mut partial_layers = std::collections::HashSet::new();
         let mut drag_metrics = VectorDragMetrics::default();
@@ -2245,7 +2371,7 @@ impl Renderer {
                 continue;
             }
             if defer_svg {
-                self.svg_cache.remove(&layer.id);
+                deferred_layers.insert(layer.id.clone());
                 continue;
             }
             let started = std::time::Instant::now();
@@ -2466,6 +2592,9 @@ impl Renderer {
                 let Some(cached) = self.svg_cache.get(&layer.id) else {
                     continue;
                 };
+                if deferred_layers.contains(&layer.id) {
+                    continue;
+                }
                 let bind_group = &cached.bind_group;
                 pass.set_pipeline(&self.svg_pipeline);
                 let uniforms = if translated_layers.contains(layer.id.as_str()) {
@@ -3403,5 +3532,52 @@ mod clipboard_pixel_tests {
         assert!(document.layers()[0].tiles.pixel(10, 10).unwrap()[3] > 0);
         let png = vector::clipboard_png(1, 1, vec![128, 0, 0, 128]).unwrap();
         assert_eq!(vector::clipboard_png_size(&png).unwrap(), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod svg_upload_tests {
+    use super::{changed_svg_rect, pack_svg_rect};
+    #[test]
+    fn rectangles_restore_exact_pixels_including_cleared_and_edge_pixels() {
+        let stride = 8 * 4;
+        for changes in [
+            vec![(1, 2), (5, 4)],
+            vec![(7, 5)],
+            vec![(0, 0), (7, 5)],
+            vec![(3, 2)],
+        ] {
+            let mut old = vec![0; stride * 6];
+            let mut new = old.clone();
+            let (x, y) = changes[0];
+            old[y * stride + x * 4] = 255;
+            for &(x, y) in &changes {
+                new[y * stride + x * 4 + 3] = 1;
+            }
+            let rect = changed_svg_rect(&old, &new, stride).unwrap();
+            let packed = pack_svg_rect(&new, stride, rect);
+            let [x, y, w, h] = rect;
+            assert_eq!(packed.len(), w * h * 4);
+            for row in 0..h {
+                let start = (y + row) * stride + x * 4;
+                old[start..start + w * 4].copy_from_slice(&packed[row * w * 4..(row + 1) * w * 4]);
+            }
+            assert_eq!(old, new);
+            assert_eq!(changed_svg_rect(&old, &new, stride), None);
+        }
+    }
+    #[test]
+    fn small_edit_uploads_only_its_rectangle_and_missing_cache_uploads_all() {
+        let old = vec![0; 1024 * 1024 * 4];
+        let mut new = old.clone();
+        for y in 500..520 {
+            for x in 400..430 {
+                new[(y * 1024 + x) * 4 + 3] = 255;
+            }
+        }
+        let rect = changed_svg_rect(&old, &new, 4096).unwrap();
+        assert_eq!(rect, [400, 500, 30, 20]);
+        assert_eq!(pack_svg_rect(&new, 4096, rect).len(), 2400);
+        assert_eq!(changed_svg_rect(&[], &new, 4096), Some([0, 0, 1024, 1024]));
     }
 }
