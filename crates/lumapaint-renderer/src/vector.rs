@@ -3,7 +3,7 @@
 use resvg::{tiny_skia, usvg};
 use std::sync::{Arc, OnceLock};
 
-fn system_fonts() -> Arc<usvg::fontdb::Database> {
+pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
@@ -307,7 +307,7 @@ fn shape_width(
     Ok((advance.abs() + graphemes as f32 * style.tracking * style.font_size / 1000.0).max(0.0))
 }
 
-fn font_resolver() -> usvg::FontResolver<'static> {
+pub(crate) fn font_resolver() -> usvg::FontResolver<'static> {
     let fallback = usvg::FontResolver::default_fallback_selector();
     usvg::FontResolver {
         select_font: usvg::FontResolver::default_font_selector(),
@@ -507,6 +507,93 @@ pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn outline_view_shows_path_edges_and_preserves_image_layers() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::{VectorObjectKind, VectorText};
+        let mut doc = Document::default();
+        doc.import_svg("Image".into(), r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect width="10" height="10" fill="red"/></svg>"#.into()).unwrap();
+        let image = doc.svg_layers().next().unwrap().source.clone();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Shape".into(),
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [255, 0, 0],
+        })
+        .unwrap();
+        let layer = doc.svg_layers().find(|l| l.vector_layer).unwrap();
+        let id = layer.id.clone();
+        let mut shape = layer.vector_objects[0].clone();
+        shape.text = None;
+        shape.kind = VectorObjectKind::Path;
+        shape.path.data = "M20 20H100V100H20Z".into();
+        shape.control_points = vec![[20., 20.], [100., 20.], [100., 100.], [20., 100.]];
+        doc.upsert_vector_object(&id, shape).unwrap();
+        let preview = doc.outline_view([0., 0.], 1.);
+        assert_eq!(preview.svg_layers().next().unwrap().source, image);
+        let raster = rasterize_svg(
+            &preview
+                .svg_layers()
+                .find(|l| l.vector_layer)
+                .unwrap()
+                .source,
+            960,
+            640,
+        )
+        .unwrap();
+        assert_eq!(raster.pixels[(60 * 960 + 60) * 4 + 3], 0);
+        assert!(raster.pixels[(20 * 960 + 60) * 4 + 3] > 0);
+    }
+
+    #[test]
+    fn outline_view_changes_only_rendering_and_removes_text_fill() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::VectorText;
+        let mut document = Document::default();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "MMMM".into(),
+                    font_size: 80.,
+                    ..Default::default()
+                },
+                position: [20., 20.],
+                color: [220, 30, 50],
+            })
+            .unwrap();
+        let saved = document.encode().unwrap();
+        let before =
+            rasterize_svg(&document.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let outline = document.outline_view([0., 0.], 1.);
+        let after = rasterize_svg(&outline.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        let alpha = |pixels: &[u8]| {
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[3] as u64)
+                .sum::<u64>()
+        };
+        assert!(alpha(&after.pixels) > 0);
+        assert!(alpha(&after.pixels) < alpha(&before.pixels) / 2);
+        assert!(after
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] > 0)
+            .all(|p| p[0] == p[1] && p[1] == p[2]));
+        assert_eq!(document.encode().unwrap(), saved);
+        assert_eq!(document.revision(), outline.revision());
+        let restored =
+            rasterize_svg(&document.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        assert_eq!(restored.pixels, before.pixels);
+    }
+
     use super::*;
 
     #[test]

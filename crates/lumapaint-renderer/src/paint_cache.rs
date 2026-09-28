@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 pub(crate) struct PaintCache {
     tiles: TiledRasterDocument,
+    image: Option<String>,
     strokes: Vec<Stroke>,
     active_coords: Vec<TileCoord>,
     uploaded: BTreeMap<TileCoord, Vec<u8>>,
@@ -17,6 +18,7 @@ impl PaintCache {
         tiles.discard_history();
         Ok(Self {
             tiles,
+            image: None,
             strokes: vec![],
             active_coords: vec![],
             uploaded: BTreeMap::new(),
@@ -31,7 +33,8 @@ impl PaintCache {
     pub fn prepare(&mut self, document: &Document, force: bool) -> Result<Vec<TileUpload>, String> {
         let committed: Vec<_> = document.committed_paint_strokes().collect();
         let size_changed = self.dimensions() != document.dimensions();
-        let prefix = !size_changed
+        let prefix = self.image.as_deref() == document.paint_source()
+            && !size_changed
             && self.strokes.len() <= committed.len()
             && self
                 .strokes
@@ -50,6 +53,15 @@ impl PaintCache {
             } else {
                 dirty.clear();
             }
+        }
+        if self.image.as_deref() != document.paint_source() {
+            if let Some(source) = document.paint_source() {
+                if let Some(changes) = seed_paint_image(&mut self.tiles, "paint", source, 1)? {
+                    dirty.extend(changes.coords);
+                }
+                self.tiles.discard_history();
+            }
+            self.image = document.paint_source().map(str::to_owned);
         }
         for stroke in committed.iter().skip(self.strokes.len()) {
             if let Some(changes) = paint_stroke_into_tiles(&mut self.tiles, "paint", stroke)? {
@@ -116,6 +128,46 @@ impl PaintCache {
 mod tests {
     use super::*;
     use lumapaint_core::document::Brush;
+    #[test]
+    fn backing_image_is_rendered_erased_and_rebuilt_after_undo() {
+        let mut doc = Document::default();
+        doc.replace_moved_pixels("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"640\"><rect x=\"10\" y=\"10\" width=\"30\" height=\"30\" fill=\"red\"/></svg>".into(),None).unwrap();
+        let mut cache = PaintCache::new(doc.dimensions()).unwrap();
+        cache.prepare(&doc, true).unwrap();
+        assert_eq!(
+            cache.tiles.layers()[0].tiles.pixel(20, 20).unwrap(),
+            [255, 0, 0, 255]
+        );
+        doc.begin_eraser(
+            Point { x: 20., y: 20. },
+            Brush {
+                size: 20.,
+                hardness: 1.,
+                ..Default::default()
+            },
+            1.,
+        )
+        .unwrap();
+        doc.finish();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(cache.tiles.layers()[0].tiles.pixel(20, 20).unwrap()[3], 0);
+        doc.undo();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(
+            cache.tiles.layers()[0].tiles.pixel(20, 20).unwrap(),
+            [255, 0, 0, 255]
+        );
+        doc.undo();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(
+            cache.tiles.layers()[0]
+                .tiles
+                .pixel(20, 20)
+                .unwrap_or([0; 4]),
+            [0; 4]
+        );
+    }
+
     fn stroke(document: &mut Document, x: f32, erase: bool) {
         let brush = Brush {
             simulation: Default::default(),

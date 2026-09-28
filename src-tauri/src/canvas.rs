@@ -1013,3 +1013,32 @@ pub async fn set_vector_paint(
         Err("Vector paint is pending on this platform".into())
     }
 }
+
+#[tauri::command]
+pub async fn outline_text(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::outline_text).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Text outlines are pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn outline_view(
+    window: tauri::WebviewWindow,
+    value: Option<bool>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::outline_view(value)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, value);
+        Err("Outline view is pending on this platform".into())
+    }
+}

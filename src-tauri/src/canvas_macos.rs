@@ -42,6 +42,8 @@ use tauri::{Emitter, Manager};
 
 #[path = "clipboard_macos.rs"]
 mod clipboard;
+#[path = "pixel_move_macos.rs"]
+mod pixel_move;
 #[path = "text_editor_macos.rs"]
 mod text_editor;
 
@@ -285,11 +287,28 @@ pub fn initialize(app: tauri::AppHandle) {
     }
 }
 
+fn pan_offset(current: (f32, f32), delta: (f32, f32)) -> (f32, f32) {
+    if !delta.0.is_finite() || !delta.1.is_finite() {
+        return current;
+    }
+    (
+        (current.0 + delta.0).clamp(-8192., 8192.),
+        (current.1 + delta.1).clamp(-8192., 8192.),
+    )
+}
+
+fn pinch_zoom(current: f32, magnification: f32) -> f32 {
+    if !magnification.is_finite() {
+        return current;
+    }
+    (current * (1. + magnification).max(0.01)).clamp(0.25, 4.)
+}
+
 define_class!(
     #[unsafe(super(NSView))]
     #[ivars = ()]
     struct PaintView;
-    impl PaintView {
+impl PaintView {
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool { true }
         #[unsafe(method(acceptsFirstResponder))]
@@ -357,6 +376,49 @@ define_class!(
                         }
                     }
                 }
+            }
+            if TOOL.with(|t|t.get()) == CanvasTool::VectorSelect {
+                let viewport=CANVAS.with(|slot|slot.borrow().as_ref().map(|c|c.viewport));
+                let corners=DOCUMENT.with(|d|d.borrow().selected_vector_box());
+                if let (Some(v),Some(c))=(viewport,corners) {
+                    let w=v.width as f32/v.scale; let h=v.height as f32/v.scale;
+                    let fit=((w-48.)/v.document_width).min((h-48.)/v.document_height).max(0.01)*v.zoom;
+                    for i in 0..4 {
+                        let a=c[i];let b=c[(i+1)%4];
+                        for (point,radius,cursor) in [(a,17.,NSCursor::crosshairCursor()),(a,7.,NSCursor::frameResizeCursorFromPosition_inDirections([NSCursorFrameResizePosition::TopLeft,NSCursorFrameResizePosition::TopRight,NSCursorFrameResizePosition::BottomRight,NSCursorFrameResizePosition::BottomLeft][i],NSCursorFrameResizeDirections::All)), ([(a[0]+b[0])*0.5,(a[1]+b[1])*0.5],7.,NSCursor::frameResizeCursorFromPosition_inDirections(if i%2==0 {NSCursorFrameResizePosition::Top}else{NSCursorFrameResizePosition::Left},NSCursorFrameResizeDirections::All))] {
+                            let x=w*0.5+v.pan_x+(point[0]-v.document_width*0.5)*fit;
+                            let y=h*0.5+v.pan_y+(point[1]-v.document_height*0.5)*fit;
+                            self.addCursorRect_cursor(NSRect::new(NSPoint::new(f64::from(x-radius),f64::from(y-radius)),NSSize::new(f64::from(radius*2.),f64::from(radius*2.))),&cursor);
+                        }
+                    }
+                }
+            }
+        }
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            if self.isHidden() || !DOCUMENT_OPEN.with(|open|open.get()) || PANNING.with(|p|p.get()) {return;}
+            if !event.hasPreciseScrollingDeltas() {return;}
+            let dx=event.scrollingDeltaX() as f32;
+            let dy=event.scrollingDeltaY() as f32;
+            if !dx.is_finite() || !dy.is_finite() || (dx==0. && dy==0.) {return;}
+            if DOCUMENT.with(|doc|doc.borrow().has_active_stroke()) {return;}
+            if text_editor::active() {if let Err(error)=text_editor::finish(true){emit_error(error);return;}}
+            // AppKit already applies the user's natural-scrolling preference and momentum.
+            // Delta units are view points, matching the hand tool, independent of zoom/Retina.
+            self.pan_by(dx,dy);
+        }
+        #[unsafe(method(magnifyWithEvent:))]
+        fn magnify_with_event(&self, event: &NSEvent) {
+            if self.isHidden() || !DOCUMENT_OPEN.with(|open|open.get()) || PANNING.with(|p|p.get()) { return; }
+            let delta=event.magnification() as f32;
+            if !delta.is_finite() || delta==0. {return;}
+            if DOCUMENT.with(|doc|doc.borrow().has_active_stroke()) {return;}
+            if text_editor::active() {if let Err(error)=text_editor::finish(true){emit_error(error);return;}}
+            let location=self.convertPoint_fromView(event.locationInWindow(),None);
+            let viewport=CANVAS.with(|slot|slot.borrow().as_ref().map(|c|c.viewport));
+            if let Some(viewport)=viewport {
+                let zoom=pinch_zoom(viewport.zoom,delta);
+                self.apply_zoom(viewport,location,zoom);
             }
         }
         #[unsafe(method(mouseDown:))]
@@ -491,6 +553,26 @@ impl PaintView {
         }
     }
 
+    fn apply_zoom(&self, viewport: Viewport, location: NSPoint, zoom: f32) {
+        if zoom == viewport.zoom || !location.x.is_finite() || !location.y.is_finite() {
+            return;
+        }
+        let viewport = viewport.zoom_around(location.x as f32, location.y as f32, zoom);
+        PAN.with(|pan| pan.set((viewport.pan_x, viewport.pan_y)));
+        CANVAS.with(|slot| {
+            if let Some(canvas) = slot.borrow_mut().as_mut() {
+                canvas.viewport = viewport;
+            }
+        });
+        if let Err(error) = redraw() {
+            emit_error(error);
+        }
+        self.refresh_cursor();
+        if let Some(app) = APP.get() {
+            let _ = app.emit_to("main", "canvas-zoom-changed", zoom);
+        }
+    }
+
     fn pointer(&self, event: &NSEvent, phase: u8) {
         if self.isHidden() || !DOCUMENT_OPEN.with(|open| open.get()) {
             return;
@@ -526,21 +608,7 @@ impl PaintView {
                     0.8
                 };
                 let zoom = (viewport.zoom * factor).clamp(0.25, 4.0);
-                if zoom != viewport.zoom {
-                    let viewport = viewport.zoom_around(location.x as f32, location.y as f32, zoom);
-                    PAN.with(|pan| pan.set((viewport.pan_x, viewport.pan_y)));
-                    CANVAS.with(|slot| {
-                        if let Some(canvas) = slot.borrow_mut().as_mut() {
-                            canvas.viewport = viewport;
-                        }
-                    });
-                    if let Err(error) = redraw() {
-                        emit_error(error);
-                    }
-                    if let Some(app) = APP.get() {
-                        let _ = app.emit_to("main", "canvas-zoom-changed", zoom);
-                    }
-                }
+                self.apply_zoom(viewport, location, zoom);
             }
             return;
         }
@@ -570,6 +638,7 @@ impl PaintView {
             }
             if tool == CanvasTool::Text
                 || (tool == CanvasTool::VectorSelect
+                    && DOCUMENT.with(|doc| doc.borrow().selected_layer_is_vector())
                     && event.clickCount() == 2
                     && DOCUMENT.with(|doc| {
                         selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
@@ -633,6 +702,13 @@ impl PaintView {
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
                 let tool = TOOL.with(|value| value.get());
+                if matches!(
+                    tool,
+                    CanvasTool::VectorSelect | CanvasTool::VectorDirectSelect
+                ) && !doc.selected_layer_is_vector()
+                {
+                    return pixel_move::pointer(&mut doc, point, phase, event.modifierFlags());
+                }
                 if matches!(
                     tool,
                     CanvasTool::VectorSelect
@@ -711,13 +787,11 @@ impl PaintView {
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         let current = (point.x as f32, point.y as f32);
         let previous = LAST_PAN_POINT.with(|last| last.replace(current));
-        PAN.with(|pan| {
-            let (x, y) = pan.get();
-            pan.set((
-                (x + current.0 - previous.0).clamp(-8192.0, 8192.0),
-                (y + current.1 - previous.1).clamp(-8192.0, 8192.0),
-            ));
-        });
+        self.pan_by(current.0 - previous.0, current.1 - previous.1);
+    }
+
+    fn pan_by(&self, dx: f32, dy: f32) {
+        PAN.with(|pan| pan.set(pan_offset(pan.get(), (dx, dy))));
         CANVAS.with(|slot| {
             if let Some(canvas) = slot.borrow_mut().as_mut() {
                 let (x, y) = PAN.with(|pan| pan.get());
@@ -728,6 +802,7 @@ impl PaintView {
         if let Err(error) = redraw() {
             emit_error(error);
         }
+        self.refresh_cursor();
     }
 }
 
@@ -927,11 +1002,7 @@ fn anchor_pointer(
 ) -> Result<(), String> {
     use lumapaint_core::bezier;
     let position = [point.x, point.y];
-    let tolerance = CANVAS.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map_or(6.0, |canvas| 6.0 / canvas.viewport.zoom)
-    });
+    let tolerance = box_tolerance();
     if phase == 0 {
         ANCHOR_DRAFT.with(|draft| draft.borrow_mut().take());
         let Some(layer_id) = document.selected_vector_target()? else {
@@ -968,6 +1039,7 @@ fn anchor_pointer(
         let Some((mut object, index, t)) = candidate else {
             return Ok(());
         };
+        document.select_vector_objects(vec![object.id.clone()])?;
         if tool == CanvasTool::VectorAnchorAdd {
             bezier::insert(&mut object, index, t)?;
         } else if tool == CanvasTool::VectorAnchorDelete {
@@ -1046,6 +1118,18 @@ impl AnchorDraft {
         for segment in points.windows(4).step_by(3) {
             let _ = write!(
                 guide.path.data,
+                " M {} {} C {} {} {} {} {} {}",
+                segment[0][0],
+                segment[0][1],
+                segment[1][0],
+                segment[1][1],
+                segment[2][0],
+                segment[2][1],
+                segment[3][0],
+                segment[3][1]
+            );
+            let _ = write!(
+                guide.path.data,
                 " M {} {} L {} {} M {} {} L {} {}",
                 segment[0][0],
                 segment[0][1],
@@ -1058,7 +1142,18 @@ impl AnchorDraft {
             );
         }
         let r = 3. / zoom;
-        for point in points {
+        for (index, point) in points.into_iter().enumerate() {
+            if !index.is_multiple_of(3) {
+                let _ = write!(
+                    guide.path.data,
+                    " M {} {} a {r} {r} 0 1 0 {} 0 a {r} {r} 0 1 0 {} 0",
+                    point[0] - r,
+                    point[1],
+                    2. * r,
+                    -2. * r
+                );
+                continue;
+            }
             let _ = write!(
                 guide.path.data,
                 " M {} {} h {} v {} h {} Z",
@@ -1312,11 +1407,7 @@ fn direct_pointer(
                         .any(|(_, object)| &object.id == id && *index < object.control_points.len())
             })
         });
-        let tolerance = CANVAS.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .map_or(6., |canvas| 6. / canvas.viewport.zoom)
-        });
+        let tolerance = box_tolerance();
         let hit = objects
             .iter()
             .rev()
@@ -1347,6 +1438,22 @@ fn direct_pointer(
                         vec![(object.id.clone(), index), (object.id.clone(), end)]
                     })
                 })
+            })
+            .or_else(|| {
+                objects
+                    .iter()
+                    .rev()
+                    .find(|(_, object)| object.hit_test(position, tolerance))
+                    .map(|(_, object)| {
+                        (0..object.control_points.len())
+                            .step_by(3)
+                            .filter(|&index| {
+                                index != object.control_points.len() - 1
+                                    || !object.path.data.ends_with('Z')
+                            })
+                            .map(|index| (object.id.clone(), index))
+                            .collect()
+                    })
             });
         let shift = flags.contains(NSEventModifierFlags::Shift);
         let marquee = hit.is_none();
@@ -1441,6 +1548,24 @@ fn direct_pointer(
         }
     }
     Ok(())
+}
+
+fn anchor_guides_preview(document: &Document, scale: f32) -> Result<Document, String> {
+    let mut preview = document.clone();
+    for (layer, object) in direct_objects(document)
+        .into_iter()
+        .filter(|(_, o)| document.selected_vector_ids().contains(&o.id))
+    {
+        let draft = AnchorDraft {
+            layer,
+            original: object.clone(),
+            object,
+            index: 0,
+            start: [0., 0.],
+        };
+        preview = draft.preview(&preview, scale)?;
+    }
+    Ok(preview)
 }
 
 fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
@@ -1637,6 +1762,149 @@ fn rotate_pointer(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct BoxDraft {
+    corners: [[f32; 2]; 4],
+    handle: [f32; 2],
+    start: [f32; 2],
+    matrix: [f32; 6],
+    rotate: bool,
+}
+fn box_tolerance() -> f32 {
+    CANVAS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|c| {
+                let v = c.viewport;
+                7. / (((v.width as f32 / v.scale - 48.) / v.document_width)
+                    .min((v.height as f32 / v.scale - 48.) / v.document_height)
+                    .max(0.01)
+                    * v.zoom)
+            })
+            .unwrap_or(6.)
+    })
+}
+fn box_hit(document: &Document, p: [f32; 2]) -> Option<BoxDraft> {
+    let corners = document.selected_vector_box()?;
+    let tolerance = box_tolerance();
+    for rotate in [false, true] {
+        for h in [
+            [0., 0.],
+            [0.5, 0.],
+            [1., 0.],
+            [1., 0.5],
+            [1., 1.],
+            [0.5, 1.],
+            [0., 1.],
+            [0., 0.5],
+        ] {
+            if rotate && (h[0] == 0.5 || h[1] == 0.5) {
+                continue;
+            }
+            let q = [
+                corners[0][0]
+                    + h[0] * (corners[1][0] - corners[0][0])
+                    + h[1] * (corners[3][0] - corners[0][0]),
+                corners[0][1]
+                    + h[0] * (corners[1][1] - corners[0][1])
+                    + h[1] * (corners[3][1] - corners[0][1]),
+            ];
+            let distance = (p[0] - q[0]).hypot(p[1] - q[1]);
+            let center = [
+                (corners[0][0] + corners[2][0]) * 0.5,
+                (corners[0][1] + corners[2][1]) * 0.5,
+            ];
+            let outside =
+                (p[0] - q[0]) * (q[0] - center[0]) + (p[1] - q[1]) * (q[1] - center[1]) > 0.;
+            if (!rotate && distance <= tolerance)
+                || (rotate && outside && distance <= tolerance * 2.5)
+            {
+                return Some(BoxDraft {
+                    corners,
+                    handle: h,
+                    start: p,
+                    matrix: [1., 0., 0., 1., 0., 0.],
+                    rotate,
+                });
+            }
+        }
+    }
+    None
+}
+fn update_box(d: &mut BoxDraft, p: [f32; 2], flags: NSEventModifierFlags) {
+    if p == d.start {
+        d.matrix = [1., 0., 0., 1., 0., 0.];
+        return;
+    }
+    let c = d.corners;
+    if d.rotate {
+        let center = [(c[0][0] + c[2][0]) * 0.5, (c[0][1] + c[2][1]) * 0.5];
+        let mut angle = (p[1] - center[1]).atan2(p[0] - center[0])
+            - (d.start[1] - center[1]).atan2(d.start[0] - center[0]);
+        if flags.contains(NSEventModifierFlags::Shift) {
+            let step = std::f32::consts::FRAC_PI_4;
+            angle = (angle / step).round() * step;
+        }
+        let (b, a) = angle.sin_cos();
+        d.matrix = [
+            a,
+            b,
+            -b,
+            a,
+            center[0] - a * center[0] + b * center[1],
+            center[1] - b * center[0] - a * center[1],
+        ];
+        return;
+    }
+    let u = [c[1][0] - c[0][0], c[1][1] - c[0][1]];
+    let v = [c[3][0] - c[0][0], c[3][1] - c[0][1]];
+    let det = u[0] * v[1] - u[1] * v[0];
+    if det.abs() < 0.000001 {
+        return;
+    }
+    let delta = [p[0] - d.start[0], p[1] - d.start[1]];
+    let local = [
+        (v[1] * delta[0] - v[0] * delta[1]) / det,
+        (-u[1] * delta[0] + u[0] * delta[1]) / det,
+    ];
+    let anchor = if flags.contains(NSEventModifierFlags::Option) {
+        [0.5, 0.5]
+    } else {
+        [1. - d.handle[0], 1. - d.handle[1]]
+    };
+    let mut scale = [1., 1.];
+    for i in 0..2 {
+        if d.handle[i] != 0.5 {
+            scale[i] = (1. + local[i] / (d.handle[i] - anchor[i])).clamp(0.01, 100.);
+        }
+    }
+    if flags.contains(NSEventModifierFlags::Shift) {
+        let value = if (scale[0] - 1.).abs() > (scale[1] - 1.).abs() {
+            scale[0]
+        } else {
+            scale[1]
+        };
+        scale = [value, value];
+    }
+    let [sx, sy] = scale;
+    let a = (u[0] * sx * v[1] - v[0] * sy * u[1]) / det;
+    let b = (u[1] * sx * v[1] - v[1] * sy * u[1]) / det;
+    let cc = (-u[0] * sx * v[0] + v[0] * sy * u[0]) / det;
+    let dd = (-u[1] * sx * v[0] + v[1] * sy * u[0]) / det;
+    let origin = [
+        c[0][0] + u[0] * anchor[0] + v[0] * anchor[1],
+        c[0][1] + u[1] * anchor[0] + v[1] * anchor[1],
+    ];
+    d.matrix = [
+        a,
+        b,
+        cc,
+        dd,
+        origin[0] - a * origin[0] - cc * origin[1],
+        origin[1] - b * origin[0] - dd * origin[1],
+    ];
+}
+
 type VectorMarquee = ([f32; 2], [f32; 2], bool);
 
 fn vector_select_pointer(
@@ -1645,8 +1913,27 @@ fn vector_select_pointer(
     phase: u8,
     modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
+    if phase != 0 && BOX_DRAFT.with(|d| d.borrow().is_some()) {
+        BOX_DRAFT.with(|draft| {
+            if let Some(d) = draft.borrow_mut().as_mut() {
+                update_box(d, [point.x, point.y], modifiers);
+            }
+        });
+        if phase == 2 {
+            if let Some(d) = BOX_DRAFT.with(|draft| draft.borrow_mut().take()) {
+                document.affine_selected_vectors(d.matrix)?;
+            }
+        }
+        return Ok(());
+    }
     if phase == 0 {
         cancel_vector_drag();
+        if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect {
+            if let Some(d) = box_hit(document, [point.x, point.y]) {
+                BOX_DRAFT.with(|draft| *draft.borrow_mut() = Some(d));
+                return Ok(());
+            }
+        }
         if let Some((settings, handle)) = selected_text_resize_handle(document, [point.x, point.y])
             .filter(|_| !modifiers.contains(NSEventModifierFlags::Option))
         {
@@ -2046,6 +2333,15 @@ fn draft_frame_overlay(start: [f32; 2], end: [f32; 2]) -> lumapaint_renderer::Fr
 }
 
 fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer::FrameOverlay> {
+    if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect {
+        return document
+            .selected_vector_box()
+            .map(|corners| lumapaint_renderer::FrameOverlay {
+                corners,
+                handles: true,
+            });
+    }
+
     if document.selected_vector_ids().len() != 1 {
         return None;
     }
@@ -2089,6 +2385,8 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
 }
 
 fn cancel_vector_drag() -> bool {
+    let pixels = PIXEL_DRAG.with(|d| d.borrow_mut().take().is_some());
+    let bounding = BOX_DRAFT.with(|d| d.borrow_mut().take().is_some());
     let rotating = ROTATE_DRAFT.with(|d| d.borrow_mut().take().is_some());
     let scaling = SCALE_DRAFT.with(|d| d.borrow_mut().take().is_some());
     let marquee = VECTOR_MARQUEE.with(|draft| draft.borrow_mut().take().is_some());
@@ -2101,7 +2399,17 @@ fn cancel_vector_drag() -> bool {
     let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
-    rotating || scaling || marquee || moving || pen || anchor || direct || text_frame || text_resize
+    pixels
+        || bounding
+        || rotating
+        || scaling
+        || marquee
+        || moving
+        || pen
+        || anchor
+        || direct
+        || text_frame
+        || text_resize
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
@@ -2519,11 +2827,32 @@ fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
 }
 
 fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
+    canvas
+        .renderer
+        .set_outline_view(OUTLINE_VIEW.with(|state| state.get()));
     // Modal edits are rendered once, with their final state, when the view resumes.
     if canvas.view.isHidden() {
         return Ok(());
     }
     canvas.renderer.set_frame_overlay(None);
+    if let Some(overlay) = pixel_move::overlay() {
+        canvas.renderer.set_frame_overlay(Some(overlay));
+        return DOCUMENT.with(|d| canvas.renderer.render(canvas.viewport, &d.borrow()));
+    }
+    if let Some(d) = BOX_DRAFT.with(|draft| *draft.borrow()) {
+        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
+        preview.affine_selected_vectors(d.matrix)?;
+        canvas
+            .renderer
+            .set_frame_overlay(preview.selected_vector_box().map(|corners| {
+                lumapaint_renderer::FrameOverlay {
+                    corners,
+                    handles: true,
+                }
+            }));
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
+
     if matches!(
         TOOL.with(|t| t.get()),
         CanvasTool::VectorScale | CanvasTool::VectorRotate
@@ -2579,16 +2908,45 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
             .set_frame_overlay(text_frame_overlay(&settings, true));
         return canvas.renderer.render(canvas.viewport, &preview);
     }
+    let guide_scale = ((canvas.viewport.width as f32 / canvas.viewport.scale - 48.)
+        / canvas.viewport.document_width)
+        .min(
+            (canvas.viewport.height as f32 / canvas.viewport.scale - 48.)
+                / canvas.viewport.document_height,
+        )
+        .max(0.01)
+        * canvas.viewport.zoom;
+    if matches!(
+        TOOL.with(|tool| tool.get()),
+        CanvasTool::VectorAnchorAdd
+            | CanvasTool::VectorAnchorDelete
+            | CanvasTool::VectorAnchorConvert
+    ) && ANCHOR_DRAFT.with(|draft| draft.borrow().is_none())
+        && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none())
+    {
+        let preview = DOCUMENT.with(|doc| anchor_guides_preview(&doc.borrow(), guide_scale))?;
+        return canvas.renderer.render(canvas.viewport, &preview);
+    }
     if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect
         && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none())
     {
-        let preview =
-            DOCUMENT.with(|document| direct_preview(&document.borrow(), canvas.viewport.zoom))?;
+        let preview = DOCUMENT.with(|document| {
+            direct_preview(
+                &document.borrow(),
+                ((canvas.viewport.width as f32 / canvas.viewport.scale - 48.)
+                    / canvas.viewport.document_width)
+                    .min(
+                        (canvas.viewport.height as f32 / canvas.viewport.scale - 48.)
+                            / canvas.viewport.document_height,
+                    )
+                    .max(0.01)
+                    * canvas.viewport.zoom,
+            )
+        })?;
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some(draft) = ANCHOR_DRAFT.with(|draft| draft.borrow().clone()) {
-        let preview =
-            DOCUMENT.with(|document| draft.preview(&document.borrow(), canvas.viewport.zoom))?;
+        let preview = DOCUMENT.with(|document| draft.preview(&document.borrow(), guide_scale))?;
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some(draft) = PEN_DRAFT.with(|draft| draft.borrow().clone()) {
@@ -2637,7 +2995,9 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     DOCUMENT.with(|document| {
         let document = document.borrow();
-        if document.visible_strokes().any(|stroke| stroke.eraser) {
+        if document.paint_source().is_some()
+            || document.visible_strokes().any(|stroke| stroke.eraser)
+        {
             if RASTER_SENDER.get().is_some() {
                 schedule_raster_job(canvas, &document)?;
                 return canvas.renderer.render_deferred(canvas.viewport, &document);
@@ -3099,6 +3459,8 @@ thread_local! {
     static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PIXEL_DRAG: RefCell<Option<pixel_move::PixelDrag>> = const { RefCell::new(None) };
+    static BOX_DRAFT: RefCell<Option<BoxDraft>> = const { RefCell::new(None) };
     static ROTATE_DRAFT: RefCell<Option<RotateDraft>> = const { RefCell::new(None) };
     static SCALE_DRAFT: RefCell<Option<ScaleDraft>> = const { RefCell::new(None) };
     static VECTOR_MARQUEE: RefCell<Option<VectorMarquee>> = const { RefCell::new(None) };
@@ -3588,6 +3950,139 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_guides_show_curve_anchors_handles_without_modifying_document() {
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        DIRECT_GESTURE.with(|d| d.borrow_mut().take());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let draft = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![([20., 20.], [40., 0.]), ([100., 80.], [120., 60.])],
+        };
+        let object = draft.object(false, "guide-test").unwrap();
+        doc.upsert_vector_object(&layer, object).unwrap();
+        doc.select_vector_objects(vec!["guide-test".into()])
+            .unwrap();
+        let before = doc.encode().unwrap();
+        let revision = doc.revision();
+        for scale in [0.25, 1., 4.] {
+            let preview = direct_preview(&doc, scale).unwrap();
+            let guide = preview
+                .svg_layers()
+                .flat_map(|l| &l.vector_objects)
+                .find(|o| o.id == "guides-guide-test")
+                .unwrap();
+            assert!(guide.path.data.contains(" C "));
+            assert!(guide.path.data.contains(" a "));
+            assert!(guide.path.data.contains(" h "));
+            assert_eq!(guide.stroke_width, 1. / scale);
+        }
+        let idle = anchor_guides_preview(&doc, 2.).unwrap();
+        let guide = idle
+            .svg_layers()
+            .flat_map(|l| &l.vector_objects)
+            .find(|o| o.id == "guides-guide-test")
+            .unwrap();
+        assert!(guide.path.data.contains(" C ") && guide.path.data.contains(" a "));
+        assert_eq!(guide.stroke_width, 0.5);
+        assert_eq!(doc.encode().unwrap(), before);
+        assert_eq!(doc.revision(), revision);
+    }
+
+    #[test]
+    fn trackpad_pan_uses_both_axes_in_view_points_and_limits_offsets() {
+        assert_eq!(pan_offset((10., 20.), (12.5, -8.)), (22.5, 12.));
+        assert_eq!(pan_offset((10., 20.), (-12.5, 8.)), (-2.5, 28.));
+        assert_eq!(pan_offset((8190., -8190.), (10., -10.)), (8192., -8192.));
+        assert_eq!(pan_offset((10., 20.), (f32::NAN, 1.)), (10., 20.));
+        let first = pan_offset((0., 0.), (8., 4.));
+        assert_eq!(pan_offset(first, (4., 2.)), (12., 6.));
+    }
+
+    #[test]
+    fn pinch_zoom_in_out_limits_and_invalid_events() {
+        assert!((pinch_zoom(1., 0.2) - 1.2).abs() < 0.0001);
+        assert!((pinch_zoom(1., -0.2) - 0.8).abs() < 0.0001);
+        assert_eq!(pinch_zoom(4., 1.), 4.);
+        assert_eq!(pinch_zoom(0.25, -0.9), 0.25);
+        assert_eq!(pinch_zoom(1., f32::NAN), 1.);
+        assert_eq!(pinch_zoom(1., 0.), 1.);
+    }
+
+    #[test]
+    fn bounding_handles_transform_preview_commit_undo_and_cancel() {
+        TOOL.with(|t| t.set(CanvasTool::VectorSelect));
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: lumapaint_core::vector::VectorText {
+                content: "Box".into(),
+                box_width: 100.,
+                box_height: Some(50.),
+                ..Default::default()
+            },
+            position: [100., 100.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let original = doc.selected_vector_box().unwrap();
+        let start = original[2];
+        let end = [start[0] + 100., start[1] + 50.];
+        let point = |p: [f32; 2]| lumapaint_core::document::Point { x: p[0], y: p[1] };
+        let flags = NSEventModifierFlags::empty();
+        let revision = doc.revision();
+        vector_select_pointer(&mut doc, point(start), 0, flags).unwrap();
+        assert!(BOX_DRAFT.with(|d| d.borrow().is_some()));
+        vector_select_pointer(&mut doc, point(end), 1, flags).unwrap();
+        assert_eq!(doc.revision(), revision);
+        vector_select_pointer(&mut doc, point(end), 2, flags).unwrap();
+        assert_eq!(doc.revision(), revision + 1);
+        let changed = doc.selected_vector_box().unwrap();
+        assert!((changed[0][0] - original[0][0]).abs() < 0.001);
+        assert!((changed[2][0] - end[0]).abs() < 0.001);
+        doc.undo();
+        assert_eq!(doc.selected_vector_box().unwrap(), original);
+        doc.redo();
+        assert_eq!(doc.selected_vector_box().unwrap(), changed);
+        vector_select_pointer(&mut doc, point(changed[2]), 0, flags).unwrap();
+        cancel_vector_drag();
+        assert!(BOX_DRAFT.with(|d| d.borrow().is_none()));
+        TOOL.with(|t| t.set(CanvasTool::Brush));
+    }
+    #[test]
+    fn bounding_math_keeps_rotated_anchor_and_supports_center_and_rotation() {
+        let corners = [[10., 20.], [10., 120.], [-40., 120.], [-40., 20.]];
+        let mut d = BoxDraft {
+            corners,
+            handle: [1., 1.],
+            start: corners[2],
+            matrix: [1., 0., 0., 1., 0., 0.],
+            rotate: false,
+        };
+        update_box(&mut d, [-90., 220.], NSEventModifierFlags::empty());
+        let apply = |m: [f32; 6], p: [f32; 2]| {
+            [
+                m[0] * p[0] + m[2] * p[1] + m[4],
+                m[1] * p[0] + m[3] * p[1] + m[5],
+            ]
+        };
+        assert_eq!(apply(d.matrix, corners[0]), corners[0]);
+        assert_eq!(apply(d.matrix, corners[2]), [-90., 220.]);
+        update_box(
+            &mut d,
+            [-90., 220.],
+            NSEventModifierFlags::Option | NSEventModifierFlags::Shift,
+        );
+        assert_eq!(apply(d.matrix, [-15., 70.]), [-15., 70.]);
+        d.rotate = true;
+        d.start = [35., 70.];
+        update_box(&mut d, [-15., 120.], NSEventModifierFlags::Shift);
+        let p = apply(d.matrix, [35., 70.]);
+        assert!((p[0] + 15.).abs() < 0.001 && (p[1] - 120.).abs() < 0.001);
+    }
+
+    #[test]
     fn vector_release_holds_last_frame_until_ready_and_rejects_stale_documents() {
         let key = RasterKey {
             document_id: 7,
@@ -4053,6 +4548,10 @@ mod tests {
         document
             .upsert_vector_object(&layer, original.clone())
             .unwrap();
+        assert!(
+            document.selected_layer_is_vector(),
+            "shared tools must route a newly created path to vector editing"
+        );
         let p = |x, y| lumapaint_core::document::Point { x, y };
         let flags = NSEventModifierFlags::empty();
         direct_pointer(&mut document, p(20., 20.), 0, flags).unwrap();
@@ -4920,4 +5419,31 @@ pub fn set_vector_paint(
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+pub fn outline_text() -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|d| {
+        d.borrow_mut()
+            .outline_selected_text(lumapaint_renderer::text_outlines::outline)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+thread_local! { static OUTLINE_VIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub fn outline_view(value: Option<bool>) -> Result<bool, String> {
+    if let Some(value) = value {
+        text_editor::finish(true)?;
+        OUTLINE_VIEW.with(|state| state.set(value));
+        CANVAS.with(|slot| {
+            if let Some(canvas) = slot.borrow_mut().as_mut() {
+                canvas.renderer.set_outline_view(value);
+            }
+        });
+        redraw()?;
+    }
+    Ok(OUTLINE_VIEW.with(|state| state.get()))
 }

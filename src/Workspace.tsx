@@ -2,7 +2,7 @@ import { setVectorPaint } from './bridge';
 import type { VectorColorControls } from './components/ColorPanel';
 import { TransformDialog, transformLabels } from './components/TransformDialog';
 import { transformObjects, type TransformAction } from './bridge';
-import { clippingPath, compoundPath } from './bridge';
+import { clippingPath, compoundPath, outlineText, outlineView } from './bridge';
 import { IconToolMenu, type IconToolChoice } from './components/IconToolMenu';
 import { setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
@@ -31,13 +31,18 @@ import { NewDocumentDialog } from './components/NewDocumentDialog';
 import { subscribeNewDocument, type NewDocumentSettings, type DisplayChannel } from './bridge';
 
 export function Workspace() {
+  const [outlineDisplay, setOutlineDisplay] = useState(false);
+  useEffect(() => { void outlineView().then(setOutlineDisplay).catch(() => {}); }, []);
+
   const [locale, setLocale] = useState<Locale>(initialLocale);
   const [theme, setTheme] = useState<Theme>(() => readPreference('theme') ? initialTheme() : 'dark');
   const [toolState, setToolState] = useState({ mode: 'paint' as ToolMode, tools: initialTools });
   const toolMode = toolState.mode;
   const [zoomTool, setZoomTool] = useState<ZoomTool | null>(null);
   const [lastZoomTool, setLastZoomTool] = useState<ZoomTool>('zoomIn');
-  const canvasTool = zoomTool ?? toolState.tools[toolMode];
+  const [transformTool, setTransformTool] = useState<'vectorScale' | 'vectorRotate' | 'vectorSelect' | 'vectorDirectSelect' | null>(null);
+  const [selectionTool, setSelectionTool] = useState<SelectionTool | null>(null);
+  const canvasTool = zoomTool ?? transformTool ?? selectionTool ?? toolState.tools[toolMode];
   const [lastSelectionTool, setLastSelectionTool] = useState<SelectionTool>('rectangle');
   const [transformAction, setTransformAction] = useState<TransformAction | null>(null);
   const [lastTransformTool, setLastTransformTool] = useState<'vectorScale' | 'vectorRotate'>('vectorScale');
@@ -50,15 +55,16 @@ export function Workspace() {
     setToolState(current => ({ ...current, mode }));
   }, []);
   const setTool = useCallback((next: CanvasTool) => {
-    if (next === 'zoomIn' || next === 'zoomOut' || next === 'hand') { setZoomTool(next); setLastZoomTool(next); return; }
+    if (next === 'zoomIn' || next === 'zoomOut' || next === 'hand') { setSelectionTool(null); setTransformTool(null); setZoomTool(next); setLastZoomTool(next); return; }
     setZoomTool(null);
+    if (next === 'vectorScale' || next === 'vectorRotate' || next === 'vectorSelect' || next === 'vectorDirectSelect') { setSelectionTool(null); setTransformTool(next); if(next === 'vectorScale' || next === 'vectorRotate') setLastTransformTool(next); else setLastVectorSelectTool(next); return; }
+    setTransformTool(null);
+    if (next === 'rectangle' || next === 'ellipse') { setSelectionTool(next); setLastSelectionTool(next); return; }
+    setSelectionTool(null);
     setToolState(current => {
       const mode = modeForTool(current.mode, next);
       return { mode, tools: { ...current.tools, [mode]: next } };
     });
-    if (next === 'vectorScale' || next === 'vectorRotate') setLastTransformTool(next);
-    if (next === 'rectangle' || next === 'ellipse') setLastSelectionTool(next);
-    if (next === 'vectorSelect' || next === 'vectorDirectSelect') setLastVectorSelectTool(next);
     if (isPenTool(next)) setLastPenTool(next);
     if (next === 'vectorRectangle' || next === 'vectorEllipse') setLastVectorShapeTool(next);
     if (next === 'text' || next === 'textFrame') setLastTextTool(next);
@@ -434,9 +440,10 @@ export function Workspace() {
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
+      <WorkspaceMenu outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onFile={action => void file(action)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
         onTransform={setTransformAction}
+        onOutlineText={() => { void outlineText().then(updateDocument).catch(cause => setError(String(cause))); }}
         onCompound={release => { void compoundPath(release).then(updateDocument).catch(cause => setError(String(cause))); }}
         onClipping={action => { void clippingPath(action).then(snapshot => { updateDocument(snapshot); if (action === 'edit') setTool('vectorDirectSelect'); }).catch(cause => setError(String(cause))); }}
         onGroup={action => void changeGroup(action)}
@@ -466,11 +473,8 @@ export function Workspace() {
       <nav className="tool-rail" aria-label={t.tools}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
         <span className="tool-mode-divider" aria-hidden="true" />
-        {modeTools[toolMode].map(item => item === 'ellipse' || item === 'vectorEllipse' || item === 'vectorDirectSelect' || item === 'vectorRotate' || item === 'textFrame' || (isPenTool(item) && item !== 'vectorPen') ? null : (item === 'brush' || item === 'eraser') && toolMode === 'paint' ?
-          <IconToolMenu key={item} label={item === 'brush' ? t.drawTools : t.eraseTools} selected={item} active={canvasTool === item} enabled={documentEditable} choices={[{ id: item, label: t[item], icon: item, shortcut: item === 'brush' ? 'B' : 'E' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> : item === 'rectangle' ?
-          <SelectionToolMenu key="selection" locale={locale} selected={canvasTool === 'rectangle' || canvasTool === 'ellipse' ? canvasTool : lastSelectionTool} active={canvasTool === 'rectangle' || canvasTool === 'ellipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
-          item === 'vectorScale' ? <IconToolMenu key="vector-transform" label={t.transformTools} selected={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate' ? canvasTool : lastTransformTool} active={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate'} enabled={documentEditable} choices={[{ id: 'vectorScale', label: t.vectorScale, icon: 'vectorScale' }, { id: 'vectorRotate', label: t.vectorRotate, icon: 'vectorRotate' }, ...(['move','reflect','shear','individual','reset'] as const).map((action,i)=>({id:action,label:transformLabels[locale][action],icon:(['transformMove','transformReflect','transformShear','transformEach','transformReset'] as const)[i]}))]} onSelect={tool => { if(tool==='vectorScale'||tool==='vectorRotate') setTool(tool); else setTransformAction(tool as TransformAction); }} onError={setError} /> :
-          item === 'vectorSelect' ? <IconToolMenu key="vector-selection" label={t.vectorSelect} selected={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect' ? canvasTool : lastVectorSelectTool} active={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect'} enabled={documentEditable} choices={[{ id: 'vectorSelect', label: t.vectorSelect, icon: 'vectorSelect', shortcut: 'V' }, { id: 'vectorDirectSelect', label: t.vectorDirectSelect, icon: 'vectorDirectSelect', shortcut: 'A' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
+        {modeTools[toolMode].map(item => item === 'vectorEllipse' || item === 'textFrame' || (isPenTool(item) && item !== 'vectorPen') ? null : (item === 'brush' || item === 'eraser') && toolMode === 'paint' ?
+          <IconToolMenu key={item} label={item === 'brush' ? t.drawTools : t.eraseTools} selected={item} active={canvasTool === item} enabled={documentEditable} choices={[{ id: item, label: t[item], icon: item, shortcut: item === 'brush' ? 'B' : 'E' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
           item === 'vectorPen' ? <IconToolMenu key="pen-tools" label={t.penTools} selected={isPenTool(canvasTool) ? canvasTool : lastPenTool} active={isPenTool(canvasTool)} enabled={documentEditable} choices={penTools.map(tool => ({ id: tool, label: t[tool], icon: tool, shortcut: tool === 'vectorPen' ? 'P' : tool === 'vectorPencil' ? 'N' : undefined })) as [IconToolChoice, ...IconToolChoice[]]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
           item === 'vectorRectangle' ?
           <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
@@ -479,6 +483,9 @@ export function Workspace() {
         {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentEditable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}
         <div className="common-tools">
+        <IconToolMenu key="vector-selection" label={t.vectorSelect} selected={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect' ? canvasTool : lastVectorSelectTool} active={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect'} enabled={documentEditable} choices={[{ id: 'vectorSelect', label: t.vectorSelect, icon: 'vectorSelect', shortcut: 'V' }, { id: 'vectorDirectSelect', label: t.vectorDirectSelect, icon: 'vectorDirectSelect', shortcut: 'A' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} />
+        <SelectionToolMenu locale={locale} selected={selectionTool ?? lastSelectionTool} active={selectionTool !== null} enabled={documentEditable} onSelect={setTool} onError={setError} />
+        <IconToolMenu key="vector-transform" label={t.transformTools} selected={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate' ? canvasTool : lastTransformTool} active={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate'} enabled={documentEditable} choices={[{ id: 'vectorScale', label: t.vectorScale, icon: 'vectorScale' }, { id: 'vectorRotate', label: t.vectorRotate, icon: 'vectorRotate' }, ...(['move','reflect','shear','individual','reset'] as const).map((action,i)=>({id:action,label:transformLabels[locale][action],icon:(['transformMove','transformReflect','transformShear','transformEach','transformReset'] as const)[i]}))]} onSelect={tool => { if(tool==='vectorScale'||tool==='vectorRotate') setTool(tool); else setTransformAction(tool as TransformAction); }} onError={setError} />
         <ZoomToolMenu locale={locale} selected={zoomTool ?? lastZoomTool} active={zoomTool !== null} enabled={documentAvailable && ready} onSelect={setTool} onError={setError} />
         <ColorPairControl locale={locale} foreground={brush.color} background={backgroundColor} compact activeColor={activeColor} onSelectColor={target => { setActiveColor(target); setPanels(true); setColorPanelRequest(current => current + 1); }} onSwap={swapColors} />
         </div>

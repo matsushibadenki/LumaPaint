@@ -115,6 +115,8 @@ pub fn run() {
             canvas::group_selected_vectors,
             canvas::clipping_path,
             canvas::compound_path,
+            canvas::outline_text,
+            canvas::outline_view,
             canvas::transform_objects,
             canvas::set_vector_paint,
             canvas::ungroup_selected_vectors,

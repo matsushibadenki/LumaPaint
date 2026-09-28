@@ -360,3 +360,15 @@ export function setVectorPaint(ids: string[], target: 'fill'|'stroke'|'swap', co
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
+
+export function outlineText(): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('outline_text'));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function outlineView(value?: boolean): Promise<boolean> {
+  const result = canvasQueue.then(() => invoke<boolean>('outline_view', { value: value ?? null }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}

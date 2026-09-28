@@ -414,6 +414,8 @@ struct VectorHistoryState {
     layers: Vec<SvgLayer>,
     selection: Vec<String>,
     strokes: Option<Vec<Stroke>>,
+    paint_source: Option<String>,
+    pixel_selection: Option<Selection>,
 }
 
 /// Minimal state needed to decide whether a projected paint tile cache can be
@@ -484,6 +486,7 @@ pub struct Document {
     artboards: bool,
     canvas_color: CanvasColor,
     pixel_aspect_ratio: f32,
+    paint_source: Option<String>,
     strokes: Vec<Stroke>,
     redo: Vec<Stroke>,
     active: Option<Stroke>,
@@ -524,6 +527,7 @@ impl Default for Document {
             artboards: false,
             canvas_color: CanvasColor::White,
             pixel_aspect_ratio: 1.0,
+            paint_source: None,
             strokes: Vec::new(),
             redo: Vec::new(),
             active: None,
@@ -709,6 +713,7 @@ impl Document {
             color_mode: self.color_mode,
             color_profile: Some(self.color_profile),
             bit_depth: self.bit_depth,
+            paint_source: self.paint_source.clone(),
             strokes: self.strokes.clone(),
             svg_layers: self.svg_layers.clone(),
         })
@@ -788,6 +793,13 @@ impl Document {
         {
             return Err("Project contains too many SVG layers or SVG data".into());
         }
+        if file
+            .paint_source
+            .as_ref()
+            .is_some_and(|s| s.len() > MAX_SVG_BYTES || !s.contains("<svg"))
+        {
+            return Err("Invalid paint image".into());
+        }
         let stroke_count = file.strokes.len();
         Ok(Self {
             name: file.name.unwrap_or_else(|| "Untitled-1".into()),
@@ -798,6 +810,7 @@ impl Document {
             artboards: file.artboards.unwrap_or(false),
             canvas_color: file.canvas_color.unwrap_or_default(),
             pixel_aspect_ratio: file.pixel_aspect_ratio.unwrap_or(1.0),
+            paint_source: file.paint_source,
             strokes: file.strokes,
             svg_layers: file.svg_layers,
             visible: file.layer_visible,
@@ -1132,6 +1145,52 @@ impl Document {
         Ok(())
     }
 
+    pub fn paint_source(&self) -> Option<&str> {
+        self.paint_source.as_deref()
+    }
+    pub fn selected_layer_is_vector(&self) -> bool {
+        self.svg_layers.iter().any(|layer| {
+            layer.vector_layer
+                && (Some(&layer.id) == self.selected_layer.as_ref()
+                    || (self.selected_layer.is_none()
+                        && layer.visible
+                        && !layer.locked
+                        && !layer.vector_objects.is_empty()))
+        })
+    }
+    pub fn translate_pixel_selection(&mut self, selection: Option<Selection>, dx: f32, dy: f32) {
+        self.selection = selection.map(|s| s.translated(dx, dy));
+    }
+    pub fn replace_moved_pixels(
+        &mut self,
+        source: String,
+        selection: Option<Selection>,
+    ) -> Result<(), String> {
+        if source.len() > MAX_SVG_BYTES || !source.contains("<svg") {
+            return Err("Pixel image exceeds project limit".into());
+        }
+        if let Some(selection) = &selection {
+            selection.validate()?;
+        }
+        self.finish();
+        if self.selected_layer.as_deref().unwrap_or("layer-1") == "layer-1" {
+            if self.layer_locked || self.layer_alpha_locked || !self.visible {
+                return Err("Unlock and show the pixel layer / ピクセルレイヤーのロックを解除してください / 请解锁并显示像素图层".into());
+            }
+            let mut before = self.vector_history_state();
+            before.strokes = Some(std::mem::take(&mut self.strokes));
+            self.point_count = 0;
+            self.paint_source = Some(source);
+            self.selection = selection;
+            self.record_vector_edit(before);
+            self.revision += 1;
+        } else {
+            self.replace_selected_image(source)?;
+            self.selection = selection;
+        }
+        Ok(())
+    }
+
     pub fn replace_selected_image(&mut self, source: String) -> Result<(), String> {
         let id = self
             .selected_layer
@@ -1265,9 +1324,10 @@ impl Document {
         self.finish();
         let mut before = self.vector_history_state();
         if id == "layer-1" {
-            if self.strokes.is_empty() {
+            if self.strokes.is_empty() && self.paint_source.is_none() {
                 return Ok(());
             }
+            self.paint_source = None;
             before.strokes = Some(std::mem::take(&mut self.strokes));
             self.point_count = 0;
         } else {
@@ -2556,6 +2616,115 @@ impl Document {
         Ok(())
     }
 
+    /// Transient inspection projection; never stored in project data or history.
+    pub fn outline_view(&self, offset: [f32; 2], line_width: f32) -> Self {
+        let mut preview = self.clone();
+        if offset != [0., 0.] {
+            let _ = preview.move_selected_vectors(offset[0], offset[1]);
+        }
+        for layer in &mut preview.svg_layers {
+            if !layer.vector_layer {
+                continue;
+            }
+            // CSS covers vector geometry and shaped text. Clipping and
+            // masks are disabled only in this projection so their paths can be inspected.
+            let style = format!(
+                r#"<style>path,rect,circle,ellipse,line,polyline,polygon,text,tspan {{ fill: none !important; stroke: #222 !important; stroke-width: {line_width} !important; stroke-opacity: 1 !important; stroke-dasharray: none !important; }} * {{ clip-path: none !important; mask: none !important; filter: none !important; }}</style>"#
+            );
+            if let Some(end) = layer.source.rfind("</svg>") {
+                layer.source.insert_str(end, &style);
+            }
+        }
+        preview
+    }
+
+    pub fn outline_selected_text(
+        &mut self,
+        mut outline: impl FnMut(&str, &VectorObject) -> Result<Vec<VectorObject>, String>,
+    ) -> Result<(), String> {
+        let selected = self.selected_vector_objects.clone();
+        let mut layers = self.svg_layers.clone();
+        let mut ids = Vec::new();
+        let mut count = 0;
+        let mut occupied: std::collections::HashSet<String> = layers
+            .iter()
+            .flat_map(|l| {
+                l.vector_objects
+                    .iter()
+                    .flat_map(|o| std::iter::once(o.id.clone()).chain(o.group_path.iter().cloned()))
+            })
+            .collect();
+        let mut serial = 0;
+        let mut fresh = || loop {
+            serial += 1;
+            let id = format!("outline-{}-{serial}", self.revision);
+            if occupied.insert(id.clone()) {
+                break id;
+            }
+        };
+        for layer in &mut layers {
+            let mut objects = Vec::new();
+            let mut changed = false;
+            for object in &layer.vector_objects {
+                if !selected.contains(&object.id) || object.text.is_none() {
+                    objects.push(object.clone());
+                    if selected.contains(&object.id) {
+                        ids.push(object.id.clone());
+                    }
+                    continue;
+                }
+                if layer.locked || !layer.visible || !object.visible {
+                    return Err("Unlock and show selected text / 選択した文字のロックを解除し表示してください / 请解锁并显示所选文字".into());
+                }
+                let mut source_object = object.clone();
+                source_object.group_path.clear();
+                source_object.clipping_group = None;
+                let source = vector_svg(self.width, self.height, &[source_object]);
+                let replacements = outline(&source, object)?;
+                if replacements.is_empty() {
+                    return Err("No outlineable glyphs / アウトライン化できる文字がありません / 没有可转换的字形".into());
+                }
+                let group = fresh();
+                for mut replacement in replacements {
+                    replacement.id = fresh();
+                    replacement.group_path = object.group_path.clone();
+                    replacement.group_path.push(group.clone());
+                    replacement.text = None;
+                    replacement.clipping_group = None;
+                    replacement.validate()?;
+                    ids.push(replacement.id.clone());
+                    objects.push(replacement);
+                }
+                count += 1;
+                changed = true;
+            }
+            if changed {
+                if objects.len() > 4096 {
+                    return Err(
+                        "Too many outlines / アウトライン数が上限を超えています / 轮廓数量超出限制"
+                            .into(),
+                    );
+                }
+                layer.vector_objects = objects;
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if count == 0 {
+            return Err("Select text / テキストを選択してください / 请选择文字".into());
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much outline data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.selected_vector_objects = ids;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn replace_selected_path_geometry(
         &mut self,
         mut replace: impl FnMut(&VectorObject) -> Result<(VectorPath, Vec<[f32; 2]>), String>,
@@ -3000,6 +3169,56 @@ impl Document {
             }
         }
         bounds.iter().all(|v| v.is_finite()).then_some(bounds)
+    }
+
+    pub fn affine_selected_vectors(&mut self, matrix: [f32; 6]) -> Result<bool, String> {
+        if matrix.iter().any(|v| !v.is_finite())
+            || (matrix[0] * matrix[3] - matrix[1] * matrix[2]).abs() < 0.000001
+        {
+            return Err("Invalid object transform".into());
+        }
+        if matrix == [1., 0., 0., 1., 0., 0.] || self.selected_vector_objects.is_empty() {
+            return Ok(false);
+        }
+        let selected = self.expand_group_selection(&self.selected_vector_objects);
+        let mut layers = self.svg_layers.clone();
+        for layer in &mut layers {
+            let mut changed = false;
+            for o in &mut layer.vector_objects {
+                if !selected.contains(&o.id) {
+                    continue;
+                }
+                if layer.locked || !layer.visible || !o.visible {
+                    return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
+                }
+                let [a, b, c, d, e, f] = matrix;
+                let [oa, ob, oc, od, oe, of] = o.transform;
+                o.transform = [
+                    a * oa + c * ob,
+                    b * oa + d * ob,
+                    a * oc + c * od,
+                    b * oc + d * od,
+                    a * oe + c * of + e,
+                    b * oe + d * of + f,
+                ];
+                o.bounds_reset = false;
+                o.validate()?;
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(true)
     }
 
     pub fn scale_selected_vectors(&mut self, center: [f32; 2], scale: f32) -> Result<bool, String> {
@@ -3691,9 +3910,13 @@ impl Document {
             layers: self.svg_layers.clone(),
             selection: self.selected_vector_objects.clone(),
             strokes: None,
+            paint_source: self.paint_source.clone(),
+            pixel_selection: self.selection.clone(),
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.paint_source = state.paint_source;
+        self.selection = state.pixel_selection;
         if let Some(strokes) = state.strokes {
             self.point_count = strokes.iter().map(|stroke| stroke.points.len()).sum();
             self.strokes = strokes;
@@ -3764,6 +3987,7 @@ impl Document {
             return;
         }
         self.selection_anchor = Some(SelectionGesture {
+            vector_layer: None,
             start: point,
             shape,
             mode: SelectionMode::Replace,
@@ -3782,14 +4006,24 @@ impl Document {
         if !point.valid() || !point.on_page(self.width, self.height) {
             return Ok(());
         }
-        let moving = mode == SelectionMode::Replace
+        let vector_layer = self
+            .svg_layers
+            .iter()
+            .find(|layer| Some(&layer.id) == self.selected_layer.as_ref() && layer.vector_layer);
+        if vector_layer.is_some_and(|layer| layer.locked || !layer.visible) {
+            return Err("Select an unlocked visible layer / ロックされていない表示中のレイヤーを選択してください / 请选择未锁定且可见的图层".into());
+        }
+        let vector_layer = vector_layer.map(|layer| layer.id.clone());
+        let moving = vector_layer.is_none()
+            && mode == SelectionMode::Replace
             && self.selection.as_ref().is_some_and(|s| s.contains(point));
-        if mode != SelectionMode::Replace {
+        if vector_layer.is_none() && mode != SelectionMode::Replace {
             if let Some(selection) = &self.selection {
                 selection.ensure_capacity()?;
             }
         }
         self.selection_anchor = Some(SelectionGesture {
+            vector_layer,
             start: point,
             shape,
             mode,
@@ -3800,6 +4034,70 @@ impl Document {
     }
     pub fn extend_selection(&mut self, point: Point, finish: bool) {
         if !point.valid() {
+            return;
+        }
+        if let Some(gesture) = self
+            .selection_anchor
+            .as_ref()
+            .filter(|g| g.vector_layer.is_some())
+            .cloned()
+        {
+            let layer_id = gesture.vector_layer.as_ref().unwrap();
+            let bounds = [
+                gesture.start.x.min(point.x),
+                gesture.start.y.min(point.y),
+                (gesture.start.x - point.x).abs(),
+                (gesture.start.y - point.y).abs(),
+            ];
+            let region = Selection::new(gesture.shape, bounds);
+            self.selection = (bounds[2] >= 1. && bounds[3] >= 1.).then_some(region.clone());
+            if finish {
+                let mut hits = Vec::new();
+                if self.selected_layer.as_ref() == Some(layer_id)
+                    && bounds[2] >= 1.
+                    && bounds[3] >= 1.
+                {
+                    if let Some(layer) = self
+                        .svg_layers
+                        .iter()
+                        .find(|l| &l.id == layer_id && l.visible && !l.locked)
+                    {
+                        for object in &layer.vector_objects {
+                            if object.visible
+                                && !object.control_points.is_empty()
+                                && transformed_control_points(object)
+                                    .iter()
+                                    .all(|p| region.contains(*p))
+                            {
+                                hits.push(object.id.clone());
+                            }
+                        }
+                    }
+                }
+                if self.selected_layer.as_ref() == Some(layer_id) {
+                    let hits = self.expand_group_selection(&hits);
+                    self.selected_vector_objects = match gesture.mode {
+                        SelectionMode::Replace => hits,
+                        SelectionMode::Add => {
+                            let mut ids = self.selected_vector_objects.clone();
+                            for id in hits {
+                                if !ids.contains(&id) {
+                                    ids.push(id);
+                                }
+                            }
+                            ids
+                        }
+                        SelectionMode::Subtract => self
+                            .selected_vector_objects
+                            .iter()
+                            .filter(|id| !hits.contains(id))
+                            .cloned()
+                            .collect(),
+                    };
+                }
+                self.selection = gesture.base;
+                self.selection_anchor = None;
+            }
             return;
         }
         if let Some(gesture) = &self.selection_anchor {
@@ -3952,6 +4250,133 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_selection_recognizes_legacy_vector_target_but_honors_pixel_layer() {
+        let mut doc = Document::default();
+        assert!(!doc.selected_layer_is_vector());
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: crate::vector::VectorText {
+                content: "Legacy".into(),
+                ..Default::default()
+            },
+            position: [20., 20.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        assert!(doc.selected_layer.is_none());
+        assert!(doc.selected_layer_is_vector());
+        let layer = doc.svg_layers[0].id.clone();
+        doc.select_layer("layer-1".into()).unwrap();
+        assert!(!doc.selected_layer_is_vector());
+        doc.select_layer(layer).unwrap();
+        assert!(doc.selected_layer_is_vector());
+    }
+
+    #[test]
+    fn moved_background_image_round_trips_and_restores_strokes_and_selection() {
+        let mut doc = Document::default();
+        doc.begin(Point { x: 20., y: 20. }, Brush::default())
+            .unwrap();
+        doc.finish();
+        doc.begin_selection_edit(
+            Point { x: 1., y: 1. },
+            SelectionShape::Rectangle,
+            SelectionMode::Replace,
+        )
+        .unwrap();
+        doc.extend_selection(Point { x: 40., y: 40. }, true);
+        let original = doc.selection.clone();
+        let source="<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"640\"><rect x=\"30\" y=\"30\" width=\"10\" height=\"10\" fill=\"red\"/></svg>".to_owned();
+        let moved = original.clone().map(|s| s.translated(10., 10.));
+        doc.replace_moved_pixels(source.clone(), moved.clone())
+            .unwrap();
+        assert!(doc.strokes.is_empty());
+        assert_eq!(doc.paint_source(), Some(source.as_str()));
+        assert_eq!(
+            Document::decode(&doc.encode().unwrap())
+                .unwrap()
+                .paint_source(),
+            Some(source.as_str())
+        );
+        doc.undo();
+        assert_eq!(doc.strokes.len(), 1);
+        assert!(doc.paint_source().is_none());
+        assert_eq!(doc.selection, original);
+        doc.redo();
+        assert!(doc.strokes.is_empty());
+        assert_eq!(doc.selection, moved);
+        doc.clear_selected_layer().unwrap();
+        assert!(doc.paint_source().is_none());
+        doc.undo();
+        assert_eq!(doc.paint_source(), Some(source.as_str()));
+    }
+
+    #[test]
+    fn selection_area_routes_by_layer_and_preserves_pixel_mask() {
+        let mut doc = Document::default();
+        doc.begin_selection_edit(
+            Point { x: 1., y: 1. },
+            SelectionShape::Rectangle,
+            SelectionMode::Replace,
+        )
+        .unwrap();
+        doc.extend_selection(Point { x: 10., y: 10. }, true);
+        let mask = doc.selection.clone();
+        let layer = doc.add_vector_layer().unwrap();
+        doc.select_layer(layer.clone()).unwrap();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: crate::vector::VectorText {
+                content: "A".into(),
+                box_width: 20.,
+                box_height: Some(20.),
+                ..Default::default()
+            },
+            position: [50., 50.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let id = doc.selected_vector_objects[0].clone();
+        doc.select_vector_objects(Vec::new()).unwrap();
+        for shape in [SelectionShape::Rectangle, SelectionShape::Ellipse] {
+            doc.begin_selection_edit(Point { x: 0., y: 0. }, shape, SelectionMode::Replace)
+                .unwrap();
+            doc.extend_selection(Point { x: 150., y: 150. }, true);
+            assert_eq!(doc.selected_vector_objects, vec![id.clone()]);
+            assert_eq!(doc.selection, mask);
+            doc.begin_selection_edit(Point { x: 0., y: 0. }, shape, SelectionMode::Subtract)
+                .unwrap();
+            doc.extend_selection(Point { x: 150., y: 150. }, true);
+            assert!(doc.selected_vector_objects.is_empty());
+            doc.begin_selection_edit(Point { x: 0., y: 0. }, shape, SelectionMode::Add)
+                .unwrap();
+            doc.extend_selection(Point { x: 150., y: 150. }, true);
+            assert_eq!(doc.selected_vector_objects, vec![id.clone()]);
+        }
+        doc.begin_selection_edit(
+            Point { x: 200., y: 200. },
+            SelectionShape::Rectangle,
+            SelectionMode::Replace,
+        )
+        .unwrap();
+        doc.extend_selection(Point { x: 220., y: 220. }, false);
+        doc.cancel_selection_gesture();
+        assert_eq!(doc.selection, mask);
+        assert_eq!(doc.selected_vector_objects, vec![id]);
+        doc.select_layer("layer-1".into()).unwrap();
+        doc.begin_selection_edit(
+            Point { x: 200., y: 200. },
+            SelectionShape::Ellipse,
+            SelectionMode::Replace,
+        )
+        .unwrap();
+        doc.extend_selection(Point { x: 220., y: 220. }, true);
+        assert_ne!(doc.selection, mask);
+        assert!(doc.selected_vector_objects.is_empty());
+        doc.select_layer(layer).unwrap();
+    }
 
     #[test]
     fn vector_paints_update_selection_preserve_alpha_and_undo() {
@@ -4589,6 +5014,8 @@ struct ProjectFile {
     color_profile: Option<ColorProfile>,
     #[serde(default = "default_bit_depth")]
     bit_depth: u8,
+    #[serde(default)]
+    paint_source: Option<String>,
     strokes: Vec<Stroke>,
     #[serde(default)]
     svg_layers: Vec<SvgLayer>,

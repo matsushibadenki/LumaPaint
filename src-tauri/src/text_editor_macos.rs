@@ -85,6 +85,7 @@ struct Session {
     view: Retained<InlineEditor>,
     settings: TextSettings,
     preview: Document,
+    object_transform: [f32; 6],
     layout_generation: std::cell::Cell<u64>,
     current_cache: RefCell<Option<(u64, TextSettings)>>,
 }
@@ -112,9 +113,19 @@ pub fn active() -> bool {
 pub fn render(canvas: &mut Canvas) -> Result<(), String> {
     SESSION.with(|slot| {
         if let Some(session) = slot.borrow().as_ref() {
-            canvas
-                .renderer
-                .set_frame_overlay(super::text_frame_overlay(&session.settings, false));
+            let overlay = super::text_frame_overlay(&session.settings, false).map(|mut overlay| {
+                let [a, b, c, d, _, _] = session.object_transform;
+                let [x, y] = session.settings.position;
+                for point in &mut overlay.corners {
+                    let local = [point[0] - x, point[1] - y];
+                    *point = [
+                        x + a * local[0] + c * local[1],
+                        y + b * local[0] + d * local[1],
+                    ];
+                }
+                overlay
+            });
+            canvas.renderer.set_frame_overlay(overlay);
             canvas.renderer.render(canvas.viewport, &session.preview)
         } else {
             DOCUMENT.with(|doc| {
@@ -633,6 +644,13 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     {
         return Err("Invalid text position".into());
     }
+    let object_transform = DOCUMENT.with(|doc| {
+        doc.borrow()
+            .svg_layers()
+            .flat_map(|layer| layer.vector_objects.iter())
+            .find(|object| Some(&object.id) == settings.id.as_ref())
+            .map_or([1., 0., 0., 1., 0., 0.], |object| object.transform)
+    });
     let preview = DOCUMENT.with(|doc| doc.borrow().text_edit_preview(settings.id.as_deref()))?;
     let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
@@ -674,6 +692,7 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             view: view.clone(),
             settings,
             preview,
+            object_transform,
             layout_generation: std::cell::Cell::new(0),
             current_cache: RefCell::new(None),
         })
@@ -836,6 +855,20 @@ pub fn finish(commit: bool) -> Result<(), String> {
     Ok(())
 }
 
+// Native text layout remains in original font units. Only the view is scaled,
+// so reading edited attributes back cannot bake the object transform in twice.
+fn editor_display_transform(text: &VectorText, matrix: [f32; 6]) -> (f32, f32, f32) {
+    let [a, b, c, d, _, _] = matrix;
+    let (sin, cos) = text.rotation.to_radians().sin_cos();
+    let x = [a * cos + c * sin, b * cos + d * sin];
+    let y = [-a * sin + c * cos, -b * sin + d * cos];
+    (
+        text.scale_x * x[0].hypot(x[1]),
+        text.scale_y * y[0].hypot(y[1]),
+        x[1].atan2(x[0]).to_degrees(),
+    )
+}
+
 pub fn layout() -> Result<(), String> {
     invalidate_current_cache();
     let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
@@ -864,21 +897,22 @@ pub fn layout() -> Result<(), String> {
                 (viewport.document_height * fit).into(),
             ),
         ));
+        let (scale_x, scale_y, rotation) = editor_display_transform(text, session.object_transform);
         let x = session.settings.position[0] * fit;
         let y = session.settings.position[1] * fit;
-        let logical_height = text.box_height.unwrap_or_else(|| {
-            ((height - page_y - y) / (fit * text.scale_y)).max(text.font_size * 2.0)
-        });
+        let logical_height = text
+            .box_height
+            .unwrap_or_else(|| ((height - page_y - y) / (fit * scale_y)).max(text.font_size * 2.0));
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),
             NSSize::new(
-                (text.box_width * fit * text.scale_x).into(),
-                (logical_height * fit * text.scale_y).into(),
+                (text.box_width * fit * scale_x).into(),
+                (logical_height * fit * scale_y).into(),
             ),
         ));
         view.setBoundsSize(NSSize::new(text.box_width.into(), logical_height.into()));
-        view.setFrameRotation(f64::from(text.rotation));
+        view.setFrameRotation(f64::from(rotation));
         // AppKit centers a font's baseline within the requested line height. SVG uses the
         // explicit baseline font_size + space_before. Align the editor's first baseline
         // without changing glyph attributes, selection, or document coordinates.
@@ -894,8 +928,8 @@ pub fn layout() -> Result<(), String> {
                     let expected = f64::from(
                         text.style_at(0, session.settings.color).font_size + text.space_before,
                     );
-                    let correction = (natural - expected) * f64::from(fit * text.scale_y);
-                    let angle = f64::from(text.rotation).to_radians();
+                    let correction = (natural - expected) * f64::from(fit * scale_y);
+                    let angle = f64::from(rotation).to_radians();
                     view.setFrameOrigin(NSPoint::new(
                         f64::from(x) + correction * angle.sin(),
                         f64::from(y) - correction * angle.cos(),
@@ -1091,5 +1125,70 @@ pub fn clipboard(action: super::DocumentAction) {
             }
         }
         publish();
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+    #[test]
+    fn editing_resized_text_keeps_font_units_and_object_transform() {
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Original".into(),
+                font_size: 15.,
+                box_width: 180.,
+                box_height: Some(80.),
+                ..Default::default()
+            },
+            position: [40., 50.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        doc.affine_selected_vectors([2., 0., 0., 3., -40., -100.])
+            .unwrap();
+        let original = doc.svg_layers().next().unwrap().vector_objects[0].clone();
+        let snapshot = doc.snapshot().text_objects[0].clone();
+        let mut settings = TextSettings {
+            id: Some(snapshot.id),
+            text: snapshot.text,
+            position: snapshot.position,
+            color: snapshot.color,
+        };
+        settings.text.content = "Edited".into();
+        doc.set_text_object(settings).unwrap();
+        let edited = &doc.svg_layers().next().unwrap().vector_objects[0];
+        assert_eq!(edited.transform, original.transform);
+        assert_eq!(edited.text.as_ref().unwrap().font_size, 15.);
+        assert_eq!(
+            editor_display_transform(edited.text.as_ref().unwrap(), edited.transform),
+            (2., 3., 0.)
+        );
+        doc.undo();
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects[0], original);
+    }
+
+    #[test]
+    fn inline_editor_preserves_bounding_box_scale_and_rotation() {
+        let text = VectorText {
+            scale_x: 1.2,
+            scale_y: 0.8,
+            ..Default::default()
+        };
+        let (x, y, angle) = editor_display_transform(&text, [0., 2., -3., 0., 40., 50.]);
+        assert!((x - 2.4).abs() < 1e-5);
+        assert!((y - 2.4).abs() < 1e-5);
+        assert!((angle - 90.).abs() < 1e-5);
+        let rotated = VectorText {
+            rotation: 30.,
+            ..text.clone()
+        };
+        let (x, y, angle) = editor_display_transform(&rotated, [2., 0., 0., 2., 0., 0.]);
+        assert!((x - 2.4).abs() < 1e-5);
+        assert!((y - 1.6).abs() < 1e-5);
+        assert!((angle - 30.).abs() < 1e-5);
+        assert_eq!(text.scale_x, 1.2);
     }
 }

@@ -181,6 +181,7 @@ pub enum SelectionMode {
 
 #[derive(Clone)]
 pub(crate) struct SelectionGesture {
+    pub vector_layer: Option<String>,
     pub start: Point,
     pub shape: SelectionShape,
     pub mode: SelectionMode,

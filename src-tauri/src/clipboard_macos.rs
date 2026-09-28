@@ -14,7 +14,7 @@ enum Content {
     Pixels { source: String },
 }
 
-fn image_svg(width: u32, height: u32, png: &[u8]) -> String {
+pub(super) fn image_svg(width: u32, height: u32, png: &[u8]) -> String {
     let data = base64::engine::general_purpose::STANDARD.encode(png);
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\"><image width=\"{width}\" height=\"{height}\" href=\"data:image/png;base64,{data}\"/></svg>")
 }
@@ -60,7 +60,7 @@ fn write(content: &Content, png: Option<&[u8]>) -> Result<(), String> {
     Ok(())
 }
 
-fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
+pub(super) fn raw_selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
     let snapshot = document.snapshot();
     let (width, height) = document.dimensions();
     if u64::from(width) * u64::from(height) > 16_777_216 {
@@ -77,7 +77,7 @@ fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
                 .into(),
         );
     }
-    let mut pixels = if layer.id == "layer-1" {
+    let pixels = if layer.id == "layer-1" {
         let projected = lumapaint_renderer::project_committed_paint_layer(document)?;
         let tiles = &projected.layers()[0].tiles;
         let mut pixels = vec![0; width as usize * height as usize * 4];
@@ -101,6 +101,17 @@ fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
             .source;
         lumapaint_renderer::vector::rasterize_svg(source, width, height)?.pixels
     };
+    Ok((width, height, pixels))
+}
+
+fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
+    let (width, height, mut pixels) = raw_selected_pixels(document)?;
+    let snapshot = document.snapshot();
+    let layer = snapshot
+        .layers
+        .iter()
+        .find(|l| l.id == snapshot.layer_id)
+        .ok_or("Layer not found")?;
     // Layer appearance remains on the source layer; copied pixels retain it once.
     let opacity = layer.opacity
         * if !layer.mask_enabled {

@@ -11,6 +11,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 pub mod frame_cache;
 mod frame_overlay;
+#[cfg(feature = "skia")]
+pub mod text_outlines;
 pub use frame_overlay::FrameOverlay;
 mod paint_cache;
 pub use wgpu;
@@ -524,6 +526,27 @@ pub fn prepare_graph_changed_uploads(
 /// Reconstruct the committed v1 paint layer as tiles for migration checks.
 /// SVG/vector layers and an active pointer stroke remain on the v1 renderer.
 /// This does not alter the source document or its save format.
+pub(crate) fn seed_paint_image(
+    tiles: &mut TiledRasterDocument,
+    id: &str,
+    source: &str,
+    scale: u32,
+) -> Result<Option<TileInvalidation>, String> {
+    let (w, h) = tiles.dimensions();
+    let mut pixels = vector::rasterize_svg(source, w, h)?.pixels;
+    for p in pixels.as_chunks_mut::<4>().0 {
+        let alpha = u32::from(p[3]);
+        for c in &mut p[..3] {
+            *c = (u32::from(*c) * 255 + alpha / 2)
+                .checked_div(alpha)
+                .unwrap_or(0)
+                .min(255) as u8;
+        }
+    }
+    let _ = scale;
+    tiles.write_rect(id, [0, 0, w, h], &pixels)
+}
+
 pub fn project_committed_paint_layer(source: &Document) -> Result<TiledRasterDocument, String> {
     project_committed_paint_layer_at_scale(source, 1)
 }
@@ -550,6 +573,10 @@ pub fn project_committed_paint_layer_at_scale(
     let snapshot = source.snapshot();
     let paint = snapshot.layers.first().ok_or("Missing v1 paint layer")?;
     projected.add_layer(paint.id.clone(), paint.name.clone())?;
+    if let Some(image) = source.paint_source() {
+        seed_paint_image(&mut projected, &paint.id, image, scale)?;
+        projected.discard_history();
+    }
     for stroke in source.committed_paint_strokes() {
         paint_stroke_into_tiles_at_scale(&mut projected, &paint.id, stroke, scale)?;
         projected.discard_history();
@@ -1183,6 +1210,7 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     frame_overlay_pipeline: wgpu::RenderPipeline,
     frame_overlay: Option<FrameOverlay>,
+    outline_view: bool,
     selection_layout: wgpu::BindGroupLayout,
     brush_pipeline: wgpu::RenderPipeline,
     brush_composite_pipeline: wgpu::RenderPipeline,
@@ -1661,6 +1689,9 @@ impl Renderer {
 
     /// Layers that still need CPU preparation for the committed document frame.
     pub fn svg_layers_ready(&self, document: &Document) -> bool {
+        if self.outline_view {
+            return true;
+        }
         let size = document.dimensions();
         document.visible_svg_layers().all(|layer| {
             self.svg_cache.get(&layer.id).is_some_and(|cached| {
@@ -1673,6 +1704,9 @@ impl Renderer {
 
     /// Clone only the layers that need to be sent to the CPU worker.
     pub fn missing_svg_layers(&self, document: &Document) -> Vec<SvgLayer> {
+        if self.outline_view {
+            return Vec::new();
+        }
         let size = document.dimensions();
         document
             .visible_svg_layers()
@@ -2025,6 +2059,7 @@ impl Renderer {
             selection_pipeline,
             frame_overlay_pipeline,
             frame_overlay: None,
+            outline_view: false,
             selection_layout,
             brush_pipeline,
             brush_composite_pipeline,
@@ -2106,6 +2141,10 @@ impl Renderer {
         self.render_vector_drag(viewport, document, [0.0, 0.0])
     }
 
+    pub fn set_outline_view(&mut self, outline: bool) {
+        self.outline_view = outline;
+    }
+
     pub fn set_frame_overlay(&mut self, overlay: Option<FrameOverlay>) {
         self.frame_overlay = overlay;
     }
@@ -2138,7 +2177,20 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
-        if document.visible_strokes().any(|stroke| stroke.eraser) {
+        let projection;
+        let (document, offset, defer_svg) = if self.outline_view {
+            let fit = ((viewport.width as f32 / viewport.scale - 48.) / viewport.document_width)
+                .min((viewport.height as f32 / viewport.scale - 48.) / viewport.document_height)
+                .max(0.01)
+                * viewport.zoom;
+            projection = document.outline_view(offset, 1. / fit);
+            (&projection, [0., 0.], false)
+        } else {
+            (document, offset, defer_svg)
+        };
+        if document.paint_source().is_some()
+            || document.visible_strokes().any(|stroke| stroke.eraser)
+        {
             let started = std::time::Instant::now();
             let mut cache = match self.paint_cache.take() {
                 Some(cache) => cache,

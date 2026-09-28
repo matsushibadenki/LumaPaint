@@ -20,11 +20,13 @@ type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | Pre
 const colorModes: { value: ColorMode; label: string }[] = [{ value: 'rgb', label: 'RGB' }, { value: 'cmyk', label: 'CMYK' }];
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
   locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
   onTransform: (action: TransformAction) => void;
+  onOutlineText: () => void;
   onCompound: (release: boolean) => void;
   onClipping: (action: 'create' | 'release' | 'edit') => void;
   onGroup: (action: 'group' | 'ungroup' | 'ungroupAll') => void;
@@ -82,12 +84,14 @@ export function WorkspaceMenu(props: Props) {
       { label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
       { label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
       { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
-    [future(t.font), future(t.fontSize), future(t.paragraph)],
+    [{label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText},null,future(t.font), future(t.fontSize), future(t.paragraph)],
     [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
       { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+D', action: () => onEdit('deselect') },
       { label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
-    [{ label: common.zoomIn, enabled: canEdit && zoom < 4, action: () => onZoom(Math.min(4, zoom * 1.25)) },
+    [{ label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
+      { label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
+      { label: common.zoomIn, enabled: canEdit && zoom < 4, action: () => onZoom(Math.min(4, zoom * 1.25)) },
       { label: common.zoomOut, enabled: canEdit && zoom > .25, action: () => onZoom(Math.max(.25, zoom / 1.25)) },
       { label: common.fit, enabled: canEdit, action: () => onZoom(1) }],
     [future(t.managePlugins), future(t.browsePlugins)],

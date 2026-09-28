@@ -2,20 +2,20 @@ import type { CanvasTool } from './bridge';
 
 export const toolModes = ['paint', 'vector', 'layout', 'animation'] as const;
 export type ToolMode = typeof toolModes[number];
-export type ModeTool = Exclude<CanvasTool, 'zoomIn' | 'zoomOut' | 'hand'>;
+export type ModeTool = Exclude<CanvasTool, 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
 
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
-  paint: ['brush', 'eraser', 'rectangle', 'ellipse'],
-  vector: ['vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate', 'vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
-  layout: ['vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate', 'vectorRectangle', 'vectorEllipse', 'text', 'textFrame'],
-  animation: ['brush', 'rectangle', 'ellipse', 'vectorSelect', 'vectorDirectSelect', 'vectorScale', 'vectorRotate'],
+  paint: ['brush', 'eraser'],
+  vector: ['vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
+  layout: ['vectorRectangle', 'vectorEllipse', 'text', 'textFrame'],
+  animation: ['brush'],
 };
 export const modeLabels = {
   paint: 'paintTools', vector: 'vectorTools', layout: 'layoutTools', animation: 'animationTools',
 } as const;
 
 export const initialTools: Record<ToolMode, ModeTool> = {
-  paint: 'brush', vector: 'vectorSelect', layout: 'vectorSelect', animation: 'brush',
+  paint: 'brush', vector: 'vectorPen', layout: 'text', animation: 'brush',
 };
 
 export function modeForTool(mode: ToolMode, tool: ModeTool): ToolMode {
