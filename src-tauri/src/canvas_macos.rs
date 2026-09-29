@@ -44,6 +44,8 @@ use tauri::{Emitter, Manager};
 mod clipboard;
 #[path = "pixel_move_macos.rs"]
 mod pixel_move;
+#[path = "pixel_paint_macos.rs"]
+mod pixel_paint;
 #[path = "text_editor_macos.rs"]
 mod text_editor;
 
@@ -309,6 +311,15 @@ define_class!(
     #[ivars = ()]
     struct PaintView;
 impl PaintView {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
+            if CANVAS_OVERLAY.with(|value| value.get()).is_some_and(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3]) {
+                return std::ptr::null_mut();
+            }
+            // SAFETY: forward AppKit hit testing to the NSView superclass.
+            unsafe { msg_send![super(self), hitTest: point] }
+        }
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool { true }
         #[unsafe(method(acceptsFirstResponder))]
@@ -401,7 +412,7 @@ impl PaintView {
             let dx=event.scrollingDeltaX() as f32;
             let dy=event.scrollingDeltaY() as f32;
             if !dx.is_finite() || !dy.is_finite() || (dx==0. && dy==0.) {return;}
-            if DOCUMENT.with(|doc|doc.borrow().has_active_stroke()) {return;}
+            if paint_gesture_active() {return;}
             if text_editor::active() {if let Err(error)=text_editor::finish(true){emit_error(error);return;}}
             // AppKit already applies the user's natural-scrolling preference and momentum.
             // Delta units are view points, matching the hand tool, independent of zoom/Retina.
@@ -412,7 +423,7 @@ impl PaintView {
             if self.isHidden() || !DOCUMENT_OPEN.with(|open|open.get()) || PANNING.with(|p|p.get()) { return; }
             let delta=event.magnification() as f32;
             if !delta.is_finite() || delta==0. {return;}
-            if DOCUMENT.with(|doc|doc.borrow().has_active_stroke()) {return;}
+            if paint_gesture_active() {return;}
             if text_editor::active() {if let Err(error)=text_editor::finish(true){emit_error(error);return;}}
             let location=self.convertPoint_fromView(event.locationInWindow(),None);
             let viewport=CANVAS.with(|slot|slot.borrow().as_ref().map(|c|c.viewport));
@@ -424,12 +435,18 @@ impl PaintView {
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             if let Some(window) = self.window() { window.makeFirstResponder(Some(self)); }
-            if SPACE_DOWN.with(|space| space.get()) || TOOL.with(|tool| tool.get()) == CanvasTool::Hand { self.begin_pan(event); } else { self.pointer(event, 0); }
+            if SPACE_DOWN.with(|space| space.get()) || TOOL.with(|tool| tool.get()) == CanvasTool::Hand { self.begin_pan(event); } else {
+                if matches!(TOOL.with(|tool| tool.get()), CanvasTool::Brush | CanvasTool::Eraser) {
+                    begin_precise_paint_input();
+                }
+                self.pointer(event, 0);
+                if !paint_gesture_active() { end_precise_paint_input(); }
+            }
         }
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); } else { self.pointer(event, 1); } }
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); } else { self.pointer(event, 2); } }
+        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); } else { self.pointer(event, 2); } end_precise_paint_input(); }
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) { self.begin_pan(event); }
         #[unsafe(method(otherMouseDragged:))]
@@ -741,6 +758,15 @@ impl PaintView {
                     }
                     return Ok(());
                 }
+                if pixel_paint::pointer(
+                    &mut doc,
+                    point,
+                    phase,
+                    pressure,
+                    tool == CanvasTool::Eraser,
+                )? {
+                    return Ok(());
+                }
                 let result = if phase == 0 {
                     BRUSH
                         .with(|brush| {
@@ -823,6 +849,32 @@ struct TextResizeDraft {
 }
 
 impl PenDraft {
+    fn committed_object(
+        &self,
+        closed: bool,
+        id: &str,
+        snap_distance: f32,
+    ) -> Result<VectorObject, String> {
+        let first = self.nodes[0].0;
+        let last = self.nodes.last().unwrap().0;
+        if self.nodes.len() >= 3 && (first[0] - last[0]).hypot(first[1] - last[1]) <= snap_distance
+        {
+            // The final node already supplies the closing curve. Snap its
+            // endpoint and incoming handle instead of adding another segment.
+            let mut object = self.object(false, id)?;
+            let end = object.control_points.len() - 1;
+            object.control_points[end] = first;
+            for axis in 0..2 {
+                object.control_points[end - 1][axis] += first[axis] - last[axis];
+            }
+            object.path.data = lumapaint_core::bezier::path_data(&object.control_points, true)?;
+            object.validate()?;
+            Ok(object)
+        } else {
+            self.object(closed, id)
+        }
+    }
+
     fn object(&self, closed: bool, id: &str) -> Result<VectorObject, String> {
         let mut controls = vec![self.nodes[0].0];
         let count = self.nodes.len();
@@ -836,6 +888,8 @@ impl PenDraft {
             ]);
         }
         Ok(VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: id.into(),
             name: "Bezier path".into(),
             group_path: Vec::new(),
@@ -870,10 +924,10 @@ impl PenDraft {
         let mut guide = self.object(false, "pen-guides")?;
         guide.kind = VectorObjectKind::Compound;
         guide.stroke = Some(VectorPaint {
-            color: [60, 160, 255, 255],
+            color: document.layer_guide_color(&self.layer),
         });
         guide.stroke_width = 1.0 / zoom;
-        guide.path.data.clear();
+        // Keep the curve centerline above the actual brush-width stroke.
         let radius = 3.0 / zoom;
         for (anchor, handle) in &self.nodes {
             let incoming = [2.0 * anchor[0] - handle[0], 2.0 * anchor[1] - handle[1]];
@@ -882,7 +936,19 @@ impl PenDraft {
                 " M {} {} L {} {}",
                 incoming[0], incoming[1], handle[0], handle[1]
             );
-            for point in [*anchor, *handle, incoming] {
+            for (index, point) in [*anchor, *handle, incoming].into_iter().enumerate() {
+                if index != 0 {
+                    let r = radius * 0.7;
+                    let _ = write!(
+                        guide.path.data,
+                        " M {} {} a {r} {r} 0 1 0 {} 0 a {r} {r} 0 1 0 {} 0",
+                        point[0] - r,
+                        point[1],
+                        2. * r,
+                        -2. * r
+                    );
+                    continue;
+                }
                 let _ = write!(
                     guide.path.data,
                     " M {} {} h {} v {} h {} Z",
@@ -894,7 +960,7 @@ impl PenDraft {
                 );
             }
         }
-        preview.upsert_vector_object(&self.layer, guide)?;
+        preview.append_vector_guide(&self.layer, guide)?;
         Ok(preview)
     }
 }
@@ -911,9 +977,14 @@ fn finish_pen(document: &mut Document, closed: bool) -> Result<(), String> {
             next.set(id + 1);
             id
         });
+        // A stricter two-screen-point threshold also resolves near-duplicate
+        // endpoints when an open draft is committed by switching tools.
+        let snap_distance = CANVAS.with(|slot| {
+            pen_close_tolerance(slot.borrow().as_ref().map(|canvas| canvas.viewport)) * 0.25
+        });
         document.upsert_vector_object(
             &draft.layer,
-            draft.object(closed, &format!("vector-object-{serial}"))?,
+            draft.committed_object(closed, &format!("vector-object-{serial}"), snap_distance)?,
         )?;
     }
     PEN_DRAFT.with(|draft| draft.borrow_mut().take());
@@ -940,6 +1011,22 @@ fn switch_canvas_tool(tool: CanvasTool) -> Result<(), String> {
     Ok(())
 }
 
+// Keep the closing target eight logical screen points wide in radius.
+// Fit-to-window, zoom, and Retina backing scale all affect document distance.
+fn pen_close_tolerance(viewport: Option<Viewport>) -> f32 {
+    viewport.map_or(8., |v| {
+        let fit = ((v.width as f32 / v.scale - 48.) / v.document_width)
+            .min((v.height as f32 / v.scale - 48.) / v.document_height)
+            .max(0.01);
+        8. / (fit * v.zoom)
+    })
+}
+
+fn pen_should_close(draft: &PenDraft, position: [f32; 2], tolerance: f32) -> bool {
+    draft.nodes.len() >= 2
+        && (draft.nodes[0].0[0] - position[0]).hypot(draft.nodes[0].0[1] - position[1]) <= tolerance
+}
+
 fn bezier_pointer(
     document: &mut Document,
     point: lumapaint_core::document::Point,
@@ -950,17 +1037,13 @@ fn bezier_pointer(
         let layer = document
             .selected_vector_target()?
             .ok_or("Select a vector layer / ベクターレイヤーを選択してください / 请选择矢量图层")?;
-        let zoom = CANVAS.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .map_or(1.0, |canvas| canvas.viewport.zoom)
-        });
+        let tolerance = CANVAS
+            .with(|slot| pen_close_tolerance(slot.borrow().as_ref().map(|canvas| canvas.viewport)));
         let close = PEN_DRAFT.with(|draft| {
-            draft.borrow().as_ref().is_some_and(|draft| {
-                draft.nodes.len() >= 2
-                    && (draft.nodes[0].0[0] - point.x).hypot(draft.nodes[0].0[1] - point.y)
-                        <= 6.0 / zoom
-            })
+            draft
+                .borrow()
+                .as_ref()
+                .is_some_and(|draft| pen_should_close(draft, position, tolerance))
         });
         if close {
             return finish_pen(document, true);
@@ -1104,7 +1187,7 @@ impl AnchorDraft {
         guide.kind = VectorObjectKind::Compound;
         guide.fill = None;
         guide.stroke = Some(VectorPaint {
-            color: [60, 160, 255, 255],
+            color: document.layer_guide_color(&self.layer),
         });
         guide.stroke_width = 1. / zoom;
         guide.transform = [1., 0., 0., 1., 0., 0.];
@@ -1164,7 +1247,7 @@ impl AnchorDraft {
                 -r * 2.
             );
         }
-        preview.upsert_vector_object(&self.layer, guide)?;
+        preview.append_vector_guide(&self.layer, guide)?;
         Ok(preview)
     }
 }
@@ -1325,6 +1408,8 @@ fn vector_pointer(
         &layer_id,
         VectorObject {
             text: None,
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: format!("vector-object-{serial}"),
             name: format!("{name} {serial}"),
             group_path: Vec::new(),
@@ -1357,7 +1442,12 @@ struct DirectGesture {
 fn direct_objects(document: &Document) -> Vec<(String, VectorObject)> {
     document
         .svg_layers()
-        .filter(|layer| layer.vector_layer && layer.visible && !layer.locked)
+        .filter(|layer| {
+            document.can_edit_path_layer(layer)
+                && layer.vector_layer
+                && layer.visible
+                && !layer.locked
+        })
         .flat_map(|layer| {
             layer
                 .vector_objects
@@ -1606,7 +1696,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
         marker.transform = [1., 0., 0., 1., 0., 0.];
         marker.stroke = None;
         marker.fill = Some(VectorPaint {
-            color: [60, 160, 255, 255],
+            color: document.layer_guide_color(&layer),
         });
         marker.path.data.clear();
         let r = 3. / zoom;
@@ -1626,7 +1716,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
             );
         }
         if !marker.path.data.is_empty() {
-            preview.upsert_vector_object(&layer, marker)?;
+            preview.append_vector_guide(&layer, marker)?;
         }
     }
     if let Some(draft) = gesture.filter(|draft| draft.marquee && draft.start != draft.current) {
@@ -1639,6 +1729,8 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
         preview.upsert_vector_object(
             &layer,
             VectorObject {
+                opacity: 1.0,
+                blend_mode: "normal".into(),
                 id: "direct-marquee".into(),
                 name: "Selection".into(),
                 group_path: Vec::new(),
@@ -1652,7 +1744,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                 transform: [1., 0., 0., 1., 0., 0.],
                 fill: None,
                 stroke: Some(VectorPaint {
-                    color: [60, 160, 255, 255],
+                    color: [48, 144, 255, 255],
                 }),
                 stroke_width: 1. / zoom,
                 visible: true,
@@ -1678,7 +1770,7 @@ fn scale_pointer(
     if phase == 0 {
         cancel_vector_drag();
         if document.selected_vector_ids().is_empty() {
-            document.select_vector_at(point, 6., false);
+            document.select_vector_at(point, object_selection_tolerance(), false);
         }
         if let Some([x, y, right, bottom]) = document.selected_vector_bounds() {
             SCALE_DRAFT.with(|draft| {
@@ -1726,7 +1818,7 @@ fn rotate_pointer(
     if phase == 0 {
         cancel_vector_drag();
         if document.selected_vector_ids().is_empty() {
-            document.select_vector_at(point, 6., false);
+            document.select_vector_at(point, object_selection_tolerance(), false);
         }
         if let Some([x, y, right, bottom]) = document.selected_vector_bounds() {
             let center = [(x + right) * 0.5, (y + bottom) * 0.5];
@@ -1783,6 +1875,10 @@ fn box_tolerance() -> f32 {
             })
             .unwrap_or(6.)
     })
+}
+// Ten screen points outside the stroke, independent of canvas zoom.
+fn object_selection_tolerance() -> f32 {
+    (box_tolerance() * 10. / 7.).min(256.)
 }
 fn box_hit(document: &Document, p: [f32; 2]) -> Option<BoxDraft> {
     let corners = document.selected_vector_box()?;
@@ -1949,7 +2045,7 @@ fn vector_select_pointer(
         }
         let previous = document.selected_vector_ids().to_vec();
         let mut probe = document.clone();
-        let hit = probe.select_vector_at(point, 6.0, false);
+        let hit = probe.select_vector_at(point, object_selection_tolerance(), false);
         if hit.is_none() {
             VECTOR_MARQUEE.with(|draft| {
                 *draft.borrow_mut() = Some((
@@ -1963,7 +2059,11 @@ fn vector_select_pointer(
         if !hit.as_ref().is_some_and(|id| previous.contains(id))
             || modifiers.contains(NSEventModifierFlags::Shift)
         {
-            document.select_vector_at(point, 6.0, modifiers.contains(NSEventModifierFlags::Shift));
+            document.select_vector_at(
+                point,
+                object_selection_tolerance(),
+                modifiers.contains(NSEventModifierFlags::Shift),
+            );
         }
         VECTOR_DUPLICATE.with(|value| {
             value.set(hit.is_some() && modifiers.contains(NSEventModifierFlags::Option))
@@ -2384,7 +2484,36 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
     })
 }
 
+// AppKit normally coalesces mouseDragged events while the main thread uploads
+// textures or presents a frame. Retaining points after delivery is too late:
+// the OS may already have reduced an entire curved gesture to its last event.
+fn begin_precise_paint_input() {
+    PAINT_MOUSE_COALESCING.with(|previous| {
+        if previous.get().is_none() {
+            previous.set(Some(NSEvent::isMouseCoalescingEnabled()));
+            NSEvent::setMouseCoalescingEnabled(false);
+        }
+    });
+}
+
+fn end_precise_paint_input() {
+    PAINT_MOUSE_COALESCING.with(|previous| {
+        if let Some(enabled) = previous.take() {
+            NSEvent::setMouseCoalescingEnabled(enabled);
+        }
+    });
+}
+
+// Additional pixel layers keep their in-progress stroke in an isolated workspace.
+// Trackpad gestures must not change the pointer-to-document transform mid-stroke.
+fn paint_gesture_active() -> bool {
+    DOCUMENT.with(|doc| doc.borrow().has_active_stroke())
+        || PIXEL_PAINT.with(|draft| draft.borrow().is_some())
+}
+
 fn cancel_vector_drag() -> bool {
+    end_precise_paint_input();
+    let painting = PIXEL_PAINT.with(|d| d.borrow_mut().take().is_some());
     let pixels = PIXEL_DRAG.with(|d| d.borrow_mut().take().is_some());
     let bounding = BOX_DRAFT.with(|d| d.borrow_mut().take().is_some());
     let rotating = ROTATE_DRAFT.with(|d| d.borrow_mut().take().is_some());
@@ -2399,7 +2528,8 @@ fn cancel_vector_drag() -> bool {
     let direct = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take().is_some());
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
-    pixels
+    painting
+        || pixels
         || bounding
         || rotating
         || scaling
@@ -2627,6 +2757,22 @@ pub fn set_vector_object_visibility(
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn arrange_selected_vectors(action: String) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| doc.borrow_mut().arrange_selected_vectors(&action))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn select_arrange_layer(id: String) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| doc.borrow_mut().select_layer_preserving_objects(id))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
 pub fn reorder_vector_objects(
     layer_id: String,
     ids: Vec<String>,
@@ -2669,7 +2815,16 @@ pub fn edit_selected_paths(action: PathEditAction) -> Result<DocumentSnapshot, S
     DOCUMENT.with(|doc| {
         let mut document = doc.borrow_mut();
         match action {
-            PathEditAction::Join => document.join_selected_paths(),
+            PathEditAction::Join => {
+                let controls = if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
+                    DIRECT_POINTS.with(|points| points.borrow().clone())
+                } else {
+                    Vec::new()
+                };
+                document.join_path_endpoints(&controls)?;
+                DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+                Ok(())
+            }
             PathEditAction::Average => {
                 let controls = DIRECT_POINTS.with(|points| points.borrow().clone());
                 document.average_vector_controls(&controls)
@@ -2835,6 +2990,12 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return Ok(());
     }
     canvas.renderer.set_frame_overlay(None);
+    if let Some(prepared) = PIXEL_PAINT_COMMIT.with(|pending| pending.borrow_mut().take()) {
+        canvas.renderer.install_prepared_svg(prepared)?;
+    }
+    if let Some(result) = pixel_paint::render(canvas) {
+        return result;
+    }
     if let Some(overlay) = pixel_move::overlay() {
         canvas.renderer.set_frame_overlay(Some(overlay));
         return DOCUMENT.with(|d| canvas.renderer.render(canvas.viewport, &d.borrow()));
@@ -2930,19 +3091,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect
         && ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none())
     {
-        let preview = DOCUMENT.with(|document| {
-            direct_preview(
-                &document.borrow(),
-                ((canvas.viewport.width as f32 / canvas.viewport.scale - 48.)
-                    / canvas.viewport.document_width)
-                    .min(
-                        (canvas.viewport.height as f32 / canvas.viewport.scale - 48.)
-                            / canvas.viewport.document_height,
-                    )
-                    .max(0.01)
-                    * canvas.viewport.zoom,
-            )
-        })?;
+        let preview = DOCUMENT.with(|document| direct_preview(&document.borrow(), guide_scale))?;
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some(draft) = ANCHOR_DRAFT.with(|draft| draft.borrow().clone()) {
@@ -2950,8 +3099,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some(draft) = PEN_DRAFT.with(|draft| draft.borrow().clone()) {
-        let preview =
-            DOCUMENT.with(|document| draft.preview(&document.borrow(), canvas.viewport.zoom))?;
+        let preview = DOCUMENT.with(|document| draft.preview(&document.borrow(), guide_scale))?;
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     if let Some((start, end)) = TEXT_FRAME_DRAFT.with(|draft| *draft.borrow()) {
@@ -3443,6 +3591,7 @@ impl Drop for Canvas {
 }
 
 thread_local! {
+    static CANVAS_OVERLAY: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
     static BRUSH_CURSOR: RefCell<Option<Retained<NSCursor>>> = const { RefCell::new(None) };
     static BRUSH_CURSOR_KEY: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
@@ -3459,6 +3608,9 @@ thread_local! {
     static LAST_PAN_POINT: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
     static PANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SPACE_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PAINT_MOUSE_COALESCING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static PIXEL_PAINT_COMMIT: RefCell<Option<PreparedSvgLayer>> = const { RefCell::new(None) };
+    static PIXEL_PAINT: RefCell<Option<pixel_paint::PixelPaint>> = const { RefCell::new(None) };
     static PIXEL_DRAG: RefCell<Option<pixel_move::PixelDrag>> = const { RefCell::new(None) };
     static BOX_DRAFT: RefCell<Option<BoxDraft>> = const { RefCell::new(None) };
     static ROTATE_DRAFT: RefCell<Option<RotateDraft>> = const { RefCell::new(None) };
@@ -3517,6 +3669,7 @@ impl TiledSession {
             .layers()
             .iter()
             .map(|layer| LayerSnapshot {
+                guide_color: [48, 144, 255, 255],
                 objects: Vec::new(),
                 id: layer.id.clone(),
                 name: layer.name.clone(),
@@ -3889,6 +4042,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         }
         let canvas = slot.as_mut().ok_or("Canvas initialization failed")?;
         canvas.view.setFrame(frame);
+        update_canvas_mask(&canvas.view, request.overlay);
         canvas.viewport = viewport;
         canvas.renderer.channel = request.channel;
         canvas.view.setHidden(false);
@@ -3915,6 +4069,48 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     });
     text_editor::layout()?;
     result
+}
+
+// Punch a hole only in the native view's composition, leaving the GPU viewport fixed.
+// The WebView below receives pointer events in this same rectangle.
+fn update_canvas_mask(view: &PaintView, overlay: Option<[f64; 4]>) {
+    CANVAS_OVERLAY.with(|value| value.set(overlay));
+    // SAFETY: all Core Animation objects are retained and accessed on the main thread.
+    unsafe {
+        let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
+        let Some(layer) = layer else { return };
+        let _: () = msg_send![class!(CATransaction), begin];
+        let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+        if let Some(r) = overlay {
+            let size = view.bounds().size;
+            let left = r[0].clamp(0.0, size.width);
+            let top = r[1].clamp(0.0, size.height);
+            let right = r[2].clamp(left, size.width);
+            let bottom = r[3].clamp(top, size.height);
+            let mask: Retained<AnyObject> = msg_send![class!(CALayer), layer];
+            let _: () = msg_send![&*mask, setFrame: view.bounds()];
+            let white = NSColor::whiteColor();
+            let color = white.CGColor();
+            for (x, y, width, height) in [
+                (0.0, 0.0, size.width, top),
+                (0.0, bottom, size.width, size.height - bottom),
+                (0.0, top, left, bottom - top),
+                (right, top, size.width - right, bottom - top),
+            ] {
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
+                }
+                let part: Retained<AnyObject> = msg_send![class!(CALayer), layer];
+                let _: () = msg_send![&*part, setFrame: NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))];
+                let _: () = msg_send![&*part, setBackgroundColor: &*color];
+                let _: () = msg_send![&*mask, addSublayer: &*part];
+            }
+            let _: () = msg_send![&*layer, setMask: &*mask];
+        } else {
+            let _: () = msg_send![&*layer, setMask: std::ptr::null::<AnyObject>()];
+        }
+        let _: () = msg_send![class!(CATransaction), commit];
+    }
 }
 
 fn native_frame(
@@ -3948,6 +4144,158 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pen_closure_uses_screen_distance_at_all_zoom_and_backing_scales() {
+        let draft = PenDraft {
+            layer: "path".into(),
+            brush: Brush::default(),
+            nodes: vec![([100., 100.], [100., 100.]), ([300., 200.], [300., 200.])],
+        };
+        for backing in [1., 2.] {
+            let mut v = Viewport::new(848., 648., backing, 1., false).unwrap();
+            v.document_width = 1600.;
+            v.document_height = 1200.;
+            for zoom in [0.25, 1., 4., 16.] {
+                v.zoom = zoom;
+                let tolerance = pen_close_tolerance(Some(v));
+                assert!((tolerance - 16. / zoom).abs() < 0.001);
+                assert!(pen_should_close(
+                    &draft,
+                    [100. + tolerance * 0.9, 100.],
+                    tolerance
+                ));
+                assert!(!pen_should_close(
+                    &draft,
+                    [100. + tolerance * 1.1, 100.],
+                    tolerance
+                ));
+            }
+            v.zoom = 0.5;
+            assert!(pen_should_close(
+                &draft,
+                [110., 100.],
+                pen_close_tolerance(Some(v))
+            ));
+            v.zoom = 4.;
+            assert!(!pen_should_close(
+                &draft,
+                [110., 100.],
+                pen_close_tolerance(Some(v))
+            ));
+        }
+        let single = PenDraft {
+            nodes: vec![draft.nodes[0]],
+            ..draft
+        };
+        assert!(!pen_should_close(&single, [100., 100.], 8.));
+    }
+
+    #[test]
+    fn pen_guides_keep_centerline_and_screen_width_without_changing_artwork() {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let draft = PenDraft {
+            layer,
+            brush: Brush {
+                size: 24.,
+                ..Brush::default()
+            },
+            nodes: vec![([20., 20.], [50., 0.]), ([200., 150.], [220., 180.])],
+        };
+        let original = doc.encode().unwrap();
+        for scale in [0.125, 0.5, 1., 4., 16.] {
+            let preview = draft.preview(&doc, scale).unwrap();
+            let objects: Vec<_> = preview
+                .svg_layers()
+                .flat_map(|l| &l.vector_objects)
+                .collect();
+            let artwork = objects.iter().find(|o| o.id == "pen-draft").unwrap();
+            let guide = objects.iter().find(|o| o.id == "pen-guides").unwrap();
+            assert!(guide.path.data.starts_with(&artwork.path.data));
+            assert!(guide.path.data.contains(" a ") && guide.path.data.contains(" h "));
+            assert_eq!(guide.stroke_width * scale, 1.);
+            assert_eq!(artwork.stroke_width, 24.);
+            assert_eq!(doc.encode().unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn pen_commit_snaps_existing_near_endpoints_without_a_tiny_closing_segment() {
+        let draft = PenDraft {
+            layer: "path".into(),
+            brush: Brush::default(),
+            nodes: vec![
+                ([10., 10.], [20., 0.]),
+                ([100., 100.], [120., 80.]),
+                ([11., 10.5], [16., 12.5]),
+            ],
+        };
+        for closed in [false, true] {
+            let result = draft.committed_object(closed, "snap", 2.).unwrap();
+            assert!(result.path.data.ends_with('Z'));
+            assert_eq!(result.control_points.len(), 7);
+            assert_eq!(result.control_points[0], result.control_points[6]);
+            assert_eq!(result.control_points[1], [20., 0.]);
+            assert_eq!(result.control_points[5], [5., 8.]);
+        }
+        let separate = draft.committed_object(false, "open", 0.5).unwrap();
+        assert!(!separate.path.data.ends_with('Z'));
+        assert_eq!(separate.control_points[6], [11., 10.5]);
+        assert_eq!(draft.nodes[2].0, [11., 10.5]);
+    }
+
+    #[test]
+    fn pen_near_start_commits_closed_path_without_extra_anchor() {
+        PEN_DRAFT.with(|slot| slot.borrow_mut().take());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        doc.select_layer(layer).unwrap();
+        for (x, y) in [(100., 100.), (200., 100.), (200., 200.), (104., 102.)] {
+            bezier_pointer(&mut doc, lumapaint_core::document::Point { x, y }, 0).unwrap();
+            bezier_pointer(&mut doc, lumapaint_core::document::Point { x, y }, 2).unwrap();
+        }
+        assert!(PEN_DRAFT.with(|slot| slot.borrow().is_none()));
+        let object = &doc.svg_layers().next().unwrap().vector_objects[0];
+        assert!(object.path.data.ends_with('Z'));
+        assert_eq!(object.control_points.len(), 10);
+        assert_eq!(object.control_points.first(), object.control_points.last());
+        doc.undo();
+        assert!(doc.svg_layers().next().unwrap().vector_objects.is_empty());
+    }
+
+    #[test]
+    fn saved_path_direct_selection_is_scoped_and_guides_do_not_change_clip_geometry() {
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let draft = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![([20., 20.], [40., 0.]), ([100., 80.], [120., 60.])],
+        };
+        doc.upsert_vector_object(&layer, draft.object(false, "artwork").unwrap())
+            .unwrap();
+        doc.saved_path_action("new", None, "Path").unwrap();
+        assert!(direct_objects(&doc).is_empty());
+        let target = doc.selected_vector_target().unwrap().unwrap();
+        doc.upsert_vector_object(&target, draft.object(false, "path-only").unwrap())
+            .unwrap();
+        assert_eq!(direct_objects(&doc).len(), 1);
+        DIRECT_POINTS.with(|p| *p.borrow_mut() = vec![("path-only".into(), 0)]);
+        direct_select_ids(&mut doc).unwrap();
+        assert!(doc.has_active_saved_path());
+        assert_eq!(doc.selected_vector_ids(), &["path-only"]);
+        let mut preview = anchor_guides_preview(&doc, 1.).unwrap();
+        assert_eq!(preview.snapshot().saved_paths[0].components, 1);
+        let reloaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(reloaded.snapshot().saved_paths[0].components, 1);
+        doc.saved_path_action("deactivate", None, "").unwrap();
+        assert_eq!(direct_objects(&doc)[0].1.id, "artwork");
+        // A native editing guide belongs only to a preview clone.
+        assert_ne!(preview.encode().unwrap(), doc.encode().unwrap());
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+    }
 
     #[test]
     fn direct_guides_show_curve_anchors_handles_without_modifying_document() {
@@ -4921,6 +5269,7 @@ mod tests {
             right: 0.0,
         };
         let request = CanvasRequest {
+            overlay: None,
             channel: 0,
             x: 79.0,
             y: 228.0,
@@ -4949,6 +5298,7 @@ mod tests {
             right: 0.0,
         };
         let mut request = CanvasRequest {
+            overlay: None,
             channel: 0,
             x: -10.0,
             y: 400.0,
@@ -5409,6 +5759,21 @@ pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnaps
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
 
+pub fn set_vector_appearance(
+    ids: &[String],
+    opacity: Option<f32>,
+    blend_mode: Option<String>,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        d.borrow_mut()
+            .set_selected_vector_appearance(ids, opacity, blend_mode)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn set_vector_paint(
     ids: &[String],
     target: &str,
@@ -5446,4 +5811,52 @@ pub fn outline_view(value: Option<bool>) -> Result<bool, String> {
         redraw()?;
     }
     Ok(OUTLINE_VIEW.with(|state| state.get()))
+}
+
+pub fn text_writing_mode(
+    mode: lumapaint_core::vector::WritingMode,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .set_text_writing_mode(mode, text_editor::reflow_text)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn saved_path_action(
+    action: String,
+    id: Option<String>,
+    name: String,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| {
+        let mut document = doc.borrow_mut();
+        finish_pen(&mut document, false)?;
+        document.saved_path_action(&action, id.as_deref(), &name)
+    })?;
+    DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn thumbnail_document() -> Result<super::ThumbnailDocument, String> {
+    ensure_document_open()?;
+    if let Some(document) = ACTIVE_TILED_DOCUMENT.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|session| session.document.clone())
+    }) {
+        return Ok(super::ThumbnailDocument::Tiled(Box::new(document)));
+    }
+    DOCUMENT.with(|doc| {
+        Ok(super::ThumbnailDocument::Standard(Box::new(
+            doc.borrow().clone(),
+        )))
+    })
 }

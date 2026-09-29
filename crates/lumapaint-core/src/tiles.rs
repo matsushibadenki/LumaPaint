@@ -707,12 +707,13 @@ fn dab_density_on_tiles(
         if dab.weight == 0.0 {
             continue;
         }
-        let left = ((dab.x - dab.radius - 2.0).floor() as i32).max(0) as u32;
-        let top = ((dab.y - dab.radius - 2.0).floor() as i32).max(0) as u32;
-        let right = ((dab.x + dab.radius + 2.0).ceil() as i32)
+        let fringe = 2.0 * dab.texture_scale;
+        let left = ((dab.x - dab.radius - fringe).floor() as i32).max(0) as u32;
+        let top = ((dab.y - dab.radius - fringe).floor() as i32).max(0) as u32;
+        let right = ((dab.x + dab.radius + fringe).ceil() as i32)
             .min(width as i32)
             .max(0) as u32;
-        let bottom = ((dab.y + dab.radius + 2.0).ceil() as i32)
+        let bottom = ((dab.y + dab.radius + fringe).ceil() as i32)
             .min(height as i32)
             .max(0) as u32;
         let inner = dab.radius * dab.hardness;
@@ -740,9 +741,10 @@ fn dab_density_on_tiles(
                     let dx = x as f32 + 0.5 - dab.x;
                     let dy = y as f32 + 0.5 - dab.y;
                     let distance = dx.hypot(dy);
-                    // At 1:1 zoom, fwidth(distance) is approximately the L1 norm
-                    // of the radial distance gradient used by the GPU brush.
-                    let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01);
+                    // Share the GPU brush's document-pixel radial profile. A 2x
+                    // preview must scale the fringe as well as the tip radius.
+                    let aa =
+                        ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01) * dab.texture_scale;
                     let edge = (inner + aa).max(dab.radius + aa);
                     let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
                     let profile = 1.0 - t * t * (3.0 - 2.0 * t);

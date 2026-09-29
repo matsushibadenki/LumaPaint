@@ -276,6 +276,8 @@ mod tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let shape = |id: &str, data: &str| VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: id.into(),
             name: id.into(),
             group_path: vec![],
@@ -379,6 +381,8 @@ mod tests {
     #[test]
     fn outline_offset_and_grid_return_portable_geometry() {
         let object = VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: "shape".into(),
             name: "Shape".into(),
             group_path: Vec::new(),
@@ -446,6 +450,8 @@ mod tests {
         let mut document = Document::default();
         let layer_id = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: id.into(),
             name: id.into(),
             group_path: Vec::new(),

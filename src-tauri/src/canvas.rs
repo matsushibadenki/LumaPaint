@@ -12,6 +12,8 @@ mod platform;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanvasRequest {
     #[serde(default)]
+    pub overlay: Option<[f64; 4]>,
+    #[serde(default)]
     pub channel: u32,
     pub x: f64,
     pub y: f64,
@@ -56,6 +58,12 @@ impl CanvasRequest {
     fn validate(&self) -> Result<(), String> {
         if self.channel > 8 {
             return Err("Invalid display channel".into());
+        }
+        if self
+            .overlay
+            .is_some_and(|rect| rect.iter().any(|v| !v.is_finite() || v.abs() > 65536.0))
+        {
+            return Err("Invalid overlay bounds".into());
         }
         self.brush.validate()?;
         if ![self.x, self.y, self.width, self.height, self.zoom]
@@ -477,6 +485,36 @@ pub async fn set_vector_object_visibility(
     }
 }
 #[tauri::command]
+pub async fn arrange_selected_vectors(
+    window: tauri::WebviewWindow,
+    action: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::arrange_selected_vectors(action)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, action);
+        Err("Native editing is unavailable".into())
+    }
+}
+#[tauri::command]
+pub async fn select_arrange_layer(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::select_arrange_layer(id)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native editing is unavailable".into())
+    }
+}
+#[tauri::command]
 pub async fn reorder_vector_objects(
     window: tauri::WebviewWindow,
     layer_id: String,
@@ -680,6 +718,7 @@ mod tests {
     #[test]
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
+            overlay: None,
             channel: 0,
             x: 0.0,
             y: 0.0,
@@ -994,6 +1033,27 @@ pub async fn transform_objects(
 }
 
 #[tauri::command]
+pub async fn set_vector_appearance(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+    opacity: Option<f32>,
+    blend_mode: Option<String>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_vector_appearance(&ids, opacity, blend_mode)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids, opacity, blend_mode);
+        Err("Vector appearance is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
 pub async fn set_vector_paint(
     window: tauri::WebviewWindow,
     ids: Vec<String>,
@@ -1040,5 +1100,92 @@ pub async fn outline_view(
     {
         let _ = (window, value);
         Err("Outline view is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn text_writing_mode(
+    window: tauri::WebviewWindow,
+    mode: lumapaint_core::vector::WritingMode,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::text_writing_mode(mode)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, mode);
+        Err("Writing direction is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn saved_path_action(
+    window: tauri::WebviewWindow,
+    action: String,
+    id: Option<String>,
+    name: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::saved_path_action(action, id, name)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, action, id, name);
+        Err("Saved paths are pending on this platform".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub enum ThumbnailDocument {
+    Standard(Box<lumapaint_core::document::Document>),
+    Tiled(Box<lumapaint_core::tiles::TiledRasterDocument>),
+}
+#[derive(Serialize)]
+pub struct ThumbnailSet {
+    layers: Vec<(String, String)>,
+    channels: Vec<String>,
+}
+#[tauri::command]
+pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailSet, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let document = on_main(window, platform::thumbnail_document).await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            use base64::Engine;
+            let previews = match document {
+                ThumbnailDocument::Standard(document) => {
+                    lumapaint_renderer::thumbnails::render(&document)?
+                }
+                ThumbnailDocument::Tiled(document) => {
+                    lumapaint_renderer::thumbnails::render_tiled(&document)?
+                }
+            };
+            let encode = |png: Vec<u8>| {
+                format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(png)
+                )
+            };
+            Ok(ThumbnailSet {
+                layers: previews
+                    .layers
+                    .into_iter()
+                    .map(|(id, png)| (id, encode(png)))
+                    .collect(),
+                channels: previews.channels.into_iter().map(encode).collect(),
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Panel thumbnails are pending on this platform".into())
     }
 }

@@ -6,7 +6,8 @@ import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ layers, textObjects, selectedId, enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
+export function LayerList({ thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
+  thumbnails?: Record<string,string>; thumbnailError?: string;
   layers: LayerSnapshot[]; textObjects: TextObjectSnapshot[]; selectedId: string; enabled: boolean; locale: Locale;
   selectedObjects: string[]; onSelectObject: (layerId: string, objectId: string) => void;
   onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
@@ -208,7 +209,8 @@ export function LayerList({ layers, textObjects, selectedId, enabled, locale, on
         aria-label={`${layer.visible ? t.hideLayer : t.showLayer}: ${displayName}`} aria-pressed={layer.visible}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
       <span className="layer-type-icon" title={label} role="img" aria-label={label}><Icon name={type === 'pixel' ? 'pixels' : type === 'image' ? 'image' : type === 'textVector' ? 'text' : 'vector'} /></span>
       </div>
-      <span className={`layer-thumb ${layer.kind}`} aria-hidden="true" />
+      <span className={`path-color-stripe${layer.kind === 'vector' ? '' : ' pixel-color-stripe'}`} aria-hidden="true" style={layer.kind === 'vector' ? { backgroundColor: `rgb(${(layer.guideColor ?? [48,144,255]).slice(0,3).join(',')})` } : undefined} />
+      <span className={`layer-thumb ${layer.kind}`} aria-hidden="true" title={thumbnailError}>{thumbnails[layer.id] && <img src={thumbnails[layer.id]} alt="" draggable={false} />}</span>
       {layer.maskEnabled && <span className={`mask-thumb${layer.maskInverted ? ' inverted' : ''}`} aria-hidden="true" />}
       <div className="layer-description">
       {editingId === layer.id ? <input className="layer-name" autoFocus maxLength={120} aria-label={t.renameLayer} value={name}

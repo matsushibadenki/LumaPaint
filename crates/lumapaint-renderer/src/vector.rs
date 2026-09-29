@@ -64,6 +64,10 @@ pub fn reflow_text_with_system_fonts(
     text: &mut lumapaint_core::vector::VectorText,
     color: [u8; 3],
 ) -> Result<(), String> {
+    if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+        text.reflow_vertical();
+        return text.validate();
+    }
     let source = text.clone();
     let mut candidate = text.clone();
     let mut measurer = PortableFontMeasurer {
@@ -307,6 +311,34 @@ fn shape_width(
     Ok((advance.abs() + graphemes as f32 * style.tracking * style.font_size / 1000.0).max(0.0))
 }
 
+/// Resolve the same face used by SVG before asking AppKit to instantiate it.
+pub fn text_font_postscript_name(style: &lumapaint_core::vector::TextStyle) -> Option<String> {
+    use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
+    let names: Vec<&str> = match style.font_family.as_str() {
+        "sans-serif" => vec!["Hiragino Sans", "PingFang SC", "Noto Sans CJK JP", "Arial"],
+        "serif" => vec!["Hiragino Mincho ProN", "Songti SC", "Noto Serif CJK JP"],
+        "monospace" => vec!["Menlo", "Consolas", "Noto Sans Mono CJK JP"],
+        name => vec![name],
+    };
+    let families: Vec<_> = names.into_iter().map(Family::Name).collect();
+    let fonts = system_fonts();
+    let id = fonts.query(&Query {
+        families: &families,
+        weight: if style.bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        },
+        stretch: Stretch::Normal,
+        style: if style.italic {
+            Style::Italic
+        } else {
+            Style::Normal
+        },
+    })?;
+    Some(fonts.face(id)?.post_script_name.clone())
+}
+
 pub(crate) fn font_resolver() -> usvg::FontResolver<'static> {
     let fallback = usvg::FontResolver::default_fallback_selector();
     usvg::FontResolver {
@@ -475,16 +507,35 @@ fn supports_skia(group: &usvg::Group) -> bool {
     })
 }
 
-/// Encode premultiplied document pixels for clipboard transfer.
-pub fn clipboard_png(width: u32, height: u32, pixels: Vec<u8>) -> Result<Vec<u8>, String> {
-    if u64::from(width) * u64::from(height) > 16_777_216 {
-        return Err("Clipboard image is too large (16 megapixels maximum)".into());
+/// Validate the bounded, Rust-owned document raster before allocating memory.
+/// Clipboard transfers have their own smaller limit and must not constrain editing.
+pub fn document_rgba_len(width: u32, height: u32) -> Result<usize, String> {
+    let limit = lumapaint_core::document::MAX_DOCUMENT_DIMENSION;
+    if width == 0 || height == 0 || width > limit || height > limit {
+        return Err("Image dimensions must be between 1 and 8192 pixels / 画像の幅・高さは1〜8192ピクセルにしてください / 图像宽高必须在1到8192像素之间".into());
+    }
+    Ok(width as usize * height as usize * 4)
+}
+
+/// Encode a document layer for persistence; full pixels stay on the Rust side.
+pub fn document_png(width: u32, height: u32, pixels: Vec<u8>) -> Result<Vec<u8>, String> {
+    let expected = document_rgba_len(width, height)?;
+    if pixels.len() != expected {
+        return Err("Invalid image pixels".into());
     }
     let size = tiny_skia::IntSize::from_wh(width, height).ok_or("Invalid image size")?;
     tiny_skia::Pixmap::from_vec(pixels, size)
         .ok_or("Invalid image pixels")?
         .encode_png()
         .map_err(|e| e.to_string())
+}
+
+/// Encode premultiplied document pixels for clipboard transfer.
+pub fn clipboard_png(width: u32, height: u32, pixels: Vec<u8>) -> Result<Vec<u8>, String> {
+    if u64::from(width) * u64::from(height) > 16_777_216 {
+        return Err("Clipboard image is too large (16 megapixels maximum)".into());
+    }
+    document_png(width, height, pixels)
 }
 
 pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
@@ -507,6 +558,258 @@ pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn internal_raster_limits_are_independent_from_clipboard_limits() {
+        assert_eq!(
+            super::document_rgba_len(3508, 4961).unwrap(),
+            3508 * 4961 * 4
+        );
+        assert_eq!(
+            super::document_rgba_len(8192, 8192).unwrap(),
+            8192 * 8192 * 4
+        );
+        for (w, h) in [(0, 1), (1, 0), (8193, 1), (1, 8193), (u32::MAX, u32::MAX)] {
+            assert!(super::document_rgba_len(w, h).is_err());
+        }
+        // Reject before allocation; actual clipboard limits are unchanged.
+        assert!(super::clipboard_png(3508, 4961, Vec::new())
+            .unwrap_err()
+            .contains("16 megapixels"));
+        assert!(super::document_png(3508, 4961, Vec::new())
+            .unwrap_err()
+            .contains("Invalid image pixels"));
+    }
+
+    #[test]
+    fn document_clipping_paths_cover_all_layers_without_changing_artwork() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::{VectorObjectKind, VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "seed".into(),
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [255, 0, 0],
+        })
+        .unwrap();
+        let layer = doc.svg_layers().next().unwrap();
+        let id = layer.id.clone();
+        let mut object = layer.vector_objects[0].clone();
+        object.text = None;
+        object.kind = VectorObjectKind::Path;
+        object.path.data = "M20 20H100V100H20Z".into();
+        object.control_points = vec![[20., 20.], [100., 20.], [100., 100.], [20., 100.]];
+        doc.upsert_vector_object(&id, object).unwrap();
+        let art = doc.svg_layers().next().unwrap().source.clone();
+        doc.saved_path_action("create", None, "Cutout").unwrap();
+        let path = doc.snapshot().saved_paths[0].id.clone();
+        let before = doc.encode().unwrap();
+        doc.saved_path_action("clip", Some(&path), "").unwrap();
+        let saved = doc.encode().unwrap();
+        let preview = doc.clipping_view();
+        let cover = preview.svg_layers().last().unwrap();
+        let raster = super::rasterize_svg(&cover.source, 960, 640).unwrap();
+        assert_eq!(raster.pixels[(60 * 960 + 60) * 4 + 3], 0);
+        assert_eq!(raster.pixels[(140 * 960 + 140) * 4 + 3], 255);
+        assert_eq!(doc.svg_layers().next().unwrap().source, art);
+        assert_eq!(doc.encode().unwrap(), saved);
+        assert!(Document::decode(&saved).unwrap().has_document_clipping());
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.redo();
+        assert_eq!(doc.encode().unwrap(), saved);
+        doc.saved_path_action("delete", Some(&path), "").unwrap();
+        assert!(!doc.has_document_clipping());
+        doc.undo();
+        assert!(doc.has_document_clipping());
+        let before = doc.encode().unwrap();
+        assert!(doc.saved_path_action("clip", Some("missing"), "").is_err());
+        assert_eq!(doc.encode().unwrap(), before);
+    }
+
+    #[test]
+    fn vertical_native_positions_are_preserved_in_preview_and_save() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::{VectorText, WritingMode};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語文".into(),
+                writing_mode: WritingMode::Vertical,
+                box_width: 120.,
+                box_height: Some(200.),
+                font_size: 20.,
+                soft_breaks: vec![2],
+                line_baselines: vec![12., 44.],
+                line_origins: vec![3., 7.],
+                character_origins: vec![vec![3., 27.], vec![7., 31.]],
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let source = &doc.svg_layers().next().unwrap().source;
+        assert!(source.contains("x=\"108\" y=\"3\""));
+        assert!(source.contains("x=\"76\" y=\"7\""));
+        assert!(source.contains("y=\"3 27\""));
+        assert!(source.contains("y=\"7 31\""));
+        let raster = super::rasterize_svg(source, 960, 640).unwrap();
+        assert!(raster.pixels.iter().any(|v| *v != 0));
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.snapshot().text_objects[0].text.character_origins,
+            vec![vec![3., 27.], vec![7., 31.]]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vertical_latin_is_rotated_once() {
+        fn crop(source: &str) -> (usize, usize, Vec<bool>) {
+            let raster = super::rasterize_svg(source, 240, 240).unwrap();
+            let mut bounds = [240usize, 240, 0, 0];
+            for y in 0..240 {
+                for x in 0..240 {
+                    if raster.pixels[(y * 240 + x) * 4 + 3] > 127 {
+                        bounds[0] = bounds[0].min(x);
+                        bounds[1] = bounds[1].min(y);
+                        bounds[2] = bounds[2].max(x);
+                        bounds[3] = bounds[3].max(y);
+                    }
+                }
+            }
+            let mut pixels = Vec::new();
+            for y in bounds[1]..=bounds[3] {
+                for x in bounds[0]..=bounds[2] {
+                    pixels.push(raster.pixels[(y * 240 + x) * 4 + 3] > 127);
+                }
+            }
+            (bounds[2] - bounds[0] + 1, bounds[3] - bounds[1] + 1, pixels)
+        }
+        for ch in ['F', 'R', 'a', '2'] {
+            let vertical = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240"><text x="100" y="40" font-family="Hiragino Sans" font-size="80" writing-mode="tb">{ch}</text></svg>"#
+            );
+            let expected = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240"><text transform="translate(100 40) rotate(90)" font-family="Hiragino Sans" font-size="80">{ch}</text></svg>"#
+            );
+            let a = crop(&vertical);
+            let b = crop(&expected);
+            assert!(
+                a.0.abs_diff(b.0) <= 1 && a.1.abs_diff(b.1) <= 1,
+                "{ch}: {:?} {:?}",
+                (a.0, a.1),
+                (b.0, b.1)
+            );
+            let mismatches = (0..a.1.min(b.1))
+                .flat_map(|y| (0..a.0.min(b.0)).map(move |x| (x, y)))
+                .filter(|&(x, y)| a.2[y * a.0 + x] != b.2[y * b.0 + x])
+                .count();
+            assert!(
+                (mismatches as f32) / (a.2.len() as f32) < 0.12,
+                "Latin glyph is not a single clockwise rotation: {ch}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn japanese_vertical_glyphs_use_font_alternates() {
+        for ch in ['。', '、', 'ぁ', 'っ', 'ゃ', '「', 'ー'] {
+            let source = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><text x="80" y="20" font-family="Hiragino Sans" font-size="80" writing-mode="tb">{ch}</text></svg>"#
+            );
+            let raster = super::rasterize_svg(&source, 180, 180).unwrap();
+            let mut bounds = [180usize, 180, 0, 0];
+            for y in 0..180 {
+                for x in 0..180 {
+                    if raster.pixels[(y * 180 + x) * 4 + 3] > 30 {
+                        bounds[0] = bounds[0].min(x);
+                        bounds[1] = bounds[1].min(y);
+                        bounds[2] = bounds[2].max(x);
+                        bounds[3] = bounds[3].max(y);
+                    }
+                }
+            }
+            assert!(bounds[0] < bounds[2]);
+            match ch {
+                '。' | '、' => assert!(
+                    bounds[0] > 80 && bounds[3] < 60,
+                    "punctuation must sit at the upper right: {ch} {bounds:?}"
+                ),
+                'ぁ' | 'っ' | 'ゃ' => assert!(
+                    bounds[0] + bounds[2] > 160 && bounds[3] < 100,
+                    "small kana must use the upright vertical alternate: {ch} {bounds:?}"
+                ),
+                'ー' => assert!(
+                    bounds[3] - bounds[1] > 3 * (bounds[2] - bounds[0]),
+                    "prolonged mark must be vertical"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn writing_direction_renders_vertical_columns_and_round_trips() {
+        use lumapaint_core::document::{Document, TextSettings};
+        use lumapaint_core::vector::{VectorText, WritingMode};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語の縦組み文字".into(),
+                font_size: 24.,
+                box_width: 140.,
+                box_height: Some(100.),
+                ..Default::default()
+            },
+            position: [20., 20.],
+            color: [20, 40, 120],
+        })
+        .unwrap();
+        let before = doc.encode().unwrap();
+        doc.set_text_writing_mode(WritingMode::Vertical, super::reflow_text_with_system_fonts)
+            .unwrap();
+        let layer = doc.svg_layers().next().unwrap();
+        assert!(layer.source.contains("writing-mode=\"tb\""));
+        let text = layer.vector_objects[0].text.as_ref().unwrap();
+        assert!(text.soft_breaks.len() >= 2);
+        let raster = super::rasterize_svg(&layer.source, 960, 640).unwrap();
+        let has_ink = |x0: usize, x1: usize| {
+            (20..120).any(|y| (x0..x1).any(|x| raster.pixels[(y * 960 + x) * 4 + 3] > 0))
+        };
+        assert!(has_ink(130, 160));
+        assert!(has_ink(90, 130));
+        let saved = doc.encode().unwrap();
+        assert_eq!(
+            Document::decode(&saved).unwrap().snapshot().text_objects[0]
+                .text
+                .writing_mode,
+            WritingMode::Vertical
+        );
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.redo();
+        assert_eq!(doc.encode().unwrap(), saved);
+        doc.set_text_writing_mode(
+            WritingMode::Horizontal,
+            super::reflow_text_with_system_fonts,
+        )
+        .unwrap();
+        assert!(!doc
+            .svg_layers()
+            .next()
+            .unwrap()
+            .source
+            .contains("writing-mode=\"tb\""));
+    }
+
     #[test]
     fn outline_view_shows_path_edges_and_preserves_image_layers() {
         use lumapaint_core::document::{Document, TextSettings};
@@ -1136,10 +1439,79 @@ mod clipping_tests {
         vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath},
     };
     #[test]
+    fn object_appearance_renders_and_survives_save_undo() {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let shape = |id: &str, color| VectorObject {
+            opacity: 1.,
+            blend_mode: "normal".into(),
+            id: id.into(),
+            name: id.into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            path: VectorPath {
+                data: "M0 0H20V20H0Z".into(),
+                fill_rule: FillRule::NonZero,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            fill: Some(VectorPaint { color }),
+            stroke: None,
+            stroke_width: 0.,
+            visible: true,
+            kind: VectorObjectKind::Rectangle,
+            control_points: vec![[0., 0.], [20., 20.]],
+            text: None,
+        };
+        doc.upsert_vector_object(&layer, shape("base", [255, 0, 0, 255]))
+            .unwrap();
+        doc.upsert_vector_object(&layer, shape("top", [0, 0, 255, 255]))
+            .unwrap();
+        let ids = vec!["top".into()];
+        doc.select_vector_objects(ids.clone()).unwrap();
+        doc.set_selected_vector_appearance(&ids, Some(0.5), Some("multiply".into()))
+            .unwrap();
+        let (w, h) = doc.dimensions();
+        let render =
+            |d: &Document| rasterize_svg(&d.svg_layers().next().unwrap().source, w, h).unwrap();
+        let pixel = |r: &SvgRaster| {
+            let i = (10 * w as usize + 10) * 4;
+            r.pixels[i..i + 4].to_vec()
+        };
+        let mixed = pixel(&render(&doc));
+        assert!((126..=129).contains(&mixed[0]), "{mixed:?}");
+        assert_eq!(&mixed[1..], &[0, 0, 255]);
+        let saved = doc.encode().unwrap();
+        let reopened = Document::decode(&saved).unwrap();
+        assert_eq!(mixed, pixel(&render(&reopened)));
+        assert!(doc
+            .set_selected_vector_appearance(&ids, Some(1.1), None)
+            .is_err());
+        assert!(doc
+            .set_selected_vector_appearance(&ids, None, Some("invalid".into()))
+            .is_err());
+        assert_eq!(saved, doc.encode().unwrap());
+        assert!(doc
+            .vector_drag_runs(doc.svg_layers().next().unwrap())
+            .is_none());
+        doc.undo();
+        assert_eq!(pixel(&render(&doc)), vec![0, 0, 255, 255]);
+        doc.redo();
+        assert_eq!(pixel(&render(&doc)), mixed);
+        for mode in lumapaint_core::vector::OBJECT_BLEND_MODES {
+            doc.set_selected_vector_appearance(&ids, None, Some((*mode).into()))
+                .unwrap();
+            render(&doc);
+        }
+    }
+
+    #[test]
     fn clipping_create_edit_release_undo_and_save_render_correctly() {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let shape = |id: &str, size: f32, color| VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: id.into(),
             name: id.into(),
             group_path: vec![],

@@ -505,6 +505,8 @@ mod anchor_tests {
     fn curve() -> VectorObject {
         let points = vec![[0., 0.], [0., 100.], [100., 100.], [100., 0.]];
         VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: "curve".into(),
             name: "Curve".into(),
             group_path: Vec::new(),
@@ -726,6 +728,8 @@ mod direct_tests {
     use crate::vector::{FillRule, VectorPaint, VectorPath};
     fn shape() -> VectorObject {
         VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: "shape".into(),
             name: "Shape".into(),
             group_path: Vec::new(),

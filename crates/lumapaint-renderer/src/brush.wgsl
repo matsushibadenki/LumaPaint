@@ -14,7 +14,7 @@ struct VertexOut {
     let corners = array<vec2<f32>, 6>(vec2(0.0,0.0),vec2(1.0,0.0),vec2(0.0,1.0),vec2(0.0,1.0),vec2(1.0,0.0),vec2(1.0,1.0));
     let size = u.viewport.xy / u.viewport.z;
     let scale = max(0.01, min((size.x-48.0)/u.document.x, (size.y-48.0)/u.document.y)) * u.viewport.w;
-    let extra = radius + 1.5 / scale;
+    let extra = radius + 2.0;
     let point = mix(min(ends.xy,ends.zw)-vec2(extra), max(ends.xy,ends.zw)+vec2(extra), corners[vertex]);
     let screen = (point-u.document.xy*0.5)*scale + size*0.5 + u.appearance.yz;
     var out: VertexOut;
@@ -26,8 +26,11 @@ struct VertexOut {
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let delta=in.ends.zw-in.ends.xy;
     let t=clamp(dot(in.point-in.ends.xy,delta)/max(dot(delta,delta),0.0001),0.0,1.0);
-    let distance=length(in.point-(in.ends.xy+t*delta));
-    let aa=max(fwidth(distance),0.01);
+    let radial=in.point-(in.ends.xy+t*delta);
+    let distance=length(radial);
+    // Match the raster brush profile in document pixels. Screen derivatives
+    // inflate the brush when zoomed out and shrink it on Retina/zoomed-in views.
+    let aa=max((abs(radial.x)+abs(radial.y))/max(distance,0.001),0.01);
     let inner=in.radius*clamp(in.hardness,0.0,1.0);
     let profile=1.0-smoothstep(inner,max(inner+aa,in.radius+aa),distance);
     let density=mix(4.0,16.0,in.hardness);

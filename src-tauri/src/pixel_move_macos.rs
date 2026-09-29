@@ -70,7 +70,7 @@ pub(super) fn pointer(
                 if let Some(pixels) = d.pixels {
                     let (w, h) = d.dimensions;
                     let moved = move_pixels(&pixels, w, h, d.selection.as_ref(), dx, dy, d.copy);
-                    let png = lumapaint_renderer::vector::clipboard_png(w, h, moved)?;
+                    let png = lumapaint_renderer::vector::document_png(w, h, moved)?;
                     let source = clipboard::image_svg(w, h, &png);
                     doc.replace_moved_pixels(
                         source,

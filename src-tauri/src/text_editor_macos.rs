@@ -6,11 +6,12 @@ use lumapaint_core::vector::{
 };
 use objc2::{runtime::AnyObject, AnyThread, DefinedClass};
 use objc2_app_kit::{
-    NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName, NSFontManager,
-    NSFontTraitMask, NSForegroundColorAttributeName, NSKernAttributeName, NSLineBreakMode,
-    NSLineBreakStrategy, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
-    NSSelectionAffinity, NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient,
-    NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextListOptions, NSTextView,
+    NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSColor, NSFont,
+    NSFontAttributeName, NSFontManager, NSFontTraitMask, NSForegroundColorAttributeName,
+    NSKernAttributeName, NSLineBreakMode, NSLineBreakStrategy, NSMutableParagraphStyle,
+    NSParagraphStyleAttributeName, NSSelectionAffinity, NSStrikethroughStyleAttributeName,
+    NSTextAlignment, NSTextInputClient, NSTextLayoutOrientation, NSTextList,
+    NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextListOptions, NSTextView,
     NSUnderlineStyleAttributeName,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
@@ -34,8 +35,11 @@ define_class!(
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             unsafe { msg_send![super(self), didChangeText] }
+            SESSION.with(|slot| { if let Ok(slot) = slot.try_borrow() { if let Some(session) = slot.as_ref() { session.edited.set(true); } } });
+            hide_native_glyphs(self);
             invalidate_current_cache();
             publish();
+            if let Err(error) = redraw() { emit_error(error); }
         }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
@@ -86,6 +90,7 @@ struct Session {
     settings: TextSettings,
     preview: Document,
     object_transform: [f32; 6],
+    edited: std::cell::Cell<bool>,
     layout_generation: std::cell::Cell<u64>,
     current_cache: RefCell<Option<(u64, TextSettings)>>,
 }
@@ -126,7 +131,9 @@ pub fn render(canvas: &mut Canvas) -> Result<(), String> {
                 overlay
             });
             canvas.renderer.set_frame_overlay(overlay);
-            canvas.renderer.render(canvas.viewport, &session.preview)
+            let settings = cached_current(session).unwrap_or_else(|| session.settings.clone());
+            let preview = live_preview(&session.preview, settings)?;
+            canvas.renderer.render(canvas.viewport, &preview)
         } else {
             DOCUMENT.with(|doc| {
                 canvas.renderer.render_vector_drag(
@@ -224,8 +231,10 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
                 manager.lineFragmentRectForGlyphAtIndex_effectiveRange(0, std::ptr::null_mut())
             };
             let natural_baseline = line.origin.y + manager.locationForGlyphAtIndex(0).y + origin.y;
-            y_correction =
-                f64::from(text.style_at(0, color).font_size + text.space_before) - natural_baseline;
+            if text.writing_mode != lumapaint_core::vector::WritingMode::Vertical {
+                y_correction = f64::from(text.style_at(0, color).font_size + text.space_before)
+                    - natural_baseline;
+            }
             let candidate = [
                 (rect.origin.x + origin.x) as f32,
                 (rect.origin.y + origin.y + y_correction) as f32,
@@ -240,7 +249,18 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
                 && (candidate[0] + candidate[2]).abs() < 100_000.0
                 && (candidate[1] + candidate[3]).abs() < 100_000.0
             {
-                bounds = Some(candidate);
+                bounds = Some(
+                    if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+                        [
+                            text.box_width - candidate[1] - candidate[3],
+                            candidate[0],
+                            candidate[3],
+                            candidate[2],
+                        ]
+                    } else {
+                        candidate
+                    },
+                );
             }
         }
         let utf16: Vec<_> = text.content.encode_utf16().collect();
@@ -256,7 +276,21 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
             };
             let baseline =
                 line.origin.y + manager.locationForGlyphAtIndex(glyph).y + origin.y + y_correction;
-            baselines.push(baseline as f32);
+            let column_baseline =
+                if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+                    // SVG vertical text uses the em-axis center; AppKit reports its
+                    // rotated horizontal baseline. Preserve the actual font metrics.
+                    let offset = manager.characterIndexForGlyphAtIndex(glyph);
+                    let midpoint = attributes(text, &text.style_at(offset, color))
+                        .ok()
+                        .and_then(|attrs| attrs.objectForKey(unsafe { NSFontAttributeName }))
+                        .and_then(|font| font.downcast::<NSFont>().ok())
+                        .map_or(0., |font| (font.ascender() + font.descender()) * 0.5);
+                    baseline - midpoint
+                } else {
+                    baseline
+                };
+            baselines.push(column_baseline as f32);
             widths.push(used.size.width as f32);
             origins
                 .push((line.origin.x + manager.locationForGlyphAtIndex(glyph).x + origin.x) as f32);
@@ -447,7 +481,17 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.clear_measured_layout();
     settings.text.validate()?;
     if settings.id.is_none() {
-        DOCUMENT.with(|doc| doc.borrow().selected_vector_target())?;
+        DOCUMENT.with(|doc| {
+            let document = doc.borrow();
+            if document.has_active_saved_path() {
+                Err(
+                    "Paths accept geometry only / パスには文字を追加できません / 路径不支持文字"
+                        .to_string(),
+                )
+            } else {
+                document.selected_vector_target()
+            }
+        })?;
     }
     let mtm = MainThreadMarker::new().ok_or("Text layout requires the main thread")?;
     let view = NSTextView::initWithFrame(
@@ -465,6 +509,24 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
         container.setLineFragmentPadding(0.0);
         container.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
         container.setWidthTracksTextView(true);
+    }
+    if settings.text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+        let width = settings.text.box_width;
+        let height = settings.text.box_height.unwrap_or(width);
+        view.setLayoutOrientation(NSTextLayoutOrientation::Vertical);
+        view.setFrame(NSRect::new(
+            NSPoint::new(0., 0.),
+            NSSize::new(width.into(), height.into()),
+        ));
+        view.setBoundsSize(NSSize::new(width.into(), height.into()));
+        if let Some(container) = unsafe { view.textContainer() } {
+            container.setWidthTracksTextView(false);
+            container.setHeightTracksTextView(false);
+            container.setContainerSize(vertical_container_size(width, height));
+        }
+    }
+    if let Some(manager) = unsafe { view.layoutManager() } {
+        manager.setUsesFontLeading(false);
     }
     apply_attributes_to_view(&view, settings)?;
     let (breaks, baselines, widths, origins, segments, characters, clusters, bounds) =
@@ -578,6 +640,9 @@ fn invalidate_current_cache() {
 }
 
 fn cached_current(session: &Session) -> Option<TextSettings> {
+    if !session.edited.get() {
+        return Some(session.settings.clone());
+    }
     let generation = session.layout_generation.get();
     let mut cache = session.current_cache.try_borrow_mut().ok()?;
     if let Some((saved_generation, settings)) = cache.as_ref() {
@@ -632,7 +697,17 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     // Reject an incompatible destination before creating an inline editor. Otherwise
     // the error is deferred until a tool switch commits the text during canvas sync.
     if settings.id.is_none() {
-        DOCUMENT.with(|doc| doc.borrow().selected_vector_target())?;
+        DOCUMENT.with(|doc| {
+            let document = doc.borrow();
+            if document.has_active_saved_path() {
+                Err(
+                    "Paths accept geometry only / パスには文字を追加できません / 路径不支持文字"
+                        .to_string(),
+                )
+            } else {
+                document.selected_vector_target()
+            }
+        })?;
     }
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return Err("No document is open".into());
@@ -651,7 +726,9 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             .find(|object| Some(&object.id) == settings.id.as_ref())
             .map_or([1., 0., 0., 1., 0., 0.], |object| object.transform)
     });
-    let preview = DOCUMENT.with(|doc| doc.borrow().text_edit_preview(settings.id.as_deref()))?;
+    // Validate editability, then retain the original visible object for GPU rendering.
+    DOCUMENT.with(|doc| doc.borrow().text_edit_preview(settings.id.as_deref()))?;
+    let preview = DOCUMENT.with(|doc| doc.borrow().clone());
     let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
     let allocated = InlineEditor::alloc(mtm).set_ivars(EditorState {
@@ -693,6 +770,7 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             settings,
             preview,
             object_transform,
+            edited: std::cell::Cell::new(false),
             layout_generation: std::cell::Cell::new(0),
             current_cache: RefCell::new(None),
         })
@@ -785,6 +863,7 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
     }
     SESSION.with(|slot| {
         if let Some(session) = slot.borrow_mut().as_mut() {
+            session.edited.set(true);
             session.settings = next;
             session
                 .layout_generation
@@ -800,11 +879,13 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
     unsafe {
         view.setTypingAttributes(&attributes);
     }
+    hide_native_glyphs(&view);
     if patch.is_some() && range.length > 0 {
         view.didChangeText();
     }
     layout()?;
     publish();
+    redraw()?;
     Ok(())
 }
 
@@ -821,6 +902,7 @@ pub fn finish(commit: bool) -> Result<(), String> {
         let base = settings.text.base_style(settings.color);
         settings.text.runs.retain(|run| run.style != base);
         if commit
+            && (session.edited.get() || session.settings.id.is_none())
             && (!settings.text.content.trim().is_empty() || settings.text.box_height.is_some())
         {
             DOCUMENT.with(|doc| doc.borrow_mut().set_text_object(settings))?;
@@ -869,6 +951,10 @@ fn editor_display_transform(text: &VectorText, matrix: [f32; 6]) -> (f32, f32, f
     )
 }
 
+fn vertical_container_size(width: f32, height: f32) -> NSSize {
+    NSSize::new(height.into(), width.into())
+}
+
 pub fn layout() -> Result<(), String> {
     invalidate_current_cache();
     let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
@@ -882,6 +968,12 @@ pub fn layout() -> Result<(), String> {
         };
         let view = &session.view;
         let text = &session.settings.text;
+        let vertical = text.writing_mode == lumapaint_core::vector::WritingMode::Vertical;
+        view.setLayoutOrientation(if vertical {
+            NSTextLayoutOrientation::Vertical
+        } else {
+            NSTextLayoutOrientation::Horizontal
+        });
         let width = viewport.width as f32 / viewport.scale;
         let height = viewport.height as f32 / viewport.scale;
         let fit = ((width - 48.0) / viewport.document_width)
@@ -902,6 +994,7 @@ pub fn layout() -> Result<(), String> {
         let y = session.settings.position[1] * fit;
         let logical_height = text
             .box_height
+            .or_else(|| vertical.then_some(text.box_width))
             .unwrap_or_else(|| ((height - page_y - y) / (fit * scale_y)).max(text.font_size * 2.0));
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
@@ -912,6 +1005,17 @@ pub fn layout() -> Result<(), String> {
             ),
         ));
         view.setBoundsSize(NSSize::new(text.box_width.into(), logical_height.into()));
+        if let Some(container) = unsafe { view.textContainer() } {
+            container.setWidthTracksTextView(!vertical);
+            // NSTextView rotates its internal coordinate system for vertical text.
+            // The container's width is therefore the physical column height.
+            // Automatic height tracking would overwrite the cross-column extent
+            // with the physical view height during zooming or resizing.
+            container.setHeightTracksTextView(false);
+            if vertical {
+                container.setContainerSize(vertical_container_size(text.box_width, logical_height));
+            }
+        }
         view.setFrameRotation(f64::from(rotation));
         // AppKit centers a font's baseline within the requested line height. SVG uses the
         // explicit baseline font_size + space_before. Align the editor's first baseline
@@ -919,7 +1023,7 @@ pub fn layout() -> Result<(), String> {
         unsafe {
             if let (Some(manager), Some(container)) = (view.layoutManager(), view.textContainer()) {
                 manager.ensureLayoutForTextContainer(&container);
-                if manager.numberOfGlyphs() > 0 {
+                if manager.numberOfGlyphs() > 0 && !vertical {
                     let fragment = manager
                         .lineFragmentRectForGlyphAtIndex_effectiveRange(0, std::ptr::null_mut());
                     let natural = fragment.origin.y
@@ -985,13 +1089,18 @@ fn attributes(
     if style.italic {
         traits |= NSFontTraitMask::ItalicFontMask;
     }
-    let font = NSFontManager::sharedFontManager(mtm)
-        .fontWithFamily_traits_weight_size(
-            &NSString::from_str(family),
-            traits,
-            if style.bold { 9 } else { 5 },
-            style.font_size.into(),
-        )
+    let font = lumapaint_renderer::vector::text_font_postscript_name(style)
+        .and_then(|name| {
+            NSFont::fontWithName_size(&NSString::from_str(&name), style.font_size.into())
+        })
+        .or_else(|| {
+            NSFontManager::sharedFontManager(mtm).fontWithFamily_traits_weight_size(
+                &NSString::from_str(family),
+                traits,
+                if style.bold { 9 } else { 5 },
+                style.font_size.into(),
+            )
+        })
         .or_else(|| {
             NSFontManager::sharedFontManager(mtm).fontWithFamily_traits_weight_size(
                 &NSString::from_str("Arial"),
@@ -1075,6 +1184,34 @@ fn attributes(
     }
 }
 
+// AppKit owns IME, caret and selection; the GPU draws the actual glyphs in both
+// editing and preview modes, avoiding font rasterizer/antialiasing differences.
+fn hide_native_glyphs(view: &NSTextView) {
+    let clear = NSColor::clearColor();
+    view.setTextColor(Some(&clear));
+    let background = NSColor::colorWithSRGBRed_green_blue_alpha(0.15, 0.5, 1., 0.25);
+    unsafe {
+        let values: [&AnyObject; 2] = [&clear, &background];
+        let attributes = NSDictionary::from_slices(
+            &[
+                NSForegroundColorAttributeName,
+                NSBackgroundColorAttributeName,
+            ],
+            &values,
+        );
+        view.setSelectedTextAttributes(&attributes);
+    }
+}
+
+fn live_preview(document: &Document, settings: TextSettings) -> Result<Document, String> {
+    if settings.text.content.trim().is_empty() && settings.text.box_height.is_none() {
+        return document.text_edit_preview(settings.id.as_deref());
+    }
+    let mut preview = document.clone();
+    preview.set_text_object(settings)?;
+    Ok(preview)
+}
+
 fn apply_all_attributes() -> Result<(), String> {
     let state = SESSION.with(|slot| {
         slot.borrow()
@@ -1084,7 +1221,9 @@ fn apply_all_attributes() -> Result<(), String> {
     let Some((view, settings)) = state else {
         return Ok(());
     };
-    apply_attributes_to_view(&view, &settings)
+    apply_attributes_to_view(&view, &settings)?;
+    hide_native_glyphs(&view);
+    Ok(())
 }
 
 fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Result<(), String> {
@@ -1128,9 +1267,77 @@ pub fn clipboard(action: super::DocumentAction) {
     }
 }
 
+pub fn reflow_text(text: &mut VectorText, color: [u8; 3]) -> Result<(), String> {
+    let mut settings = TextSettings {
+        id: Some(String::new()),
+        text: text.clone(),
+        position: [0., 0.],
+        color,
+    };
+    reflow(&mut settings)?;
+    *text = settings.text;
+    Ok(())
+}
+
 #[cfg(test)]
 mod transform_tests {
     use super::*;
+    #[test]
+    fn gpu_inline_preview_matches_commit_without_changing_original() {
+        for mode in [
+            lumapaint_core::vector::WritingMode::Horizontal,
+            lumapaint_core::vector::WritingMode::Vertical,
+        ] {
+            let mut doc = Document::default();
+            doc.set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "文字 ABC、っ。".into(),
+                    writing_mode: mode,
+                    box_height: Some(180.),
+                    ..Default::default()
+                },
+                position: [40., 50.],
+                color: [12, 34, 56],
+            })
+            .unwrap();
+            doc.affine_selected_vectors([1.3, 0., 0., 1.8, 5., 9.])
+                .unwrap();
+            let before = doc.encode().unwrap();
+            let snapshot = doc.snapshot().text_objects[0].clone();
+            let mut settings = TextSettings {
+                id: Some(snapshot.id),
+                text: snapshot.text,
+                position: snapshot.position,
+                color: snapshot.color,
+            };
+            let preview = live_preview(&doc, settings.clone()).unwrap();
+            assert_eq!(
+                preview.svg_layers().next().unwrap().source,
+                doc.svg_layers().next().unwrap().source
+            );
+            settings.text.content.push('文');
+            let preview = live_preview(&doc, settings.clone()).unwrap();
+            assert_eq!(doc.encode().unwrap(), before);
+            doc.set_text_object(settings.clone()).unwrap();
+            assert_eq!(
+                preview.svg_layers().next().unwrap().source,
+                doc.svg_layers().next().unwrap().source
+            );
+            settings.text.content.clear();
+            settings.text.box_height = None;
+            settings.text.clear_measured_layout();
+            assert!(live_preview(&doc, settings).is_ok());
+        }
+    }
+
+    #[test]
+    fn vertical_container_uses_physical_height_for_column_length() {
+        assert_eq!(vertical_container_size(260., 430.), NSSize::new(430., 260.));
+        assert_eq!(vertical_container_size(430., 260.), NSSize::new(260., 430.));
+        assert_eq!(vertical_container_size(300., 300.), NSSize::new(300., 300.));
+    }
+
     #[test]
     fn editing_resized_text_keeps_font_units_and_object_transform() {
         let mut doc = Document::default();

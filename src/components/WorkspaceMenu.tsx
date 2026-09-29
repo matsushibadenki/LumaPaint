@@ -1,5 +1,5 @@
 import { transformLabels } from './TransformDialog';
-import type { TransformAction } from '../bridge';
+import type { ArrangeAction, TransformAction } from '../bridge';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
@@ -25,8 +25,10 @@ type Props = {
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
+  onArrange: (action: ArrangeAction) => void;
   onTransform: (action: TransformAction) => void;
   onOutlineText: () => void;
+  onWritingMode: (mode: 'horizontal' | 'vertical') => void;
   onCompound: (release: boolean) => void;
   onClipping: (action: 'create' | 'release' | 'edit') => void;
   onGroup: (action: 'group' | 'ungroup' | 'ungroupAll') => void;
@@ -42,6 +44,16 @@ export function WorkspaceMenu(props: Props) {
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
   const selectedObjects = doc.layers.flatMap(layer => layer.objects.filter(object => doc.selectedVectorObjects.includes(object.id)).map(object => ({ layer, object })));
   const selectedEntities = new Set(selectedObjects.map(item => `${item.layer.id}:${item.object.groupPath[0] ?? item.object.id}`));
+  const selectedTexts = doc.textObjects.filter(text => doc.selectedVectorObjects.includes(text.id));
+  const directionLabels = { ja: ['組み方向', '横組み', '縦組み'], en: ['Writing Direction', 'Horizontal', 'Vertical'], 'zh-CN': ['文字方向', '横排', '竖排'] }[locale];
+  const arrangeLabels = {
+    ja: ['重ね順', '最前面へ', '前面へ', '背面へ', '最背面へ', '選択しているレイヤーへ移動'],
+    en: ['Arrange', 'Bring to Front', 'Bring Forward', 'Send Backward', 'Send to Back', 'Move to Selected Layer'],
+    'zh-CN': ['排列', '置于顶层', '上移一层', '下移一层', '置于底层', '移动到所选图层'],
+  }[locale];
+  const canArrange = canEdit && selectedObjects.length > 0 && selectedObjects.every(({layer}) => layer.visible && !layer.locked);
+  const destination = doc.layers.find(layer => layer.id === doc.layerId);
+  const canMoveToLayer = canArrange && !doc.activeSavedPath && destination?.kind === 'vector' && destination.visible && !destination.locked;
   const canGroup = canEdit && selectedEntities.size >= 2 && new Set(selectedObjects.map(item => item.layer.id)).size === 1;
   const canUngroup = canEdit && selectedObjects.some(item => item.object.groupPath.length > 0);
   const future = (label: string): Entry => ({ label, planned: true });
@@ -58,8 +70,10 @@ export function WorkspaceMenu(props: Props) {
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
-    [{ label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
-      { label: t.pathJoin, enabled: selectedObjects.length === 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
+    [{ label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
+      label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
+    })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
+      { label: t.pathJoin, enabled: doc.selectedVectorObjects.length >= 1 && doc.selectedVectorObjects.length <= 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
       { label: t.pathAverage, enabled: selectedObjects.length > 0, action: () => onPathEdit('average') }, null,
       { label: t.pathOutline, enabled: selectedObjects.length > 0, action: () => onPathEdit('outline') },
       { label: t.pathOffset, enabled: selectedObjects.length > 0, action: () => onPathEdit('offset') },
@@ -84,7 +98,7 @@ export function WorkspaceMenu(props: Props) {
       { label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
       { label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
       { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
-    [{label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText},null,future(t.font), future(t.fontSize), future(t.paragraph)],
+    [{label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText}, null, { label: directionLabels[0], enabled: canEdit && selectedTexts.length > 0 && selectedTexts.every(text => text.editable), children: (['horizontal', 'vertical'] as const).map((mode, index) => ({ label: directionLabels[index + 1], checked: selectedTexts.length > 0 && selectedTexts.every(text => (text.text.writingMode ?? 'horizontal') === mode), action: () => props.onWritingMode(mode) })) }, null, future(t.font), future(t.fontSize), future(t.paragraph)],
     [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
       { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+D', action: () => onEdit('deselect') },
       { label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],

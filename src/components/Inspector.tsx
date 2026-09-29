@@ -1,3 +1,5 @@
+import { usePanelThumbnails } from './usePanelThumbnails';
+import { PathsPanel, type SavedPathAction } from './PathsPanel';
 import { StrokePanel, strokeLabels } from './StrokePanel';
 import { ChannelsPanel } from './ChannelsPanel';
 import { CompactSlider } from './CompactSlider';
@@ -54,7 +56,9 @@ function initialPanel(): PanelId {
 
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ vectorColors, channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  thumbnailDocumentKey: string;
+  onSavedPathAction: (action: SavedPathAction, id: string | null, name: string) => Promise<void>;
   vectorColors?: VectorColorControls;
   channel: DisplayChannel; onChannel: (channel: DisplayChannel) => void;
   onStrokeWidth: (width: number) => Promise<void>;
@@ -80,7 +84,16 @@ export function Inspector({ vectorColors, channel, onChannel, onStrokeWidth, tex
   const [settings, setSettings] = useState<DocumentSettings>(() => ({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio }));
   const [displayDimensions, setDisplayDimensions] = useState(() => ({ width: displaySize(document.width, document.unit, document.resolution), height: displaySize(document.height, document.unit, document.resolution) }));
   const selectedLayerId = document.layerId;
-  const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels'>('layers');
+  const thumbnails = usePanelThumbnails(thumbnailDocumentKey, document.revision);
+  const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels' | 'paths'>('layers');
+  const [pathTabError, setPathTabError] = useState('');
+  const switchLayerPanel = async (mode: 'layers' | 'channels' | 'paths') => {
+    try {
+      setPathTabError('');
+      if (mode !== 'paths' && document.activeSavedPath) await onSavedPathAction('deactivate', null, '');
+      setLayerPanelMode(mode);
+    } catch (cause) { setPathTabError(String(cause)); }
+  };
   const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
@@ -196,12 +209,13 @@ export function Inspector({ vectorColors, channel, onChannel, onStrokeWidth, tex
     </section>}
 
     {activePanel === 'layers' && <section className="inspector-panel layer-panel" role="tabpanel" id="inspector-panel-layers" aria-labelledby="inspector-tab-layers">
-      <div className="layer-subtabs"><button className={layerPanelMode === 'layers' ? 'active' : ''} onClick={() => setLayerPanelMode('layers')}>{t.layers}</button><button className={layerPanelMode === 'channels' ? 'active' : ''} onClick={() => setLayerPanelMode('channels')}>{t.channels}</button><button disabled>{t.paths}</button></div>
-      {layerPanelMode === 'channels' ? <ChannelsPanel locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
+      <div className="layer-subtabs"><button className={layerPanelMode === 'layers' ? 'active' : ''} onClick={() => void switchLayerPanel('layers')}>{t.layers}</button><button className={layerPanelMode === 'channels' ? 'active' : ''} onClick={() => void switchLayerPanel('channels')}>{t.channels}</button><button className={layerPanelMode === 'paths' ? 'active' : ''} onClick={() => setLayerPanelMode('paths')}>{t.paths}</button></div>
+      {pathTabError && <p role="alert">{pathTabError}</p>}
+      {layerPanelMode === 'paths' ? <PathsPanel document={document} locale={locale} enabled={enabled} onAction={onSavedPathAction} /> : layerPanelMode === 'channels' ? <ChannelsPanel thumbnails={thumbnails.channels} thumbnailError={thumbnails.error} locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
         <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><CompactSlider disabled={!enabled || !selectedLayer} min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!enabled || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
         {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}
-        <LayerList layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
+        <LayerList thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
           selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
           onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}
           onRename={(layer, name) => onLayerSettings(layerSettings(layer, { name }))} />

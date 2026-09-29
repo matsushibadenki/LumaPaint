@@ -65,7 +65,7 @@ function ChannelNumber({ value, max, label, onChange }: { value: number; max: nu
     onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
 }
 
-export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void }) {
+export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
   const [colorModel, setColorModel] = useState<ColorModel>('hsb');
   const [cmykEdits, setCmykEdits] = useState<Partial<Record<ColorTarget, { hex: string; values: CmykColor }>>>({});
@@ -157,12 +157,12 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     if (key === 'hue') changeHue(n);
     else onChange(rgb(h, key === 'saturation' ? n / 100 : current.s, key === 'value' ? n / 100 : current.v));
   }
-  return <div className="color-panel-controls">
+  return <div className={`color-panel-controls${singleColor ? ' single-color' : ''}`}>
     <label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
       <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option>
     </select></label>
     <div className="hsb-header">
-      <ColorPairControl foregroundStatus={vectorColors?.fillStatus} backgroundStatus={vectorColors?.strokeStatus} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />
+      {!singleColor && <ColorPairControl foregroundStatus={vectorColors?.fillStatus} backgroundStatus={vectorColors?.strokeStatus} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />}
       <div className="hsb-sliders">{channels.map(item => <div className="color-slider" key={activeColor + item.key}>
         <span title={t[item.key]}>{item.short}</span><input aria-label={t[item.key]} type="range" min="0" max={item.max} value={Math.round(item.value)} style={{ background: item.background }} onChange={event => setChannel(item.key, Number(event.target.value))} />
         <ChannelNumber label={t[item.key] + ' (' + item.short + ')'} max={item.max} value={item.value} onChange={next => setChannel(item.key, next)} /><span>{item.unit}</span>

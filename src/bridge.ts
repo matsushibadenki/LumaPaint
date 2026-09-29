@@ -8,6 +8,9 @@ export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: 
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
 export interface Brush { size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface DocumentSnapshot {
+  selectedBounds?: [number, number, number, number] | null;
+  activeSavedPath: string | null;
+  savedPaths: { guideColor?: [number, number, number, number]; id: string; name: string; components: number; clipping: boolean }[];
   selection: Selection | null;
   name: string;
   width: number; height: number; layerId: string; layerVisible: boolean;
@@ -19,13 +22,15 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerObjectSnapshot { fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
-export interface LayerSnapshot { objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
+export interface LayerObjectSnapshot { opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface LayerSnapshot {
+  guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
+  writingMode?: 'horizontal' | 'vertical';
   runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; characterOrigins?: number[][]; glyphClusters?: TextGlyphCluster[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
   italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
@@ -78,7 +83,7 @@ export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
 export interface NewDocumentSettings { document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
-export const emptyDocument: DocumentSnapshot = { selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export const emptyDocument: DocumentSnapshot = { activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -88,6 +93,7 @@ export interface RuntimeInfo {
 
 export type DisplayChannel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export interface CanvasRequest {
+  overlay?: [number, number, number, number] | null;
   channel?: DisplayChannel;
   x: number; y: number; width: number; height: number;
   zoom: number; dark: boolean; visible: boolean;
@@ -148,6 +154,12 @@ export function selectVectorObjects(ids: string[]): Promise<DocumentSnapshot> {
 }
 export function setVectorObjectVisibility(layerId: string, objectId: string, visible: boolean): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_object_visibility', { layerId, objectId, visible }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export type ArrangeAction = 'front' | 'forward' | 'backward' | 'back' | 'moveToLayer';
+export function arrangeSelectedVectors(action: ArrangeAction): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('arrange_selected_vectors', { action }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
@@ -324,8 +336,8 @@ export async function subscribeCanvasText(onEdit: () => void) {
   return listen('canvas-text-edit', onEdit);
 }
 
-export function selectLayer(id: string): Promise<DocumentSnapshot> {
-  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_layer', { id }));
+export function selectLayer(id: string, preserveObjects = false): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>(preserveObjects ? 'select_arrange_layer' : 'select_layer', { id }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
@@ -370,5 +382,19 @@ export function outlineText(): Promise<DocumentSnapshot> {
 export function outlineView(value?: boolean): Promise<boolean> {
   const result = canvasQueue.then(() => invoke<boolean>('outline_view', { value: value ?? null }));
   canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function setTextWritingMode(mode: 'horizontal' | 'vertical'): Promise<DocumentSnapshot> {
+  return textCommand<DocumentSnapshot>('text_writing_mode', { mode });
+}
+
+export function savedPathAction(action: string, id: string | null, name: string): Promise<DocumentSnapshot> {
+  return textCommand<DocumentSnapshot>('saved_path_action', { action, id, name });
+}
+
+export function setVectorAppearance(ids: string[], opacity: number | null, blendMode: string | null): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_appearance', { ids, opacity, blendMode }));
+  canvasQueue = result.then(() => {}, () => {});
   return result;
 }

@@ -15,6 +15,7 @@ mod frame_overlay;
 pub mod text_outlines;
 pub use frame_overlay::FrameOverlay;
 mod paint_cache;
+pub mod pixel_paint;
 pub use wgpu;
 use wgpu::util::DeviceExt;
 
@@ -291,7 +292,16 @@ fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
 
 /// A matching tile preview already contains every committed stroke. Keep the
 /// live stroke separate so the GPU only samples the points under the pointer.
-fn strokes_for_frame(document: &Document, tiled_preview_visible: bool) -> Vec<&Stroke> {
+fn strokes_for_frame(
+    document: &Document,
+    tiled_preview_visible: bool,
+    includes_live_stroke: bool,
+) -> Vec<&Stroke> {
+    if tiled_preview_visible && includes_live_stroke {
+        // PaintCache already composited the active stroke (including soft edges).
+        // Drawing it again makes background strokes darker and apparently wider.
+        return Vec::new();
+    }
     if tiled_preview_visible {
         if document.has_active_stroke() {
             document
@@ -881,6 +891,44 @@ impl TileTexture {
     }
 }
 
+fn upload_pixel_tiles(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    writes: ValidatedTileUploads,
+    opacity: f32,
+) {
+    for mut write in writes.writes {
+        if opacity != 1.0 {
+            for value in &mut write.pixels {
+                *value = (f32::from(*value) * opacity).round() as u8;
+            }
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: write.origin[0],
+                    y: write.origin[1],
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &write.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(write.bytes_per_row),
+                rows_per_image: Some(write.extent[1]),
+            },
+            wgpu::Extent3d {
+                width: write.extent[0],
+                height: write.extent[1],
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
 fn validate_tile_uploads(width: u32, height: u32, uploads: &[TileUpload]) -> Result<(), String> {
     for upload in uploads {
         let x = upload
@@ -1187,6 +1235,7 @@ fn create_brush_composite(
     (bind_layout, pipeline)
 }
 
+pub mod thumbnails;
 pub mod vector;
 
 fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -1504,6 +1553,14 @@ fn drag_runs_are_separate(runs: &[DragRun], offset: [f32; 2]) -> bool {
 }
 
 /// CPU-only SVG result. The host can prepare this away from the AppKit/GPU owner.
+pub struct PreparedPixelTiles {
+    pub id: String,
+    pub source: String,
+    pub opacity: f32,
+    pub size: (u32, u32),
+    pub uploads: Vec<TileUpload>,
+}
+
 pub struct PreparedSvgLayer {
     pub id: String,
     pub source: String,
@@ -1719,6 +1776,51 @@ impl Renderer {
             })
             .cloned()
             .collect()
+    }
+
+    /// Upload changed raster tiles directly into the layer's retained texture.
+    /// No full-frame comparison, staging copy or WebView transfer is involved.
+    pub fn install_pixel_tiles(&mut self, prepared: PreparedPixelTiles) -> Result<(), String> {
+        let bytes = vector::document_rgba_len(prepared.size.0, prepared.size.1)?;
+        let limit = self.device.limits().max_texture_dimension_2d;
+        if prepared.size.0 == 0
+            || prepared.size.1 == 0
+            || prepared.size.0 > limit
+            || prepared.size.1 > limit
+        {
+            return Err("Invalid pixel layer dimensions".into());
+        }
+        let writes = ValidatedTileUploads::new(prepared.size, prepared.uploads)?;
+        if !prepared.opacity.is_finite() || !(0.0..=1.0).contains(&prepared.opacity) {
+            return Err("Invalid pixel layer opacity".into());
+        }
+        let reusable = self.svg_cache.get(&prepared.id).is_some_and(|cached| {
+            cached.size == prepared.size
+                && cached.opacity == prepared.opacity
+                && cached.source == prepared.source
+        });
+        if !reusable {
+            let empty = PreparedSvgLayer {
+                id: prepared.id.clone(),
+                source: prepared.source.clone(),
+                opacity: prepared.opacity,
+                size: prepared.size,
+                fully_contained: true,
+                pixels: vec![0; bytes],
+            };
+            let cached = self.make_cached_svg(empty)?;
+            self.svg_cache.insert(prepared.id.clone(), cached);
+        }
+        let cached = self
+            .svg_cache
+            .get_mut(&prepared.id)
+            .ok_or("Missing pixel layer texture")?;
+        upload_pixel_tiles(&self.queue, &cached._texture, writes, prepared.opacity);
+        cached.source = prepared.source;
+        cached.opacity = prepared.opacity;
+        cached.fully_contained = true;
+        cached.comparison_pixels.clear();
+        Ok(())
     }
 
     /// GPU-only half of SVG preparation. The host checks the document generation
@@ -2177,6 +2279,26 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
+        let clipped;
+        let document = if document.has_document_clipping() {
+            clipped = document.clipping_view();
+            &clipped
+        } else {
+            document
+        };
+        let defer_svg =
+            defer_svg && !document.has_document_clipping() && !document.has_active_saved_path();
+        let path_preview;
+        let document = if document.has_active_saved_path() {
+            let fit = ((viewport.width as f32 / viewport.scale - 48.) / viewport.document_width)
+                .min((viewport.height as f32 / viewport.scale - 48.) / viewport.document_height)
+                .max(0.01)
+                * viewport.zoom;
+            path_preview = document.saved_path_edit_view(1. / fit);
+            &path_preview
+        } else {
+            document
+        };
         let projection;
         let (document, offset, defer_svg) = if self.outline_view {
             let fit = ((viewport.width as f32 / viewport.scale - 48.) / viewport.document_width)
@@ -2285,7 +2407,8 @@ impl Renderer {
             .tile_preview
             .as_ref()
             .is_some_and(|preview| preview.visible);
-        let brush_strokes = strokes_for_frame(document, tiled_preview_visible);
+        let brush_strokes =
+            strokes_for_frame(document, tiled_preview_visible, self.paint_cache_installed);
         let stroke_selections: Vec<_> = brush_strokes
             .iter()
             .map(|stroke| {
@@ -2846,16 +2969,18 @@ mod tests {
         let point = Point { x: 20.0, y: 20.0 };
         document.begin(point, Brush::default()).unwrap();
         document.finish();
-        assert_eq!(strokes_for_frame(&document, false).len(), 1);
-        assert!(strokes_for_frame(&document, true).is_empty());
+        assert_eq!(strokes_for_frame(&document, false, false).len(), 1);
+        assert!(strokes_for_frame(&document, true, false).is_empty());
 
         document.begin(point, Brush::default()).unwrap();
-        assert_eq!(strokes_for_frame(&document, false).len(), 2);
-        assert_eq!(strokes_for_frame(&document, true).len(), 1);
+        assert_eq!(strokes_for_frame(&document, false, false).len(), 2);
+        assert_eq!(strokes_for_frame(&document, true, false).len(), 1);
+        assert!(strokes_for_frame(&document, true, true).is_empty());
+        assert_eq!(strokes_for_frame(&document, false, true).len(), 2);
         document.finish();
 
         document.begin_eraser(point, Brush::default(), 1.0).unwrap();
-        assert!(strokes_for_frame(&document, true).is_empty());
+        assert!(strokes_for_frame(&document, true, false).is_empty());
     }
 
     #[test]
@@ -3279,6 +3404,8 @@ mod tests {
                 .upsert_vector_object(
                     &layer_id,
                     VectorObject {
+                        opacity: 1.0,
+                        blend_mode: "normal".into(),
                         id: id.into(),
                         name: id.into(),
                         group_path: Vec::new(),

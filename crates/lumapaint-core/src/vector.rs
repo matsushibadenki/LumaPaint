@@ -127,10 +127,20 @@ pub struct TextGlyphCluster {
     pub x: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WritingMode {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    #[serde(default)]
+    pub writing_mode: WritingMode,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<TextRun>,
@@ -225,6 +235,7 @@ pub enum MojikumiMode {
 impl Default for VectorText {
     fn default() -> Self {
         Self {
+            writing_mode: WritingMode::Horizontal,
             content: String::new(),
             runs: Vec::new(),
             soft_breaks: Vec::new(),
@@ -275,6 +286,33 @@ fn utf16_boundary_in(value: &str, offset: usize) -> bool {
 }
 
 impl VectorText {
+    pub fn reflow_vertical(&mut self) {
+        use unicode_segmentation::UnicodeSegmentation;
+        self.clear_measured_layout();
+        let limit = self.box_height.unwrap_or(self.box_width);
+        let mut offset = 0;
+        let mut advance = self.indent_left + self.indent_first;
+        for grapheme in self.content.graphemes(true) {
+            if grapheme.contains('\n') {
+                advance = self.indent_left + self.indent_first;
+            } else {
+                let style = self.style_at(offset, [0, 0, 0]);
+                let step = (style.font_size * (1. + style.tracking / 1000.)).max(0.1);
+                if advance + step > limit - self.indent_right
+                    && advance > self.indent_left + self.indent_first
+                {
+                    self.soft_breaks.push(offset);
+                    advance = self.indent_left;
+                }
+                advance += step;
+            }
+            offset += grapheme.encode_utf16().count();
+        }
+        let columns = self.visual_lines().len() as f32;
+        let span = columns * self.font_size * self.line_height;
+        self.layout_bounds = Some([self.box_width - span, 0., span, limit]);
+    }
+
     /// Discard measurements tied to a particular font/layout engine.
     /// A host should call this before measuring the current content again.
     pub fn clear_measured_layout(&mut self) {
@@ -705,9 +743,38 @@ impl VectorText {
     }
 }
 
+pub const OBJECT_BLEND_MODES: &[&str] = &[
+    "normal",
+    "darken",
+    "multiply",
+    "color-burn",
+    "lighten",
+    "screen",
+    "color-dodge",
+    "overlay",
+    "soft-light",
+    "hard-light",
+    "difference",
+    "exclusion",
+    "hue",
+    "saturation",
+    "color",
+    "luminosity",
+];
+fn default_object_opacity() -> f32 {
+    1.0
+}
+fn default_object_blend() -> String {
+    "normal".into()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VectorObject {
+    #[serde(default = "default_object_opacity")]
+    pub opacity: f32,
+    #[serde(default = "default_object_blend")]
+    pub blend_mode: String,
     pub id: String,
     pub name: String,
     /// Group identifiers from the outermost group to the innermost group.
@@ -735,6 +802,12 @@ pub struct VectorObject {
 
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
+        if !self.opacity.is_finite()
+            || !(0.0..=1.0).contains(&self.opacity)
+            || !OBJECT_BLEND_MODES.contains(&self.blend_mode.as_str())
+        {
+            return Err("Invalid object opacity or blend mode".into());
+        }
         if self
             .clipping_group
             .as_ref()
@@ -785,6 +858,132 @@ impl VectorObject {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Tests the drawn outline rather than requiring all Bezier handles inside.
+    pub fn intersects_selection(&self, bounds: [f32; 4], ellipse: bool) -> bool {
+        if bounds.iter().any(|v| !v.is_finite())
+            || !self.visible
+            || bounds[2] <= 0.0
+            || bounds[3] <= 0.0
+            || self.control_points.is_empty()
+        {
+            return false;
+        }
+        let [x, y, w, h] = bounds;
+        let map = |p: [f32; 2]| {
+            let [a, b, c, d, e, f] = self.transform;
+            [a * p[0] + c * p[1] + e, b * p[0] + d * p[1] + f]
+        };
+        let controls: Vec<_> = self.control_points.iter().copied().map(map).collect();
+        let mut outline = if self.kind == VectorObjectKind::Bezier {
+            crate::bezier::flattened(&controls)
+        } else {
+            controls.clone()
+        };
+        if matches!(
+            self.kind,
+            VectorObjectKind::Rectangle | VectorObjectKind::Ellipse | VectorObjectKind::Compound
+        ) {
+            let min = self
+                .control_points
+                .iter()
+                .fold([f32::INFINITY; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+            let max = self
+                .control_points
+                .iter()
+                .fold([f32::NEG_INFINITY; 2], |m, p| {
+                    [m[0].max(p[0]), m[1].max(p[1])]
+                });
+            outline = if self.kind == VectorObjectKind::Ellipse {
+                (0..64)
+                    .map(|i| {
+                        let t = i as f32 * std::f32::consts::TAU / 64.;
+                        map([
+                            (min[0] + max[0]) / 2. + (max[0] - min[0]) / 2. * t.cos(),
+                            (min[1] + max[1]) / 2. + (max[1] - min[1]) / 2. * t.sin(),
+                        ])
+                    })
+                    .collect()
+            } else {
+                vec![
+                    map(min),
+                    map([max[0], min[1]]),
+                    map(max),
+                    map([min[0], max[1]]),
+                ]
+            };
+        }
+        let filled = self.fill.is_some() || self.kind == VectorObjectKind::Text;
+        let closed = filled
+            || matches!(
+                self.kind,
+                VectorObjectKind::Rectangle
+                    | VectorObjectKind::Ellipse
+                    | VectorObjectKind::Text
+                    | VectorObjectKind::Compound
+            )
+            || self.path.data.trim_end().ends_with(['Z', 'z']);
+        if closed {
+            if let Some(first) = outline.first().copied() {
+                outline.push(first);
+            }
+        }
+        let normalize = |p: [f32; 2]| {
+            [
+                (p[0] - x - w / 2.) / (w / 2.),
+                (p[1] - y - h / 2.) / (h / 2.),
+            ]
+        };
+        let inside = |p: [f32; 2]| {
+            if ellipse {
+                let q = normalize(p);
+                q[0] * q[0] + q[1] * q[1] <= 1.
+            } else {
+                p[0] >= x && p[0] <= x + w && p[1] >= y && p[1] <= y + h
+            }
+        };
+        if outline.iter().copied().any(inside) {
+            return true;
+        }
+        for edge in outline.windows(2) {
+            if ellipse {
+                if distance_to_segment([0., 0.], normalize(edge[0]), normalize(edge[1])) <= 1. {
+                    return true;
+                }
+            } else {
+                let mut low: f32 = 0.;
+                let mut high: f32 = 1.;
+                for axis in 0..2 {
+                    let start = edge[0][axis];
+                    let delta = edge[1][axis] - start;
+                    let min = bounds[axis];
+                    let max = min + bounds[axis + 2];
+                    if delta.abs() < f32::EPSILON {
+                        if start < min || start > max {
+                            high = -1.;
+                        }
+                    } else {
+                        let a = (min - start) / delta;
+                        let b = (max - start) / delta;
+                        low = low.max(a.min(b));
+                        high = high.min(a.max(b));
+                    }
+                }
+                if low <= high {
+                    return true;
+                }
+            }
+        }
+        // A selection wholly inside a filled path still intersects it.
+        filled
+            && path_hit_test(
+                &outline,
+                [x + w / 2., y + h / 2.],
+                0.,
+                Some(self.path.fill_rule),
+                true,
+            )
     }
 
     pub fn hit_test(&self, point: [f32; 2], tolerance: f32) -> bool {
@@ -841,7 +1040,14 @@ impl VectorObject {
                 path_hit_test(
                     outline,
                     point,
-                    tolerance.max(self.stroke_width * 0.5),
+                    tolerance
+                        + self.stroke.map_or(0., |_| {
+                            self.stroke_width
+                                * 0.5
+                                * self.transform[0]
+                                    .hypot(self.transform[1])
+                                    .max(self.transform[2].hypot(self.transform[3]))
+                        }),
                     self.fill.map(|_| self.path.fill_rule),
                     self.path.data.trim_end().ends_with(['Z', 'z']),
                 )
@@ -1264,6 +1470,8 @@ mod path_hit_tests {
             data.push_str(&format!(" L {x} {y}"));
         }
         VectorObject {
+            opacity: 1.0,
+            blend_mode: "normal".into(),
             id: "hit-test".into(),
             name: "Path".into(),
             group_path: Vec::new(),
@@ -1284,6 +1492,74 @@ mod path_hit_tests {
             control_points: points,
             text: None,
         }
+    }
+
+    #[test]
+    fn selection_intersects_curve_not_control_polygon() {
+        let mut object = path(vec![[0., 0.], [0., 100.], [100., 100.], [100., 0.]]);
+        object.kind = VectorObjectKind::Bezier;
+        object.fill = None;
+        object.path.data = crate::bezier::path_data(&object.control_points, false).unwrap();
+        for ellipse in [false, true] {
+            assert!(object.intersects_selection([48., 73., 4., 4.], ellipse));
+            assert!(!object.intersects_selection([48., 94., 4., 4.], ellipse));
+            assert!(!object.intersects_selection([48., 20., 4., 4.], ellipse));
+            // Both segment endpoints outside a narrow selection still intersect.
+            assert!(object.intersects_selection([49.9, 74.9, 0.2, 0.2], ellipse));
+        }
+        object.transform = [0., 2., -2., 0., 300., 100.];
+        assert!(object.intersects_selection([148., 198., 4., 4.], false));
+        assert!(!object.intersects_selection([108., 198., 4., 4.], false));
+    }
+
+    #[test]
+    fn partial_curve_selection_routes_through_both_tools() {
+        use crate::document::{Document, Point, SelectionMode, SelectionShape};
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        doc.select_layer(layer.clone()).unwrap();
+        let mut object = path(vec![[0., 0.], [0., 100.], [100., 100.], [100., 0.]]);
+        object.kind = VectorObjectKind::Bezier;
+        object.fill = None;
+        object.stroke = Some(VectorPaint {
+            color: [0, 0, 0, 255],
+        });
+        object.stroke_width = 1.;
+        object.path.data = crate::bezier::path_data(&object.control_points, false).unwrap();
+        doc.upsert_vector_object(&layer, object).unwrap();
+        let start = Point { x: 48., y: 73. };
+        let end = Point { x: 52., y: 77. };
+        doc.select_vectors_in_rect(end, start, false).unwrap();
+        assert_eq!(doc.selected_vector_ids(), &["hit-test"]);
+        for shape in [SelectionShape::Rectangle, SelectionShape::Ellipse] {
+            for mode in [
+                SelectionMode::Subtract,
+                SelectionMode::Add,
+                SelectionMode::Replace,
+            ] {
+                doc.begin_selection_edit(start, shape, mode).unwrap();
+                doc.extend_selection(end, true);
+                if mode == SelectionMode::Subtract {
+                    assert!(doc.selected_vector_ids().is_empty());
+                } else {
+                    assert_eq!(doc.selected_vector_ids(), &["hit-test"]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_inside_fill_and_click_margin_outside_stroke() {
+        let mut object = path(vec![[0., 0.], [100., 0.], [100., 100.], [0., 100.]]);
+        assert!(object.intersects_selection([40., 40., 20., 20.], true));
+        object.fill = None;
+        assert!(!object.intersects_selection([40., 40., 20., 20.], true));
+        object.stroke = Some(VectorPaint {
+            color: [0, 0, 0, 255],
+        });
+        object.stroke_width = 20.;
+        assert!(object.hit_test([50., -19.], 10.));
+        assert!(!object.hit_test([50., -21.], 10.));
     }
 
     #[test]

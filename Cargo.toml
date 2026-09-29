@@ -12,3 +12,19 @@ serde = { version = "1", features = ["derive"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+block = { path = "vendor/block" }
+usvg = { path = "vendor/usvg" }
+
+# Native drawing must remain interactive in `tauri dev` as well as release builds.
+[profile.dev.package.lumapaint-core]
+opt-level = 2
+[profile.dev.package.lumapaint-renderer]
+opt-level = 2
+[profile.dev.package.tiny-skia]
+opt-level = 2
+[profile.dev.package.png]
+opt-level = 2
+[profile.dev.package.resvg]
+opt-level = 2

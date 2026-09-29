@@ -4,6 +4,7 @@ import type { Locale } from '../i18n';
 import { textPanelMessages } from '../text-panel-i18n';
 import { textMessages } from '../text-i18n';
 import { fromHex, toHex } from './BrushControls';
+import { ColorPickerPopover } from './ColorPickerPopover';
 
 function NumberField({ label, value, placeholder, min, max, step, unit, onValidChange }: {
   label: string; value: number | null; placeholder?: string; min: number; max: number; step: number | 'any'; unit: string;
@@ -111,7 +112,7 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
             {numeric('scaleY', t.vertical, 'T↕', '%', 100, 10, 400, 1)}
             {numeric('scaleX', t.horizontal, 'T↔', '%', 100, 10, 400, 1)}
             {numeric('tracking', t.tracking, 'VA', '', 1, -100, 1000, 1)}
-            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><input aria-label={t.color} type="color" value={toHex(color)} onChange={event => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(event.target.value) } }); }} /><HexColorField label={t.color} value={toHex(color)} onValidChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(value) } }); }} /></span></label>
+            <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><ColorPickerPopover locale={locale} color={color} disabled={disabled} label={t.color} onChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: value } }); }} /><HexColorField label={t.color} value={toHex(color)} onValidChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(value) } }); }} /></span></label>
             {numeric('baselineShift', t.baseline, 'A↟', 'pt', pt, -512 * pt, 512 * pt)}
             {numeric('rotation', t.rotation, 'T↻', '°', 1, -180, 180, 1)}
           </div>

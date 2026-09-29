@@ -6,7 +6,8 @@ const labels = {
   en: { title: 'Display channel', composite: 'Composite', red: 'Red', green: 'Green', blue: 'Blue', cyan: 'Cyan', magenta: 'Magenta', yellow: 'Yellow', black: 'Black', alpha: 'Alpha (opacity)', hint: 'Inspect components in grayscale. This changes the preview only. Alpha is white for opaque and black for transparent.', cmyk: 'CMYK is an approximate RGB conversion, not an ICC color separation.' },
   'zh-CN': { title: '显示通道', composite: '复合', red: '红', green: '绿', blue: '蓝', cyan: '青', magenta: '洋红', yellow: '黄', black: '黑', alpha: 'Alpha（不透明度）', hint: '以灰度查看颜色分量，仅影响预览。Alpha中白色表示不透明，黑色表示透明。', cmyk: 'CMYK由RGB近似转换，并非基于ICC配置文件的分色。' },
 };
-export function ChannelsPanel({ locale, mode, value, enabled, onChange }: {
+export function ChannelsPanel({ thumbnails = [], thumbnailError, locale, mode, value, enabled, onChange }: {
+  thumbnails?: string[]; thumbnailError?: string;
   locale: Locale; mode: ColorMode; value: DisplayChannel; enabled: boolean; onChange: (value: DisplayChannel) => void;
 }) {
   const t = labels[locale];
@@ -22,7 +23,7 @@ export function ChannelsPanel({ locale, mode, value, enabled, onChange }: {
   ];
   return <section className="channel-list" aria-label={t.title}>
     {rows.map(row => <button type="button" key={row.id} className={`channel-row${value === row.id ? ' active' : ''}${row.id === 4 ? ' alpha' : ''}`} aria-pressed={value === row.id} disabled={!enabled} onClick={() => onChange(row.id)}>
-      <span aria-hidden="true">{value === row.id ? '●' : ''}</span><span className="channel-symbol" aria-hidden="true">{row.symbol}</span><span>{row.label}</span>
+      <span aria-hidden="true">{value === row.id ? '●' : ''}</span><span className="channel-thumbnail" aria-hidden="true" title={thumbnailError}>{thumbnails[row.id] ? <img src={thumbnails[row.id]} alt="" draggable={false} /> : row.symbol}</span><span>{row.label}</span>
     </button>)}
     <p className="channel-hint">{t.hint}</p>
     {mode === 'cmyk' && <p className="channel-hint">{t.cmyk}</p>}

@@ -63,9 +63,7 @@ fn write(content: &Content, png: Option<&[u8]>) -> Result<(), String> {
 pub(super) fn raw_selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
     let snapshot = document.snapshot();
     let (width, height) = document.dimensions();
-    if u64::from(width) * u64::from(height) > 16_777_216 {
-        return Err("Clipboard image is too large (16 megapixels maximum) / コピーできる画像は1600万画素までです / 剪贴板图像最多1600万像素".into());
-    }
+    lumapaint_renderer::vector::document_rgba_len(width, height)?;
     let layer = snapshot
         .layers
         .iter()
@@ -105,6 +103,10 @@ pub(super) fn raw_selected_pixels(document: &Document) -> Result<(u32, u32, Vec<
 }
 
 fn selected_pixels(document: &Document) -> Result<(u32, u32, Vec<u8>), String> {
+    let (width, height) = document.dimensions();
+    if u64::from(width) * u64::from(height) > 16_777_216 {
+        return Err("Clipboard image is too large (16 megapixels maximum) / コピーできる画像は1600万画素までです / 剪贴板图像最多1600万像素".into());
+    }
     let (width, height, mut pixels) = raw_selected_pixels(document)?;
     let snapshot = document.snapshot();
     let layer = snapshot
