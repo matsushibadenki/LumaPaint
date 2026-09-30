@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
+    "check:architecture": "python3 scripts/check-core-boundary.py",
     "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "test:rust": "cargo test --workspace"
   },

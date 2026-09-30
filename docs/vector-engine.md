@@ -22,6 +22,8 @@ Skia独自のGPUコンテキストを追加せず、現在のwgpu／Metalのビ�
 
 ## 編集エンジンの境界
 
+coreはSkia・usvg・tiny-skia・wgpuに依存しない。読み込みSVGの形状解決・編集は`lumapaint-svg`へ分離し、Documentへ`SvgGeometryBackend`として接続する。パーサー固有の型とキャッシュはアダプター内だけで扱う。詳細は[Documentと外部エンジンの境界](document-boundaries.md)を参照。
+
 コアの`VectorPath`はSVGの`d`文字列と`FillRule`を持つ。座標は文書座標、スタイルや変換は含めない。
 `VectorPathEngine`は合体・左から右の差分・交差・排他的和、および塗り領域の点内包判定を定義する。
 rendererの`SkiaPathEngine`がこの契約を実装し、入力を書き換えず結果を返す。閉じていない輪郭の演算も塗り領域として扱う。

@@ -3646,7 +3646,7 @@ thread_local! {
     static BRUSH_CURSOR_KEY: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
-    static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); let _ = document.select_layer("layer-1".into()); document });
+    static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); lumapaint_svg::attach(&mut document); let _ = document.select_layer("layer-1".into()); document });
     static ACTIVE_TILED_DOCUMENT: RefCell<Option<TiledSession>> = const { RefCell::new(None) };
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
     static TOOL: std::cell::Cell<CanvasTool> = const { std::cell::Cell::new(CanvasTool::Brush) };
@@ -3813,6 +3813,7 @@ fn activate_document(entry: OpenDocument) {
     };
     match entry.content {
         OpenDocumentContent::Legacy(mut document) => {
+            lumapaint_svg::attach(&mut document);
             let id = document.snapshot().layer_id;
             let _ = document.select_layer(id);
             ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow_mut().take());
@@ -5028,6 +5029,7 @@ mod tests {
                 "source": include_str!("../../tests/fixtures/direct-svg-shapes.svg") }]
         });
         let mut document = Document::decode(&serde_json::to_vec(&project).unwrap()).unwrap();
+        lumapaint_svg::attach(&mut document);
         assert!(!selection_uses_pixel_move(
             &document,
             CanvasTool::VectorDirectSelect
@@ -6283,9 +6285,36 @@ mod direct_command_tests {
         assert_eq!(DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()), before);
     }
     #[test]
+    fn activating_reloaded_document_attaches_svg_service_without_changing_saved_data() {
+        let mut document = Document::default();
+        document
+            .import_svg(
+                "SVG".into(),
+                "<svg width=\"100\" height=\"100\"><rect width=\"20\" height=\"20\"/></svg>".into(),
+            )
+            .unwrap();
+        let encoded = document.encode().unwrap();
+        let loaded = Document::decode(&encoded).unwrap();
+        assert!(!loaded.has_svg_geometry_backend());
+        activate_document(OpenDocument {
+            id: 1,
+            content: OpenDocumentContent::Legacy(Box::new(loaded)),
+            path: None,
+            fingerprint: None,
+        });
+        DOCUMENT.with(|slot| {
+            let mut document = slot.borrow_mut();
+            assert!(document.has_svg_geometry_backend());
+            assert_eq!(document.direct_objects().len(), 1);
+            assert_eq!(document.encode().unwrap(), encoded);
+        });
+    }
+
+    #[test]
     fn imported_svg_selection_preview_guides_preserve_source_and_clip_definitions() {
         DIRECT_POINTS.with(|p| p.borrow_mut().clear());
         let mut doc = Document::default();
+        lumapaint_svg::attach(&mut doc);
         doc.import_svg("Imported".into(),r##"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><defs><clipPath id="clip"><path d="M0 0H100V100H0Z"/></clipPath></defs><g clip-path="url(#clip)"><path fill="#3070ff" d="M20 20H80V80H20Z"/></g></svg>"##.into()).unwrap();
         let original = doc.svg_layers().next().unwrap().source.clone();
         let p = lumapaint_core::document::Point { x: 20., y: 20. };

@@ -19,4 +19,5 @@ unicode-segmentation = "1.13"
 skia-safe = { version = "=0.153.3", features = ["svg", "webp"], optional = true }
 
 [dev-dependencies]
+lumapaint-svg = { path = "../lumapaint-svg" }
 pollster = "0.4"

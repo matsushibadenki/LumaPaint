@@ -48,11 +48,14 @@ macOSアプリの出力先は `target/release/bundle/macos/LumaPaint.app` です
 ```text
 src/                      React + TypeScript（UI・翻訳・IPC窓口）
 src-tauri/                Tauri 2（デスクトップ起動・OSとの接続）
-crates/lumapaint-core/    OS・UI非依存のRustコア
+crates/lumapaint-core/    OS・UI・描画エンジン非依存のRustコア
 crates/lumapaint-formats/ 外部形式アダプター・互換レポート
+crates/lumapaint-svg/     SVG形状解決・編集の交換可能なアダプター
 crates/lumapaint-renderer/  wgpu描画・WGSLシェーダー（OS非依存）
 docs/                    設計・開発方針・ロードマップ
 ```
+
+[Documentと外部エンジンの境界](docs/document-boundaries.md)に依存方向と実行時アダプターの接続方法をまとめています。
 
 macOSではRust + wgpu + MetalでWKWebViewの子NSViewに描画します。
 拡大・縮小・全体表示、ウィンドウのサイズ変更、外観変更に応じて必要なフレームだけ描画します。

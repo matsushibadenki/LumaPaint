@@ -2190,6 +2190,7 @@ dependencies = [
  "base64 0.22.1",
  "lumapaint-core",
  "lumapaint-renderer",
+ "lumapaint-svg",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -2212,9 +2213,7 @@ dependencies = [
  "serde",
  "serde_json",
  "svgtypes",
- "tiny-skia-path",
  "unicode-segmentation",
- "usvg",
 ]
 
 [[package]]
@@ -2240,6 +2239,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "lumapaint-core",
+ "lumapaint-svg",
  "pollster",
  "resvg",
  "rustybuzz",
@@ -2247,6 +2247,17 @@ dependencies = [
  "ttf-parser",
  "unicode-segmentation",
  "wgpu",
+]
+
+[[package]]
+name = "lumapaint-svg"
+version = "0.1.0"
+dependencies = [
+ "lumapaint-core",
+ "roxmltree",
+ "serde_json",
+ "tiny-skia-path",
+ "usvg",
 ]
 
 [[package]]

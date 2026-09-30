@@ -32,7 +32,8 @@ Apple Pencil等のモバイル入力はデスクトップ対応とは別に対�
 
 `npm run build` で型検査とUIビルド、`npm run check:rust` で書式とClippy、
 `npm run test:rust` でRustテストを実行する。現在は入力検査・履歴・保存・復旧・座標変換の21件を用意している（AppKit座標変換の2件はmacOSのみ）。
-CIはmacOS・Windows・UbuntuでRustチェックとテストを行う。CI配置だけでは各OSの動作確認完了を意味しない。
+`npm run check:architecture`でcoreの通常依存を再帰的に検査し、描画・SVGランタイム・ウインドウの依存が入っていないことを確認する。オフライン環境では`python3 scripts/check-core-boundary.py --offline`を使う。
+CIはmacOS・Windows・UbuntuでRustチェックとテスト、coreの依存境界検査を行う。CI配置だけでは各OSの動作確認完了を意味しない。
 依存関係は `package-lock.json` と `Cargo.lock` を共有する。
 
 手動確認：デスクトップ起動時のRust接続、3言語、3外観設定、設定の再起動後保持、ウィンドウ縮小時の表示。

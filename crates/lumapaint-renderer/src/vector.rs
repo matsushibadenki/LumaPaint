@@ -2108,7 +2108,8 @@ mod stroke_appearance_tests {
 #[cfg(test)]
 mod imported_svg_edit_tests {
     use super::*;
-    use lumapaint_core::svg_edit;
+    use lumapaint_core::svg_backend::{SvgEdit, SvgGeometryBackend};
+    use lumapaint_svg::UsvgGeometryBackend;
     fn image(source: &str) -> SvgRaster {
         rasterize_svg(source, 160, 100).unwrap()
     }
@@ -2132,9 +2133,21 @@ mod imported_svg_edit_tests {
         ] {
             let before = image(source);
             let mut edited = source.to_owned();
-            let target = svg_edit::targets(source, "l", [160., 100.]).remove(0);
-            let object = target.object.clone();
-            svg_edit::replace(&mut edited, target, Some(object)).unwrap();
+            let target = UsvgGeometryBackend
+                .objects(source, "l", [160., 100.])
+                .remove(0);
+            let object = target.clone();
+            edited = UsvgGeometryBackend
+                .apply(
+                    &edited,
+                    "l",
+                    [160., 100.],
+                    &[SvgEdit {
+                        object_id: target.id,
+                        object: Some(object),
+                    }],
+                )
+                .unwrap();
             let after = image(&edited);
             let changed = before
                 .pixels
@@ -2144,7 +2157,7 @@ mod imported_svg_edit_tests {
                 .count();
             assert_eq!(changed, 0, "Original: {source}\nEdited: {edited}");
             same(&before, &after);
-            let targets = svg_edit::targets(&edited, "l", [160., 100.]);
+            let targets = UsvgGeometryBackend.objects(&edited, "l", [160., 100.]);
             assert!(!targets.is_empty(), "{edited}");
         }
     }
@@ -2152,20 +2165,25 @@ mod imported_svg_edit_tests {
     fn moving_one_use_does_not_change_the_other_instance_or_definition() {
         let mut source=r##"<svg width="160" height="100"><defs><g id="model"><rect x="5" y="5" width="30" height="30" fill="red"/><circle cx="20" cy="20" r="10" fill="blue"/></g></defs><use href="#model" x="10" y="10"/><use href="#model" x="90" y="10"/></svg>"##.to_owned();
         let before = image(&source);
-        let targets = svg_edit::targets(&source, "l", [160., 100.]);
+        let targets = UsvgGeometryBackend.objects(&source, "l", [160., 100.]);
         assert_eq!(targets.len(), 4);
-        let changes = targets
+        let changes: Vec<_> = targets
             .into_iter()
             .take(2)
             .map(|t| {
-                let mut o = t.object.clone();
+                let mut o = t.clone();
                 let indices = lumapaint_core::bezier::anchor_indices(&o);
                 lumapaint_core::bezier::translate_controls(&mut o, &indices, [10., 15.], false)
                     .unwrap();
-                (t, Some(o))
+                SvgEdit {
+                    object_id: t.id,
+                    object: Some(o),
+                }
             })
             .collect();
-        svg_edit::replace_many(&mut source, changes).unwrap();
+        source = UsvgGeometryBackend
+            .apply(&source, "l", [160., 100.], &changes)
+            .unwrap();
         let after = image(&source);
         for y in 0..100 {
             for x in 80..160 {

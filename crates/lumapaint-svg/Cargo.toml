@@ -1,0 +1,11 @@
+[package]
+name = "lumapaint-svg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumapaint-core = { path = "../lumapaint-core" }
+usvg = { version = "0.45.1", features = ["text", "system-fonts"] }
+tiny-skia-path = "0.11.4"
+roxmltree = "0.20"
+serde_json = "1"

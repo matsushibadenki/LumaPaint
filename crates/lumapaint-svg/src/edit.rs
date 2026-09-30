@@ -1,5 +1,5 @@
 //! Edit the rendered SVG geometry while retaining the authored XML around it.
-use crate::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
+use lumapaint_core::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
 use std::{
     collections::{HashMap, HashSet},
     fmt::Write,
@@ -263,17 +263,18 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
                 kind: VectorObjectKind::Compound,
                 control_points: vec![],
             };
-            let mut object = crate::bezier::editable(&object)?;
+            let mut object = lumapaint_core::bezier::editable(&object)?;
             if let Some(value) = node
                 .attribute("data-lumapaint-corners")
                 .filter(|s| !s.is_empty())
             {
-                let corners: crate::bezier::LiveCorners = serde_json::from_str(value).ok()?;
+                let corners: lumapaint_core::bezier::LiveCorners =
+                    serde_json::from_str(value).ok()?;
                 corners.validate().ok()?;
                 object.live_corners = Some(corners);
             }
-            if crate::bezier::segment_indices(&object).is_empty()
-                || crate::bezier::local_point(&object, [0., 0.]).is_err()
+            if lumapaint_core::bezier::segment_indices(&object).is_empty()
+                || lumapaint_core::bezier::local_point(&object, [0., 0.]).is_err()
             {
                 return None;
             }
@@ -723,6 +724,7 @@ pub fn replace_many(
         )
     })
 }
+#[cfg(test)]
 pub fn replace(
     source: &mut String,
     target: Target,
@@ -739,11 +741,11 @@ mod tests {
         let source = r#"<svg width="400" height="200" viewBox="0 0 100 100"><svg x="10" y="20" width="40" height="20" viewBox="0 0 20 20"><g transform="scale(2)"><path d="M0 0L5 5"/></g></svg></svg>"#;
         let target = targets(source, "layer", [400., 200.]).remove(0);
         assert_eq!(
-            crate::bezier::world_point(&target.object, [0., 0.]),
+            lumapaint_core::bezier::world_point(&target.object, [0., 0.]),
             [140., 40.]
         );
         assert_eq!(
-            crate::bezier::world_point(&target.object, [5., 5.]),
+            lumapaint_core::bezier::world_point(&target.object, [5., 5.]),
             [160., 60.]
         );
     }
@@ -768,7 +770,7 @@ mod root_fit_tests {
         let source =
             r#"<svg width="200" height="100" viewBox="0 0 100 50"><path d="M10 20L40 20"/></svg>"#;
         let object = targets(source, "layer", [960., 640.]).remove(0).object;
-        let p = crate::bezier::world_point(&object, [10., 20.]);
+        let p = lumapaint_core::bezier::world_point(&object, [10., 20.]);
         assert!((p[0] - 96.).abs() < 0.001);
         assert!((p[1] - 272.).abs() < 0.001);
         let vb_only = r#"<svg viewBox="0 0 100 50"><path d="M10 20L40 20"/></svg>"#;
@@ -813,7 +815,7 @@ mod absolute_unit_tests {
 mod resolved_edit_tests {
     use super::*;
     fn moved(mut object: VectorObject, delta: [f32; 2]) -> VectorObject {
-        crate::bezier::translate_controls(&mut object, &[0], delta, false).unwrap();
+        lumapaint_core::bezier::translate_controls(&mut object, &[0], delta, false).unwrap();
         object
     }
     #[test]
@@ -852,11 +854,11 @@ mod resolved_edit_tests {
         let all = targets(&source, "l", [100., 100.]);
         assert_eq!(all.len(), 2);
         assert_eq!(
-            crate::bezier::world_point(&all[0].object, all[0].object.control_points[0]),
+            lumapaint_core::bezier::world_point(&all[0].object, all[0].object.control_points[0]),
             [20., 10.]
         );
         assert_eq!(
-            crate::bezier::world_point(&all[1].object, all[1].object.control_points[0]),
+            lumapaint_core::bezier::world_point(&all[1].object, all[1].object.control_points[0]),
             [15., 5.]
         );
         let target = targets(&source, "l", [100., 100.]).remove(1);
@@ -868,7 +870,7 @@ mod resolved_edit_tests {
             .find(|t| t.object.id == id)
             .unwrap();
         assert_eq!(
-            crate::bezier::world_point(&edited.object, edited.object.control_points[0]),
+            lumapaint_core::bezier::world_point(&edited.object, edited.object.control_points[0]),
             [20., 8.],
             "{source}"
         );
@@ -882,7 +884,10 @@ mod resolved_edit_tests {
         assert_eq!(before.len(), 5);
         let ids: Vec<_> = before.iter().map(|t| t.object.id.clone()).collect();
         assert_eq!(
-            crate::bezier::world_point(&before[0].object, before[0].object.control_points[0]),
+            lumapaint_core::bezier::world_point(
+                &before[0].object,
+                before[0].object.control_points[0]
+            ),
             [15., 15.]
         );
         let changes = targets(&source, "l", [160., 100.])
@@ -917,7 +922,8 @@ mod resolved_edit_tests {
         let mut source=r##"<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="100"><s:defs><s:symbol id="symbol" viewBox="0 0 20 20"><s:rect width="20" height="20"/></s:symbol><s:use id="nested" xlink:href="#symbol" width="40" height="40"/></s:defs><s:use xlink:href="#nested" x="10" y="20"/></s:svg>"##.to_owned();
         let target = targets(&source, "l", [100., 100.]).remove(0);
         let id = target.object.id.clone();
-        let world = crate::bezier::world_point(&target.object, target.object.control_points[0]);
+        let world =
+            lumapaint_core::bezier::world_point(&target.object, target.object.control_points[0]);
         assert_eq!(world, [10., 20.]);
         let next = moved(target.object.clone(), [2., 3.]);
         replace(&mut source, target, Some(next)).unwrap();
@@ -925,7 +931,10 @@ mod resolved_edit_tests {
         assert_eq!(after.len(), 1, "{source}");
         assert_eq!(after[0].object.id, id);
         assert_eq!(
-            crate::bezier::world_point(&after[0].object, after[0].object.control_points[0]),
+            lumapaint_core::bezier::world_point(
+                &after[0].object,
+                after[0].object.control_points[0]
+            ),
             [12., 23.]
         );
         assert!(source.contains("clip-path"));
