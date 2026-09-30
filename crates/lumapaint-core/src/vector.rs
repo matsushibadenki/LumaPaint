@@ -44,6 +44,12 @@ pub enum VectorObjectKind {
 pub struct TextStyle {
     pub font_family: String,
     pub font_size: f32,
+    #[serde(default = "default_object_opacity")]
+    pub scale_x: f32,
+    #[serde(default = "default_object_opacity")]
+    pub scale_y: f32,
+    #[serde(default)]
+    pub rotation: f32,
     pub bold: bool,
     pub italic: bool,
     pub tracking: f32,
@@ -57,6 +63,9 @@ pub struct TextStyle {
 pub struct TextStylePatch {
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
+    pub scale_x: Option<f32>,
+    pub scale_y: Option<f32>,
+    pub rotation: Option<f32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub tracking: Option<f32>,
@@ -67,6 +76,15 @@ pub struct TextStylePatch {
 }
 impl TextStyle {
     pub fn apply(&mut self, patch: &TextStylePatch) {
+        if let Some(value) = patch.scale_x {
+            self.scale_x = value;
+        }
+        if let Some(value) = patch.scale_y {
+            self.scale_y = value;
+        }
+        if let Some(value) = patch.rotation {
+            self.rotation = value;
+        }
         if let Some(value) = &patch.font_family {
             self.font_family = value.clone();
         }
@@ -100,6 +118,9 @@ impl TextStyle {
             || self.font_family.chars().count() > 200
             || self.font_family.chars().any(char::is_control)
             || !(1.0..=512.0).contains(&self.font_size)
+            || !(0.1..=4.0).contains(&self.scale_x)
+            || !(0.1..=4.0).contains(&self.scale_y)
+            || !(-180.0..=180.0).contains(&self.rotation)
             || !(-100.0..=1000.0).contains(&self.tracking)
             || !(-512.0..=512.0).contains(&self.baseline_shift)
         {
@@ -305,7 +326,8 @@ impl VectorText {
                 advance = self.indent_left + self.indent_first;
             } else {
                 let style = self.style_at(offset, [0, 0, 0]);
-                let step = (style.font_size * (1. + style.tracking / 1000.)).max(0.1);
+                let step =
+                    (style.font_size * style.scale_y * (1. + style.tracking / 1000.)).max(0.1);
                 if advance + step > limit - self.indent_right
                     && advance > self.indent_left + self.indent_first
                 {
@@ -454,6 +476,9 @@ impl VectorText {
         TextStyle {
             font_family: self.font_family.clone(),
             font_size: self.font_size,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation: 0.0,
             bold: self.bold,
             italic: self.italic,
             tracking: self.tracking,
@@ -532,6 +557,9 @@ impl VectorText {
         if changed
             && (patch.font_family.is_some()
                 || patch.font_size.is_some()
+                || patch.scale_x.is_some()
+                || patch.scale_y.is_some()
+                || patch.rotation.is_some()
                 || patch.bold.is_some()
                 || patch.italic.is_some()
                 || patch.tracking.is_some()
@@ -712,7 +740,7 @@ impl VectorText {
         let max_size = self
             .runs
             .iter()
-            .map(|run| run.style.font_size)
+            .map(|run| run.style.font_size * run.style.scale_y)
             .fold(self.font_size, f32::max);
         let height = self.visual_lines().len() as f32
             * (self.font_size * self.line_height + self.space_before + self.space_after);
@@ -1297,6 +1325,44 @@ pub trait VectorPathEngine {
 
 #[cfg(test)]
 mod text_style_tests {
+    #[test]
+    fn character_transforms_preserve_unselected_text_and_legacy_defaults() {
+        let mut text = super::VectorText {
+            content: "A😀BCD".into(),
+            ..Default::default()
+        };
+        let color = [20, 30, 40];
+        let base = text.base_style(color);
+        text.apply_style(
+            1,
+            4,
+            &super::TextStylePatch {
+                scale_x: Some(1.7),
+                scale_y: Some(2.0),
+                rotation: Some(15.0),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert_eq!(text.style_at(0, color), base);
+        assert_eq!(text.style_at(4, color), base);
+        assert_eq!(text.style_at(1, color).scale_x, 1.7);
+        assert_eq!((text.scale_x, text.scale_y, text.rotation), (1.0, 1.0, 0.0));
+        text.validate().unwrap();
+        let restored: super::VectorText =
+            serde_json::from_str(&serde_json::to_string(&text).unwrap()).unwrap();
+        assert_eq!(restored.runs, text.runs);
+        let mut legacy = serde_json::to_value(base).unwrap();
+        for key in ["scaleX", "scaleY", "rotation"] {
+            legacy.as_object_mut().unwrap().remove(key);
+        }
+        let restored: super::TextStyle = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            (restored.scale_x, restored.scale_y, restored.rotation),
+            (1.0, 1.0, 0.0)
+        );
+    }
     use super::*;
     #[test]
     fn portable_reflow_preserves_graphemes_runs_and_hard_breaks() {

@@ -386,7 +386,7 @@ impl PaintView {
                     CanvasTool::ZoomIn => Some(NSCursor::zoomInCursor()),
                     CanvasTool::ZoomOut => Some(NSCursor::zoomOutCursor()),
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
-                    CanvasTool::Text | CanvasTool::TextFrame => Some(NSCursor::IBeamCursor()),
+                    CanvasTool::Text | CanvasTool::TextVertical | CanvasTool::TextFrame | CanvasTool::TextFrameVertical => Some(NSCursor::IBeamCursor()),
                     CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
                     CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(NSCursor::crosshairCursor()),
                     CanvasTool::VectorDirectSelect => Some(NSCursor::crosshairCursor()),
@@ -395,7 +395,7 @@ impl PaintView {
                 }
             };
             if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
-            if matches!(TOOL.with(|tool| tool.get()), CanvasTool::VectorSelect | CanvasTool::TextFrame) {
+            if matches!(TOOL.with(|tool| tool.get()), CanvasTool::VectorSelect | CanvasTool::TextFrame | CanvasTool::TextFrameVertical) {
                 let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
                 let selected = DOCUMENT.with(|document| {
                     let document = document.borrow();
@@ -747,7 +747,7 @@ impl PaintView {
                 return;
             }
             let tool = TOOL.with(|tool| tool.get());
-            if tool == CanvasTool::TextFrame
+            if matches!(tool, CanvasTool::TextFrame | CanvasTool::TextFrameVertical)
                 && DOCUMENT.with(|doc| {
                     selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
                 })
@@ -758,7 +758,7 @@ impl PaintView {
                 }
                 return;
             }
-            if tool == CanvasTool::Text
+            if matches!(tool, CanvasTool::Text | CanvasTool::TextVertical)
                 || (tool == CanvasTool::VectorSelect
                     && DOCUMENT.with(|doc| doc.borrow().selected_layer_is_vector())
                     && event.clickCount() == 2
@@ -772,19 +772,26 @@ impl PaintView {
                         && point.x < viewport.document_width
                         && point.y < viewport.document_height)
                 {
-                    if let Err(error) =
-                        text_editor::begin_at([point.x, point.y], tool == CanvasTool::Text)
-                    {
+                    if let Err(error) = text_editor::begin_at(
+                        [point.x, point.y],
+                        matches!(tool, CanvasTool::Text | CanvasTool::TextVertical),
+                    ) {
                         emit_error(error);
                     }
                 }
                 return;
             }
         }
-        if TOOL.with(|tool| tool.get()) == CanvasTool::Text {
+        if matches!(
+            TOOL.with(|tool| tool.get()),
+            CanvasTool::Text | CanvasTool::TextVertical
+        ) {
             return;
         }
-        if TOOL.with(|tool| tool.get()) == CanvasTool::TextFrame {
+        if matches!(
+            TOOL.with(|tool| tool.get()),
+            CanvasTool::TextFrame | CanvasTool::TextFrameVertical
+        ) {
             let resizing = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().is_some())
                 || (phase == 0
                     && DOCUMENT.with(|doc| {
@@ -2547,12 +2554,25 @@ fn text_frame_pointer(point: lumapaint_core::document::Point, phase: u8) -> Resu
         return Ok(());
     };
     let (position, box_width, box_height) = text_frame_geometry(start, end);
+    let (box_width, box_height) = if TOOL.with(|tool| tool.get()) == CanvasTool::TextFrameVertical
+        && (start[0] - end[0]).abs() < 3.0
+        && (start[1] - end[1]).abs() < 3.0
+    {
+        (box_height, box_width)
+    } else {
+        (box_width, box_height)
+    };
     let settings = TextSettings {
         id: None,
         text: lumapaint_core::vector::VectorText {
             content: String::new(),
             box_width,
             box_height: Some(box_height),
+            writing_mode: if TOOL.with(|tool| tool.get()) == CanvasTool::TextFrameVertical {
+                lumapaint_core::vector::WritingMode::Vertical
+            } else {
+                lumapaint_core::vector::WritingMode::Horizontal
+            },
             ..Default::default()
         },
         position,
@@ -3356,7 +3376,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     if matches!(
         TOOL.with(|tool| tool.get()),
-        CanvasTool::VectorSelect | CanvasTool::TextFrame
+        CanvasTool::VectorSelect | CanvasTool::TextFrame | CanvasTool::TextFrameVertical
     ) && TEXT_FRAME_DRAFT.with(|draft| draft.borrow().is_none())
     {
         let overlay = DOCUMENT.with(|document| selected_text_frame_overlay(&document.borrow()));

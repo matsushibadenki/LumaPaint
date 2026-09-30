@@ -103,6 +103,12 @@ macOS 14以降はNSViewのDisplay LinkをCommon RunLoop Modeで登録し、マ�
 
 文字の実描画はMetal側にあり、NSTextViewは透明な文字と選択背景を描く。フォーカスが数値欄へ移ると、AppKitの標準レイアウトマネージャーは選択背景を不透明なグレーに置き換え、GPUの文字を隠す。インライン編集用の`PreviewLayoutManager`で`fillBackgroundRectArray`を処理し、選択矩形をalpha 0.25のブルーでSourceOver合成する。選択範囲と配置はAppKitが維持し、数値入力中も変更後の文字が透けて見える。`scripts/check-text-selection-preview.swift`で数値欄へフォーカスを移した状態のbitmapを確認し、選択背景の半透明性、フォントサイズ変更後の矩形更新、選択範囲の保持を検証する。
 
+## 選択文字の縦横倍率・回転
+
+TextStyle／TextStylePatchにscaleX・scaleY・rotationを保存する。TextPanelはこれらをUTF-16選択範囲への書式変更として送信し、VectorText全体の変形値は変更しない。旧TextStyleの追加フィールド省略時は100%・0度を使用する。AppKitは範囲ごとのフォント行列で計測し、SVGは保存したglyph clusterの位置で各字形へ変形を適用する。アプリの描画と書き出しは同じSVG経路を使用する。文字サイズ・字間・ベースライン等も既存の範囲書式として適用する。枠の幅・高さと段落設定は文字の縦横倍率とは別の設定である。
+
+`scripts/check-character-transform-layout.swift`で横組み／縦組みの部分変更後に後続の文字が移動し、選択外フォントと枠寸法が維持されることを確認する。
+
 ## GPUキャッシュ生成の検証
 
 Metal実機テストで図形・日本語を含む文字の`SkiaGpu`経路を確認する。半透明図形はCPU結果と各RGBA成分の差1以内で一致することを検証する。通常テストではGPUを利用不能にした状態でCPU描画へ戻ることを確認する。これは描画経路と画素の検証であり、長文の速度改善率の測定ではない。

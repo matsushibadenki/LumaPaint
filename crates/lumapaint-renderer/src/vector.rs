@@ -84,6 +84,10 @@ pub fn reflow_text_with_system_fonts(
     let mut widths = Vec::new();
     let mut origins = Vec::new();
     let mut segment_origins = Vec::new();
+    let transformed = candidate.runs.iter().any(|run| {
+        run.style.scale_x != 1.0 || run.style.scale_y != 1.0 || run.style.rotation != 0.0
+    });
+    let mut glyph_clusters = Vec::new();
     for (index, (start, line, hard_break_before)) in
         candidate.visual_lines().into_iter().enumerate()
     {
@@ -125,10 +129,30 @@ pub fn reflow_text_with_system_fonts(
         widths.push(width);
         origins.push(origin);
         segment_origins.push(line_segments);
+        if transformed {
+            use unicode_segmentation::UnicodeSegmentation;
+            let mut clusters = Vec::new();
+            let mut offset = 0;
+            let mut cursor = origin;
+            for grapheme in line.graphemes(true) {
+                let end = offset + grapheme.encode_utf16().count();
+                clusters.push(lumapaint_core::vector::TextGlyphCluster {
+                    start: offset,
+                    end,
+                    x: cursor,
+                });
+                cursor += measurer.measure(&source, color, grapheme, start + offset)?;
+                offset = end;
+            }
+            glyph_clusters.push(clusters);
+        }
     }
     candidate.line_widths = widths;
     candidate.line_origins = origins;
     candidate.style_segment_origins = segment_origins;
+    if transformed {
+        candidate.glyph_clusters = glyph_clusters;
+    }
     candidate.validate()?;
     *text = candidate;
     Ok(())
@@ -310,7 +334,9 @@ fn shape_width(
         })
         .flatten()
         .ok_or("Unable to shape system font")?;
-    Ok((advance.abs() + graphemes as f32 * style.tracking * style.font_size / 1000.0).max(0.0))
+    Ok((advance.abs() * style.scale_x
+        + graphemes as f32 * style.tracking * style.font_size / 1000.0)
+        .max(0.0))
 }
 
 /// Resolve the same face used by SVG before asking AppKit to instantiate it.

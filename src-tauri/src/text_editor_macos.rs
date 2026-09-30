@@ -717,6 +717,19 @@ fn cached_current(session: &Session) -> Option<TextSettings> {
     Some(settings)
 }
 
+fn point_text(vertical: bool) -> VectorText {
+    let mut text = VectorText {
+        content: "Text".into(),
+        ..Default::default()
+    };
+    if vertical {
+        text.writing_mode = lumapaint_core::vector::WritingMode::Vertical;
+        text.box_height = Some(text.box_width);
+        text.box_width = (text.font_size * text.line_height).max(16.0);
+    }
+    text
+}
+
 pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
     finish(true)?;
     let id = DOCUMENT.with(|doc| doc.borrow().text_at(point));
@@ -738,10 +751,7 @@ pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
     } else if create {
         TextSettings {
             id: None,
-            text: VectorText {
-                content: "Text".into(),
-                ..Default::default()
-            },
+            text: point_text(TOOL.with(|tool| tool.get()) == CanvasTool::TextVertical),
             position: point,
             color: BRUSH.with(|brush| brush.borrow().color),
         }
@@ -1218,6 +1228,21 @@ fn attributes(
             )
         })
         .unwrap_or_else(|| NSFont::systemFontOfSize(style.font_size.into()));
+    let font = if style.scale_x != 1.0 || style.scale_y != 1.0 || style.rotation != 0.0 {
+        let (sin, cos) = (-style.rotation.to_radians()).sin_cos();
+        let mut matrix = [
+            f64::from(style.font_size * style.scale_x * cos),
+            f64::from(style.font_size * style.scale_x * sin),
+            f64::from(-style.font_size * style.scale_y * sin),
+            f64::from(style.font_size * style.scale_y * cos),
+            0.0,
+            0.0,
+        ];
+        unsafe { NSFont::fontWithName_matrix(&font.fontName(), NonNull::from(&mut matrix[0])) }
+            .unwrap_or(font)
+    } else {
+        font
+    };
     let [r, g, b] = style.color;
     let color = NSColor::colorWithSRGBRed_green_blue_alpha(
         r as f64 / 255.0,
@@ -1399,6 +1424,76 @@ pub fn reflow_text(text: &mut VectorText, color: [u8; 3]) -> Result<(), String> 
 #[cfg(test)]
 mod transform_tests {
     use super::*;
+    #[test]
+    fn vertical_point_text_starts_with_a_tall_single_column_frame() {
+        let horizontal = point_text(false);
+        let vertical = point_text(true);
+        assert!(vertical.box_height.unwrap() > vertical.box_width);
+        assert_eq!(vertical.box_height, Some(horizontal.box_width));
+        assert_eq!(vertical.font_size, horizontal.font_size);
+        vertical.validate().unwrap();
+    }
+    #[test]
+    fn selected_character_width_and_height_reflow_without_scaling_the_frame() {
+        let mut settings = TextSettings {
+            id: None,
+            text: VectorText {
+                content: "AAAAAA".into(),
+                font_size: 24.0,
+                box_width: 500.0,
+                ..Default::default()
+            },
+            position: [10.0, 20.0],
+            color: [0, 0, 0],
+        };
+        lumapaint_renderer::vector::reflow_text_with_system_fonts(
+            &mut settings.text,
+            settings.color,
+        )
+        .unwrap();
+        let before = settings.text.line_widths[0];
+        let base = settings.text.base_style(settings.color);
+        settings
+            .text
+            .apply_style(
+                2,
+                4,
+                &TextStylePatch {
+                    scale_x: Some(2.0),
+                    scale_y: Some(1.5),
+                    ..Default::default()
+                },
+                settings.color,
+            )
+            .unwrap();
+        lumapaint_renderer::vector::reflow_text_with_system_fonts(
+            &mut settings.text,
+            settings.color,
+        )
+        .unwrap();
+        assert!(settings.text.line_widths[0] > before + 10.0);
+        assert_eq!(settings.text.style_at(0, settings.color), base);
+        assert_eq!(settings.text.style_at(4, settings.color), base);
+        assert_eq!(
+            (
+                settings.text.scale_x,
+                settings.text.scale_y,
+                settings.text.box_width
+            ),
+            (1.0, 1.0, 500.0)
+        );
+        let mut document = Document::default();
+        document.set_text_object(settings).unwrap();
+        let layer = document.svg_layers().next().unwrap();
+        assert!(layer.source.contains("scale(2 1.5)"));
+        let raster = lumapaint_renderer::vector::rasterize_svg(&layer.source, 960, 640).unwrap();
+        assert!(raster
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
+    }
     #[test]
     fn gpu_inline_preview_matches_commit_without_changing_original() {
         for mode in [

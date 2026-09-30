@@ -139,7 +139,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
   }, [attempt, onDocument]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? tool === 'text' ? textPanelMessages[locale].hint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && (status === 'browser' || status === 'unsupported') && <div className="paper-preview" aria-hidden="true" />}
       {status === 'failed' ? <div className="canvas-notice canvas-failure" role="alert">
         <p>{t.canvasStatus.failed}</p>

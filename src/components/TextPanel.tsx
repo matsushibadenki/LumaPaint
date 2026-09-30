@@ -73,11 +73,11 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   const base = draft?.text ?? defaultVectorText;
   const style = draft?.selection?.style ?? (base.runs?.[0]?.start === 0 ? base.runs[0].style : undefined);
   const text = { ...base, ...style, ...draft?.stylePatch };
-  const inherited = { ...base, color: draft?.color ?? [32, 32, 32] };
+  const inherited = { ...base, scaleX: 1, scaleY: 1, rotation: 0, color: draft?.color ?? [32, 32, 32] };
   const wholeStyles = [base.runs?.[0]?.start === 0 ? base.runs[0].style : inherited, ...(base.runs ?? []).map(run => run.style)];
   if ((base.runs ?? []).reduce((length, run) => length + run.end - run.start, 0) < base.content.length) wholeStyles.push(inherited);
-  const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
-  const characterKeys = ['fontFamily', 'fontSize', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
+  const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
+  const characterKeys = ['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
   const color = draft?.stylePatch?.color ?? style?.color ?? draft?.color ?? [32, 32, 32];
   const disabled = !enabled || !draft;
   const pt = 72 / Math.max(1, resolution);

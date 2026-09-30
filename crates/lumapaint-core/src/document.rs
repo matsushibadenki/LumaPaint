@@ -6520,6 +6520,19 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})">"#,
                 text.rotation, text.scale_x, text.scale_y
             );
+            if text.runs.iter().any(|run| {
+                run.style.scale_x != 1.0 || run.style.scale_y != 1.0 || run.style.rotation != 0.0
+            }) {
+                let color = object.fill.map_or([0, 0, 0], |paint| {
+                    [paint.color[0], paint.color[1], paint.color[2]]
+                });
+                write_transformed_text(&mut svg, text, color, object_index);
+                svg.push_str("</g>");
+                for _ in 0..clips {
+                    svg.push_str("</g>");
+                }
+                continue;
+            }
             if text.writing_mode == crate::vector::WritingMode::Vertical {
                 let mut vertical = text.clone();
                 if vertical.line_baselines.is_empty() {
@@ -6827,6 +6840,116 @@ fn utf16_slice(value: &str, start: usize, end: usize) -> Option<&str> {
         end_byte = Some(value.len());
     }
     Some(&value[start_byte?..end_byte?])
+}
+
+fn write_transformed_text(
+    svg: &mut String,
+    text: &crate::vector::VectorText,
+    color: [u8; 3],
+    object_index: usize,
+) {
+    use std::fmt::Write;
+    use unicode_segmentation::UnicodeSegmentation;
+    let vertical = text.writing_mode == crate::vector::WritingMode::Vertical;
+    if let Some(height) = text.box_height {
+        let _ = write!(
+            svg,
+            r#"<clipPath id="run-frame-{object_index}"><rect width="{}" height="{height}"/></clipPath><g clip-path="url(#run-frame-{object_index})">"#,
+            text.box_width
+        );
+    }
+    let mut paragraph_number = 0;
+    for (index, (start, line, hard_break_before)) in text.visual_lines().into_iter().enumerate() {
+        let cross = text.line_baselines.get(index).copied().unwrap_or(
+            text.font_size + text.space_before + index as f32 * text.font_size * text.line_height,
+        );
+        let mut offset = 0;
+        let mut character_index = 0;
+        let mut cursor = text
+            .line_origins
+            .get(index)
+            .copied()
+            .unwrap_or(text.indent_left);
+        if !vertical && (index == 0 || hard_break_before) {
+            paragraph_number += 1;
+            let marker = match text.list_style {
+                crate::vector::ParagraphListStyle::None => None,
+                crate::vector::ParagraphListStyle::Bullets => Some("•".to_string()),
+                crate::vector::ParagraphListStyle::Numbers => Some(format!("{paragraph_number}.")),
+            };
+            if let Some(marker) = marker {
+                let x = (cursor - text.font_size * 1.1).max(0.0);
+                let _ = write!(svg, r#"<text x="{x}" y="{cross}" xml:space="preserve">"#);
+                write_text_segment(svg, &text.base_style(color), &marker, Some(x), None, None);
+                svg.push_str("</text>");
+            }
+        }
+        let fallback: Vec<_> = line
+            .graphemes(true)
+            .map(|content| {
+                let style = text.style_at(start + offset, color);
+                let position = text
+                    .character_origins
+                    .get(index)
+                    .and_then(|positions| positions.get(character_index))
+                    .copied()
+                    .unwrap_or(cursor);
+                let cluster = crate::vector::TextGlyphCluster {
+                    start: offset,
+                    end: offset + content.encode_utf16().count(),
+                    x: position,
+                };
+                offset = cluster.end;
+                character_index += content.chars().count();
+                cursor += style.font_size
+                    * if vertical {
+                        style.scale_y
+                    } else {
+                        style.scale_x
+                    };
+                cluster
+            })
+            .collect();
+        let clusters = text
+            .glyph_clusters
+            .get(index)
+            .filter(|clusters| !clusters.is_empty())
+            .unwrap_or(&fallback);
+        for cluster in clusters {
+            let Some(content) = utf16_slice(line, cluster.start, cluster.end) else {
+                continue;
+            };
+            let style = text.style_at(start + cluster.start, color);
+            let (x, y) = if vertical {
+                (text.box_width - cross, cluster.x)
+            } else {
+                (cluster.x, cross)
+            };
+            let _ = write!(
+                svg,
+                r#"<g transform="translate({x} {y}) rotate({}) scale({} {})"><text x="0" y="0" xml:space="preserve"{}>"#,
+                style.rotation,
+                style.scale_x,
+                style.scale_y,
+                if vertical {
+                    r#" writing-mode="tb""#
+                } else {
+                    ""
+                }
+            );
+            let mut local = style.clone();
+            local.baseline_shift /= if vertical {
+                style.scale_x
+            } else {
+                style.scale_y
+            };
+            write_text_segment(svg, &local, content, Some(0.0), None, None);
+            svg.push_str("</text></g>");
+        }
+    }
+    if text.box_height.is_some() {
+        svg.push_str("</g>");
+    }
 }
 
 fn write_text_segment(

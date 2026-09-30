@@ -64,7 +64,7 @@ export function Workspace() {
   const [lastVectorSelectTool, setLastVectorSelectTool] = useState<'vectorSelect' | 'vectorDirectSelect'>('vectorSelect');
   const [lastPenTool, setLastPenTool] = useState<PenTool>('vectorPen');
   const [lastVectorShapeTool, setLastVectorShapeTool] = useState<VectorShapeTool>('vectorRectangle');
-  const [lastTextTool, setLastTextTool] = useState<'text' | 'textFrame'>('text');
+  const [lastTextTool, setLastTextTool] = useState<'text' | 'textVertical' | 'textFrame' | 'textFrameVertical'>('text');
   const setToolMode = useCallback((mode: ToolMode) => {
     setZoomTool(null);
     setToolState(current => ({ ...current, mode }));
@@ -82,7 +82,7 @@ export function Workspace() {
     });
     if (isPenTool(next)) setLastPenTool(next);
     if (next === 'vectorRectangle' || next === 'vectorEllipse') setLastVectorShapeTool(next);
-    if (next === 'text' || next === 'textFrame') setLastTextTool(next);
+    if (next === 'text' || next === 'textVertical' || next === 'textFrame' || next === 'textFrameVertical') setLastTextTool(next);
   }, []);
   const [paintState, setPaintState] = useState<{ brush: Brush; backgroundColor: Brush['color'] }>({
     brush: { size: 16, hardness: 1, color: [32, 32, 32] }, backgroundColor: [255, 255, 255],
@@ -295,7 +295,12 @@ export function Workspace() {
     }).catch(cause => setError(String(cause)));
   }, [updateDocument]);
   const beginText = () => {
-    const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText, content: textMessages[locale].defaultText }, position: [48, 48], color: brush.color };
+    const vertical = canvasTool === 'textVertical' || canvasTool === 'textFrameVertical';
+    const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText,
+      writingMode: vertical ? 'vertical' : 'horizontal',
+      boxWidth: vertical ? defaultVectorText.fontSize * defaultVectorText.lineHeight : defaultVectorText.boxWidth,
+      boxHeight: vertical ? defaultVectorText.boxWidth : defaultVectorText.boxHeight,
+      content: textMessages[locale].defaultText }, position: [48, 48], color: brush.color };
     textSessionActive.current = true;
     void beginTextEdit(settings).catch(cause => {
       textSessionActive.current = false;
@@ -512,7 +517,7 @@ export function Workspace() {
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><ColorPickerPopover locale={locale} color={brush.color} label={t.foreground} onChange={changeForeground} /></label>
-      </> : <span className="selection-hint">{canvasTool === 'text' ? textPanelMessages[locale].hint : canvasTool === 'textFrame' ? t.textFrameHint : t.selectionHint}</span>}
+      </> : <span className="selection-hint">{(canvasTool === 'text' || canvasTool === 'textVertical') ? textPanelMessages[locale].hint : (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical') ? t.textFrameHint : t.selectionHint}</span>}
       {toolMode === 'animation' && <span className="selection-hint animation-hint">{t.animationHint}</span>}
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
@@ -532,12 +537,12 @@ export function Workspace() {
         <ZoomToolMenu locale={locale} selected={zoomTool ?? lastZoomTool} active={zoomTool !== null} enabled={documentAvailable && ready} onSelect={setTool} onError={setError} />
         </div>
         <div className="mode-tools">
-        {modeTools[toolMode].map(item => item === 'vectorEllipse' || item === 'textFrame' || (isPenTool(item) && item !== 'vectorPen') ? null : (item === 'brush' || item === 'eraser') && toolMode === 'paint' ?
+        {modeTools[toolMode].map(item => item === 'vectorEllipse' || item === 'textVertical' || item === 'textFrame' || item === 'textFrameVertical' || (isPenTool(item) && item !== 'vectorPen') ? null : (item === 'brush' || item === 'eraser') && toolMode === 'paint' ?
           <IconToolMenu key={item} label={item === 'brush' ? t.drawTools : t.eraseTools} selected={item} active={canvasTool === item} enabled={documentEditable} choices={[{ id: item, label: t[item], icon: item, shortcut: item === 'brush' ? 'B' : 'E' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
           item === 'vectorPen' ? <IconToolMenu key="pen-tools" label={t.penTools} selected={isPenTool(canvasTool) ? canvasTool : lastPenTool} active={isPenTool(canvasTool)} enabled={documentEditable} choices={penTools.map(tool => ({ id: tool, label: t[tool], icon: tool, shortcut: tool === 'vectorPen' ? 'P' : tool === 'vectorPencil' ? 'N' : undefined })) as [IconToolChoice, ...IconToolChoice[]]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} /> :
           item === 'vectorRectangle' ?
           <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentEditable} onSelect={setTool} onError={setError} /> :
-          item === 'text' ? <IconToolMenu key="text-tools" label={t.textTool} selected={canvasTool === 'text' || canvasTool === 'textFrame' ? canvasTool : lastTextTool} active={canvasTool === 'text' || canvasTool === 'textFrame'} enabled={documentEditable} choices={[{ id: 'text', label: t.text, icon: 'text', shortcut: 'T' }, { id: 'textFrame', label: t.textFrame, icon: 'textFrame' }]} onSelect={tool => { setTool(tool as CanvasTool); showTextPanel(); }} onError={setError} /> :
+          item === 'text' ? <IconToolMenu key="text-tools" label={t.textTool} selected={canvasTool === 'text' || canvasTool === 'textVertical' || (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical') ? canvasTool : lastTextTool} active={canvasTool === 'text' || canvasTool === 'textVertical' || (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical')} enabled={documentEditable} choices={[{ id: 'text', label: t.text, icon: 'text', shortcut: 'T' }, { id: 'textVertical', label: t.textVertical, icon: 'textVertical' }, { id: 'textFrame', label: t.textFrame, icon: 'textFrame' }, { id: 'textFrameVertical', label: t.textFrameVertical, icon: 'textFrameVertical' }]} onSelect={tool => { setTool(tool as CanvasTool); showTextPanel(); }} onError={setError} /> :
           <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={t[item]} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={() => setTool(item)}><Icon name={item} /></button>)}
         {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentEditable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}

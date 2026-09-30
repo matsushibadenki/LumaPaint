@@ -7,7 +7,7 @@ export type ModeTool = Exclude<CanvasTool, 'zoomIn' | 'zoomOut' | 'hand' | 'vect
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
   paint: ['brush', 'eraser'],
   vector: ['vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
-  layout: ['vectorRectangle', 'vectorEllipse', 'text', 'textFrame'],
+  layout: ['vectorRectangle', 'vectorEllipse', 'text', 'textVertical', 'textFrame', 'textFrameVertical'],
   animation: ['brush'],
 };
 export const modeLabels = {
@@ -20,7 +20,7 @@ export const initialTools: Record<ToolMode, ModeTool> = {
 
 export function modeForTool(mode: ToolMode, tool: ModeTool): ToolMode {
   // Shared tools retain the current workspace; other shortcuts switch to their home mode.
-  if (tool === 'text' || tool === 'textFrame') return 'layout';
+  if (tool === 'text' || tool === 'textVertical' || tool === 'textFrame' || tool === 'textFrameVertical') return 'layout';
   return modeTools[mode].includes(tool) ? mode : tool.startsWith('vector') ? 'vector' : 'paint';
 }
 

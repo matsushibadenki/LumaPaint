@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textFrame' | 'zoomIn' | 'zoomOut' | 'hand';
+export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
@@ -34,7 +34,7 @@ export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', mit
 export interface LayerObjectSnapshot { strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot {
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
-export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
+export interface TextStyle { fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
