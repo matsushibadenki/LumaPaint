@@ -2104,3 +2104,77 @@ mod stroke_appearance_tests {
         assert!((127..=128).contains(&alpha(&image, 80, 50)));
     }
 }
+
+#[cfg(test)]
+mod imported_svg_edit_tests {
+    use super::*;
+    use lumapaint_core::svg_edit;
+    fn image(source: &str) -> SvgRaster {
+        rasterize_svg(source, 160, 100).unwrap()
+    }
+    fn same(before: &SvgRaster, after: &SvgRaster) {
+        assert_eq!(before.pixels.len(), after.pixels.len());
+        let differing = before
+            .pixels
+            .iter()
+            .zip(&after.pixels)
+            .filter(|(a, b)| a.abs_diff(**b) > 2)
+            .count();
+        assert_eq!(differing, 0, "{differing} color channels changed");
+    }
+    #[test]
+    fn materializing_css_shapes_and_use_preserves_pixels_paints_and_clips() {
+        for source in [
+            r##"<svg width="160" height="100"><style>rect {x:20px;y:20px;width:80px;height:50px;rx:10px;opacity:.6;fill:red;transform:translateX(5px)} path {fill:blue;d:path('M0 0H1V1Z') !important}</style><rect id="shape"/></svg>"##,
+            r##"<svg width="160" height="100"><defs><linearGradient id="paint"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient><clipPath id="cut"><rect x="10" y="10" width="120" height="60"/></clipPath></defs><ellipse id="shape" cx="70" cy="45" rx="50" ry="30" fill="url(#paint)" clip-path="url(#cut)" opacity=".7"/></svg>"##,
+            r##"<svg width="160" height="100"><style>.part {fill:orange;stroke:green;stroke-width:3} g {opacity:.8} path {fill:blue !important}</style><defs><g id="model"><rect class="part" x="5" y="5" width="25" height="30"/><circle class="part" cx="45" cy="20" r="15"/></g></defs><use id="one" href="#model" x="10" y="10" transform="rotate(10)"/><use id="two" href="#model" x="80" y="10"/></svg>"##,
+            r##"<svg width="160" height="100"><defs><symbol id="symbol" viewBox="0 0 20 20"><rect x="-5" y="-5" width="30" height="30" fill="red"/><ellipse cx="10" cy="10" rx="8" ry="5" fill="blue"/></symbol></defs><use href="#symbol" x="20" y="10" width="70" height="70"/></svg>"##,
+        ] {
+            let before = image(source);
+            let mut edited = source.to_owned();
+            let target = svg_edit::targets(source, "l", [160., 100.]).remove(0);
+            let object = target.object.clone();
+            svg_edit::replace(&mut edited, target, Some(object)).unwrap();
+            let after = image(&edited);
+            let changed = before
+                .pixels
+                .iter()
+                .zip(&after.pixels)
+                .filter(|(a, b)| a.abs_diff(**b) > 2)
+                .count();
+            assert_eq!(changed, 0, "Original: {source}\nEdited: {edited}");
+            same(&before, &after);
+            let targets = svg_edit::targets(&edited, "l", [160., 100.]);
+            assert!(!targets.is_empty(), "{edited}");
+        }
+    }
+    #[test]
+    fn moving_one_use_does_not_change_the_other_instance_or_definition() {
+        let mut source=r##"<svg width="160" height="100"><defs><g id="model"><rect x="5" y="5" width="30" height="30" fill="red"/><circle cx="20" cy="20" r="10" fill="blue"/></g></defs><use href="#model" x="10" y="10"/><use href="#model" x="90" y="10"/></svg>"##.to_owned();
+        let before = image(&source);
+        let targets = svg_edit::targets(&source, "l", [160., 100.]);
+        assert_eq!(targets.len(), 4);
+        let changes = targets
+            .into_iter()
+            .take(2)
+            .map(|t| {
+                let mut o = t.object.clone();
+                let indices = lumapaint_core::bezier::anchor_indices(&o);
+                lumapaint_core::bezier::translate_controls(&mut o, &indices, [10., 15.], false)
+                    .unwrap();
+                (t, Some(o))
+            })
+            .collect();
+        svg_edit::replace_many(&mut source, changes).unwrap();
+        let after = image(&source);
+        for y in 0..100 {
+            for x in 80..160 {
+                let i = (y * 160 + x) * 4;
+                assert_eq!(before.pixels[i..i + 4], after.pixels[i..i + 4]);
+            }
+        }
+        assert_eq!(before.pixels[(20 * 160 + 20) * 4 + 3], 255);
+        assert_eq!(after.pixels[(20 * 160 + 20) * 4 + 3], 0);
+        assert!(source.contains(r#"<rect x="5" y="5" width="30" height="30" fill="red"/>"#));
+    }
+}

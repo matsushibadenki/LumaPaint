@@ -191,6 +191,7 @@ pub(crate) enum NodeKind {
 }
 
 struct NodeData {
+    source_range: Option<std::ops::Range<usize>>,
     parent: Option<NodeId>,
     next_sibling: Option<NodeId>,
     children: Option<(NodeId, NodeId)>,
@@ -870,10 +871,9 @@ impl<'a, 'input: 'a> FromValue<'a, 'input> for Opacity {
 
 impl<'a, 'input: 'a> FromValue<'a, 'input> for Transform {
     fn parse(_: SvgNode, _: AId, value: &str) -> Option<Self> {
-        let ts = match svgtypes::Transform::from_str(value) {
-            Ok(v) => v,
-            Err(_) => return None,
-        };
+        let ts = svgtypes::Transform::from_str(value)
+            .ok()
+            .or_else(|| css_transform(value))?;
 
         let ts = Transform::from_row(
             ts.a as f32,
@@ -1064,4 +1064,101 @@ impl<'a, 'input: 'a> FromValue<'a, 'input> for SvgNode<'a, 'input> {
 
         node.document().element_by_id(id)
     }
+}
+
+impl SvgNode<'_, '_> {
+    pub(crate) fn source_reference(&self) -> Option<crate::PathSource> {
+        let element = self.d.source_range.clone()?;
+        let mut instances: Vec<_> = self
+            .ancestors()
+            .filter(|n| n.tag_name() == Some(EId::Use))
+            .filter_map(|n| n.d.source_range.clone())
+            .collect();
+        instances.reverse();
+        Some(crate::PathSource { element, instances })
+    }
+    pub(crate) fn source_range(&self) -> Option<std::ops::Range<usize>> {
+        self.d.source_range.clone()
+    }
+}
+
+/// Resolve static CSS 2D transform functions into the SVG transform representation.
+pub(crate) fn css_transform(value: &str) -> Option<svgtypes::Transform> {
+    if value.trim() == "none" {
+        return "matrix(1 0 0 1 0 0)".parse().ok();
+    }
+    let mut normalized = String::new();
+    for function in value.split(')').filter(|s| !s.trim().is_empty()) {
+        let (name, args) = function.trim().split_once('(')?;
+        let args: Vec<_> = args
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let length = |s: &str| -> Option<f64> {
+            let length: svgtypes::Length = s.parse().ok()?;
+            Some(
+                length.number
+                    * match length.unit {
+                        svgtypes::LengthUnit::None | svgtypes::LengthUnit::Px => 1.,
+                        svgtypes::LengthUnit::In => 96.,
+                        svgtypes::LengthUnit::Cm => 96. / 2.54,
+                        svgtypes::LengthUnit::Mm => 96. / 25.4,
+                        svgtypes::LengthUnit::Pt => 96. / 72.,
+                        svgtypes::LengthUnit::Pc => 16.,
+                        _ => return None,
+                    },
+            )
+        };
+        let number = |s: &str| s.parse::<f64>().ok().filter(|v| v.is_finite());
+        let angle = |s: &str| -> Option<f64> {
+            for (unit, scale) in [
+                ("deg", 1.),
+                ("rad", 180. / std::f64::consts::PI),
+                ("grad", 0.9),
+                ("turn", 360.),
+            ] {
+                if let Some(s) = s.strip_suffix(unit) {
+                    return Some(number(s)? * scale);
+                }
+            }
+            number(s)
+        };
+        let argument = |i: usize| args.get(i).copied();
+        let text = match name.trim() {
+            "translate" if (1..=2).contains(&args.len()) => format!(
+                "translate({} {})",
+                length(argument(0)?)?,
+                if let Some(v) = argument(1) {
+                    length(v)?
+                } else {
+                    0.
+                }
+            ),
+            "translateX" if args.len() == 1 => format!("translate({} 0)", length(args[0])?),
+            "translateY" if args.len() == 1 => format!("translate(0 {})", length(args[0])?),
+            "scale" if (1..=2).contains(&args.len()) => format!(
+                "scale({} {})",
+                number(args[0])?,
+                if let Some(v) = argument(1) {
+                    number(v)?
+                } else {
+                    number(args[0])?
+                }
+            ),
+            "scaleX" if args.len() == 1 => format!("scale({} 1)", number(args[0])?),
+            "scaleY" if args.len() == 1 => format!("scale(1 {})", number(args[0])?),
+            "rotate" if args.len() == 1 => format!("rotate({})", angle(args[0])?),
+            "skewX" | "skewY" if args.len() == 1 => format!("{}({})", name.trim(), angle(args[0])?),
+            "matrix" if args.len() == 6 => format!(
+                "matrix({})",
+                args.iter()
+                    .map(|v| number(v).map(|v| v.to_string()))
+                    .collect::<Option<Vec<_>>>()?
+                    .join(" ")
+            ),
+            _ => return None,
+        };
+        normalized.push_str(&text);
+    }
+    normalized.parse().ok()
 }

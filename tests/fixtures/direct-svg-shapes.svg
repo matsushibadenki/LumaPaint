@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">
+  <style>
+    #css-rect { x: 40px; y: 35px; width: 120px; height: 80px; fill: #ea7048; }
+    #css-path { d: path('M220 40L330 40L275 120Z'); transform: translateX(10px); fill: #6473dc; }
+    #hidden { display: none; }
+  </style>
+  <defs>
+    <linearGradient id="paint"><stop stop-color="#20a99b"/><stop offset="1" stop-color="#90d5a7"/></linearGradient>
+    <g id="model"><rect width="110" height="70" rx="14" fill="url(#paint)"/><circle cx="55" cy="35" r="18" fill="#fff"/></g>
+    <symbol id="symbol" viewBox="0 0 50 50"><polygon points="25,0 50,50 0,50" fill="#d386ba"/></symbol>
+  </defs>
+  <rect id="css-rect"/>
+  <path id="css-path" d="M0 0L1 1"/>
+  <ellipse id="ellipse" cx="460" cy="80" rx="70" ry="40" fill="#e1b849"/>
+  <use id="first-instance" href="#model" x="55" y="220"/>
+  <use id="second-instance" href="#model" x="250" y="220"/>
+  <use id="symbol-instance" href="#symbol" x="430" y="215" width="80" height="80"/>
+  <path id="hidden" d="M0 0L640 400" stroke="black"/>
+</svg>

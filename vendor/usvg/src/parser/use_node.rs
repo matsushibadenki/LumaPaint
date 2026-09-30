@@ -254,6 +254,7 @@ fn clip_element(
     };
 
     Group {
+        source: node.source_range(),
         id,
         transform,
         clip_path: Some(Arc::new(clip_path)),

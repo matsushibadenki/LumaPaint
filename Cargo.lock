@@ -2212,7 +2212,9 @@ dependencies = [
  "serde",
  "serde_json",
  "svgtypes",
+ "tiny-skia-path",
  "unicode-segmentation",
+ "usvg",
 ]
 
 [[package]]

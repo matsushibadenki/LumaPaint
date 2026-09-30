@@ -100,13 +100,9 @@ fn resolve_clip_path_transform(node: SvgNode, state: &converter::State) -> Optio
         None => return Some(Transform::default()),
     };
 
-    let ts = match svgtypes::Transform::from_str(value) {
-        Ok(v) => v,
-        Err(_) => {
-            log::warn!("Failed to parse {} value: '{}'.", AId::Transform, value);
-            return None;
-        }
-    };
+    let ts = svgtypes::Transform::from_str(value)
+        .ok()
+        .or_else(|| super::svgtree::css_transform(value))?;
 
     let ts = Transform::from_row(
         ts.a as f32,

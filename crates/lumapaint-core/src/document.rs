@@ -4864,7 +4864,8 @@ impl Document {
                     &layer.id,
                     [self.width as f32, self.height as f32],
                 );
-                for target in targets.into_iter().rev() {
+                let mut changes = Vec::new();
+                for target in targets {
                     let indices: Vec<_> = controls
                         .iter()
                         .filter(|(id, _)| id == &target.object.id)
@@ -4881,8 +4882,9 @@ impl Document {
                     }
                     found += indices.len();
                     let edited = edit(&target.object, &indices)?;
-                    crate::svg_edit::replace(&mut layer.source, target, edited)?;
+                    changes.push((target, edited));
                 }
+                crate::svg_edit::replace_many(&mut layer.source, changes)?;
             }
             validate_svg_layer(layer)?;
         }
@@ -9352,6 +9354,59 @@ mod direct_import_tests {
         };
         doc.import_svg("SVG".into(),r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient><clipPath id="c"><path d="M0 0H100V100H0Z"/></clipPath></defs><g transform="translate(5 10)" clip-path="url(#c)"><path id="art" fill="url(#g)" d="M0 0H40V40H0Z M10 10V30H30V10Z"/><path id="other" d="M50 50L80 80"/></g></svg>"##.into()).unwrap();
         doc
+    }
+    #[test]
+    fn shape_and_css_use_edits_are_one_transaction_and_survive_reload() {
+        let mut doc = Document {
+            selected_layer: None,
+            width: 160,
+            height: 100,
+            ..Default::default()
+        };
+        doc.import_svg("Instances".into(), r##"<svg width="160" height="100"><style>rect {x:5px;y:5px;width:20px;height:20px} #hidden{display:none}</style><defs><g id="model"><rect/><ellipse cx="40" cy="15" rx="10" ry="8"/></g></defs><use id="one" href="#model" x="10"/><use id="two" href="#model" x="80"/><path id="hidden" d="M0 0L50 50"/></svg>"##.into()).unwrap();
+        let before = doc.direct_objects();
+        assert_eq!(before.len(), 4);
+        let ids: Vec<_> = before.iter().map(|(_, o)| o.id.clone()).collect();
+        doc.select_direct_objects(ids[..2].to_vec()).unwrap();
+        let original = doc.encode().unwrap();
+        let controls: Vec<_> = ids[..2].iter().map(|id| (id.clone(), 0)).collect();
+        doc.move_vector_controls(&controls, [2., 3.], false)
+            .unwrap();
+        let changed = doc.encode().unwrap();
+        let mut saved = Document::decode(&changed).unwrap();
+        let after = saved.direct_objects();
+        assert_eq!(
+            after.iter().map(|(_, o)| o.id.clone()).collect::<Vec<_>>(),
+            ids
+        );
+        for i in 0..2 {
+            let p = crate::bezier::world_point(&before[i].1, before[i].1.control_points[0]);
+            let q = crate::bezier::world_point(&after[i].1, after[i].1.control_points[0]);
+            assert_eq!(q, [p[0] + 2., p[1] + 3.]);
+        }
+        assert_eq!(before[2].1.control_points, after[2].1.control_points);
+        assert_eq!(before[3].1.transform, after[3].1.transform);
+        saved
+            .set_direct_coordinates(&[(ids[0].clone(), 0)], [30., 40.])
+            .unwrap();
+        let edited = saved.direct_objects().remove(0).1;
+        assert_eq!(
+            crate::bezier::world_point(&edited, edited.control_points[0]),
+            [30., 40.]
+        );
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), original);
+        doc.redo();
+        assert_eq!(doc.encode().unwrap(), changed);
+        let unchanged = doc.encode().unwrap();
+        assert!(doc
+            .move_vector_controls(
+                &[(ids[0].clone(), 0), ("missing".into(), 0)],
+                [1., 1.],
+                false
+            )
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), unchanged);
     }
     #[test]
     fn imported_svg_moves_path_without_losing_xml_paints_clips_or_other_paths() {

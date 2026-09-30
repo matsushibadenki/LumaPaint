@@ -25,6 +25,7 @@ impl<'input> Document<'input> {
     pub(crate) fn append(&mut self, parent_id: NodeId, kind: NodeKind) -> NodeId {
         let new_child_id = NodeId::from(self.nodes.len());
         self.nodes.push(NodeData {
+            source_range: None,
             parent: Some(parent_id),
             next_sibling: None,
             children: None,
@@ -84,6 +85,7 @@ fn parse<'input>(
 
     // Add a root node.
     doc.nodes.push(NodeData {
+        source_range: None,
         parent: None,
         next_sibling: None,
         children: None,
@@ -291,22 +293,9 @@ pub(crate) fn parse_svg_element<'input>(
                 let last_idx = doc.attrs.len() - 1;
                 let existing_idx = attrs_start_idx + idx;
 
-                // See https://developer.mozilla.org/en-US/docs/Web/CSS/important
-                // When a declaration is important, the order of precedence is reversed.
-                // Declarations marked as important in the user-agent style sheets override
-                // all important declarations in the user style sheets. Similarly, all important
-                // declarations in the user style sheets override all important declarations in the
-                // author's style sheets. Finally, all important declarations take precedence over
-                // all animations.
-                //
-                // Which means:
-                // 1) Existing is not important, new is not important -> swap
-                // 2) Existing is important, new is not important -> don't swap
-                // 3) Existing is not important, new is important -> swap
-                // 4) Existing is important, new is important -> don't swap (since the order
-                // is reversed, so existing important attributes take precedence over new
-                // important attributes)
-                let has_precedence = !doc.attrs[existing_idx].important;
+                // Rules are applied by specificity and source order, then inline style.
+                // Important declarations beat normal ones; later equal-priority values win.
+                let has_precedence = important || !doc.attrs[existing_idx].important;
 
                 if has_precedence {
                     doc.attrs.swap(existing_idx, last_idx);
@@ -322,6 +311,15 @@ pub(crate) fn parse_svg_element<'input>(
         // TODO: perform XML attribute normalization
         let imp = declaration.important;
         let val = declaration.value;
+        let val = if declaration.name == "d" {
+            val.trim()
+                .strip_prefix("path(")
+                .and_then(|v| v.strip_suffix(')'))
+                .map(|v| v.trim().trim_matches(['\"', '\'']))
+                .unwrap_or(val)
+        } else {
+            val
+        };
 
         if declaration.name == "marker" {
             insert_attribute(AId::MarkerStart, val, imp);
@@ -367,7 +365,25 @@ pub(crate) fn parse_svg_element<'input>(
             }
         } else if let Some(aid) = AId::from_str(declaration.name) {
             // Parse only the presentation attributes.
-            if aid.is_presentation() {
+            if aid.is_presentation()
+                || matches!(
+                    aid,
+                    AId::D
+                        | AId::X
+                        | AId::Y
+                        | AId::Width
+                        | AId::Height
+                        | AId::Cx
+                        | AId::Cy
+                        | AId::R
+                        | AId::Rx
+                        | AId::Ry
+                        | AId::X1
+                        | AId::Y1
+                        | AId::X2
+                        | AId::Y2
+                )
+            {
                 insert_attribute(aid, val, imp);
             }
         }
@@ -401,6 +417,7 @@ pub(crate) fn parse_svg_element<'input>(
         },
     );
 
+    doc.nodes[node_id.get_usize()].source_range = Some(xml_node.range());
     Ok(node_id)
 }
 

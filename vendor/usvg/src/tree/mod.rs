@@ -993,6 +993,7 @@ impl Node {
 /// `g` element in SVG.
 #[derive(Clone, Debug)]
 pub struct Group {
+    pub(crate) source: Option<std::ops::Range<usize>>,
     pub(crate) id: String,
     pub(crate) transform: Transform,
     pub(crate) abs_transform: Transform,
@@ -1014,9 +1015,15 @@ pub struct Group {
 }
 
 impl Group {
+    /// Source XML range before normalization, if this group came from an element.
+    pub fn source_range(&self) -> Option<&std::ops::Range<usize>> {
+        self.source.as_ref()
+    }
+
     pub(crate) fn empty() -> Self {
         let dummy = Rect::from_xywh(0.0, 0.0, 0.0, 0.0).unwrap();
         Group {
+            source: None,
             id: String::new(),
             transform: Transform::default(),
             abs_transform: Transform::default(),
@@ -1238,8 +1245,18 @@ impl Default for PaintOrder {
 }
 
 /// A path element.
+/// Source XML provenance used for source-preserving editor operations.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PathSource {
+    /// Original shape element range.
+    pub element: std::ops::Range<usize>,
+    /// Referencing use elements, ordered from outermost to innermost.
+    pub instances: Vec<std::ops::Range<usize>>,
+}
+/// A normalized drawable path.
 #[derive(Clone, Debug)]
 pub struct Path {
+    pub(crate) source: Option<PathSource>,
     pub(crate) id: String,
     pub(crate) visible: bool,
     pub(crate) fill: Option<Fill>,
@@ -1255,6 +1272,11 @@ pub struct Path {
 }
 
 impl Path {
+    /// Original shape and instance provenance used by editors.
+    pub fn source(&self) -> Option<&PathSource> {
+        self.source.as_ref()
+    }
+
     pub(crate) fn new_simple(data: Arc<tiny_skia_path::Path>) -> Option<Self> {
         Self::new(
             String::new(),
@@ -1298,6 +1320,7 @@ impl Path {
         }
 
         Some(Path {
+            source: None,
             id,
             visible,
             fill,

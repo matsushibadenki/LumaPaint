@@ -17,6 +17,25 @@ impl Tree {
     }
 }
 
+impl Tree {
+    /// Write one resolved node with its paint definitions, preserving relative transforms.
+    pub fn node_to_string(&self, node: &Node, opt: &WriteOptions) -> String {
+        let mut xml = XmlWriter::new(xmlwriter::Options {
+            use_single_quote: opt.use_single_quote,
+            indent: opt.indent,
+            attributes_indent: opt.attributes_indent,
+        });
+        xml.start_svg_element(EId::Svg);
+        xml.write_attribute("xmlns", "http://www.w3.org/2000/svg");
+        xml.write_attribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+        xml.start_svg_element(EId::Defs);
+        write_defs(self, opt, &mut xml);
+        xml.end_element();
+        write_element(node, false, opt, &mut xml);
+        xml.end_document()
+    }
+}
+
 /// Checks that type has a default value.
 trait IsDefault: Default {
     /// Checks that type has a default value.
@@ -35,6 +54,8 @@ impl<T: Default + PartialEq + Copy> IsDefault for T {
 pub struct WriteOptions {
     /// Used to add a custom prefix to each element ID during writing.
     pub id_prefix: Option<String>,
+    /// Include source provenance only in temporary editor fragments.
+    pub source_provenance: bool,
 
     /// Do not convert text into paths.
     ///
@@ -128,6 +149,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             id_prefix: Default::default(),
+            source_provenance: false,
             preserve_text: false,
             coordinates_precision: 8,
             transforms_precision: 8,
@@ -1190,6 +1212,17 @@ fn write_path(
     xml: &mut XmlWriter,
 ) {
     xml.start_svg_element(EId::Path);
+    if opt.source_provenance {
+        if let Some(source) = path.source() {
+            let mut key = source
+                .instances
+                .iter()
+                .map(|r| r.start.to_string())
+                .collect::<Vec<_>>();
+            key.push(source.element.start.to_string());
+            xml.write_attribute("data-lumapaint-source", &key.join(":"));
+        }
+    }
     if !path.id.is_empty() {
         xml.write_id_attribute(&path.id, opt);
     }

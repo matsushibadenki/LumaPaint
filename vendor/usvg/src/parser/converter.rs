@@ -706,6 +706,7 @@ pub(crate) fn convert_group(
     let abs_transform = parent.abs_transform.pre_concat(transform);
     let dummy = Rect::from_xywh(0.0, 0.0, 0.0, 0.0).unwrap();
     let mut g = Group {
+        source: node.source_range(),
         id,
         transform,
         abs_transform,
@@ -926,11 +927,14 @@ fn convert_path(
         path_transform,
     );
 
-    let path = match path {
+    let mut path = match path {
         Some(v) => v,
         None => return,
     };
 
+    if state.parent_markers.is_empty() {
+        path.source = node.source_reference();
+    }
     match (raw_paint_order.order, marker) {
         ([PaintOrderKind::Markers, _, _], Some(markers_node)) => {
             parent.children.push(Node::Group(Box::new(markers_node)));

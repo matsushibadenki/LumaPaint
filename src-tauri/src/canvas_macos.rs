@@ -742,11 +742,7 @@ impl PaintView {
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
                 let tool = TOOL.with(|value| value.get());
-                if matches!(
-                    tool,
-                    CanvasTool::VectorSelect | CanvasTool::VectorDirectSelect
-                ) && !doc.selected_layer_is_vector()
-                {
+                if selection_uses_pixel_move(&doc, tool) {
                     return pixel_move::pointer(&mut doc, point, phase, event.modifierFlags());
                 }
                 if matches!(
@@ -1468,6 +1464,13 @@ struct DirectGesture {
     marquee: bool,
     baseline: Vec<(String, usize)>,
     break_smooth: bool,
+}
+
+// Direct selection reaches imported SVG geometry even when its layer is an image layer.
+fn selection_uses_pixel_move(document: &Document, tool: CanvasTool) -> bool {
+    !document.selected_layer_is_vector()
+        && (tool == CanvasTool::VectorSelect
+            || (tool == CanvasTool::VectorDirectSelect && document.direct_objects().is_empty()))
 }
 
 fn direct_objects(document: &Document) -> Vec<(String, VectorObject)> {
@@ -5011,6 +5014,54 @@ mod tests {
                 moved
             );
         }
+    }
+
+    #[test]
+    fn imported_shapes_use_direct_selection_instead_of_image_layer_movement() {
+        use lumapaint_core::document::Point;
+        DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+        DIRECT_GESTURE.with(|draft| draft.borrow_mut().take());
+        let project = serde_json::json!({
+            "format": "LumaPaint", "version": 1, "width": 640, "height": 400,
+            "layerVisible": true, "strokes": [],
+            "svgLayers": [{ "id": "svg-layer-1", "name": "SVG", "visible": true,
+                "source": include_str!("../../tests/fixtures/direct-svg-shapes.svg") }]
+        });
+        let mut document = Document::decode(&serde_json::to_vec(&project).unwrap()).unwrap();
+        assert!(!selection_uses_pixel_move(
+            &document,
+            CanvasTool::VectorDirectSelect
+        ));
+        assert!(selection_uses_pixel_move(
+            &document,
+            CanvasTool::VectorSelect
+        ));
+        assert!(selection_uses_pixel_move(
+            &Document::default(),
+            CanvasTool::VectorDirectSelect
+        ));
+        let before = document.direct_objects();
+        let start = Point { x: 69., y: 220. };
+        direct_pointer(&mut document, start, 0, NSEventModifierFlags::empty()).unwrap();
+        assert_eq!(DIRECT_POINTS.with(|p| p.borrow().len()), 1);
+        direct_pointer(
+            &mut document,
+            Point { x: 79., y: 230. },
+            2,
+            NSEventModifierFlags::empty(),
+        )
+        .unwrap();
+        let after = document.direct_objects();
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before[3].1.control_points, after[3].1.control_points);
+        assert_eq!(before[5].1.control_points, after[5].1.control_points);
+        assert_eq!(before[0].1.control_points, after[0].1.control_points);
+        document.undo();
+        assert_eq!(
+            document.direct_objects()[3].1.control_points,
+            before[3].1.control_points
+        );
+        DIRECT_POINTS.with(|points| points.borrow_mut().clear());
     }
 
     #[test]
