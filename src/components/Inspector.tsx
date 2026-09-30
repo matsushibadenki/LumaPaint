@@ -56,11 +56,12 @@ function initialPanel(): PanelId {
 
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
-export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   thumbnailDocumentKey: string;
   onSavedPathAction: (action: SavedPathAction, id: string | null, name: string) => Promise<void>;
   vectorColors?: VectorColorControls;
   channel: DisplayChannel; onChannel: (channel: DisplayChannel) => void;
+  onStrokeStyle: (patch: Partial<import('../bridge').StrokeStyle>) => Promise<void>;
   onStrokeWidth: (width: number) => Promise<void>;
   onSelectLayer: (id: string) => void;
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
@@ -174,7 +175,7 @@ export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColor
       ><Icon name={panelIcons[panel]} /></button>{panel === 'color' && <span className="inspector-tab-separator" aria-hidden="true" />}</Fragment>)}
     </div>
 
-    {activePanel === 'stroke' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} /></section>}
+    {activePanel === 'stroke' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} onStyle={onStrokeStyle} /></section>}
     {activePanel === 'text' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">
       <TextPanel locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
     </section>}

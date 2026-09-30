@@ -1,0 +1,8 @@
+[package]
+name = "lumapaint-formats"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lumapaint-core = { path = "../lumapaint-core" }
+serde.workspace = true

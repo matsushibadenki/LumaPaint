@@ -2211,7 +2211,16 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
+ "svgtypes",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "lumapaint-formats"
+version = "0.1.0"
+dependencies = [
+ "lumapaint-core",
+ "serde",
 ]
 
 [[package]]

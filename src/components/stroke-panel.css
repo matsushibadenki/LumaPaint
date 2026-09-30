@@ -10,3 +10,12 @@
 .stroke-profile svg { width: 72px; height: 18px; }
 .stroke-note { margin-top: 16px; font-size: 11px; line-height: 1.6; color: var(--color-muted); overflow-wrap: anywhere; }
 .stroke-error { font-size: 11px; line-height: 1.5; color: #e5796b; }
+.stroke-settings { display: grid; gap: 8px; margin-top: 14px; }
+.stroke-setting { display: grid; grid-template-columns: minmax(0, 1fr) minmax(82px, 1fr); gap: 8px; align-items: center; font-size: 12px; }
+.stroke-setting span { overflow-wrap: anywhere; }
+.stroke-setting input, .stroke-setting select, .stroke-dash-input { min-width: 0; width: 100%; height: 28px; background: var(--color-field); color: inherit; border: 1px solid var(--color-rule); border-radius: 2px; padding: 2px 4px; }
+.stroke-dash-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 16px; margin-bottom: 6px; font-size: 12px; }
+.stroke-dash-heading span { margin-right: auto; }
+.stroke-dash-heading button { background: var(--color-field); color: inherit; border: 1px solid var(--color-rule); padding: 3px 6px; border-radius: 2px; font-size: 11px; }
+.stroke-hint { color: var(--color-muted); font-size: 11px; line-height: 1.6; margin: 6px 0; }
+.stroke-panel fieldset:disabled { opacity: .5; }

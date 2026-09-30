@@ -449,6 +449,46 @@ pub async fn set_vector_stroke_width(
 }
 
 #[tauri::command]
+pub fn stroke_preview(
+    width: f32,
+    style: lumapaint_core::stroke::StrokeStyle,
+) -> Result<String, String> {
+    style.validate()?;
+    if !width.is_finite() || !(0.0..=4096.0).contains(&width) {
+        return Err("Invalid stroke width".into());
+    }
+    let data = "M32 48L88 22L144 48L208 22";
+    let body = lumapaint_core::stroke::svg_stroke(
+        data,
+        data,
+        "nonzero",
+        width.min(12.),
+        &style,
+        "currentColor",
+        0,
+    );
+    Ok(format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 72">{body}</svg>"#
+    ))
+}
+
+#[tauri::command]
+pub async fn set_vector_stroke_style(
+    window: tauri::WebviewWindow,
+    patch: lumapaint_core::stroke::StrokeStylePatch,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_vector_stroke_style(patch)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, patch);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
 pub async fn select_vector_objects(
     window: tauri::WebviewWindow,
     ids: Vec<String>,

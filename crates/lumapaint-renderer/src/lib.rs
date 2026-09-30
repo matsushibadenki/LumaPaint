@@ -3419,6 +3419,7 @@ mod tests {
                         transform: [1.0, 0.0, 0.0, 1.0, x, 20.0],
                         fill: Some(VectorPaint { color }),
                         stroke: None,
+                        stroke_style: Default::default(),
                         stroke_width: 0.0,
                         visible: true,
                         kind: VectorObjectKind::Rectangle,

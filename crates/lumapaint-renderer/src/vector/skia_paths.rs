@@ -289,6 +289,7 @@ mod tests {
                 color: [255, 0, 0, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Compound,
@@ -397,6 +398,7 @@ mod tests {
             stroke: Some(VectorPaint {
                 color: [0, 0, 0, 255],
             }),
+            stroke_style: Default::default(),
             stroke_width: 4.,
             visible: true,
             kind: VectorObjectKind::Rectangle,
@@ -463,6 +465,7 @@ mod tests {
                 color: [20, 90, 180, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.0,
             visible: true,
             kind: VectorObjectKind::Rectangle,

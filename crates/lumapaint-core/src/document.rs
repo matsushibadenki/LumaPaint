@@ -360,6 +360,7 @@ pub struct LayerObjectSnapshot {
     pub fill_color: Option<[u8; 4]>,
     pub stroke_color: Option<[u8; 4]>,
     pub stroke_width: f32,
+    pub stroke_style: crate::stroke::StrokeStyle,
     pub id: String,
     pub name: String,
     pub group_path: Vec<String>,
@@ -686,6 +687,7 @@ impl Document {
                             blend_mode: object.blend_mode.clone(),
                             fill_color: object.fill.map(|p| p.color),
                             stroke_color: object.stroke.map(|p| p.color),
+                            stroke_style: object.stroke_style.clone(),
                             stroke_width: if object.stroke.is_some() {
                                 object.stroke_width
                             } else {
@@ -1914,6 +1916,7 @@ impl Document {
                 color: [r, g, b, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.0,
             visible: true,
             kind: VectorObjectKind::Text,
@@ -2046,6 +2049,60 @@ impl Document {
                         color: [color[0], color[1], color[2], 255],
                     });
                 }
+                object.validate()?;
+                layer_changed = true;
+            }
+            if layer_changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+                changed = true;
+            }
+        }
+        if !found {
+            return Err(
+                "Select a vector path / ベクターパスを選択してください / 请选择矢量路径".into(),
+            );
+        }
+        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        if changed {
+            let before = self.vector_history_state();
+            self.svg_layers = layers;
+            self.record_vector_edit(before);
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
+    pub fn set_selected_stroke_style(
+        &mut self,
+        patch: crate::stroke::StrokeStylePatch,
+    ) -> Result<(), String> {
+        let mut layers = self.svg_layers.clone();
+        let mut changed = false;
+        let mut found = false;
+        for layer in &mut layers {
+            let mut layer_changed = false;
+            for object in &mut layer.vector_objects {
+                if !self.selected_vector_objects.contains(&object.id) {
+                    continue;
+                }
+                if !layer.visible
+                    || layer.locked
+                    || !object.visible
+                    || object.kind == VectorObjectKind::Text
+                {
+                    return Err("Select unlocked visible vector paths / ロックされていない表示中のパスを選択してください / 请选择未锁定的可见路径".into());
+                }
+                found = true;
+                let mut style = object.stroke_style.clone();
+                style.apply(&patch);
+                style.validate()?;
+                if style == object.stroke_style {
+                    continue;
+                }
+                object.stroke_style = style;
                 object.validate()?;
                 layer_changed = true;
             }
@@ -3163,6 +3220,7 @@ impl Document {
                 color: self.layer_guide_color(&edit.layer_id),
             });
             object.stroke_width = width;
+            object.stroke_style = Default::default();
         }
         layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
         doc.svg_layers.push(layer);
@@ -3427,6 +3485,11 @@ impl Document {
             if !layer.vector_layer {
                 continue;
             }
+            // Outline mode shows the editable centerline, without generated stroke outlines or arrowheads.
+            for object in &mut layer.vector_objects {
+                object.stroke_style = Default::default();
+            }
+            layer.source = vector_svg(preview.width, preview.height, &layer.vector_objects);
             // CSS covers vector geometry and shaped text. Clipping and
             // masks are disabled only in this projection so their paths can be inspected.
             let style = format!(
@@ -5398,6 +5461,7 @@ mod tests {
                 color: [40, 80, 160, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,
@@ -6439,12 +6503,35 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             crate::vector::FillRule::NonZero => "nonzero",
             crate::vector::FillRule::EvenOdd => "evenodd",
         };
-        let _ = write!(
-            svg,
-            r#"<path d="{}" transform="matrix({a} {b} {c} {d} {e} {f})" fill="{fill}" stroke="{stroke}" stroke-width="{}" fill-rule="{rule}"/>"#,
-            escape_xml(&object.path.data),
-            object.stroke_width
-        );
+        let data = escape_xml(&object.path.data);
+        let appearance = &object.stroke_style;
+        if appearance.profile == crate::stroke::WidthProfile::Uniform
+            && appearance.alignment == crate::stroke::StrokeAlignment::Center
+            && appearance.start_arrow == crate::stroke::Arrowhead::None
+            && appearance.end_arrow == crate::stroke::Arrowhead::None
+        {
+            let _ = write!(
+                svg,
+                r#"<path d="{data}" transform="matrix({a} {b} {c} {d} {e} {f})" fill="{fill}" stroke="{stroke}" stroke-width="{}" fill-rule="{rule}" {}/>"#,
+                object.stroke_width,
+                appearance.attributes()
+            );
+        } else {
+            let _ = write!(
+                svg,
+                r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><path d="{data}" fill="{fill}" fill-rule="{rule}"/>"#
+            );
+            svg.push_str(&crate::stroke::svg_stroke(
+                &data,
+                &object.path.data,
+                rule,
+                object.stroke_width,
+                &object.stroke_style,
+                &stroke,
+                object_index,
+            ));
+            svg.push_str("</g>");
+        }
         for _ in 0..clips {
             svg.push_str("</g>");
         }
@@ -6746,6 +6833,7 @@ mod persistence_tests {
                     stroke: Some(VectorPaint {
                         color: [0, 0, 0, 128],
                     }),
+                    stroke_style: Default::default(),
                     stroke_width: 2.0,
                     visible: true,
                     kind: crate::vector::VectorObjectKind::Path,
@@ -6793,6 +6881,7 @@ mod persistence_tests {
                             color: [50, 80, 120, 255],
                         }),
                         stroke: None,
+                        stroke_style: Default::default(),
                         stroke_width: 0.0,
                         visible: true,
                         kind: crate::vector::VectorObjectKind::Rectangle,
@@ -6855,6 +6944,7 @@ mod persistence_tests {
                         color: [255, 0, 0, 255],
                     }),
                     stroke: None,
+                    stroke_style: Default::default(),
                     stroke_width: 0.0,
                     visible: true,
                     kind: crate::vector::VectorObjectKind::Path,
@@ -6934,6 +7024,7 @@ mod persistence_tests {
                         color: [0, 0, 0, 255],
                     }),
                     stroke: None,
+                    stroke_style: Default::default(),
                     stroke_width: 0.0,
                     visible: true,
                     kind: crate::vector::VectorObjectKind::Rectangle,
@@ -7007,6 +7098,7 @@ mod persistence_tests {
                 color: [40, 80, 160, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,
@@ -8312,6 +8404,121 @@ mod text_tests {
 mod stroke_width_tests {
     use super::*;
     #[test]
+    fn stroke_style_patch_is_atomic_persisted_and_keeps_unrelated_settings() {
+        use crate::stroke::*;
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        for (id, cap) in [("a", LineCap::Round), ("b", LineCap::Square)] {
+            doc.upsert_vector_object(
+                &layer,
+                VectorObject {
+                    id: id.into(),
+                    name: id.into(),
+                    opacity: 1.,
+                    blend_mode: "normal".into(),
+                    group_path: vec![],
+                    clipping_group: None,
+                    bounds_reset: false,
+                    path: VectorPath {
+                        data: "M20 50C40 10 80 90 120 50".into(),
+                        fill_rule: crate::vector::FillRule::NonZero,
+                    },
+                    transform: [1., 0., 0., 1., 0., 0.],
+                    fill: None,
+                    stroke: Some(VectorPaint {
+                        color: [10, 20, 30, 255],
+                    }),
+                    stroke_width: 8.,
+                    stroke_style: StrokeStyle {
+                        cap,
+                        ..Default::default()
+                    },
+                    visible: true,
+                    kind: VectorObjectKind::Path,
+                    control_points: vec![[20., 50.], [120., 50.]],
+                    text: None,
+                },
+            )
+            .unwrap();
+        }
+        doc.select_vector_objects(vec!["a".into(), "b".into()])
+            .unwrap();
+        let before = doc.encode().unwrap();
+        let patch = || StrokeStylePatch {
+            profile: Some(WidthProfile::TaperBoth),
+            dash_array: Some(vec![12., 5.]),
+            end_arrow: Some(Arrowhead::Triangle),
+            ..Default::default()
+        };
+        doc.set_selected_stroke_style(patch()).unwrap();
+        assert_eq!(
+            doc.svg_layers[0].vector_objects[0].stroke_style.cap,
+            LineCap::Round
+        );
+        assert_eq!(
+            doc.svg_layers[0].vector_objects[1].stroke_style.cap,
+            LineCap::Square
+        );
+        let outline = doc.outline_view([0., 0.], 1.);
+        assert!(!outline.svg_layers[0].source.contains("scale(8)"));
+        assert!(outline.svg_layers[0]
+            .vector_objects
+            .iter()
+            .all(|o| o.stroke_style == StrokeStyle::default()));
+        assert_eq!(
+            doc.svg_layers[0].vector_objects[0].stroke_style.profile,
+            WidthProfile::TaperBoth
+        );
+        let after = doc.encode().unwrap();
+        let revision = doc.revision;
+        doc.set_selected_stroke_style(patch()).unwrap();
+        assert_eq!(doc.revision, revision);
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.redo();
+        assert_eq!(doc.encode().unwrap(), after);
+        let loaded = Document::decode(&after).unwrap();
+        assert_eq!(
+            loaded.svg_layers[0].vector_objects,
+            doc.svg_layers[0].vector_objects
+        );
+        assert_eq!(
+            doc.snapshot().layers[1].objects[0].stroke_style,
+            doc.svg_layers[0].vector_objects[0].stroke_style
+        );
+        doc.svg_layers[0].vector_objects[1].visible = false;
+        let locked = doc.encode().unwrap();
+        assert!(doc
+            .set_selected_stroke_style(StrokeStylePatch {
+                join: Some(LineJoin::Bevel),
+                ..Default::default()
+            })
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), locked);
+        doc.svg_layers[0].vector_objects[1].visible = true;
+        for invalid in [f32::NAN, 0., 101.] {
+            assert!(doc
+                .set_selected_stroke_style(StrokeStylePatch {
+                    miter_limit: Some(invalid),
+                    ..Default::default()
+                })
+                .is_err());
+            assert_eq!(doc.encode().unwrap(), after);
+        }
+        let mut legacy: serde_json::Value = serde_json::from_slice(&after).unwrap();
+        for object in legacy["svgLayers"][0]["vectorObjects"]
+            .as_array_mut()
+            .unwrap()
+        {
+            object.as_object_mut().unwrap().remove("strokeStyle");
+        }
+        let legacy = Document::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            legacy.svg_layers[0].vector_objects[0].stroke_style,
+            StrokeStyle::default()
+        );
+    }
+    #[test]
     fn selected_stroke_width_is_atomic_undoable_and_keeps_geometry() {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
@@ -8333,6 +8540,7 @@ mod stroke_width_tests {
             stroke: Some(VectorPaint {
                 color: [10, 20, 30, 255],
             }),
+            stroke_style: Default::default(),
             stroke_width: 1.,
             visible: true,
             kind: VectorObjectKind::Path,
@@ -8514,6 +8722,7 @@ mod independent_saved_path_tests {
                 color: [255, 0, 0, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,

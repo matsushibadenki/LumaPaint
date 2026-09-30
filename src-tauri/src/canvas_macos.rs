@@ -927,6 +927,7 @@ impl PenDraft {
                     255,
                 ],
             }),
+            stroke_style: Default::default(),
             stroke_width: self.brush.size,
             visible: true,
             kind: VectorObjectKind::Bezier,
@@ -1440,6 +1441,7 @@ fn vector_pointer(
             fill,
             stroke,
             stroke_width,
+            stroke_style: Default::default(),
             visible: true,
             kind,
             control_points,
@@ -1763,6 +1765,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                 stroke: Some(VectorPaint {
                     color: [48, 144, 255, 255],
                 }),
+                stroke_style: Default::default(),
                 stroke_width: 1. / zoom,
                 visible: true,
                 kind: VectorObjectKind::Compound,
@@ -2755,6 +2758,16 @@ pub fn set_vector_stroke_width(width: f32, color: [u8; 3]) -> Result<DocumentSna
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|document| document.borrow().snapshot()))
+}
+
+pub fn set_vector_stroke_style(
+    patch: lumapaint_core::stroke::StrokeStylePatch,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| doc.borrow_mut().set_selected_stroke_style(patch))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
 pub fn select_vector_objects(ids: Vec<String>) -> Result<DocumentSnapshot, String> {

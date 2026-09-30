@@ -109,6 +109,8 @@ pub fn run() {
             canvas::finish_text_edit,
             canvas::select_vector_objects,
             canvas::set_vector_stroke_width,
+            canvas::set_vector_stroke_style,
+            canvas::stroke_preview,
             canvas::set_vector_object_visibility,
             canvas::reorder_vector_objects,
             canvas::arrange_selected_vectors,

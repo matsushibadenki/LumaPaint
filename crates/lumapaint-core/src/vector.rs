@@ -799,6 +799,8 @@ pub struct VectorObject {
     pub fill: Option<VectorPaint>,
     pub stroke: Option<VectorPaint>,
     pub stroke_width: f32,
+    #[serde(default)]
+    pub stroke_style: crate::stroke::StrokeStyle,
     pub visible: bool,
     #[serde(default)]
     pub kind: VectorObjectKind,
@@ -810,6 +812,7 @@ pub struct VectorObject {
 
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
+        self.stroke_style.validate()?;
         if !self.opacity.is_finite()
             || !(0.0..=1.0).contains(&self.opacity)
             || !OBJECT_BLEND_MODES.contains(&self.blend_mode.as_str())
@@ -855,6 +858,8 @@ impl VectorObject {
         {
             return Err("Invalid vector object".into());
         }
+        self.stroke_style
+            .validate_geometry(&self.path.data, self.stroke_width)?;
         if self.kind == VectorObjectKind::Bezier {
             crate::bezier::path_data(&self.control_points, false)?;
         }
@@ -1494,6 +1499,7 @@ mod path_hit_tests {
                 color: [30, 60, 90, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.0,
             visible: true,
             kind: VectorObjectKind::Path,

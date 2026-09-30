@@ -22,7 +22,14 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
-export interface LayerObjectSnapshot { opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface StrokeStyle {
+  cap: 'butt' | 'round' | 'square'; join: 'miter' | 'round' | 'bevel'; miterLimit: number;
+  alignment: 'center' | 'inside' | 'outside'; dashArray: number[]; dashOffset: number;
+  startArrow: 'none' | 'triangle' | 'open' | 'circle'; endArrow: 'none' | 'triangle' | 'open' | 'circle';
+  arrowScale: number; profile: 'uniform' | 'taperBoth' | 'taperStart' | 'taperEnd' | 'bulge';
+}
+export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform' };
+export interface LayerObjectSnapshot { opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot {
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
@@ -75,7 +82,7 @@ export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
 export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
 export type PathEditAction = 'join' | 'average' | 'outline' | 'offset' | 'reverse' | 'simplify' | 'smooth' | 'addAnchors' | 'removeAnchors' | 'divideBelow' | 'splitGrid' | 'cleanUp';
 export interface VectorPaint { color: [number, number, number, number] }
-export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
+export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; strokeStyle?: StrokeStyle; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean; format: 'legacy' | 'tiled' }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
@@ -358,6 +365,14 @@ export function selectLayer(id: string, preserveObjects = false): Promise<Docume
   return result;
 }
 
+export function strokePreview(width: number, style: StrokeStyle): Promise<string> {
+  return invoke<string>('stroke_preview', { width, style });
+}
+export function setVectorStrokeStyle(patch: Partial<StrokeStyle>): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_stroke_style', { patch }));
+  canvasQueue = result.then(() => {}, () => {});
+  return result;
+}
 export function setVectorStrokeWidth(width: number, color: Brush['color']): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_vector_stroke_width', { width, color }));
   canvasQueue = result.then(() => undefined, () => undefined);

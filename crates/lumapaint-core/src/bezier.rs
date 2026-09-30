@@ -523,6 +523,7 @@ mod anchor_tests {
             stroke: Some(VectorPaint {
                 color: [0, 0, 0, 255],
             }),
+            stroke_style: Default::default(),
             stroke_width: 1.,
             visible: true,
             kind: VectorObjectKind::Bezier,
@@ -745,6 +746,7 @@ mod direct_tests {
                 color: [0, 0, 0, 255],
             }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,

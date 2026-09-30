@@ -1475,6 +1475,7 @@ mod clipping_tests {
             transform: [1., 0., 0., 1., 0., 0.],
             fill: Some(VectorPaint { color }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,
@@ -1542,6 +1543,7 @@ mod clipping_tests {
             transform: [1., 0., 0., 1., 0., 0.],
             fill: Some(VectorPaint { color }),
             stroke: None,
+            stroke_style: Default::default(),
             stroke_width: 0.,
             visible: true,
             kind: VectorObjectKind::Rectangle,
@@ -1795,4 +1797,226 @@ fn pixel_layer_moves_outside_and_back_without_accumulating_crops() {
         .unwrap()
         .unwrap();
     assert_eq!(rasterize_svg(&source, 960, 640).unwrap().pixels, initial);
+}
+
+#[cfg(test)]
+mod stroke_appearance_tests {
+    use super::*;
+    use lumapaint_core::stroke::*;
+    fn render(path: &str, style: &StrokeStyle) -> SvgRaster {
+        let body = svg_stroke(path, path, "nonzero", 10., style, "#ff0000", 0);
+        rasterize_svg(
+            &format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100">{body}</svg>"#
+            ),
+            160,
+            100,
+        )
+        .unwrap()
+    }
+    fn alpha(image: &SvgRaster, x: usize, y: usize) -> u8 {
+        image.pixels[(y * 160 + x) * 4 + 3]
+    }
+    #[test]
+    fn stroke_alignment_preserves_inside_outside_and_holes() {
+        let path = "M30 20H130V80H30Z M50 35H110V65H50Z";
+        for (alignment, outside, inside) in [
+            (StrokeAlignment::Center, 255, 255),
+            (StrokeAlignment::Inside, 0, 255),
+            (StrokeAlignment::Outside, 255, 0),
+        ] {
+            let style = StrokeStyle {
+                alignment,
+                ..Default::default()
+            };
+            let body = svg_stroke(path, path, "evenodd", 10., &style, "red", 0);
+            let image = rasterize_svg(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100">{body}</svg>"#),160,100).unwrap();
+            assert_eq!(alpha(&image, 80, 18), outside, "{alignment:?}");
+            assert_eq!(alpha(&image, 80, 22), inside, "{alignment:?}");
+            assert_eq!(alpha(&image, 80, 33), inside, "hole {alignment:?}");
+            assert_eq!(alpha(&image, 80, 37), outside, "hole {alignment:?}");
+            assert_eq!(alpha(&image, 80, 50), 0);
+        }
+    }
+    #[test]
+    fn stroke_caps_dashes_and_endpoint_arrows_change_pixels() {
+        let path = "M30 50H130";
+        let butt = render(path, &StrokeStyle::default());
+        assert_eq!(alpha(&butt, 27, 50), 0);
+        for cap in [LineCap::Round, LineCap::Square] {
+            assert_eq!(
+                alpha(
+                    &render(
+                        path,
+                        &StrokeStyle {
+                            cap,
+                            ..Default::default()
+                        }
+                    ),
+                    27,
+                    50
+                ),
+                255
+            );
+        }
+        let dashed = render(
+            path,
+            &StrokeStyle {
+                dash_array: vec![10., 10.],
+                ..Default::default()
+            },
+        );
+        assert_eq!(alpha(&dashed, 35, 50), 255);
+        assert_eq!(alpha(&dashed, 45, 50), 0);
+        let shifted = render(
+            path,
+            &StrokeStyle {
+                dash_array: vec![10., 10.],
+                dash_offset: 10.,
+                ..Default::default()
+            },
+        );
+        assert_eq!(alpha(&shifted, 35, 50), 0);
+        assert_eq!(alpha(&shifted, 45, 50), 255);
+        let arrow = render(
+            path,
+            &StrokeStyle {
+                start_arrow: Arrowhead::Triangle,
+                end_arrow: Arrowhead::Triangle,
+                ..Default::default()
+            },
+        );
+        assert!(alpha(&arrow, 60, 60) > 0);
+        assert!(alpha(&arrow, 100, 60) > 0);
+        assert_eq!(alpha(&arrow, 20, 60), 0);
+        assert_eq!(alpha(&arrow, 140, 60), 0);
+        let open = render(
+            path,
+            &StrokeStyle {
+                alignment: StrokeAlignment::Inside,
+                ..Default::default()
+            },
+        );
+        assert_eq!(open.pixels, butt.pixels);
+    }
+    #[test]
+    fn stroke_joins_and_miter_limit_control_corner_extent() {
+        let path = "M30 75L80 25L130 75";
+        let miter = render(path, &StrokeStyle::default());
+        let round = render(
+            path,
+            &StrokeStyle {
+                join: LineJoin::Round,
+                ..Default::default()
+            },
+        );
+        let bevel = render(
+            path,
+            &StrokeStyle {
+                join: LineJoin::Bevel,
+                ..Default::default()
+            },
+        );
+        assert_eq!(alpha(&miter, 80, 19), 255);
+        assert_eq!(alpha(&round, 80, 19), 0);
+        assert!(alpha(&round, 80, 20) > 200);
+        assert_eq!(alpha(&bevel, 80, 20), 0);
+        let limited = render(
+            path,
+            &StrokeStyle {
+                miter_limit: 1.,
+                ..Default::default()
+            },
+        );
+        assert_eq!(limited.pixels, bevel.pixels);
+        let transformed = svg_stroke(
+            path,
+            path,
+            "nonzero",
+            10.,
+            &StrokeStyle {
+                join: LineJoin::Round,
+                ..Default::default()
+            },
+            "red",
+            0,
+        );
+        let image=rasterize_svg(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><g transform="translate(10 0) scale(0.5)">{transformed}</g></svg>"#),160,100).unwrap();
+        assert!(alpha(&image, 50, 11) > 0);
+        assert_eq!(alpha(&image, 80, 20), 0);
+    }
+    #[test]
+    fn stroke_variable_closed_dash_preserves_the_closing_join() {
+        let path = "M40 30H120V70H40Z";
+        let style = StrokeStyle {
+            profile: WidthProfile::Bulge,
+            cap: LineCap::Square,
+            join: LineJoin::Bevel,
+            ..Default::default()
+        };
+        assert_eq!(
+            render(path, &style).pixels,
+            render(
+                path,
+                &StrokeStyle {
+                    dash_array: vec![500., 10.],
+                    ..style
+                }
+            )
+            .pixels
+        );
+    }
+    #[test]
+    fn stroke_variable_width_tapers_and_dashes_without_alpha_seams() {
+        let path = "M20 50H140";
+        for profile in [
+            WidthProfile::TaperBoth,
+            WidthProfile::TaperStart,
+            WidthProfile::TaperEnd,
+            WidthProfile::Bulge,
+        ] {
+            let style = StrokeStyle {
+                profile,
+                ..Default::default()
+            };
+            let image = render(path, &style);
+            assert!(alpha(&image, 80, 50) > 200, "{profile:?}");
+            if matches!(profile, WidthProfile::TaperBoth | WidthProfile::TaperStart) {
+                assert_eq!(alpha(&image, 22, 46), 0);
+            }
+            if matches!(profile, WidthProfile::TaperBoth | WidthProfile::TaperEnd) {
+                assert_eq!(alpha(&image, 138, 46), 0);
+            }
+            let dashed = render(
+                path,
+                &StrokeStyle {
+                    dash_array: vec![10., 10.],
+                    ..style
+                },
+            );
+            assert_eq!(alpha(&dashed, 75, 50), 0);
+            assert!(alpha(&dashed, 85, 50) > 200);
+        }
+        let body = svg_stroke(
+            path,
+            path,
+            "nonzero",
+            10.,
+            &StrokeStyle {
+                profile: WidthProfile::Bulge,
+                ..Default::default()
+            },
+            "#ff000080",
+            0,
+        );
+        let image = rasterize_svg(
+            &format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100">{body}</svg>"#
+            ),
+            160,
+            100,
+        )
+        .unwrap();
+        assert!((127..=128).contains(&alpha(&image, 80, 50)));
+    }
 }

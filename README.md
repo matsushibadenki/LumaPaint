@@ -15,6 +15,8 @@
 
 macOSでは基本的なSVG図形をGoogle Skiaで描画し、複雑なSVGはresvgで描画します。ベクター編集に向けたパス演算基盤も追加しています。制御点編集UIは後続の実装です。[採用範囲とビルド条件](docs/vector-engine.md)を参照してください。
 
+外部形式の対応は[Adobe／オープン形式の互換設計と対応表](docs/format-compatibility.md)で管理します。独立RustライブラリにPSDの不透明RGB8合成画像の読込基盤を追加しています。PSDのGUI読込、レイヤー編集互換、PSD出力はまだ未対応です。
+
 ## 開発環境（macOS優先）
 
 - Node.js 22以上、npm
@@ -47,6 +49,7 @@ macOSアプリの出力先は `target/release/bundle/macos/LumaPaint.app` です
 src/                      React + TypeScript（UI・翻訳・IPC窓口）
 src-tauri/                Tauri 2（デスクトップ起動・OSとの接続）
 crates/lumapaint-core/    OS・UI非依存のRustコア
+crates/lumapaint-formats/ 外部形式アダプター・互換レポート
 crates/lumapaint-renderer/  wgpu描画・WGSLシェーダー（OS非依存）
 docs/                    設計・開発方針・ロードマップ
 ```
