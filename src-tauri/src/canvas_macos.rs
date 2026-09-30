@@ -2047,8 +2047,7 @@ fn vector_select_pointer(
             return Ok(());
         }
         let previous = document.selected_vector_ids().to_vec();
-        let mut probe = document.clone();
-        let hit = probe.select_vector_at(point, object_selection_tolerance(), false);
+        let hit = document.vector_at(point, object_selection_tolerance());
         if hit.is_none() {
             VECTOR_MARQUEE.with(|draft| {
                 *draft.borrow_mut() = Some((

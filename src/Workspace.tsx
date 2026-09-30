@@ -119,7 +119,6 @@ export function Workspace() {
   const [placementBusy, setPlacementBusy] = useState(false);
   const [importImageOpen, setImportImageOpen] = useState(false);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
-  const startupChecked = useRef(false);
   const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -167,7 +166,7 @@ export function Workspace() {
   useEffect(() => {
     let active = true;
     let stop = () => {};
-    getDocumentWorkspace().then(next => { if (active) { updateWorkspace(next); if (!startupChecked.current) { startupChecked.current = true; setNewDocumentOpen(next.documents.length === 0); } } }).catch(cause => { if (active) setError(String(cause)); });
+    getDocumentWorkspace().then(next => { if (active) updateWorkspace(next); }).catch(cause => { if (active) setError(String(cause)); });
     subscribeDocuments(next => { if (active) { updateWorkspace(next); if (next.active) setNewDocumentOpen(false); } })
       .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });

@@ -4389,17 +4389,12 @@ impl Document {
         self.select_vector_objects(ids)
     }
 
-    pub fn select_vector_at(
-        &mut self,
-        point: Point,
-        tolerance: f32,
-        additive: bool,
-    ) -> Option<String> {
+    /// Read-only picking avoids cloning the document and its history for a click.
+    pub fn vector_at(&self, point: Point, tolerance: f32) -> Option<String> {
         if !point.valid() || !tolerance.is_finite() || !(0.0..=256.0).contains(&tolerance) {
             return None;
         }
-        let hit = self
-            .svg_layers
+        self.svg_layers
             .iter()
             .rev()
             .filter(|layer| {
@@ -4410,7 +4405,19 @@ impl Document {
             })
             .flat_map(|layer| layer.vector_objects.iter().rev())
             .find(|object| object.hit_test([point.x, point.y], tolerance))
-            .map(|object| object.id.clone());
+            .map(|object| object.id.clone())
+    }
+
+    pub fn select_vector_at(
+        &mut self,
+        point: Point,
+        tolerance: f32,
+        additive: bool,
+    ) -> Option<String> {
+        if !point.valid() || !tolerance.is_finite() || !(0.0..=256.0).contains(&tolerance) {
+            return None;
+        }
+        let hit = self.vector_at(point, tolerance);
         if let Some(id) = hit.as_ref() {
             if !additive {
                 self.selected_vector_objects.clear();

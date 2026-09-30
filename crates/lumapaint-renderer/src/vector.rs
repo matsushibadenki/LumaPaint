@@ -434,6 +434,7 @@ pub(crate) struct SvgRegionRaster {
     pub raster: SvgRaster,
     pub origin: (usize, usize),
     pub width: usize,
+    pub rectangle: [f32; 4],
 }
 
 pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster, String> {
@@ -460,6 +461,36 @@ pub(crate) fn rasterize_svg_workspace(
     }
     rasterize_svg_region(source, size[0], size[1], false, Some((document, rect)))
         .map(|region| region.raster.pixels)
+}
+
+/// Object-local texture, including pixels outside the artboard. Its rectangle
+/// remains in document coordinates and is translated only by the GPU.
+pub(crate) fn rasterize_svg_object(
+    source: &str,
+    document: (u32, u32),
+) -> Result<(Vec<u8>, [f32; 4]), String> {
+    if source.len() > 4 * 1024 * 1024 {
+        return Err("SVG source too large".into());
+    }
+    let options = usvg::Options {
+        fontdb: system_fonts(),
+        font_resolver: font_resolver(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree = usvg::Tree::from_str(source, &options).map_err(|e| e.to_string())?;
+    let scale =
+        (document.0 as f32 / tree.size().width()).min(document.1 as f32 / tree.size().height());
+    let x = (document.0 as f32 - tree.size().width() * scale) * 0.5;
+    let y = (document.1 as f32 - tree.size().height() * scale) * 0.5;
+    let region = rasterize_tree_region(&tree, [document.0, document.1], [scale, x, y], true, true)?;
+    if region.raster.pixels.is_empty() {
+        return Err("Empty object cache".into());
+    }
+    Ok((region.raster.pixels, region.rectangle))
 }
 
 fn rasterize_svg_region(
@@ -501,6 +532,18 @@ fn rasterize_svg_region(
         )
     };
 
+    rasterize_tree_region(&tree, [width, height], [scale, x, y], crop, false)
+}
+
+fn rasterize_tree_region(
+    tree: &usvg::Tree,
+    size: [u32; 2],
+    transform: [f32; 3],
+    crop: bool,
+    object: bool,
+) -> Result<SvgRegionRaster, String> {
+    let [width, height] = size;
+    let [scale, x, y] = transform;
     let bounds = tree.root().abs_layer_bounding_box();
     // One pixel of padding prevents reusing a texture whose antialiasing was clipped.
     let fully_contained = bounds.left() * scale + x >= 1.0
@@ -510,24 +553,37 @@ fn rasterize_svg_region(
 
     // Conservative drawable bounds including strokes/effects, rounded to integral pixels.
     // Integer origin and the unchanged document transform retain the full-surface AA phase.
-    let (left, top, right, bottom) = if crop {
-        let left = (bounds.left() * scale + x - 2.0)
-            .floor()
-            .clamp(0.0, width as f32) as u32;
-        let top = (bounds.top() * scale + y - 2.0)
-            .floor()
-            .clamp(0.0, height as f32) as u32;
-        let right = (bounds.right() * scale + x + 2.0)
-            .ceil()
-            .clamp(0.0, width as f32) as u32;
-        let bottom = (bounds.bottom() * scale + y + 2.0)
-            .ceil()
-            .clamp(0.0, height as f32) as u32;
-        (left, top, right, bottom)
-    } else {
-        (0, 0, width, height)
+    let coordinate = |value: f32, limit: u32| {
+        if object {
+            value as i32
+        } else {
+            value.clamp(0.0, limit as f32) as i32
+        }
     };
-    let origin = (left as usize, top as usize);
+    let (left, top, right, bottom) = if crop {
+        (
+            coordinate((bounds.left() * scale + x - 2.0).floor(), width),
+            coordinate((bounds.top() * scale + y - 2.0).floor(), height),
+            coordinate((bounds.right() * scale + x + 2.0).ceil(), width),
+            coordinate((bounds.bottom() * scale + y + 2.0).ceil(), height),
+        )
+    } else {
+        (0, 0, width as i32, height as i32)
+    };
+    let origin = (left.max(0) as usize, top.max(0) as usize);
+    let rectangle = [
+        left as f32,
+        top as f32,
+        (right as i64 - left as i64) as f32,
+        (bottom as i64 - top as i64) as f32,
+    ];
+    if object
+        && (rectangle[2] > 8192.0
+            || rectangle[3] > 8192.0
+            || rectangle[2] * rectangle[3] * 4.0 > 64.0 * 1024.0 * 1024.0)
+    {
+        return Err("Object cache exceeds raster budget".into());
+    }
     if right <= left || bottom <= top || (crop && tree.root().children().is_empty()) {
         return Ok(SvgRegionRaster {
             raster: SvgRaster {
@@ -536,11 +592,12 @@ fn rasterize_svg_region(
                 fully_contained,
             },
             origin,
+            rectangle,
             width: 0,
         });
     }
-    let width = right - left;
-    let height = bottom - top;
+    let width = (right - left) as u32;
+    let height = (bottom - top) as u32;
     let x = x - left as f32;
     let y = y - top as f32;
 
@@ -574,13 +631,14 @@ fn rasterize_svg_region(
                 fully_contained,
             },
             origin,
+            rectangle,
             width: width as usize,
         });
     }
 
     let mut pixmap = tiny_skia::Pixmap::new(width, height).ok_or("SVG raster allocation failed")?;
     resvg::render(
-        &tree,
+        tree,
         tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, x, y),
         &mut pixmap.as_mut(),
     );
@@ -591,6 +649,7 @@ fn rasterize_svg_region(
             fully_contained,
         },
         origin,
+        rectangle,
         width: width as usize,
     })
 }
@@ -2322,5 +2381,33 @@ mod independent_export_tests {
         let before = rasterize_svg(source, 200, 200).unwrap();
         let after = rasterize_svg(&output, 200, 200).unwrap();
         assert_eq!(before.pixels, after.pixels);
+    }
+}
+
+#[cfg(test)]
+mod object_cache_tests {
+    use super::*;
+    #[test]
+    fn object_texture_retains_exterior_and_matches_artboard_pixels() {
+        let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-20" y="10" width="60" height="30" fill="red" opacity="0.5"/></svg>"#;
+        let (pixels, rect) = rasterize_svg_object(source, (960, 640)).unwrap();
+        assert!(rect[0] < 0.0);
+        assert!(pixels.len() < 960 * 640 * 4 / 100);
+        let original = rasterize_svg(source, 960, 640).unwrap();
+        for y in 10..40usize {
+            for x in 0..40usize {
+                let local = ((y - rect[1] as usize) * rect[2] as usize
+                    + (x as i32 - rect[0] as i32) as usize)
+                    * 4;
+                let full = (y * 960 + x) * 4;
+                assert_eq!(&pixels[local..local + 4], &original.pixels[full..full + 4]);
+            }
+        }
+        assert!(pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .any(|(index, p)| rect[0] + ((index % rect[2] as usize) as f32) < 0.0 && p[3] > 0));
     }
 }

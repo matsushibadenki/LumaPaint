@@ -13,11 +13,21 @@ impl WorkspaceCache {
         self.key = None;
         self.layers.clear();
     }
+    #[cfg(test)]
     pub fn prepare(
         &mut self,
         document: &Document,
         viewport: Viewport,
         offset: [f32; 2],
+    ) -> Result<Option<Vec<PreparedSvgLayer>>, String> {
+        self.prepare_filtered(document, viewport, offset, &Default::default())
+    }
+    pub fn prepare_filtered(
+        &mut self,
+        document: &Document,
+        viewport: Viewport,
+        offset: [f32; 2],
+        excluded: &std::collections::HashSet<&str>,
     ) -> Result<Option<Vec<PreparedSvgLayer>>, String> {
         let key = [
             viewport.width as f32,
@@ -32,6 +42,7 @@ impl WorkspaceCache {
         let previews: Vec<SvgLayer> = if offset != [0.0, 0.0] {
             document
                 .visible_svg_layers()
+                .filter(|layer| !excluded.contains(layer.id.as_str()))
                 .map(|layer| {
                     document
                         .translated_vector_layer(layer, offset[0], offset[1])
@@ -42,7 +53,10 @@ impl WorkspaceCache {
             Vec::new()
         };
         let layers: Vec<&SvgLayer> = if offset == [0.0, 0.0] {
-            document.visible_svg_layers().collect()
+            document
+                .visible_svg_layers()
+                .filter(|layer| !excluded.contains(layer.id.as_str()))
+                .collect()
         } else {
             previews.iter().collect()
         };
@@ -85,7 +99,7 @@ impl WorkspaceCache {
             }
             prepared.push(PreparedSvgLayer {
                 id: layer.id.clone(),
-                source: String::new(),
+                source: layer.id.clone(),
                 opacity,
                 size: (size[0], size[1]),
                 fully_contained: true,

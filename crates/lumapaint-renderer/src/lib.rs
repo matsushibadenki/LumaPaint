@@ -27,6 +27,7 @@ fn render_metrics_enabled() -> bool {
 
 #[derive(Default)]
 struct VectorDragMetrics {
+    object_reuse: usize,
     unit_reuse: usize,
     partial_reuse: usize,
     cache_builds: usize,
@@ -1268,6 +1269,9 @@ pub struct Renderer {
     brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
     workspace_pipeline: wgpu::RenderPipeline,
+    object_pipeline: wgpu::RenderPipeline,
+    object_layout: wgpu::BindGroupLayout,
+    object_cache: HashMap<String, ObjectLayerCache>,
     workspace_cache: workspace::WorkspaceCache,
     workspace_image: Option<Vec<CachedSvg>>,
     tile_pipeline: wgpu::RenderPipeline,
@@ -1350,9 +1354,25 @@ fn create_textured_layer_pipeline(
     source: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_layer_pipeline(
+        device,
+        &[viewport_layout, texture_layout],
+        format,
+        source,
+        label,
+    )
+}
+
+fn create_layer_pipeline(
+    device: &wgpu::Device,
+    layouts: &[&wgpu::BindGroupLayout],
+    format: wgpu::TextureFormat,
+    source: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[viewport_layout, texture_layout],
+        bind_group_layouts: layouts,
         push_constant_ranges: &[],
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1483,6 +1503,93 @@ struct CachedSvg {
     size: (u32, u32),
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+}
+
+struct ObjectLayerCache {
+    objects: Vec<lumapaint_core::vector::VectorObject>,
+    source: String,
+    selected_ids: Vec<String>,
+    opacity: f32,
+    document_size: (u32, u32),
+    runs: Vec<ObjectRun>,
+    bytes: usize,
+}
+fn layer_selected_ids(document: &Document, layer: &SvgLayer) -> Vec<String> {
+    document
+        .selected_vector_ids()
+        .iter()
+        .filter(|id| layer.vector_objects.iter().any(|object| &object.id == *id))
+        .cloned()
+        .collect()
+}
+
+impl ObjectLayerCache {
+    fn translation(&self, document: &Document, layer: &SvgLayer) -> Option<[f32; 2]> {
+        if self.runs.is_empty()
+            || self.source == layer.source
+            || self.selected_ids != layer_selected_ids(document, layer)
+            || self.opacity != layer.effective_opacity()
+            || self.document_size != document.dimensions()
+        {
+            return None;
+        }
+        let delta =
+            uniform_object_translation(&self.objects, &layer.vector_objects, &self.selected_ids)?;
+        let mut old_layer = layer.clone();
+        old_layer.vector_objects = self.objects.clone();
+        old_layer.source = self.source.clone();
+        let expected = document
+            .translated_vector_layer(&old_layer, delta[0], delta[1])
+            .ok()
+            .flatten()?;
+        (expected.source == layer.source).then_some(delta)
+    }
+    fn ready(&self, document: &Document, layer: &SvgLayer) -> bool {
+        !self.runs.is_empty()
+            && self.opacity == layer.effective_opacity()
+            && self.document_size == document.dimensions()
+            && (self.source == layer.source || self.translation(document, layer).is_some())
+    }
+}
+
+struct ObjectRun {
+    selected: bool,
+    cached: CachedSvg,
+    geometry: wgpu::BindGroup,
+    geometry_buffer: wgpu::Buffer,
+    rectangle: [f32; 4],
+}
+
+fn uniform_object_translation(
+    old: &[lumapaint_core::vector::VectorObject],
+    new: &[lumapaint_core::vector::VectorObject],
+    selected: &[String],
+) -> Option<[f32; 2]> {
+    if old.len() != new.len() {
+        return None;
+    }
+    let mut offset: Option<[f32; 2]> = None;
+    for (before, after) in old.iter().zip(new) {
+        if selected.contains(&before.id) && before.visible {
+            let delta = [
+                after.transform[4] - before.transform[4],
+                after.transform[5] - before.transform[5],
+            ];
+            if offset.is_some_and(|offset| offset != delta) {
+                return None;
+            }
+            let mut adjusted = before.clone();
+            adjusted.transform[4] = after.transform[4];
+            adjusted.transform[5] = after.transform[5];
+            if adjusted != *after {
+                return None;
+            }
+            offset = Some(delta);
+        } else if before != after {
+            return None;
+        }
+    }
+    offset.filter(|delta| delta.iter().all(|v| v.is_finite()))
 }
 
 struct DragLayerCache {
@@ -1757,11 +1864,14 @@ impl Renderer {
         }
         let size = document.dimensions();
         document.visible_svg_layers().all(|layer| {
-            self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                cached.source == layer.source
-                    && cached.opacity == layer.effective_opacity()
-                    && cached.size == size
-            })
+            self.object_cache
+                .get(&layer.id)
+                .is_some_and(|cached| cached.ready(document, layer))
+                || self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                    cached.source == layer.source
+                        && cached.opacity == layer.effective_opacity()
+                        && cached.size == size
+                })
         })
     }
 
@@ -1774,11 +1884,15 @@ impl Renderer {
         document
             .visible_svg_layers()
             .filter(|layer| {
-                !self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                    cached.source == layer.source
-                        && cached.opacity == layer.effective_opacity()
-                        && cached.size == size
-                })
+                !self
+                    .object_cache
+                    .get(&layer.id)
+                    .is_some_and(|cached| cached.ready(document, layer))
+                    && !self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                        cached.source == layer.source
+                            && cached.opacity == layer.effective_opacity()
+                            && cached.size == size
+                    })
             })
             .cloned()
             .collect()
@@ -1940,6 +2054,84 @@ impl Renderer {
             size: prepared.size,
             _texture: texture,
             bind_group,
+        })
+    }
+
+    fn prepare_object_cache(
+        &self,
+        document: &Document,
+        layer: &SvgLayer,
+    ) -> Result<ObjectLayerCache, String> {
+        let size = document.dimensions();
+        let selected_ids = layer_selected_ids(document, layer);
+        let has_selection = layer
+            .vector_objects
+            .iter()
+            .any(|object| selected_ids.contains(&object.id));
+        let runs = if has_selection && !document.vector_layer_moves_as_unit(layer) {
+            document
+                .vector_drag_runs(layer)
+                .ok_or("Dependent layer requires full compositing")?
+        } else {
+            vec![(has_selection, layer.clone())]
+        };
+        if runs.len() > 64 {
+            return Err("Too many object runs".into());
+        }
+        let in_use: usize = self.object_cache.values().map(|cache| cache.bytes).sum();
+        let mut bytes = 0;
+        let mut prepared = Vec::new();
+        for (selected, run) in runs {
+            let (mut pixels, rect) = vector::rasterize_svg_object(&run.source, size)?;
+            bytes += pixels.len();
+            if bytes + in_use > 64 * 1024 * 1024 {
+                return Err("Object cache budget exceeded".into());
+            }
+            let opacity = run.effective_opacity();
+            if opacity != 1.0 {
+                for value in &mut pixels {
+                    *value = (*value as f32 * opacity).round() as u8;
+                }
+            }
+            let cached = self.make_cached_svg(PreparedSvgLayer {
+                id: run.id,
+                source: String::new(),
+                opacity,
+                size: (rect[2] as u32, rect[3] as u32),
+                pixels,
+                fully_contained: true,
+            })?;
+            let buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Object bounds"),
+                    contents: bytemuck::cast_slice(&rect),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+            let geometry = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Object bounds"),
+                layout: &self.object_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            prepared.push(ObjectRun {
+                selected,
+                cached,
+                geometry,
+                geometry_buffer: buffer,
+                rectangle: rect,
+            });
+        }
+        Ok(ObjectLayerCache {
+            objects: layer.vector_objects.clone(),
+            source: layer.source.clone(),
+            selected_ids,
+            opacity: layer.effective_opacity(),
+            document_size: size,
+            runs: prepared,
+            bytes,
         })
     }
 
@@ -2112,6 +2304,26 @@ impl Renderer {
             ..Default::default()
         });
         let (svg_bind_layout, svg_pipeline) = create_svg_pipeline(&device, &bind_layout, format);
+        let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Object rectangle"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let object_pipeline = create_layer_pipeline(
+            &device,
+            &[&bind_layout, &svg_bind_layout, &object_layout],
+            format,
+            include_str!("object.wgsl"),
+            "Object workspace",
+        );
         let workspace_pipeline = create_textured_layer_pipeline(
             &device,
             &bind_layout,
@@ -2183,6 +2395,9 @@ impl Renderer {
             brush_sampler,
             svg_pipeline,
             workspace_pipeline,
+            object_pipeline,
+            object_layout,
+            object_cache: HashMap::new(),
             workspace_cache: workspace::WorkspaceCache::default(),
             workspace_image: None,
             tile_pipeline,
@@ -2503,7 +2718,82 @@ impl Renderer {
         if offset == [0.0, 0.0] {
             self.drag_cache.clear();
         }
+        self.object_cache
+            .retain(|id, _| document.visible_svg_layers().any(|layer| &layer.id == id));
+        let mut object_layers = std::collections::HashSet::new();
         for original in document.visible_svg_layers() {
+            if original.vector_layer {
+                let local_selection = layer_selected_ids(document, original);
+                // Selecting/deselecting a complete layer only retags its retained
+                // image. Unrelated layers keep their caches when selection changes.
+                if local_selection.is_empty() || document.vector_layer_moves_as_unit(original) {
+                    if let Some(cache) = self.object_cache.get_mut(&original.id) {
+                        if cache.source == original.source && !cache.runs.is_empty() {
+                            for run in &mut cache.runs {
+                                run.selected = !local_selection.is_empty();
+                            }
+                            cache.selected_ids = local_selection.clone();
+                        }
+                    }
+                }
+                // Committing a translation (including undo/redo) keeps the image.
+                // Only its 16-byte rectangle changes; no text shaping or upload.
+                let committed_offset = self
+                    .object_cache
+                    .get(&original.id)
+                    .and_then(|cache| cache.translation(document, original));
+                if let Some(delta) = committed_offset {
+                    if let Some(cache) = self.object_cache.get_mut(&original.id) {
+                        for run in &mut cache.runs {
+                            if run.selected {
+                                run.rectangle[0] += delta[0];
+                                run.rectangle[1] += delta[1];
+                                self.queue.write_buffer(
+                                    &run.geometry_buffer,
+                                    0,
+                                    bytemuck::cast_slice(&run.rectangle),
+                                );
+                            }
+                        }
+                        cache.source = original.source.clone();
+                        cache.objects = original.vector_objects.clone();
+                    }
+                }
+                let valid = self.object_cache.get(&original.id).is_some_and(|cache| {
+                    cache.source == original.source
+                        && cache.selected_ids == local_selection
+                        && cache.opacity == original.effective_opacity()
+                        && cache.document_size == (width, height)
+                });
+                if !valid {
+                    let started = std::time::Instant::now();
+                    self.object_cache.remove(&original.id);
+                    let cache = self
+                        .prepare_object_cache(document, original)
+                        .unwrap_or_else(|_| ObjectLayerCache {
+                            objects: original.vector_objects.clone(),
+                            source: original.source.clone(),
+                            selected_ids: local_selection.clone(),
+                            opacity: original.effective_opacity(),
+                            document_size: (width, height),
+                            runs: Vec::new(),
+                            bytes: 0,
+                        });
+                    drag_metrics.upload_bytes += cache.bytes;
+                    drag_metrics.cache_builds += usize::from(!cache.runs.is_empty());
+                    drag_metrics.cache_setup_ms += started.elapsed().as_secs_f64() * 1000.0;
+                    self.object_cache.insert(original.id.clone(), cache);
+                }
+                if self
+                    .object_cache
+                    .get(&original.id)
+                    .is_some_and(|cache| !cache.runs.is_empty())
+                {
+                    object_layers.insert(original.id.as_str());
+                    drag_metrics.object_reuse += 1;
+                    continue;
+                }
+            }
             let dragging = offset != [0.0, 0.0];
             if dragging
                 && document.vector_layer_moves_as_unit(original)
@@ -2575,14 +2865,24 @@ impl Renderer {
             self.install_prepared_svg(prepared)?;
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
-        let exterior_needed = offset != [0.0, 0.0]
-            || document.visible_svg_layers().any(|layer| {
-                self.svg_cache
-                    .get(&layer.id)
-                    .is_none_or(|cached| cached.source != layer.source || !cached.fully_contained)
+        let exterior_needed = document
+            .visible_svg_layers()
+            .filter(|layer| !object_layers.contains(layer.id.as_str()))
+            .any(|layer| {
+                (offset != [0.0, 0.0]
+                    && layer
+                        .vector_objects
+                        .iter()
+                        .any(|object| document.selected_vector_ids().contains(&object.id)))
+                    || self.svg_cache.get(&layer.id).is_none_or(|cached| {
+                        cached.source != layer.source || !cached.fully_contained
+                    })
             });
         if exterior_needed {
-            if let Some(prepared) = self.workspace_cache.prepare(document, viewport, offset)? {
+            if let Some(prepared) =
+                self.workspace_cache
+                    .prepare_filtered(document, viewport, offset, &object_layers)?
+            {
                 match prepared
                     .into_iter()
                     .map(|image| self.make_cached_svg(image))
@@ -2600,7 +2900,11 @@ impl Renderer {
             self.workspace_cache.clear();
             self.workspace_image = None;
         }
-        let translated_uniforms = if translated_layers.is_empty() && partial_layers.is_empty() {
+        let translated_uniforms = if offset == [0.0, 0.0]
+            || (translated_layers.is_empty()
+                && partial_layers.is_empty()
+                && object_layers.is_empty())
+        {
             None
         } else {
             let mut moved = uniforms;
@@ -2790,6 +3094,36 @@ impl Renderer {
                 ..Default::default()
             });
             for layer in document.visible_svg_layers() {
+                if object_layers.contains(layer.id.as_str()) {
+                    if let Some(cache) = self.object_cache.get(&layer.id) {
+                        pass.set_pipeline(&self.object_pipeline);
+                        for run in &cache.runs {
+                            pass.set_bind_group(
+                                0,
+                                if run.selected {
+                                    translated_uniforms.as_ref().unwrap_or(&self.bind_group)
+                                } else {
+                                    &self.bind_group
+                                },
+                                &[],
+                            );
+                            pass.set_bind_group(1, &run.cached.bind_group, &[]);
+                            pass.set_bind_group(2, &run.geometry, &[]);
+                            pass.draw(0..6, 0..1);
+                        }
+                    }
+                    continue;
+                }
+                if let Some(image) = self
+                    .workspace_image
+                    .as_ref()
+                    .and_then(|images| images.iter().find(|image| image.source == layer.id))
+                {
+                    pass.set_pipeline(&self.workspace_pipeline);
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_bind_group(1, &image.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
                 if partial_layers.contains(layer.id.as_str()) {
                     if let Some(cache) = self.drag_cache.get(&layer.id) {
                         for run in &cache.runs {
@@ -2825,14 +3159,6 @@ impl Renderer {
                 pass.set_bind_group(0, uniforms, &[]);
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
-            }
-            if let Some(workspace) = &self.workspace_image {
-                pass.set_pipeline(&self.workspace_pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                for image in workspace {
-                    pass.set_bind_group(1, &image.bind_group, &[]);
-                    pass.draw(0..6, 0..1);
-                }
             }
             drop(pass);
             if let Some((_, group)) = &self.channel_target {
@@ -2884,7 +3210,8 @@ impl Renderer {
         frame.present();
         if offset != [0.0, 0.0] && render_metrics_enabled() {
             eprintln!(
-                "LumaPaint vector-drag unit_reuse={} partial_reuse={} cache_builds={} full_previews={} upload_bytes={} cache_setup_ms={:.2} full_prepare_upload_ms={:.2}",
+                "LumaPaint vector-drag object_reuse={} unit_reuse={} partial_reuse={} cache_builds={} full_previews={} upload_bytes={} cache_setup_ms={:.2} full_prepare_upload_ms={:.2}",
+                drag_metrics.object_reuse,
                 drag_metrics.unit_reuse,
                 drag_metrics.partial_reuse,
                 drag_metrics.cache_builds,
@@ -3813,5 +4140,64 @@ mod svg_upload_tests {
         assert_eq!(rect, [400, 500, 30, 20]);
         assert_eq!(pack_svg_rect(&new, 4096, rect).len(), 2400);
         assert_eq!(changed_svg_rect(&[], &new, 4096), Some([0, 0, 1024, 1024]));
+    }
+}
+
+#[cfg(test)]
+mod object_translation_tests {
+    use super::*;
+    use lumapaint_core::document::TextSettings;
+    use lumapaint_core::vector::VectorText;
+    #[test]
+    fn committed_translation_reuses_geometry_but_rejects_content_or_shape_changes() {
+        let mut document = Document::default();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "日本語 English 简体中文\n".into(),
+                    ..Default::default()
+                },
+                position: [40., 50.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let first = document.svg_layers().next().unwrap().vector_objects[0].clone();
+        let mut second = first.clone();
+        second.id = "second".into();
+        second.transform[4] = 200.;
+        let old = vec![first, second];
+        let selected = old
+            .iter()
+            .map(|object| object.id.clone())
+            .collect::<Vec<_>>();
+        let mut moved = old.clone();
+        for object in &mut moved {
+            object.transform[4] += 12.;
+            object.transform[5] -= 4.;
+        }
+        assert_eq!(
+            uniform_object_translation(&old, &moved, &selected),
+            Some([12., -4.])
+        );
+        assert_eq!(
+            uniform_object_translation(&moved, &old, &selected),
+            Some([-12., 4.])
+        );
+        let mut changed = moved.clone();
+        changed[0].text.as_mut().unwrap().font_size = 80.;
+        assert_eq!(uniform_object_translation(&old, &changed, &selected), None);
+        changed = moved.clone();
+        changed[0].transform[0] = 2.;
+        assert_eq!(uniform_object_translation(&old, &changed, &selected), None);
+        changed = moved.clone();
+        changed[0].transform[4] += 1.;
+        assert_eq!(uniform_object_translation(&old, &changed, &selected), None);
+        assert_eq!(
+            uniform_object_translation(&old, &moved, &selected[..1]),
+            None
+        );
+        moved.reverse();
+        assert_eq!(uniform_object_translation(&old, &moved, &selected), None);
     }
 }

@@ -2016,3 +2016,180 @@ fn gpu_artboard_exterior_masks_page_pixels() {
         assert_eq!(bytes[3], expected_alpha, "pan {pan}: {bytes:?}");
     }
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn gpu_object_texture_moves_across_artboard_without_reupload() {
+    let gpu = Gpu::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let (texture_layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+    let geometry_layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+    let pipeline = create_layer_pipeline(
+        &gpu.device,
+        &[&gpu.uniform_layout, &texture_layout, &geometry_layout],
+        format,
+        include_str!("object.wgsl"),
+        "Object translation regression",
+    );
+    let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-20" y="10" width="60" height="30" fill="red" opacity="0.5"/></svg>"#;
+    let (pixels, rectangle) = vector::rasterize_svg_object(source, (960, 640)).unwrap();
+    // This upload and the object rectangle are reused for every drag frame.
+    let texture = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: rectangle[2] as u32,
+                height: rectangle[3] as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &pixels,
+    );
+    let texture_view = texture.create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&Default::default());
+    let image = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &texture_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let bounds_buffer = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&rectangle),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+    let geometry = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &geometry_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: bounds_buffer.as_entire_binding(),
+        }],
+    });
+    let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = output.create_view(&Default::default());
+    for offset in [-10.0, 40.0, 960.0] {
+        let uniforms_buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&Uniforms {
+                    viewport: [W as f32, H as f32, 1., 960. / 976.],
+                    appearance: [0.; 4],
+                    document: [960., 640., offset, 0.],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniforms = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms_buffer.as_entire_binding(),
+            }],
+        });
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (W * H * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniforms, &[]);
+            pass.set_bind_group(1, &image, &[]);
+            pass.set_bind_group(2, &geometry, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(W * 4),
+                    rows_per_image: Some(H),
+                },
+            },
+            wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range();
+        let x = (42. + offset) as usize;
+        let pixel = (89 * W as usize + x) * 4;
+        assert_eq!(data[pixel + 3], 128, "offset {offset}");
+        assert!(data[pixel] > 0 && data[pixel + 1] == 0);
+        assert_eq!(data[(89 * W as usize + 500) * 4 + 3], 0);
+    }
+}
