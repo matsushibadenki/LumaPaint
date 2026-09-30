@@ -22,14 +22,16 @@ export interface DocumentSnapshot {
   selectedVectorObjects: string[];
   textObjects: TextObjectSnapshot[];
 }
+export interface WidthStop { position: number; width: number; slope: number }
 export interface StrokeStyle {
   cap: 'butt' | 'round' | 'square'; join: 'miter' | 'round' | 'bevel'; miterLimit: number;
   alignment: 'center' | 'inside' | 'outside'; dashArray: number[]; dashOffset: number;
-  startArrow: 'none' | 'triangle' | 'open' | 'circle'; endArrow: 'none' | 'triangle' | 'open' | 'circle';
-  arrowScale: number; profile: 'uniform' | 'taperBoth' | 'taperStart' | 'taperEnd' | 'bulge';
+  startArrow: 'none' | 'triangle' | 'open' | 'circle' | 'diamond' | 'square' | 'bar' | 'stealth'; endArrow: 'none' | 'triangle' | 'open' | 'circle' | 'diamond' | 'square' | 'bar' | 'stealth';
+  arrowScale: number; profile: 'uniform' | 'taperBoth' | 'taperStart' | 'taperEnd' | 'bulge' | 'custom';
+  widthCurve: WidthStop[]; startArrowScale: number | null; endArrowScale: number | null; contourAlignments: ('center' | 'inside' | 'outside')[];
 }
-export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform' };
-export interface LayerObjectSnapshot { opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform', widthCurve: [{ position: 0, width: 1, slope: 0 }, { position: 1, width: 1, slope: 0 }], startArrowScale: null, endArrowScale: null, contourAlignments: [] };
+export interface LayerObjectSnapshot { strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot {
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }

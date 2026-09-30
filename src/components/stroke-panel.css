@@ -19,3 +19,10 @@
 .stroke-dash-heading button { background: var(--color-field); color: inherit; border: 1px solid var(--color-rule); padding: 3px 6px; border-radius: 2px; font-size: 11px; }
 .stroke-hint { color: var(--color-muted); font-size: 11px; line-height: 1.6; margin: 6px 0; }
 .stroke-panel fieldset:disabled { opacity: .5; }
+
+.width-curve-editor { margin-top: 14px; display: grid; gap: 8px; }
+.width-curve-editor svg { width: 100%; height: 110px; overflow: visible; background: var(--color-field); border: 1px solid var(--color-rule); touch-action: none; }
+.width-curve-grid { stroke: var(--color-rule); stroke-width: 1; }
+.width-curve-line { fill: none; stroke: #8fbbeb; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.width-curve-editor circle { fill: var(--color-field); stroke: #8fbbeb; stroke-width: 2; cursor: grab; }
+.width-curve-editor circle.selected { fill: #8fbbeb; }

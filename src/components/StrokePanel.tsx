@@ -2,17 +2,18 @@ import { useEffect, useState } from 'react';
 import { defaultStrokeStyle, strokePreview, type DocumentSnapshot, type StrokeStyle } from '../bridge';
 import type { Locale } from '../i18n';
 import './stroke-panel.css';
+import { WidthCurveEditor } from './WidthCurveEditor';
 
 export const strokeLabels = {
-  en: { title: 'Stroke', width: 'Weight', preset: 'Stroke presets', preview: 'Stroke preview', select: 'Select visible, unlocked vector paths.', mixed: 'Mixed', selected: 'Selected paths', profile: 'Width profile', error: 'Enter valid stroke settings.', cap: 'Cap', caps: ['Butt', 'Round', 'Square'], join: 'Join', joins: ['Miter', 'Round', 'Bevel'], miter: 'Miter limit', alignment: 'Align stroke', alignments: ['Center', 'Inside', 'Outside'], dash: 'Dash pattern', dashHint: 'Dash / gap lengths, separated by spaces (max. 12). Empty = solid.', offset: 'Dash offset', start: 'Start arrow', end: 'End arrow', arrows: ['None', 'Triangle', 'Open', 'Circle'], scale: 'Arrow scale', profiles: ['Uniform', 'Taper both ends', 'Taper start', 'Taper end', 'Bulge'], note: 'Inside / outside applies to closed paths. Arrows apply to open paths.', solid: 'Solid', dashed: 'Dashed' },
-  ja: { title: '線', width: '線幅', preset: '線幅プリセット', preview: '線のプレビュー', select: 'ロックされていない表示中のパスを選択してください。', mixed: '混在', selected: '選択中のパス', profile: '可変幅プロファイル', error: '有効な線の設定値を入力してください。', cap: '線端', caps: ['バット', '丸型', '突出'], join: '角', joins: ['マイター', 'ラウンド', 'ベベル'], miter: 'マイター制限', alignment: '線位置', alignments: ['中央', '内側', '外側'], dash: '破線パターン', dashHint: '線・間隔を空白で区切って入力（最大12個）。空欄は実線。', offset: '破線の開始位置', start: '始点の矢印', end: '終点の矢印', arrows: ['なし', '三角', '開いた矢印', '丸'], scale: '矢印の倍率', profiles: ['均等', '両端を細く', '始点を細く', '終点を細く', '中央を太く'], note: '内側・外側は閉じたパス、矢印は開いたパスに適用されます。', solid: '実線', dashed: '破線' },
-  'zh-CN': { title: '描边', width: '粗细', preset: '描边预设', preview: '描边预览', select: '请选择未锁定的可见路径。', mixed: '混合', selected: '所选路径', profile: '可变宽度', error: '请输入有效的描边设置。', cap: '端点', caps: ['平头', '圆头', '方头'], join: '拐角', joins: ['尖角', '圆角', '斜角'], miter: '尖角限制', alignment: '描边位置', alignments: ['居中', '内部', '外部'], dash: '虚线图案', dashHint: '用空格分隔线段和间隔长度（最多12个）。留空为实线。', offset: '虚线偏移', start: '起点箭头', end: '终点箭头', arrows: ['无', '三角', '开放箭头', '圆形'], scale: '箭头比例', profiles: ['均匀', '两端渐细', '起点渐细', '终点渐细', '中间加粗'], note: '内部和外部适用于闭合路径，箭头适用于开放路径。', solid: '实线', dashed: '虚线' },
+  en: { title: 'Stroke', width: 'Weight', preset: 'Stroke presets', preview: 'Stroke preview', select: 'Select visible, unlocked vector paths.', mixed: 'Mixed', selected: 'Selected paths', profile: 'Width profile', error: 'Enter valid stroke settings.', cap: 'Cap', caps: ['Butt', 'Round', 'Square'], join: 'Join', joins: ['Miter', 'Round', 'Bevel'], miter: 'Miter limit', alignment: 'Align stroke', alignments: ['Center', 'Inside', 'Outside'], dash: 'Dash pattern', dashHint: 'Dash / gap lengths, separated by spaces (max. 12). Empty = solid.', offset: 'Dash offset', start: 'Start arrow', end: 'End arrow', arrows: ['None', 'Triangle', 'Open', 'Circle', 'Diamond', 'Square', 'Bar', 'Stealth'], scale: 'Arrow scale', profiles: ['Uniform', 'Taper both ends', 'Taper start', 'Taper end', 'Bulge', 'Custom curve'], note: 'Inside / outside applies to closed paths. Arrows apply to open paths.', solid: 'Solid', dashed: 'Dashed' },
+  ja: { title: '線', width: '線幅', preset: '線幅プリセット', preview: '線のプレビュー', select: 'ロックされていない表示中のパスを選択してください。', mixed: '混在', selected: '選択中のパス', profile: '可変幅プロファイル', error: '有効な線の設定値を入力してください。', cap: '線端', caps: ['バット', '丸型', '突出'], join: '角', joins: ['マイター', 'ラウンド', 'ベベル'], miter: 'マイター制限', alignment: '線位置', alignments: ['中央', '内側', '外側'], dash: '破線パターン', dashHint: '線・間隔を空白で区切って入力（最大12個）。空欄は実線。', offset: '破線の開始位置', start: '始点の矢印', end: '終点の矢印', arrows: ['なし', '三角', '開いた矢印', '丸', 'ひし形', '四角', 'バー', 'ステルス'], scale: '矢印の倍率', profiles: ['均等', '両端を細く', '始点を細く', '終点を細く', '中央を太く', 'カスタムカーブ'], note: '内側・外側は閉じたパス、矢印は開いたパスに適用されます。', solid: '実線', dashed: '破線' },
+  'zh-CN': { title: '描边', width: '粗细', preset: '描边预设', preview: '描边预览', select: '请选择未锁定的可见路径。', mixed: '混合', selected: '所选路径', profile: '可变宽度', error: '请输入有效的描边设置。', cap: '端点', caps: ['平头', '圆头', '方头'], join: '拐角', joins: ['尖角', '圆角', '斜角'], miter: '尖角限制', alignment: '描边位置', alignments: ['居中', '内部', '外部'], dash: '虚线图案', dashHint: '用空格分隔线段和间隔长度（最多12个）。留空为实线。', offset: '虚线偏移', start: '起点箭头', end: '终点箭头', arrows: ['无', '三角', '开放箭头', '圆形', '菱形', '方形', '横线', '燕尾'], scale: '箭头比例', profiles: ['均匀', '两端渐细', '起点渐细', '终点渐细', '中间加粗', '自定义曲线'], note: '内部和外部适用于闭合路径，箭头适用于开放路径。', solid: '实线', dashed: '虚线' },
 };
 const caps = ['butt', 'round', 'square'] as const;
 const joins = ['miter', 'round', 'bevel'] as const;
 const alignments = ['center', 'inside', 'outside'] as const;
-const arrows = ['none', 'triangle', 'open', 'circle'] as const;
-const profiles = ['uniform', 'taperBoth', 'taperStart', 'taperEnd', 'bulge'] as const;
+const arrows = ['none', 'triangle', 'open', 'circle', 'diamond', 'square', 'bar', 'stealth'] as const;
+const profiles = ['uniform', 'taperBoth', 'taperStart', 'taperEnd', 'bulge', 'custom'] as const;
 
 function NumericSetting({ label, value, mixed, min, max, step = .25, onCommit }: { label: string; value: number; mixed: string | null; min: number; max: number; step?: number; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState('');
@@ -57,7 +58,7 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
   };
   const change = (patch: Partial<StrokeStyle>) => {
     const invalid = Object.entries(patch).some(([key, v]) => typeof v === 'number' && (!Number.isFinite(v) ||
-      (key === 'miterLimit' && (v < 1 || v > 100)) || (key === 'arrowScale' && (v < .1 || v > 10)) || (key === 'dashOffset' && Math.abs(v) > 100000)));
+      (key === 'miterLimit' && (v < 1 || v > 100)) || (['arrowScale', 'startArrowScale', 'endArrowScale'].includes(key) && (v < .1 || v > 10)) || (key === 'dashOffset' && Math.abs(v) > 100000)));
     if (invalid) { setError(t.error); return; }
     void apply(() => onStyle(patch));
   };
@@ -101,9 +102,12 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
         <NumericSetting label={`${t.offset} (${unit})`} value={style.dashOffset / pixelsPerUnit} mixed={isMixed('dashOffset') ? t.mixed : null} min={-100000 / pixelsPerUnit} max={100000 / pixelsPerUnit} onCommit={n => change({ dashOffset: n * pixelsPerUnit })} />
         {choice('startArrow', t.start, arrows, t.arrows)}
         {choice('endArrow', t.end, arrows, t.arrows)}
-        <NumericSetting label={`${t.scale} (×)`} value={style.arrowScale} mixed={isMixed('arrowScale') ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ arrowScale: n })} />
+        <NumericSetting label={`${t.start} (×)`} value={style.startArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.startArrowScale ?? s.arrowScale) !== (style.startArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ startArrowScale: n })} />
+        <NumericSetting label={`${t.end} (×)`} value={style.endArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.endArrowScale ?? s.arrowScale) !== (style.endArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ endArrowScale: n })} />
         {choice('profile', t.profile, profiles, t.profiles)}
       </div>
+      {style.profile === 'custom' && <WidthCurveEditor disabled={!editable || busy} curve={style.widthCurve} locale={locale} onCommit={widthCurve => change({ widthCurve })} />}
+      {selected.length === 1 && (selected[0].object.strokeContours?.length ?? 0) > 1 && <div className="stroke-settings">{selected[0].object.strokeContours.map((closed, index) => <label key={index} className="stroke-setting"><span>{locale === 'ja' ? '輪郭' : locale === 'zh-CN' ? '轮廓' : 'Contour'} {index + 1}</span><select disabled={!closed} value={closed ? (style.contourAlignments[index] ?? style.alignment) : 'center'} onChange={e => { const contourAlignments = selected[0].object.strokeContours.map((_,i) => style.contourAlignments[i] ?? style.alignment); contourAlignments[index] = e.target.value as StrokeStyle['alignment']; change({ contourAlignments }); }}>{alignments.map((v,i) => <option key={v} value={v}>{t.alignments[i]}</option>)}</select></label>)}</div>}
     </fieldset>
     <div className="stroke-preview" role="img" aria-label={t.preview} dangerouslySetInnerHTML={{ __html: preview }} />
     {selected.length > 1 && (mixed || styles.some(s => JSON.stringify(s) !== previewKey)) && <p className="stroke-hint">{t.mixed}</p>}

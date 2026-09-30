@@ -1820,6 +1820,88 @@ mod stroke_appearance_tests {
         image.pixels[(y * 160 + x) * 4 + 3]
     }
     #[test]
+    fn advanced_strokes_match_visible_pixels_and_pick_regions() {
+        let cases = [
+            (
+                "M30 20H100V80H30Z M125 20V80",
+                StrokeStyle {
+                    alignment: StrokeAlignment::Inside,
+                    ..Default::default()
+                },
+            ),
+            (
+                "M30 20H100V80H30Z M125 20V80",
+                StrokeStyle {
+                    contour_alignments: vec![StrokeAlignment::Outside, StrokeAlignment::Inside],
+                    ..Default::default()
+                },
+            ),
+            (
+                "M30 50H130",
+                StrokeStyle {
+                    profile: WidthProfile::Custom,
+                    width_curve: vec![
+                        WidthStop {
+                            position: 0.,
+                            width: 0.,
+                            slope: 0.,
+                        },
+                        WidthStop {
+                            position: 0.5,
+                            width: 3.,
+                            slope: 0.,
+                        },
+                        WidthStop {
+                            position: 1.,
+                            width: 0.,
+                            slope: 0.,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ),
+            (
+                "M30 50H130",
+                StrokeStyle {
+                    start_arrow: Arrowhead::Square,
+                    end_arrow: Arrowhead::Diamond,
+                    start_arrow_scale: Some(0.5),
+                    end_arrow_scale: Some(2.),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (path, style) in cases {
+            let image = render(path, &style);
+            let geometry = selection_geometry(path, 10., &style, [1., 0., 0., 1., 0., 0.], false);
+            for y in (3..98).step_by(5) {
+                for x in (3..158).step_by(5) {
+                    let pixel = alpha(&image, x, y);
+                    if pixel == 0 || pixel == 255 {
+                        assert_eq!(
+                            geometry.contains([x as f32 + 0.5, y as f32 + 0.5], 0.),
+                            pixel == 255,
+                            "{style:?} at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        for shape in [
+            Arrowhead::Diamond,
+            Arrowhead::Square,
+            Arrowhead::Bar,
+            Arrowhead::Stealth,
+        ] {
+            let style = StrokeStyle {
+                end_arrow: shape,
+                ..Default::default()
+            };
+            let image = render("M30 50H130", &style);
+            assert!(alpha(&image, 129, 50) > 0);
+        }
+    }
+    #[test]
     fn stroke_alignment_preserves_inside_outside_and_holes() {
         let path = "M30 20H130V80H30Z M50 35H110V65H50Z";
         for (alignment, outside, inside) in [

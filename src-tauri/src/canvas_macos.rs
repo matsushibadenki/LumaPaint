@@ -532,6 +532,12 @@ impl PaintView {
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
             if self.isHidden() || text_editor::active() { return false.into(); }
+            // WebView fields own their editing shortcuts while focused (including Cmd+A).
+            // AppKit asks sibling views for key equivalents even when they are not responders.
+            let focused = self.window().and_then(|window| window.firstResponder()).is_some_and(|responder| {
+                Retained::as_ptr(&responder).cast::<c_void>() == (self as *const Self).cast::<c_void>()
+            });
+            if !focused { return false.into(); }
             if raster_import::active() { return event.modifierFlags().contains(NSEventModifierFlags::Command).into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
             if command && [7,8,9].contains(&event.keyCode()) {

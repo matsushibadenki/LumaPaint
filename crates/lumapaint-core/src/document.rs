@@ -361,6 +361,7 @@ pub struct LayerObjectSnapshot {
     pub stroke_color: Option<[u8; 4]>,
     pub stroke_width: f32,
     pub stroke_style: crate::stroke::StrokeStyle,
+    pub stroke_contours: Vec<bool>,
     pub id: String,
     pub name: String,
     pub group_path: Vec<String>,
@@ -688,6 +689,7 @@ impl Document {
                             fill_color: object.fill.map(|p| p.color),
                             stroke_color: object.stroke.map(|p| p.color),
                             stroke_style: object.stroke_style.clone(),
+                            stroke_contours: crate::stroke::contour_closed(&object.path.data),
                             stroke_width: if object.stroke.is_some() {
                                 object.stroke_width
                             } else {
@@ -3983,10 +3985,18 @@ impl Document {
                     f32::NEG_INFINITY,
                 ];
                 for object in &objects {
-                    for p in vector_geometry_extrema(object, |p| Point {
+                    let inverse = |p: Point| Point {
                         x: (d * (p.x - e) - c * (p.y - f)) / det,
                         y: (-b * (p.x - e) + a * (p.y - f)) / det,
-                    }) {
+                    };
+                    let mut drawn = vector_geometry_extrema(object, inverse);
+                    drawn.extend(
+                        object
+                            .stroke_boundary_points()
+                            .into_iter()
+                            .map(|p| inverse(Point { x: p[0], y: p[1] })),
+                    );
+                    for p in drawn {
                         let (x, y) = (p.x, p.y);
                         bounds[0] = bounds[0].min(x);
                         bounds[1] = bounds[1].min(y);
@@ -4003,8 +4013,18 @@ impl Document {
                 }
             }
         }
-        self.selected_vector_bounds()
-            .map(|[x, y, r, b]| [[x, y], [r, y], [r, b], [x, b]])
+        self.selected_vector_bounds().map(|mut bounds| {
+            for object in objects {
+                for p in object.stroke_boundary_points() {
+                    bounds[0] = bounds[0].min(p[0]);
+                    bounds[1] = bounds[1].min(p[1]);
+                    bounds[2] = bounds[2].max(p[0]);
+                    bounds[3] = bounds[3].max(p[1]);
+                }
+            }
+            let [x, y, r, b] = bounds;
+            [[x, y], [r, y], [r, b], [x, b]]
+        })
     }
 
     pub fn transform_selected_vectors(
@@ -4666,6 +4686,12 @@ impl Document {
             })
         {
             let mut points = vector_geometry_extrema(object, |p| p);
+            points.extend(
+                object
+                    .stroke_boundary_points()
+                    .into_iter()
+                    .map(|p| Point { x: p[0], y: p[1] }),
+            );
             if movable {
                 for point in &mut points {
                     point.x += dx;
@@ -8641,7 +8667,22 @@ mod stroke_width_tests {
             .unwrap();
         let before = doc.encode().unwrap();
         let patch = || StrokeStylePatch {
-            profile: Some(WidthProfile::TaperBoth),
+            profile: Some(WidthProfile::Custom),
+            width_curve: Some(vec![
+                crate::stroke::WidthStop {
+                    position: 0.,
+                    width: 0.5,
+                    slope: 1.,
+                },
+                crate::stroke::WidthStop {
+                    position: 1.,
+                    width: 1.5,
+                    slope: 1.,
+                },
+            ]),
+            start_arrow_scale: Some(0.75),
+            end_arrow_scale: Some(2.),
+            contour_alignments: Some(vec![crate::stroke::StrokeAlignment::Outside]),
             dash_array: Some(vec![12., 5.]),
             end_arrow: Some(Arrowhead::Triangle),
             ..Default::default()
@@ -8663,7 +8704,7 @@ mod stroke_width_tests {
             .all(|o| o.stroke_style == StrokeStyle::default()));
         assert_eq!(
             doc.svg_layers[0].vector_objects[0].stroke_style.profile,
-            WidthProfile::TaperBoth
+            WidthProfile::Custom
         );
         let after = doc.encode().unwrap();
         let revision = doc.revision;
@@ -9003,6 +9044,31 @@ mod independent_saved_path_tests {
         object
     }
 
+    #[test]
+    fn arrow_only_pick_and_selection_boxes_follow_drawn_bounds() {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let mut object = open_curve("arrow", 0., 100.);
+        object.fill = None;
+        object.stroke = Some(VectorPaint {
+            color: [0, 0, 0, 255],
+        });
+        object.stroke_width = 10.;
+        object.stroke_style.end_arrow = crate::stroke::Arrowhead::Circle;
+        object.stroke_style.end_arrow_scale = Some(2.);
+        doc.upsert_vector_object(&layer, object.clone()).unwrap();
+        doc.select_vector_objects(vec!["arrow".into()]).unwrap();
+        assert!(object.hit_test([120., 0.], 0.));
+        assert!(object.intersects_selection([118., -2., 4., 4.], false));
+        let box_points = doc.selected_vector_box().unwrap();
+        assert!((box_points[1][0] - 130.).abs() < 0.01);
+        assert!((box_points[0][1] + 30.).abs() < 0.01);
+        object.bounds_reset = true;
+        doc.upsert_vector_object(&layer, object).unwrap();
+        assert!((doc.selected_vector_box().unwrap()[1][0] - 130.).abs() < 0.01);
+        let overlay = doc.vector_overlay_selections();
+        assert!(!overlay.is_empty());
+    }
     #[test]
     fn selected_endpoints_close_saved_path_and_support_undo_and_clipping() {
         let mut doc = Document::default();

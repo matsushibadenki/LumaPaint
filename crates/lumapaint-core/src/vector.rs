@@ -878,6 +878,49 @@ impl VectorObject {
         Ok(())
     }
 
+    /// Conservative rejection before generating a stroke outline for picking.
+    fn pick_bounds(&self) -> [f32; 4] {
+        let [a, b, c, d, e, f] = self.transform;
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for p in &self.control_points {
+            let x = a * p[0] + c * p[1] + e;
+            let y = b * p[0] + d * p[1] + f;
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        if self.stroke.is_some() {
+            let profile = if self.stroke_style.profile == crate::stroke::WidthProfile::Custom {
+                4.
+            } else {
+                1.
+            };
+            let arrows = self
+                .stroke_style
+                .start_arrow_scale
+                .unwrap_or(self.stroke_style.arrow_scale)
+                .max(
+                    self.stroke_style
+                        .end_arrow_scale
+                        .unwrap_or(self.stroke_style.arrow_scale),
+                );
+            // Frobenius norm bounds the expansion under skew and non-uniform scale.
+            let margin = self.stroke_width
+                * (self.stroke_style.miter_limit.max(2.) * profile).max(arrows * 4.5)
+                * (a * a + b * b + c * c + d * d).sqrt();
+            bounds[0] -= margin;
+            bounds[1] -= margin;
+            bounds[2] += margin;
+            bounds[3] += margin;
+        }
+        bounds
+    }
     /// Tests the drawn outline rather than requiring all Bezier handles inside.
     pub fn intersects_selection(&self, bounds: [f32; 4], ellipse: bool) -> bool {
         if bounds.iter().any(|v| !v.is_finite())
@@ -887,6 +930,29 @@ impl VectorObject {
             || self.control_points.is_empty()
         {
             return false;
+        }
+        let candidate = self.pick_bounds();
+        if bounds[0] + bounds[2] < candidate[0]
+            || bounds[1] + bounds[3] < candidate[1]
+            || bounds[0] > candidate[2]
+            || bounds[1] > candidate[3]
+        {
+            return false;
+        }
+        if self.stroke.is_some()
+            && self.stroke_width > 0.
+            && self.drawn_stroke_geometry().intersects(bounds, ellipse)
+        {
+            return true;
+        }
+        if self.kind != VectorObjectKind::Text && (self.fill.is_some() || self.stroke.is_some()) {
+            return self.fill.is_some()
+                && crate::stroke::fill_geometry(
+                    &self.path.data,
+                    self.transform,
+                    self.path.fill_rule == FillRule::EvenOdd,
+                )
+                .intersects(bounds, ellipse);
         }
         let [x, y, w, h] = bounds;
         let map = |p: [f32; 2]| {
@@ -1004,6 +1070,26 @@ impl VectorObject {
             )
     }
 
+    pub fn drawn_stroke_geometry(&self) -> crate::stroke::StrokeGeometry {
+        crate::stroke::selection_geometry(
+            &self.path.data,
+            self.stroke_width,
+            &self.stroke_style,
+            self.transform,
+            self.path.fill_rule == FillRule::EvenOdd,
+        )
+    }
+    pub fn stroke_boundary_points(&self) -> Vec<[f32; 2]> {
+        if self.stroke.is_none() || self.stroke_width <= 0. {
+            return vec![];
+        }
+        self.drawn_stroke_geometry()
+            .edges
+            .into_iter()
+            .flatten()
+            .map(|p| p.map(|v| v as f32))
+            .collect()
+    }
     pub fn hit_test(&self, point: [f32; 2], tolerance: f32) -> bool {
         if !self.visible
             || !tolerance.is_finite()
@@ -1011,6 +1097,31 @@ impl VectorObject {
             || self.control_points.is_empty()
         {
             return false;
+        }
+        let bounds = self.pick_bounds();
+        if point[0] < bounds[0] - tolerance
+            || point[1] < bounds[1] - tolerance
+            || point[0] > bounds[2] + tolerance
+            || point[1] > bounds[3] + tolerance
+        {
+            return false;
+        }
+        if self.stroke.is_some()
+            && self.stroke_width > 0.
+            && self.drawn_stroke_geometry().contains(point, tolerance)
+        {
+            return true;
+        }
+        if self.fill.is_none() && self.stroke.is_some() && self.kind != VectorObjectKind::Text {
+            return false;
+        }
+        if self.fill.is_some() && self.kind != VectorObjectKind::Text {
+            return crate::stroke::fill_geometry(
+                &self.path.data,
+                self.transform,
+                self.path.fill_rule == FillRule::EvenOdd,
+            )
+            .contains(point, tolerance);
         }
         let points = self
             .control_points
@@ -1058,14 +1169,7 @@ impl VectorObject {
                 path_hit_test(
                     outline,
                     point,
-                    tolerance
-                        + self.stroke.map_or(0., |_| {
-                            self.stroke_width
-                                * 0.5
-                                * self.transform[0]
-                                    .hypot(self.transform[1])
-                                    .max(self.transform[2].hypot(self.transform[3]))
-                        }),
+                    tolerance,
                     self.fill.map(|_| self.path.fill_rule),
                     self.path.data.trim_end().ends_with(['Z', 'z']),
                 )

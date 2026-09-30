@@ -458,6 +458,23 @@ pub fn stroke_preview(
         return Err("Invalid stroke width".into());
     }
     let data = "M32 48L88 22L144 48L208 22";
+    style.validate_geometry(data, width.min(12.))?;
+    let geometry = lumapaint_core::stroke::selection_geometry(
+        data,
+        width.min(12.),
+        &style,
+        [1., 0., 0., 1., 0., 0.],
+        false,
+    );
+    let mut bounds = [0_f64, 0., 240., 72.];
+    for p in geometry.edges.into_iter().flatten() {
+        bounds[0] = bounds[0].min(p[0] - 4.);
+        bounds[1] = bounds[1].min(p[1] - 4.);
+        bounds[2] = bounds[2].max(p[0] + 4.);
+        bounds[3] = bounds[3].max(p[1] + 4.);
+    }
+    let [x, y, right, bottom] = bounds;
+    let (view_width, view_height) = (right - x, bottom - y);
     let body = lumapaint_core::stroke::svg_stroke(
         data,
         data,
@@ -468,7 +485,7 @@ pub fn stroke_preview(
         0,
     );
     Ok(format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 72">{body}</svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x} {y} {view_width} {view_height}">{body}</svg>"#
     ))
 }
 

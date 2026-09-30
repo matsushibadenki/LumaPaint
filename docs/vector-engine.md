@@ -60,3 +60,10 @@ macOS Apple M4で検証用アプリから`tests/fixtures/sample-layer.svg`を読
 - [Rust bindingsとビルド条件](https://github.com/rust-skia/rust-skia)
 - [検証した配布バイナリ](https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3)
 - [tiny-skia](https://github.com/linebender/tiny-skia)：既存resvgが使用するRust実装。Skia全体の代替ではない。
+
+
+## 線の描画境界による選択
+
+`lumapaint-core::stroke` が可変幅・破線・線端・角と矢印の輪郭を生成する。矢印の描画と選択には同じ塗り形状を使い、内外線位置の選択境界は閉じた輪郭の塗り領域で分割・クリップする。ポインター許容距離は変形後の座標で測定し、長方形／楕円の囲み選択にも適用する。複合パスの塗り選択は実際の輪郭と塗りルールで判定する。スタイルを持たない保存パスは従来どおり中心線で選択できる。
+
+表示用の選択枠は矢印・線の境界まで広げる。変形パネルの位置・サイズは引き続きパスの幾何形状を基準とする。曲線の選択境界はRustで適応分割した輪郭に基づく。自動テストで開閉輪郭の混在、穴、独立倍率、カーブ補間、破線の空白、変形後の矢印選択、長方形・楕円選択、描画ピクセルとの一致を検証する。
