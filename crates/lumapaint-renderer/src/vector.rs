@@ -445,6 +445,25 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
     rasterize_svg_region(source, width, height, false, None).map(|region| region.raster)
 }
 
+#[cfg(all(test, feature = "skia"))]
+thread_local! {
+    static COMPATIBILITY_RENDERER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Geometry invariants must compare the same rasterizer on both sides.
+/// Otherwise clip removal can switch resvg to Skia and measure AA differences.
+#[cfg(all(test, feature = "skia"))]
+pub(crate) fn with_compatibility_renderer<T>(render: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COMPATIBILITY_RENDERER.with(|state| state.set(self.0));
+        }
+    }
+    let _restore = Restore(COMPATIBILITY_RENDERER.with(|state| state.replace(true)));
+    render()
+}
+
 /// Same SVG parser, transform, resource policy and render backend, with a smaller surface.
 pub(crate) fn rasterize_svg_cropped(
     source: &str,
@@ -676,6 +695,10 @@ fn rasterize_tree_region(
 
 #[cfg(feature = "skia")]
 fn supports_skia(group: &usvg::Group) -> bool {
+    #[cfg(test)]
+    if COMPATIBILITY_RENDERER.with(|state| state.get()) {
+        return false;
+    }
     if group.clip_path().is_some()
         || group.mask().is_some()
         || !group.filters().is_empty()

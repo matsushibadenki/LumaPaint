@@ -20,6 +20,8 @@ pub struct CanvasRequest {
     pub width: f64,
     pub height: f64,
     pub zoom: f64,
+    // Part of the shared IPC schema; native zoom synchronization is macOS-only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[serde(default)]
     pub zoom_revision: Option<u64>,
     pub dark: bool,

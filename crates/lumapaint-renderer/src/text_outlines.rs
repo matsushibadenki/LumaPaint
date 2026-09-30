@@ -132,59 +132,66 @@ mod tests {
     };
     #[test]
     fn outlines_preserve_rendering_and_atomic_history() {
-        for framed in [false, true] {
-            let mut doc = Document::default();
-            doc.set_text_object(TextSettings {
-                id: None,
-                text: VectorText {
-                    content: "Outline O 日本語\nSecond line".into(),
-                    font_size: 28.,
-                    box_width: 240.,
-                    box_height: framed.then_some(38.),
-                    ..Default::default()
-                },
-                position: [40., 40.],
-                color: [32, 90, 180],
-            })
-            .unwrap();
-            doc.affine_selected_vectors([0.98, 0.15, -0.15, 0.98, 12., 3.])
+        // Compare geometry through one engine. The framed source uses clipping,
+        // while its outlined form may switch to GPU Skia in normal rendering.
+        crate::vector::with_compatibility_renderer(|| {
+            for framed in [false, true] {
+                let mut doc = Document::default();
+                doc.set_text_object(TextSettings {
+                    id: None,
+                    text: VectorText {
+                        content: "Outline O 日本語\nSecond line".into(),
+                        font_size: 28.,
+                        box_width: 240.,
+                        box_height: framed.then_some(38.),
+                        ..Default::default()
+                    },
+                    position: [40., 40.],
+                    color: [32, 90, 180],
+                })
                 .unwrap();
-            let before = doc.encode().unwrap();
-            let raster =
-                crate::vector::rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640)
+                doc.affine_selected_vectors([0.98, 0.15, -0.15, 0.98, 12., 3.])
                     .unwrap();
-            doc.outline_selected_text(outline).unwrap();
-            assert!(doc.snapshot().text_objects.is_empty());
-            let layer = doc.svg_layers().next().unwrap();
-            assert!(layer
-                .vector_objects
-                .iter()
-                .all(|o| o.text.is_none() && !o.group_path.is_empty()));
-            let after = crate::vector::rasterize_svg(&layer.source, 960, 640).unwrap();
-            let error: u64 = raster
-                .pixels
-                .iter()
-                .zip(&after.pixels)
-                .map(|(a, b)| a.abs_diff(*b) as u64)
-                .sum();
-            let ink: u64 = raster.pixels.iter().map(|v| *v as u64).sum();
-            assert!(ink > 0);
-            assert!(
-                error as f64 / (ink as f64) < 0.06,
-                "relative raster difference: {}",
-                error as f64 / ink as f64
-            );
-            let saved = doc.encode().unwrap();
-            assert!(Document::decode(&saved)
-                .unwrap()
-                .snapshot()
-                .text_objects
-                .is_empty());
-            doc.undo();
-            assert_eq!(doc.encode().unwrap(), before);
-            doc.redo();
-            assert_eq!(doc.encode().unwrap(), saved);
-        }
+                let before = doc.encode().unwrap();
+                let raster = crate::vector::rasterize_svg(
+                    &doc.svg_layers().next().unwrap().source,
+                    960,
+                    640,
+                )
+                .unwrap();
+                doc.outline_selected_text(outline).unwrap();
+                assert!(doc.snapshot().text_objects.is_empty());
+                let layer = doc.svg_layers().next().unwrap();
+                assert!(layer
+                    .vector_objects
+                    .iter()
+                    .all(|o| o.text.is_none() && !o.group_path.is_empty()));
+                let after = crate::vector::rasterize_svg(&layer.source, 960, 640).unwrap();
+                let error: u64 = raster
+                    .pixels
+                    .iter()
+                    .zip(&after.pixels)
+                    .map(|(a, b)| a.abs_diff(*b) as u64)
+                    .sum();
+                let ink: u64 = raster.pixels.iter().map(|v| *v as u64).sum();
+                assert!(ink > 0);
+                assert!(
+                    error as f64 / (ink as f64) < 0.06,
+                    "relative raster difference: {}",
+                    error as f64 / ink as f64
+                );
+                let saved = doc.encode().unwrap();
+                assert!(Document::decode(&saved)
+                    .unwrap()
+                    .snapshot()
+                    .text_objects
+                    .is_empty());
+                doc.undo();
+                assert_eq!(doc.encode().unwrap(), before);
+                doc.redo();
+                assert_eq!(doc.encode().unwrap(), saved);
+            }
+        });
     }
     #[test]
     fn conversion_failure_keeps_text() {
