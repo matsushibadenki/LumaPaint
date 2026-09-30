@@ -1,5 +1,6 @@
 use crate::attach;
 use lumapaint_core::{bezier, document::Document};
+use lumapaint_formats::native::NativeDocumentCodec;
 fn source(doc: &Document) -> &str {
     &doc.svg_layers().next().unwrap().source
 }

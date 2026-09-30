@@ -1,6 +1,8 @@
 //! Temporary image placement: document history changes only on confirmation.
 use super::*;
 use lumapaint_core::document::Point;
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 
 struct Placement {
     name: String,

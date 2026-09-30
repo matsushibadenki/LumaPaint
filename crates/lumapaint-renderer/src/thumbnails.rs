@@ -7,6 +7,8 @@ use lumapaint_core::{
     document::{CanvasColor, Document},
     tiles::TiledRasterDocument,
 };
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 
 pub struct Thumbnails {
     pub layers: Vec<(String, Vec<u8>)>,

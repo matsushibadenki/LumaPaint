@@ -1,6 +1,7 @@
 //! One writer per application profile; coalesced snapshots are encoded and written off-thread.
 use crate::project_file;
 use lumapaint_core::document::Document;
+use lumapaint_formats::native::NativeDocumentCodec;
 use serde::Serialize;
 use std::{
     fs::{File, OpenOptions},

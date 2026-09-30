@@ -2,6 +2,8 @@
 //! Run explicitly with: cargo test -p lumapaint-renderer gpu_brush -- --ignored --nocapture
 use super::*;
 use lumapaint_core::document::{Brush, SelectionRegion};
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 
 const W: u32 = 1024;
 const H: u32 = 768;

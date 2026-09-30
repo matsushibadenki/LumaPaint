@@ -4,6 +4,8 @@ use lumapaint_core::vector::{
     KinsokuMode, MojikumiMode, ParagraphListStyle, TextAlignment, TextGlyphCluster, TextRun,
     TextStyle, TextStylePatch, VectorText,
 };
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 use objc2::{runtime::AnyObject, AnyThread, DefinedClass};
 use objc2_app_kit::{
     NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSColor, NSFont,

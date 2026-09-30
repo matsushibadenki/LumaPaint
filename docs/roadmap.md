@@ -13,6 +13,19 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] macOS Apple Siliconで開発用.appの生成・起動・Rust接続を確認
 - [Done] macOS・Windows・Linux向けCI定義（実行結果は別途確認）
 
+## 大規模Sceneとキャッシュ（[設計・合格条件](large-scene-rendering.md)）
+
+100万件を毎フレーム処理せず、変更・表示対象だけを扱う方針を採用。60／120fpsは未達成の実機目標で、現在のv1容量上限は維持する。
+
+- [Done] 既存ペイントタイル、SVGレイヤーGPUキャッシュ、文字フレームCPUキャッシュ、最新要求優先のワーカーを大規模Sceneへの移行基盤として整理。
+- [Done] 文字フレームキャッシュの診断へ件数・計上ペイロード・予算・追い出し数を追加。全メモリ／VRAMの計測とは区別。
+- [Next] オブジェクト変更Journalとgeometry／transform／style等の個別世代を導入。編集・Undo/Redo・削除・読込を接続し、全SVG比較・全量生成を更新対象だけへ置換。静止と1個移動で計測。
+- [Next] 描画boundsとBVHによる可視判定・選択候補抽出。線・矢印・効果と描画順を維持し、線形探索との一致と検査ノード数を検証。
+- [Later] 共有ページのScene Compilerとimmutable RenderSnapshot。変更ページだけを更新し、版の公開・古いワーカー結果の拒否・入力遅延を検証。
+- [Later] Vector Tile／Group／EffectキャッシュとCPU／GPUの共通予算。Dirtyタイルの全寄与要素を正しい順で再合成し、半透明・クリップ・ぼかし継ぎ目を検証。
+- [Later] 画面誤差で選ぶLOD／Mip、描画スレッド分離、Animationの変更ノードだけの更新。
+- [Later] 新容量契約で10万／100万件の読込・保存・履歴・編集を実機測定。p95／p99、転送量、メモリ、deadline超過を記録してから容量上限と性能表記を更新。
+
 ## 最初の制作機能
 
 - [Done] ペイント用ブラシ・インクペンの距離ベースADSR減衰エンベロープ。立ち上がり／減衰／持続距離／消え際・持続濃度・かすれ量、ドラッグ可能なカーブ図と数値・スライダー、ストロークへの保存・旧形式互換・Undo/Redoに対応。Rustの共通サンプラーでGPU／タイル描画へ適用し、消しゴムから分離
@@ -159,6 +172,9 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] ダイレクト選択の節点削除は接続辺も削除し、残った連続線分を別輪郭へ分割。閉じたパスを開き、孤立点・全点削除を除去。アンカーポイント削除ツールによる接続を保つ削除と区別し、Undo/Redoへ接続
 - [Done] ダイレクト選択の「節点・ライブコーナー」に絶対X/Y座標、複数選択点の数値移動、直線角の共通半径を追加。形状プレビュー・取消・1操作のUndo/Redo・3言語UI、元形状と半径の保存／再読込、半径0での復元に対応。通常の節点・ハンドル編集では角丸を確定形状へ変換
 - [Done] Document Modelの描画エンジンからの独立性を強化。SVG解析・形状解決・XML編集とフォント／キャッシュを`lumapaint-svg`へ分離し、coreからusvg・tiny-skia-pathの依存を除去。独自VectorObject／SvgEditだけを渡す交換可能な契約をcoreに定義し、Rustホストが文書ごとに接続。保存形式・履歴を維持し、CIでcoreの直接・間接依存を検査。
+- [Done] LP Document／DocumentStateを中心に独立I/O境界を実装。v1 JSONとタイルコンテナcodecを`lumapaint-formats`へ分離し、保存・再読込・復旧を移行。読み取り専用ExportSnapshot、共通Exporter、形式別能力・損失レポート、限定SVG埋め込み出力を追加。core／I/O／rendererの通常依存をCIで検査。
+- [Next] SVGオブジェクト単位の編集可能な出力とブラシ・クリップ対応。既存の出力UIへ接続する際は三言語の互換レポートを提示する。
+- [Later] 独立PDF parser／writer、PDF互換AIとAI固有データのImport／Export。現在は共通I/O境界で明示的に未対応を返す。
 - [Done] 読み込みSVGのrect／ellipse／circle／line／polyline／polygon、静的CSSの座標・寸法・d・表示・2D変形、use／入れ子のuse／symbolのインスタンスをダイレクト選択の編集対象にする。Rustの描画パーサーと同じ解決済み形状から節点を生成。図形は編集時にベジェ化し、useはそのインスタンスだけ独立化。共有定義・他のインスタンス・グラデーション・クリップを保持し、複数輪郭の同時編集・安定した識別子・保存／再読込・Undo/Redoを検証。変換前後の描画ピクセルを比較して外観維持を確認。macOSで読み込みSVGを画像レイヤー移動より優先して節点編集へ振り分け、CSS図形・useの片方の節点移動とUndoを操作確認。
 - [Later] SVGの動的CSS、CSS変数・calc・パーセント変形・3D変形の解決と編集
 - [Later] キャンバス上のライブコーナーハンドル、角ごとに異なる半径、曲線に接する角の丸め

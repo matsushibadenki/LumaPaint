@@ -1,5 +1,7 @@
 //! CPU vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};
 use std::sync::{Arc, OnceLock};
 
@@ -2194,5 +2196,36 @@ mod imported_svg_edit_tests {
         assert_eq!(before.pixels[(20 * 160 + 20) * 4 + 3], 255);
         assert_eq!(after.pixels[(20 * 160 + 20) * 4 + 3], 0);
         assert!(source.contains(r#"<rect x="5" y="5" width="30" height="30" fill="red"/>"#));
+    }
+}
+
+#[cfg(test)]
+mod independent_export_tests {
+    use super::rasterize_svg;
+    use lumapaint_core::document::{CanvasColor, Document};
+    use lumapaint_formats::export::{export, ExportOptions, ExportSnapshot, FormatId};
+
+    #[test]
+    fn embedded_svg_export_preserves_aspect_ratio_and_pixels() {
+        // Non-square source in a square document catches accidental stretching.
+        let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect x="20" y="10" width="40" height="30" fill="red"/></svg>"#;
+        let mut state = Document::default().document_state();
+        state.width = 200;
+        state.height = 200;
+        state.canvas_color = Some(CanvasColor::Transparent);
+        let mut document = Document::from_document_state(state).unwrap();
+        document
+            .import_svg("fixture".into(), source.into())
+            .unwrap();
+        let result = export(
+            FormatId::Svg,
+            &ExportSnapshot::capture(&document),
+            ExportOptions { allow_lossy: true },
+        )
+        .unwrap();
+        let output = String::from_utf8(result.bytes).unwrap();
+        let before = rasterize_svg(source, 200, 200).unwrap();
+        let after = rasterize_svg(&output, 200, 200).unwrap();
+        assert_eq!(before.pixels, after.pixels);
     }
 }

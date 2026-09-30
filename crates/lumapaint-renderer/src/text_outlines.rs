@@ -1,6 +1,8 @@
 //! Convert the same shaped glyph paths used for SVG rendering to portable geometry.
 use crate::vector::{font_resolver, system_fonts};
 use lumapaint_core::vector::{FillRule, VectorObject, VectorObjectKind, VectorPaint, VectorPath};
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};
 use skia_safe::{Path, PathBuilder, PathFillType, PathOp};
 

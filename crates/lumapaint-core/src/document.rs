@@ -805,13 +805,12 @@ impl Document {
             file_name: self.file_name.clone(),
         }
     }
-    pub fn encode(&mut self) -> Result<Vec<u8>, String> {
-        self.finish();
-        serde_json::to_vec(&ProjectFile {
+    /// Owned, engine-independent state. Runtime services, selections and history are excluded.
+    /// Callers that need an in-progress stroke should finish a clone before taking this state.
+    pub fn document_state(&self) -> DocumentState {
+        DocumentState {
             saved_paths: self.saved_paths.clone(),
             clipping_path_id: self.clipping_path_id.clone(),
-            format: "LumaPaint".into(),
-            version: 1,
             name: Some(self.name.clone()),
             width: self.width,
             height: self.height,
@@ -839,22 +838,17 @@ impl Document {
                 .filter(|layer| !self.is_path_edit_layer(layer))
                 .cloned()
                 .collect(),
-        })
-        .map_err(|e| e.to_string())
-    }
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err("Project exceeds 8 MiB".into());
         }
-        let file: ProjectFile = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if file.format != "LumaPaint"
-            || file.version != 1
-            || file.width == 0
+    }
+
+    /// Validate and restore model state; file signatures and codecs belong to the I/O layer.
+    pub fn from_document_state(file: DocumentState) -> Result<Self, String> {
+        if file.width == 0
             || file.height == 0
             || file.width > MAX_DOCUMENT_DIMENSION
             || file.height > MAX_DOCUMENT_DIMENSION
         {
-            return Err("Unsupported project format, version, or dimensions".into());
+            return Err("Unsupported document dimensions".into());
         }
         if file
             .name
@@ -6293,57 +6287,55 @@ mod tests {
     }
 }
 
-/// v1 is a bounded, stroke-based exchange format, not the future tiled project container.
-pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
-#[derive(Serialize, Deserialize)]
+/// Portable document data shared by renderers and independent I/O adapters.
+/// This is model state, not a file envelope or a renderer display list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProjectFile {
+pub struct DocumentState {
     #[serde(default)]
-    saved_paths: Vec<SavedPath>,
+    pub saved_paths: Vec<SavedPath>,
     #[serde(default)]
-    clipping_path_id: Option<String>,
-    format: String,
-    version: u32,
+    pub clipping_path_id: Option<String>,
     #[serde(default)]
-    name: Option<String>,
-    width: u32,
-    height: u32,
+    pub name: Option<String>,
+    pub width: u32,
+    pub height: u32,
     #[serde(default)]
-    unit: Option<DocumentUnit>,
+    pub unit: Option<DocumentUnit>,
     #[serde(default)]
-    resolution: Option<u32>,
+    pub resolution: Option<u32>,
     #[serde(default)]
-    artboards: Option<bool>,
+    pub artboards: Option<bool>,
     #[serde(default)]
-    canvas_color: Option<CanvasColor>,
+    pub canvas_color: Option<CanvasColor>,
     #[serde(default)]
-    pixel_aspect_ratio: Option<f32>,
-    layer_visible: bool,
+    pub pixel_aspect_ratio: Option<f32>,
+    pub layer_visible: bool,
     #[serde(default)]
-    layer_name: Option<String>,
+    pub layer_name: Option<String>,
     #[serde(default)]
-    layer_opacity: Option<f32>,
+    pub layer_opacity: Option<f32>,
     #[serde(default)]
-    layer_locked: Option<bool>,
+    pub layer_locked: Option<bool>,
     #[serde(default)]
-    layer_alpha_locked: Option<bool>,
+    pub layer_alpha_locked: Option<bool>,
     #[serde(default)]
-    layer_mask_enabled: Option<bool>,
+    pub layer_mask_enabled: Option<bool>,
     #[serde(default)]
-    layer_mask_inverted: Option<bool>,
+    pub layer_mask_inverted: Option<bool>,
     #[serde(default)]
-    layer_mask_density: Option<f32>,
+    pub layer_mask_density: Option<f32>,
     #[serde(default)]
-    color_mode: ColorMode,
+    pub color_mode: ColorMode,
     #[serde(default)]
-    color_profile: Option<ColorProfile>,
+    pub color_profile: Option<ColorProfile>,
     #[serde(default = "default_bit_depth")]
-    bit_depth: u8,
+    pub bit_depth: u8,
     #[serde(default)]
-    paint_source: Option<String>,
-    strokes: Vec<Stroke>,
+    pub paint_source: Option<String>,
+    pub strokes: Vec<Stroke>,
     #[serde(default)]
-    svg_layers: Vec<SvgLayer>,
+    pub svg_layers: Vec<SvgLayer>,
 }
 
 fn validate_saved_paths(paths: &[SavedPath], clip: Option<&str>) -> Result<(), String> {
@@ -9385,5 +9377,30 @@ mod independent_saved_path_tests {
         let decoded = Document::decode(&doc.encode().unwrap()).unwrap();
         assert_eq!(decoded.saved_paths[0].objects.len(), 1);
         assert!(decoded.svg_layers.is_empty());
+    }
+}
+
+#[cfg(test)]
+impl Document {
+    pub fn encode(&mut self) -> Result<Vec<u8>, String> {
+        self.finish();
+        let mut value = serde_json::to_value(self.document_state()).map_err(|e| e.to_string())?;
+        value["format"] = "LumaPaint".into();
+        value["version"] = 1.into();
+        serde_json::to_vec(&value).map_err(|e| e.to_string())
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > 8 * 1024 * 1024 {
+            return Err("Project exceeds 8 MiB".into());
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let fields = value.as_object_mut().ok_or("Invalid project")?;
+        if fields.remove("format") != Some("LumaPaint".into())
+            || fields.remove("version") != Some(1.into())
+        {
+            return Err("Unsupported project format or version".into());
+        }
+        Self::from_document_state(serde_json::from_value(value).map_err(|e| e.to_string())?)
     }
 }

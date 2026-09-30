@@ -2,6 +2,8 @@
 use lumapaint_core::vector::{
     FillRule, PathOperation, PortablePathGeometry, VectorObject, VectorPath, VectorPathEngine,
 };
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 use skia_safe::{paint, Matrix, Paint, Path, PathBuilder, PathFillType, PathOp, Rect, StrokeRec};
 
 pub struct SkiaPathEngine;

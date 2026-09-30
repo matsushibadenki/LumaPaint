@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+lumapaint-formats = { path = "../crates/lumapaint-formats" }
 lumapaint-svg = { path = "../crates/lumapaint-svg" }
 tauri = { version = "~2.11.6", features = [] }
 lumapaint-core = { path = "../crates/lumapaint-core" }

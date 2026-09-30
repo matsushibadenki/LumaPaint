@@ -1,5 +1,9 @@
 //! External-format adapters. The dependency points toward the native core, never toward UI.
+pub mod export;
+pub mod native;
 pub mod psd;
+pub mod svg;
+pub mod tile_container;
 use lumapaint_core::tiles::TiledRasterState;
 use serde::Serialize;
 

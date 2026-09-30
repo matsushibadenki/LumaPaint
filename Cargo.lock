@@ -2189,6 +2189,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "lumapaint-core",
+ "lumapaint-formats",
  "lumapaint-renderer",
  "lumapaint-svg",
  "objc2",
@@ -2208,7 +2209,6 @@ dependencies = [
 name = "lumapaint-core"
 version = "0.1.0"
 dependencies = [
- "crc32fast",
  "roxmltree",
  "serde",
  "serde_json",
@@ -2220,8 +2220,11 @@ dependencies = [
 name = "lumapaint-formats"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "crc32fast",
  "lumapaint-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2239,6 +2242,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "lumapaint-core",
+ "lumapaint-formats",
  "lumapaint-svg",
  "pollster",
  "resvg",
@@ -2254,6 +2258,7 @@ name = "lumapaint-svg"
 version = "0.1.0"
 dependencies = [
  "lumapaint-core",
+ "lumapaint-formats",
  "roxmltree",
  "serde_json",
  "tiny-skia-path",

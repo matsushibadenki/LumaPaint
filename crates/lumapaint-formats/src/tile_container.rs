@@ -1,10 +1,10 @@
 //! Bounded binary container for authoritative tiled raster state.
 //! This is independent from the legacy `.lumapaint` v1 JSON format.
-use crate::tiles::{
+use crc32fast::hash;
+use lumapaint_core::tiles::{
     MaskTileState, RasterLayerState, RasterTileState, TileCoord, TiledRasterDocument,
     TiledRasterState, TILE_SIZE,
 };
-use crc32fast::hash;
 use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8; 8] = b"LPTILE2\0";

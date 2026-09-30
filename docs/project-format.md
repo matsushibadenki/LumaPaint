@@ -66,3 +66,7 @@
 追加設定は既存の部分更新・文書保存・Undo/Redoに含まれる。幅カーブと輪郭形状の生成・選択判定はRustで行い、WebViewには編集点と輪郭の開閉状態を渡す。
 
 SVGアダプターは実行時サービスであり、保存JSONには含めない。coreだけで読み込み・保存できる。内部編集を使うホストは読み込み後にサービスを接続する。[Documentと外部エンジンの境界](document-boundaries.md)を参照。
+
+## CodecとDocument Modelの分離
+
+ファイルの署名・版・JSON codec・8MiB上限は`lumapaint-formats::native`が担当し、タイルのバイナリcodecは`lumapaint-formats::tile_container`が担当する。coreはファイルEnvelopeを持たない`DocumentState`の取得と整合性検証・復元を担当する。既存v1のフィールド、省略時の値、読み込み可能な内容は維持し、保存時のJSONキー順序だけは契約に含めない。新しいcodecも未知フィールドと重複フィールドを拒否する。通常保存・自動復旧はI/O層を経由する。

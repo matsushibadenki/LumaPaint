@@ -74,11 +74,21 @@ struct Entry {
 
 type FrameKey = (String, String, u64, (u32, u32));
 
+/// Accounted retained CPU payload, not total heap usage or GPU allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameCacheStats {
+    pub entries: usize,
+    pub retained_payload_bytes: usize,
+    pub payload_budget_bytes: usize,
+    pub evicted_entries: usize,
+}
+
 #[derive(Default)]
 pub struct FrameRasterCache {
     entries: HashMap<FrameKey, Entry>,
     used_bytes: usize,
     clock: u64,
+    evicted_entries: usize,
     /// Diagnostic count of text frames actually rasterized by this cache.
     pub rasterized_frames: usize,
     pub reused_frames: usize,
@@ -108,6 +118,15 @@ fn source_over(destination: &mut [u8], source: &[u8]) {
 }
 
 impl FrameRasterCache {
+    pub fn stats(&self) -> FrameCacheStats {
+        FrameCacheStats {
+            entries: self.entries.len(),
+            retained_payload_bytes: self.used_bytes,
+            payload_budget_bytes: MAX_CACHE_BYTES,
+            evicted_entries: self.evicted_entries,
+        }
+    }
+
     pub fn prepare_layer(
         &mut self,
         layer: &SvgLayer,
@@ -181,6 +200,7 @@ impl FrameRasterCache {
                     break;
                 };
                 let old = self.entries.remove(&oldest).unwrap();
+                self.evicted_entries += 1;
                 self.used_bytes -= old.pixels.len() + old.source.len();
             }
             self.used_bytes += entry_bytes;
@@ -393,6 +413,11 @@ mod tests {
             cache.frame("layer", "frame", &source, (1, 1)).unwrap();
         }
         assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
+        let stats = cache.stats();
+        assert_eq!(stats.entries, MAX_CACHE_ENTRIES);
+        assert_eq!(stats.retained_payload_bytes, cache.used_bytes);
+        assert_eq!(stats.payload_budget_bytes, MAX_CACHE_BYTES);
+        assert_eq!(stats.evicted_entries, 1);
         assert!(cache.used_bytes > 0);
         assert_eq!(
             cache.used_bytes,

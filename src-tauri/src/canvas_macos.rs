@@ -14,6 +14,7 @@ use lumapaint_core::vector::{
     FillRule, PathEditAction, PathOperation, VectorObject, VectorObjectKind, VectorPaint,
     VectorPath,
 };
+use lumapaint_formats::native::NativeDocumentCodec;
 use lumapaint_renderer::frame_cache::FrameRasterCache;
 use lumapaint_renderer::{
     paint_stroke_into_tiles_at_scale, project_committed_paint_layer_at_scale,
@@ -155,6 +156,7 @@ pub fn initialize(app: tauri::AppHandle) {
                 let started = Instant::now();
                 let before_rasterized = frame_cache.rasterized_frames;
                 let before_reused = frame_cache.reused_frames;
+                let before_evicted = frame_cache.stats().evicted_entries;
                 let result: Result<Vec<PreparedSvgLayer>, String> = job
                     .layers
                     .iter()
@@ -162,10 +164,15 @@ pub fn initialize(app: tauri::AppHandle) {
                     .collect();
                 let cpu_time = started.elapsed();
                 if render_metrics_enabled() {
+                    let stats = frame_cache.stats();
                     eprintln!(
-                        "LumaPaint text-frame cache rasterized={} reused={}",
+                        "LumaPaint text-frame cache rasterized={} reused={} entries={} payload_bytes={} payload_budget_bytes={} evicted={}",
                         frame_cache.rasterized_frames - before_rasterized,
-                        frame_cache.reused_frames - before_reused
+                        frame_cache.reused_frames - before_reused,
+                        stats.entries,
+                        stats.retained_payload_bytes,
+                        stats.payload_budget_bytes,
+                        stats.evicted_entries - before_evicted
                     );
                 }
                 let _ = app.run_on_main_thread(move || {

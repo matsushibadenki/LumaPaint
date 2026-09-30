@@ -1,6 +1,9 @@
 //! Bounded reads and same-directory atomic replacement. No path supplied by the WebView.
-use lumapaint_core::document::{Document, MAX_FILE_BYTES};
-use lumapaint_core::{tile_container, tiles::TiledRasterState};
+use lumapaint_core::document::Document;
+use lumapaint_core::tiles::TiledRasterState;
+use lumapaint_formats::native::NativeDocumentCodec;
+use lumapaint_formats::native::MAX_FILE_BYTES;
+use lumapaint_formats::tile_container;
 use serde::Serialize;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},

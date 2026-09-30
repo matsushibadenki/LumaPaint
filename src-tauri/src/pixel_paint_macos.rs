@@ -2,6 +2,8 @@
 //! PNG encoding run on a worker, so AppKit can continue delivering curved strokes.
 use super::*;
 use lumapaint_core::document::Point;
+#[cfg(test)]
+use lumapaint_formats::native::NativeDocumentCodec;
 use lumapaint_renderer::pixel_paint::PixelPaintPreview;
 use lumapaint_renderer::PreparedPixelTiles;
 use std::sync::{

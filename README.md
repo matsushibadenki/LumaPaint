@@ -49,7 +49,7 @@ macOSアプリの出力先は `target/release/bundle/macos/LumaPaint.app` です
 src/                      React + TypeScript（UI・翻訳・IPC窓口）
 src-tauri/                Tauri 2（デスクトップ起動・OSとの接続）
 crates/lumapaint-core/    OS・UI・描画エンジン非依存のRustコア
-crates/lumapaint-formats/ 外部形式アダプター・互換レポート
+crates/lumapaint-formats/ Native／SVG／PSD I/O・共通Exporter・互換レポート
 crates/lumapaint-svg/     SVG形状解決・編集の交換可能なアダプター
 crates/lumapaint-renderer/  wgpu描画・WGSLシェーダー（OS非依存）
 docs/                    設計・開発方針・ロードマップ
@@ -84,3 +84,5 @@ Undoの取り消し済み分岐やUI設定は作品ファイルに含めませ�
 ストローク確定やUndo/Redoの後に、作品ファイルとは別の復旧用コピーをバックグラウンドで保存します。
 異常終了後は起動時の「前回の作業を復旧」から戻せます。復旧した作品は手動で保存してください。
 未確定のストロークや書き込み途中の変更は復旧できない場合があります。[復旧機能の仕様](docs/recovery.md) を参照してください。
+
+[大規模Sceneと描画キャッシュ](docs/large-scene-rendering.md)に、変更対象だけを処理する設計、10万／100万オブジェクトへの移行順、60／120fpsの計測条件をまとめています。

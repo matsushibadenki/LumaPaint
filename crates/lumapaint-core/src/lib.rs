@@ -7,7 +7,6 @@ pub mod graph;
 pub mod selection;
 pub mod stroke;
 pub mod svg_backend;
-pub mod tile_container;
 pub mod tiles;
 pub mod vector;
 

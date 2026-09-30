@@ -309,11 +309,8 @@ mod tests {
             &raw.raster.layers[0].tiles[0].pixels[..4],
             &[20, 21, 22, 255]
         );
-        let native = lumapaint_core::tile_container::encode(&raw.raster).unwrap();
-        assert_eq!(
-            lumapaint_core::tile_container::decode(&native).unwrap(),
-            raw.raster
-        );
+        let native = crate::tile_container::encode(&raw.raster).unwrap();
+        assert_eq!(crate::tile_container::decode(&native).unwrap(), raw.raster);
     }
     #[test]
     fn edge_tiles_have_zero_padding() {
