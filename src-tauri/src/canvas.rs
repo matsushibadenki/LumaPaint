@@ -20,6 +20,8 @@ pub struct CanvasRequest {
     pub width: f64,
     pub height: f64,
     pub zoom: f64,
+    #[serde(default)]
+    pub zoom_revision: Option<u64>,
     pub dark: bool,
     pub visible: bool,
     #[serde(default)]
@@ -782,6 +784,7 @@ mod tests {
             width: 640.0,
             height: 480.0,
             zoom: 1.0,
+            zoom_revision: None,
             dark: false,
             visible: true,
             brush: Brush::default(),

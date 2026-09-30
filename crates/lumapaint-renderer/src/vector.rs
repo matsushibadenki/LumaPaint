@@ -1,4 +1,4 @@
-//! CPU vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
+//! GPU-preferred vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
 #[cfg(test)]
 use lumapaint_formats::native::NativeDocumentCodec;
@@ -394,6 +394,9 @@ pub(crate) fn font_resolver() -> usvg::FontResolver<'static> {
     }
 }
 
+#[cfg(all(feature = "skia", target_os = "macos"))]
+#[path = "vector_gpu.rs"]
+mod gpu_cache;
 #[cfg(feature = "skia")]
 pub mod skia_paths;
 
@@ -401,6 +404,7 @@ pub mod skia_paths;
 pub enum SvgBackend {
     Resvg,
     Skia,
+    SkiaGpu,
 }
 
 pub struct SvgRaster {
@@ -608,11 +612,6 @@ fn rasterize_tree_region(
         let normalized = tree.to_string(&usvg::WriteOptions::default());
         let dom = skia_safe::svg::Dom::from_str(&normalized, skia_safe::FontMgr::empty())
             .map_err(|error| format!("Skia SVG: {error}"))?;
-        let mut surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or("Skia raster allocation failed")?;
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-        surface.canvas().translate((x, y)).scale((scale, scale));
-        dom.render(surface.canvas());
         // N32 is platform-specific (often BGRA); explicitly convert to the compositor's RGBA.
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
@@ -620,6 +619,27 @@ fn rasterize_tree_region(
             skia_safe::AlphaType::Premul,
             None,
         );
+        let draw = |surface: &mut skia_safe::Surface| {
+            surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+            surface.canvas().translate((x, y)).scale((scale, scale));
+            dom.render(surface.canvas());
+        };
+        #[cfg(target_os = "macos")]
+        if let Some(pixels) = gpu_cache::rasterize(&info, draw) {
+            return Ok(SvgRegionRaster {
+                raster: SvgRaster {
+                    pixels,
+                    backend: SvgBackend::SkiaGpu,
+                    fully_contained,
+                },
+                origin,
+                rectangle,
+                width: width as usize,
+            });
+        }
+        let mut surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
+            .ok_or("Skia raster allocation failed")?;
+        draw(&mut surface);
         let mut pixels = vec![0; width as usize * height as usize * 4];
         if !surface.read_pixels(&info, &mut pixels, width as usize * 4, (0, 0)) {
             return Err("Skia pixel conversion failed".into());
@@ -677,7 +697,8 @@ fn supports_skia(group: &usvg::Group) -> bool {
                     .stroke()
                     .is_none_or(|stroke| matches!(stroke.paint(), usvg::Paint::Color(_)))
         }
-        usvg::Node::Image(_) | usvg::Node::Text(_) => false,
+        usvg::Node::Text(text) => supports_skia(text.flattened()),
+        usvg::Node::Image(_) => false,
     })
 }
 
@@ -1540,14 +1561,14 @@ mod tests {
         assert!((127..=128).contains(&red[0]));
         assert_eq!(red[0], red[3]);
         assert_eq!(&red[1..3], [0, 0]); // premultiplied RGBA, not BGRA
-        assert_eq!(
-            result.backend,
-            if cfg!(feature = "skia") {
-                SvgBackend::Skia
-            } else {
-                SvgBackend::Resvg
-            }
-        );
+        if cfg!(feature = "skia") {
+            assert!(matches!(
+                result.backend,
+                SvgBackend::Skia | SvgBackend::SkiaGpu
+            ));
+        } else {
+            assert_eq!(result.backend, SvgBackend::Resvg);
+        }
     }
 
     #[test]

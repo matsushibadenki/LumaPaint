@@ -109,6 +109,7 @@ export interface CanvasRequest {
   channel?: DisplayChannel;
   x: number; y: number; width: number; height: number;
   zoom: number; dark: boolean; visible: boolean;
+  zoomRevision?: number;
   brush?: Brush;
   tool?: CanvasTool;
 }

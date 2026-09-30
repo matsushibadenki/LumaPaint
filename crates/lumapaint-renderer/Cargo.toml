@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-skia = ["dep:skia-safe"]
+skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]
 lumapaint-core = { path = "../lumapaint-core" }
@@ -15,8 +15,11 @@ resvg = "0.45"
 ttf-parser = "0.25"
 rustybuzz = "0.20"
 unicode-segmentation = "1.13"
-# This CPU/SVG/WebP combination has upstream prebuilt binaries for Apple Silicon.
 skia-safe = { version = "=0.153.3", features = ["svg", "webp"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+skia-safe = { version = "=0.153.3", features = ["svg", "webp", "metal", "ganesh"], optional = true }
+metal = { version = "0.32", optional = true }
 
 [dev-dependencies]
 lumapaint-formats = { path = "../lumapaint-formats" }

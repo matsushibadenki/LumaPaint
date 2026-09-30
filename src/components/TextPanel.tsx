@@ -13,15 +13,33 @@ function NumberField({ label, value, placeholder, min, max, step, unit, onValidC
   const display = value === null ? '' : String(Number(value.toFixed(2)));
   const [input, setInput] = useState(display);
   const [focused, setFocused] = useState(false);
+  const changed = useRef(false);
   useEffect(() => { if (!focused) setInput(display); }, [display, focused]);
   return <span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={step} placeholder={placeholder} value={input} onFocus={() => setFocused(true)} onChange={event => {
     const next = event.currentTarget.value;
     setInput(next);
-    if (next !== '' && event.currentTarget.validity.valid) onValidChange(Number(next));
+    changed.current = true;
   }} onBlur={event => {
     setFocused(false);
-    if (event.currentTarget.value === '' || !event.currentTarget.validity.valid) setInput(display);
-  }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span>{unit}</span></span>;
+    const next = event.currentTarget.value;
+    const shouldCommit = changed.current;
+    changed.current = false;
+    if (next === '' || !event.currentTarget.validity.valid) {
+      setInput(display);
+    } else if (shouldCommit && (value === null || Number(next) !== value)) {
+      onValidChange(Number(next));
+    }
+  }} onKeyDown={event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.currentTarget.blur();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      changed.current = false;
+      setInput(display);
+      event.currentTarget.blur();
+    }
+  }} /><span>{unit}</span></span>;
 }
 
 function HexColorField({ label, value, onValidChange }: { label: string; value: string; onValidChange: (value: string) => void }) {

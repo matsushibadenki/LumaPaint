@@ -8,13 +8,13 @@ use lumapaint_core::vector::{
 use lumapaint_formats::native::NativeDocumentCodec;
 use objc2::{runtime::AnyObject, AnyThread, DefinedClass};
 use objc2_app_kit::{
-    NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSColor, NSFont,
-    NSFontAttributeName, NSFontManager, NSFontTraitMask, NSForegroundColorAttributeName,
-    NSKernAttributeName, NSLineBreakMode, NSLineBreakStrategy, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSSelectionAffinity, NSStrikethroughStyleAttributeName,
-    NSTextAlignment, NSTextInputClient, NSTextLayoutOrientation, NSTextList,
-    NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextListOptions, NSTextView,
-    NSUnderlineStyleAttributeName,
+    NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSColor, NSCompositingOperation,
+    NSFont, NSFontAttributeName, NSFontManager, NSFontTraitMask, NSForegroundColorAttributeName,
+    NSKernAttributeName, NSLayoutManager, NSLineBreakMode, NSLineBreakStrategy,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSRectFillUsingOperation,
+    NSSelectionAffinity, NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient,
+    NSTextLayoutOrientation, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc,
+    NSTextListOptions, NSTextView, NSUnderlineStyleAttributeName,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
 
@@ -37,12 +37,13 @@ define_class!(
 
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
+            TEXT_FRAME_PENDING.with(|pending| pending.set(true));
             unsafe { msg_send![super(self), didChangeText] }
             SESSION.with(|slot| { if let Ok(slot) = slot.try_borrow() { if let Some(session) = slot.as_ref() { session.edited.set(true); } } });
             hide_native_glyphs(self);
             invalidate_current_cache();
-            publish();
-            if let Err(error) = redraw() { emit_error(error); }
+            TEXT_FRAME_PENDING.with(|pending| pending.set(true));
+            if let Err(error) = request_redraw() { emit_error(error); }
         }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
@@ -80,6 +81,27 @@ define_class!(
     }
 );
 
+// NSTextView substitutes an opaque inactive-selection color when focus moves
+// to the WebView. Glyphs live underneath this view in Metal, so that color
+// conceals the preview. Keep native selection geometry, but paint it translucent.
+define_class!(
+    #[unsafe(super(NSLayoutManager))]
+    #[ivars = ()]
+    struct PreviewLayoutManager;
+    impl PreviewLayoutManager {
+        #[unsafe(method(fillBackgroundRectArray:count:forCharacterRange:color:))]
+        unsafe fn fill_background(&self, rects: NonNull<NSRect>, count: usize, _range: NSRange, _color: &NSColor) {
+            let highlight = NSColor::colorWithSRGBRed_green_blue_alpha(0.15, 0.5, 1.0, 0.25);
+            highlight.setFill();
+            // The superclass substitutes system inactive-selection gray even
+            // for a custom color. Blend directly over the GPU glyphs instead.
+            for rect in unsafe { std::slice::from_raw_parts(rects.as_ptr(), count) } {
+                NSRectFillUsingOperation(*rect, NSCompositingOperation::SourceOver);
+            }
+        }
+    }
+);
+
 // The inline NSTextView is a native subview, so WebView/CSS clipping cannot
 // keep long text inside the document. Clip it in the same AppKit hierarchy.
 define_class!(
@@ -101,9 +123,11 @@ struct Session {
     edited: std::cell::Cell<bool>,
     layout_generation: std::cell::Cell<u64>,
     current_cache: RefCell<Option<(u64, TextSettings)>>,
+    layout_size: std::cell::Cell<Option<[f32; 2]>>,
 }
 thread_local! {
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    static TEXT_FRAME_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub fn font_families() -> Result<Vec<String>, String> {
@@ -632,7 +656,17 @@ fn selection_style(session: &Session, settings: &TextSettings) -> SelectionStyle
         mixed,
     }
 }
+pub(super) fn prepare_frame() {
+    if TEXT_FRAME_PENDING.with(|pending| pending.replace(false)) {
+        publish();
+    }
+}
+
 fn publish() {
+    if TEXT_FRAME_PENDING.with(|pending| pending.get()) {
+        let _ = request_redraw();
+        return;
+    }
     // AppKit can notify selection changes while layout or session teardown holds the slot.
     let settings = SESSION.with(|slot| {
         let Ok(slot) = slot.try_borrow() else {
@@ -777,6 +811,11 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     }
     view.setRichText(true);
     view.setImportsGraphics(false);
+    if let Some(container) = unsafe { view.textContainer() } {
+        let manager: Retained<PreviewLayoutManager> =
+            unsafe { msg_send![super(PreviewLayoutManager::alloc().set_ivars(())), init] };
+        container.replaceLayoutManager(&manager);
+    }
     if let Some(manager) = unsafe { view.layoutManager() } {
         manager.setUsesFontLeading(false);
     }
@@ -808,6 +847,7 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
             edited: std::cell::Cell::new(false),
             layout_generation: std::cell::Cell::new(0),
             current_cache: RefCell::new(None),
+            layout_size: std::cell::Cell::new(None),
         })
     });
     apply_all_attributes()?;
@@ -851,7 +891,7 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
         if session.settings.id != settings.id {
             return Err("A different text object is being edited".into());
         }
-        let current = current(session);
+        let current = cached_current(session).unwrap_or_else(|| current(session));
         let selection = selection_style(session, &current);
         let mut next = settings;
         next.text.content = current.text.content;
@@ -905,6 +945,7 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
                 .set(session.layout_generation.get().wrapping_add(1));
         }
     });
+    TEXT_FRAME_PENDING.with(|pending| pending.set(true));
     apply_all_attributes()?;
     // Attribute replacement must not turn the selected range into an insertion
     // point when focus is in a WebView color field or the system color picker.
@@ -919,12 +960,18 @@ pub fn update(settings: TextSettings, patch: Option<TextStylePatch>) -> Result<(
         view.didChangeText();
     }
     layout()?;
-    publish();
+    // A confirmed panel value must finish layout and GPU presentation before
+    // returning to the WebView. AppKit also retains the inactive selection's
+    // backing image until explicitly invalidated after the font metrics change.
+    invalidate_current_cache();
     redraw()?;
+    view.setNeedsDisplay(true);
+    view.displayIfNeeded();
     Ok(())
 }
 
 pub fn finish(commit: bool) -> Result<(), String> {
+    TEXT_FRAME_PENDING.with(|pending| pending.set(false));
     if !active() {
         return Ok(());
     }
@@ -998,7 +1045,6 @@ fn vertical_container_size(_width: f32, height: f32) -> NSSize {
 }
 
 pub fn layout() -> Result<(), String> {
-    invalidate_current_cache();
     let viewport = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.viewport));
     let Some(viewport) = viewport else {
         return Ok(());
@@ -1047,6 +1093,15 @@ pub fn layout() -> Result<(), String> {
             .unwrap_or_else(|| {
                 ((height - page_y - document_y) / (fit * scale_y)).max(text.font_size * 2.0)
             });
+        let layout_size = [
+            text.box_width,
+            if vertical { logical_height } else { 100_000.0 },
+        ];
+        if session.layout_size.replace(Some(layout_size)) != Some(layout_size) {
+            session
+                .layout_generation
+                .set(session.layout_generation.get().wrapping_add(1));
+        }
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),

@@ -22,14 +22,14 @@ use lumapaint_renderer::{
     PreparedSvgLayer, Renderer, ValidatedTileUploads, Viewport,
 };
 use objc2::{
-    class, define_class, msg_send, rc::Retained, runtime::AnyObject, AnyThread, MainThreadMarker,
-    MainThreadOnly,
+    class, define_class, msg_send, rc::Retained, runtime::AnyObject, sel, AnyThread, DefinedClass,
+    MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
     NSColor, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
     NSEventModifierFlags, NSEventSubtype, NSImage, NSView,
 };
-use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
@@ -316,11 +316,52 @@ fn pinch_zoom(current: f32, magnification: f32) -> f32 {
     (current * (1. + magnification).max(0.01)).clamp(0.25, 4.)
 }
 
+// UI echoes describe a displayed scale; only a newer explicit command can
+// replace the native scale accumulated by trackpad events.
+fn synchronized_zoom(
+    current: f32,
+    applied: Option<u64>,
+    requested: f64,
+    revision: Option<u64>,
+) -> f64 {
+    if revision.is_none() || revision > applied {
+        requested
+    } else {
+        current as f64
+    }
+}
+
+struct FrameState {
+    display_link: RefCell<Option<Retained<AnyObject>>>,
+}
+
 define_class!(
     #[unsafe(super(NSView))]
-    #[ivars = ()]
+    #[ivars = FrameState]
     struct PaintView;
 impl PaintView {
+        #[unsafe(method(frameTick:))]
+        fn frame_tick(&self, _link: &AnyObject) {
+            if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
+                if let Err(error) = redraw() { emit_error(error); }
+            }
+            if !FRAME_REQUESTED.with(|requested| requested.get()) {
+                if let Some(link) = self.ivars().display_link.borrow().as_ref() {
+                    unsafe { let _: () = msg_send![&**link, setPaused: true]; }
+                }
+            }
+        }
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool { true }
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            if self.ivars().display_link.borrow().is_some() { return; }
+            if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
+                text_editor::prepare_frame();
+                if let Err(error) = redraw() { emit_error(error); }
+            }
+        }
+
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
@@ -582,9 +623,47 @@ impl PaintView {
 
 impl PaintView {
     fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        let view = Self::alloc(mtm).set_ivars(());
+        let view = Self::alloc(mtm).set_ivars(FrameState {
+            display_link: RefCell::new(None),
+        });
         // SAFETY: initializing the allocated NSView subclass once on the main thread.
         unsafe { msg_send![super(view), initWithFrame: frame] }
+    }
+
+    fn request_frame(&self) {
+        let mut slot = self.ivars().display_link.borrow_mut();
+        if slot.is_none() {
+            // macOS 14+: follows the view's display, including 60/120Hz and
+            // display changes. Older systems use AppKit's layer update cycle.
+            let available: bool = unsafe {
+                msg_send![self, respondsToSelector: sel!(displayLinkWithTarget:selector:)]
+            };
+            if available {
+                unsafe {
+                    let link: Retained<AnyObject> =
+                        msg_send![self, displayLinkWithTarget: self, selector: sel!(frameTick:)];
+                    let run_loop = NSRunLoop::mainRunLoop();
+                    let _: () =
+                        msg_send![&*link, addToRunLoop: &*run_loop, forMode: NSRunLoopCommonModes];
+                    *slot = Some(link);
+                }
+            }
+        }
+        if let Some(link) = slot.as_ref() {
+            unsafe {
+                let _: () = msg_send![&**link, setPaused: false];
+            }
+        } else {
+            self.setNeedsDisplay(true);
+        }
+    }
+
+    fn stop_frames(&self) {
+        if let Some(link) = self.ivars().display_link.borrow_mut().take() {
+            unsafe {
+                let _: () = msg_send![&*link, invalidate];
+            }
+        }
     }
 
     fn refresh_cursor(&self) {
@@ -604,7 +683,7 @@ impl PaintView {
                 canvas.viewport = viewport;
             }
         });
-        if let Err(error) = redraw() {
+        if let Err(error) = request_redraw() {
             emit_error(error);
         }
         self.refresh_cursor();
@@ -723,7 +802,13 @@ impl PaintView {
             } else {
                 text_frame_pointer(point, phase)
             }
-            .and_then(|_| redraw());
+            .and_then(|_| {
+                if phase == 1 {
+                    request_redraw()
+                } else {
+                    redraw()
+                }
+            });
             if let Err(error) = result {
                 TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take());
                 emit_error(error);
@@ -808,7 +893,13 @@ impl PaintView {
                 }
                 result
             })
-            .and_then(|_| redraw());
+            .and_then(|_| {
+                if phase == 1 {
+                    request_redraw()
+                } else {
+                    redraw()
+                }
+            });
         if let Err(error) = result {
             cancel_vector_drag();
             let _ = redraw();
@@ -848,7 +939,7 @@ impl PaintView {
                 canvas.viewport.pan_y = y;
             }
         });
-        if let Err(error) = redraw() {
+        if let Err(error) = request_redraw() {
             emit_error(error);
         }
         self.refresh_cursor();
@@ -865,6 +956,7 @@ struct PenDraft {
 
 #[derive(Clone)]
 struct TextResizeDraft {
+    linear: [f32; 4],
     original: TextSettings,
     handle: (i8, i8),
     start: [f32; 2],
@@ -2027,17 +2119,12 @@ fn vector_select_pointer(
     }
     if phase == 0 {
         cancel_vector_drag();
-        if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect {
-            if let Some(d) = box_hit(document, [point.x, point.y]) {
-                BOX_DRAFT.with(|draft| *draft.borrow_mut() = Some(d));
-                return Ok(());
-            }
-        }
         if let Some((settings, handle)) = selected_text_resize_handle(document, [point.x, point.y])
-            .filter(|_| !modifiers.contains(NSEventModifierFlags::Option))
+            .filter(|_| !modifiers.contains(NSEventModifierFlags::Command))
         {
             TEXT_RESIZE_DRAFT.with(|draft| {
                 *draft.borrow_mut() = Some(TextResizeDraft {
+                    linear: text_object_linear(document, settings.id.as_deref()),
                     original: settings,
                     handle,
                     start: [point.x, point.y],
@@ -2045,6 +2132,15 @@ fn vector_select_pointer(
                 });
             });
             return Ok(());
+        }
+        if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect
+            || (modifiers.contains(NSEventModifierFlags::Command)
+                && selected_text_resize_handle(document, [point.x, point.y]).is_some())
+        {
+            if let Some(d) = box_hit(document, [point.x, point.y]) {
+                BOX_DRAFT.with(|draft| *draft.borrow_mut() = Some(d));
+                return Ok(());
+            }
         }
         let previous = document.selected_vector_ids().to_vec();
         let hit = document.vector_at(point, object_selection_tolerance());
@@ -2122,7 +2218,7 @@ fn vector_select_pointer(
                 || settings.text.box_width != draft.original.text.box_width
                 || settings.text.box_height != draft.original.text.box_height
             {
-                if settings.text.box_width != draft.original.text.box_width {
+                if text_frame_needs_reflow(&draft.original, &settings) {
                     text_editor::reflow(&mut settings)?;
                 }
                 document.set_text_object(settings)?;
@@ -2222,18 +2318,27 @@ fn selected_text_resize_handle(
     if selected.len() != 1 {
         return None;
     }
-    let snapshot = document.snapshot();
-    let object = snapshot
-        .text_objects
-        .into_iter()
-        .find(|object| object.id == selected[0] && object.editable)?;
-    let height = object.text.box_height?;
+    let object = document
+        .svg_layers()
+        .filter(|layer| layer.visible && !layer.locked && layer.vector_layer)
+        .flat_map(|layer| &layer.vector_objects)
+        .find(|object| object.id == selected[0] && object.visible)?;
+    let text = object.text.as_ref()?;
+    let height = text_frame_height(text);
     let settings = TextSettings {
-        id: Some(object.id),
-        text: object.text,
-        position: object.position,
-        color: object.color,
+        id: Some(object.id.clone()),
+        text: text.clone(),
+        position: [object.transform[4], object.transform[5]],
+        color: object.fill.map_or([0, 0, 0], |fill| {
+            [fill.color[0], fill.color[1], fill.color[2]]
+        }),
     };
+    let linear = [
+        object.transform[0],
+        object.transform[1],
+        object.transform[2],
+        object.transform[3],
+    ];
     let tolerance = CANVAS.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -2259,7 +2364,7 @@ fn selected_text_resize_handle(
             if xi == 1 && yi == 1 {
                 continue;
             }
-            let target = text_frame_point(&settings, [x, y]);
+            let target = text_frame_world_point(&settings, linear, [x, y]);
             let distance = (point[0] - target[0]).hypot(point[1] - target[1]);
             if distance <= tolerance && nearest.is_none_or(|(best, _)| distance < best) {
                 nearest = Some((distance, (xi as i8 - 1, yi as i8 - 1)));
@@ -2276,8 +2381,8 @@ fn selected_text_resize_handle(
             (1, 0),
         ),
     ] {
-        let a = text_frame_point(&settings, from);
-        let b = text_frame_point(&settings, to);
+        let a = text_frame_world_point(&settings, linear, from);
+        let b = text_frame_world_point(&settings, linear, to);
         let vx = b[0] - a[0];
         let vy = b[1] - a[1];
         let t = (((point[0] - a[0]) * vx + (point[1] - a[1]) * vy) / (vx * vx + vy * vy))
@@ -2287,19 +2392,83 @@ fn selected_text_resize_handle(
             nearest = Some((distance, handle));
         }
     }
+    if nearest.is_none() && text.box_height.is_none() {
+        if let Some(hit) = document
+            .selected_vector_box()
+            .and_then(|corners| box_hit_corners(corners, point))
+            .filter(|hit| !hit.rotate)
+        {
+            nearest = Some((
+                0.0,
+                (
+                    (hit.handle[0] * 2.0 - 1.0) as i8,
+                    (hit.handle[1] * 2.0 - 1.0) as i8,
+                ),
+            ));
+        }
+    }
     nearest.map(|(_, handle)| (settings, handle))
+}
+
+fn text_object_linear(document: &Document, id: Option<&str>) -> [f32; 4] {
+    document
+        .svg_layers()
+        .flat_map(|layer| &layer.vector_objects)
+        .find(|object| Some(object.id.as_str()) == id)
+        .map_or([1., 0., 0., 1.], |object| {
+            [
+                object.transform[0],
+                object.transform[1],
+                object.transform[2],
+                object.transform[3],
+            ]
+        })
+}
+
+fn text_frame_world_point(settings: &TextSettings, linear: [f32; 4], point: [f32; 2]) -> [f32; 2] {
+    let local = text_frame_point(settings, point);
+    let [x, y] = settings.position;
+    let [a, b, c, d] = linear;
+    [
+        x + a * (local[0] - x) + c * (local[1] - y),
+        y + b * (local[0] - x) + d * (local[1] - y),
+    ]
+}
+
+fn text_frame_height(text: &lumapaint_core::vector::VectorText) -> f32 {
+    text.box_height.unwrap_or_else(|| {
+        text.layout_bounds
+            .map_or(
+                text.visual_lines().len() as f32 * text.font_size * text.line_height,
+                |bounds| bounds[3],
+            )
+            .max(16.0)
+    })
+}
+
+fn text_frame_needs_reflow(original: &TextSettings, resized: &TextSettings) -> bool {
+    original.text.box_width != resized.text.box_width
+        || (original.text.writing_mode == lumapaint_core::vector::WritingMode::Vertical
+            && original.text.box_height != resized.text.box_height)
 }
 
 fn resized_text_settings(draft: &TextResizeDraft) -> TextSettings {
     let mut settings = draft.original.clone();
     let text = &settings.text;
     let angle = text.rotation.to_radians();
-    let dx = draft.current[0] - draft.start[0];
-    let dy = draft.current[1] - draft.start[1];
+    let world_dx = draft.current[0] - draft.start[0];
+    let world_dy = draft.current[1] - draft.start[1];
+    let [a, b, c, d] = draft.linear;
+    let determinant = a * d - b * c;
+    if determinant.abs() < 1e-8 {
+        return settings;
+    }
+    let dx = (d * world_dx - c * world_dy) / determinant;
+    let dy = (-b * world_dx + a * world_dy) / determinant;
     let local_dx = (dx * angle.cos() + dy * angle.sin()) / text.scale_x;
     let local_dy = (-dx * angle.sin() + dy * angle.cos()) / text.scale_y;
     let old_width = text.box_width;
-    let old_height = text.box_height.unwrap_or(16.0);
+    let old_height = text_frame_height(text);
     let min_width = 16.0_f32
         .max(text.indent_left + text.indent_right + 0.001)
         .min(old_width);
@@ -2323,10 +2492,10 @@ fn resized_text_settings(draft: &TextResizeDraft) -> TextSettings {
     } else {
         old_height
     };
-    settings.position = text_frame_point(&draft.original, [left, top]);
+    settings.position = text_frame_world_point(&draft.original, draft.linear, [left, top]);
     settings.text.box_width = right - left;
     settings.text.box_height = Some(bottom - top);
-    if settings.text.box_width != draft.original.text.box_width {
+    if text_frame_needs_reflow(&draft.original, &settings) {
         settings.text.clear_measured_layout();
     }
     settings
@@ -2999,7 +3168,23 @@ pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
+// AppKit coalesces setNeedsDisplay requests into its layer update cycle.
+// Model/input events still run in full; only the latest preview is rendered.
+thread_local! {
+    static FRAME_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn request_redraw() -> Result<(), String> {
+    let view = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.view.clone()));
+    if let Some(view) = view {
+        FRAME_REQUESTED.with(|requested| requested.set(true));
+        view.request_frame();
+    }
+    Ok(())
+}
+
 fn redraw() -> Result<(), String> {
+    FRAME_REQUESTED.with(|requested| requested.set(false));
+    text_editor::prepare_frame();
     CANVAS.with(|slot| {
         if let Some(canvas) = slot.borrow_mut().as_mut() {
             render_canvas(canvas)
@@ -3112,14 +3297,23 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     if let Some(draft) = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().clone()) {
         let mut settings = resized_text_settings(&draft);
-        if settings.text.box_width != draft.original.text.box_width {
+        if text_frame_needs_reflow(&draft.original, &settings) {
             text_editor::reflow(&mut settings)?;
         }
         let mut preview = DOCUMENT.with(|document| document.borrow().clone());
         preview.set_text_object(settings.clone())?;
         canvas
             .renderer
-            .set_frame_overlay(text_frame_overlay(&settings, true));
+            .set_frame_overlay(text_frame_overlay(&settings, true).map(|mut overlay| {
+                let [a, b, c, d] = draft.linear;
+                let [x, y] = settings.position;
+                for point in &mut overlay.corners {
+                    let dx = point[0] - x;
+                    let dy = point[1] - y;
+                    *point = [x + a * dx + c * dy, y + b * dx + d * dy];
+                }
+                overlay
+            }));
         return canvas.renderer.render(canvas.viewport, &preview);
     }
     let guide_scale = ((canvas.viewport.width as f32 / canvas.viewport.scale - 48.)
@@ -3626,6 +3820,7 @@ struct Canvas {
     renderer: Renderer,
     view: Retained<PaintView>,
     viewport: Viewport,
+    zoom_revision: Option<u64>,
     token: u64,
     raster_job: Option<RasterKey>,
     raster_failure: Option<RasterKey>,
@@ -4056,11 +4251,21 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             TiledSession::snapshot,
         )
     });
+    let zoom = CANVAS.with(|slot| {
+        slot.borrow().as_ref().map_or(request.zoom, |canvas| {
+            synchronized_zoom(
+                canvas.viewport.zoom,
+                canvas.zoom_revision,
+                request.zoom,
+                request.zoom_revision,
+            )
+        })
+    });
     let viewport = Viewport::new(
         frame.size.width,
         frame.size.height,
         scale,
-        request.zoom,
+        zoom,
         request.dark,
     )?
     .with_pan(pan_x, pan_y)?
@@ -4075,7 +4280,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                 .as_deref()
                 .is_none_or(|view| !std::ptr::eq(view, parent))
         }) {
-            slot.take();
+            if let Some(canvas) = slot.take() {
+                canvas.view.stop_frames();
+            }
         }
         if slot.is_none() {
             let view = PaintView::new(mtm, frame);
@@ -4105,6 +4312,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         renderer,
                         view,
                         viewport,
+                        zoom_revision: request.zoom_revision,
                         token: NEXT_CANVAS_TOKEN.fetch_add(1, Ordering::Relaxed),
                         raster_job: None,
                         raster_failure: None,
@@ -4126,6 +4334,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         canvas.view.setFrame(frame);
         update_canvas_mask(&canvas.view, request.overlay);
         canvas.viewport = viewport;
+        if request.zoom_revision > canvas.zoom_revision {
+            canvas.zoom_revision = request.zoom_revision;
+        }
         canvas.renderer.channel = request.channel;
         canvas.view.setHidden(false);
         if update_brush_cursor(viewport) || tool_changed {
@@ -4503,6 +4714,21 @@ mod tests {
     }
 
     #[test]
+    fn delayed_ui_sync_preserves_pinch_scale_until_a_new_explicit_command() {
+        assert_eq!(
+            synchronized_zoom(1.8, Some(3), 1.0, Some(3)),
+            1.8_f32 as f64
+        );
+        assert_eq!(
+            synchronized_zoom(1.8, Some(3), 0.5, Some(2)),
+            1.8_f32 as f64
+        );
+        assert_eq!(synchronized_zoom(1.8, Some(3), 2.0, Some(4)), 2.0);
+        assert_eq!(synchronized_zoom(1.8, None, 1.0, Some(0)), 1.0);
+        assert_eq!(synchronized_zoom(1.8, Some(3), 0.5, None), 0.5);
+    }
+
+    #[test]
     fn bounding_handles_transform_preview_commit_undo_and_cancel() {
         TOOL.with(|t| t.set(CanvasTool::VectorSelect));
         let mut doc = Document::default();
@@ -4522,7 +4748,7 @@ mod tests {
         let start = original[2];
         let end = [start[0] + 100., start[1] + 50.];
         let point = |p: [f32; 2]| lumapaint_core::document::Point { x: p[0], y: p[1] };
-        let flags = NSEventModifierFlags::empty();
+        let flags = NSEventModifierFlags::Command;
         let revision = doc.revision();
         vector_select_pointer(&mut doc, point(start), 0, flags).unwrap();
         assert!(BOX_DRAFT.with(|d| d.borrow().is_some()));
@@ -4542,6 +4768,60 @@ mod tests {
         assert!(BOX_DRAFT.with(|d| d.borrow().is_none()));
         TOOL.with(|t| t.set(CanvasTool::Brush));
     }
+    #[test]
+    fn text_bounding_drag_resizes_frame_without_scaling_glyphs() {
+        TOOL.with(|tool| tool.set(CanvasTool::VectorSelect));
+        let mut document = Document::default();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: lumapaint_core::vector::VectorText {
+                    content: "文字 English 简体中文".into(),
+                    box_width: 100.,
+                    box_height: Some(50.),
+                    ..Default::default()
+                },
+                position: [100., 100.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let original = document.snapshot().text_objects[0].text.clone();
+        let start = lumapaint_core::document::Point { x: 200., y: 150. };
+        vector_select_pointer(&mut document, start, 0, NSEventModifierFlags::empty()).unwrap();
+        assert!(BOX_DRAFT.with(|draft| draft.borrow().is_none()));
+        assert!(TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().is_some()));
+        vector_select_pointer(
+            &mut document,
+            lumapaint_core::document::Point { x: 300., y: 200. },
+            1,
+            NSEventModifierFlags::empty(),
+        )
+        .unwrap();
+        let draft = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow().clone().unwrap());
+        let resized = resized_text_settings(&draft);
+        assert_eq!(resized.text.box_width, 200.);
+        assert_eq!(resized.text.box_height, Some(100.));
+        assert_eq!(resized.text.font_size, original.font_size);
+        assert_eq!(resized.text.scale_x, original.scale_x);
+        assert_eq!(resized.text.scale_y, original.scale_y);
+        assert_eq!(resized.text.runs, original.runs);
+        assert_eq!(resized.text.content, original.content);
+        assert!(cancel_vector_drag());
+        assert_eq!(document.snapshot().text_objects[0].text, original);
+        // A previously transformed object still resizes in its local frame units.
+        let transformed = resized_text_settings(&TextResizeDraft {
+            linear: [0., 2., -3., 0.],
+            original: draft.original.clone(),
+            start: [0., 0.],
+            current: [-150., 200.],
+            handle: (1, 1),
+        });
+        assert_eq!(transformed.text.box_width, 200.);
+        assert_eq!(transformed.text.box_height, Some(100.));
+        assert_eq!(transformed.text.font_size, original.font_size);
+        TOOL.with(|tool| tool.set(CanvasTool::Brush));
+    }
+
     #[test]
     fn bounding_math_keeps_rotated_anchor_and_supports_center_and_rotation() {
         let corners = [[10., 20.], [10., 120.], [-40., 120.], [-40., 20.]];
@@ -4620,6 +4900,7 @@ mod tests {
             color: [0, 0, 0],
         };
         let draft = TextResizeDraft {
+            linear: [1., 0., 0., 1.],
             original: original.clone(),
             handle: (-1, -1),
             start: [50.0, 40.0],
@@ -5469,6 +5750,7 @@ mod tests {
             width: 1042.0,
             height: 436.0,
             zoom: 1.0,
+            zoom_revision: None,
             dark: false,
             visible: true,
             brush: Brush::default(),
@@ -5498,6 +5780,7 @@ mod tests {
             width: 700.0,
             height: 100.0,
             zoom: 1.0,
+            zoom_revision: None,
             dark: false,
             visible: true,
             brush: Brush::default(),

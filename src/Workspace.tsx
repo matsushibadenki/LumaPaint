@@ -106,6 +106,11 @@ export function Workspace() {
   const filePending = useRef(false);
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
+  const [zoomCommand, setZoomCommand] = useState({ zoom: 1, revision: 0 });
+  const changeZoom = useCallback((next: number) => {
+    setZoom(next);
+    setZoomCommand(current => ({ zoom: next, revision: current.revision + 1 }));
+  }, []);
   const [channel, setChannel] = useState<DisplayChannel>(0);
   useEffect(() => setChannel(0), [activeDocumentId, documentState.colorMode]);
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
@@ -377,9 +382,9 @@ export function Workspace() {
   const createFromPreset = useCallback(async (settings: NewDocumentSettings) => {
     if (filePending.current) throw new Error('Another file operation is in progress');
     filePending.current = true; setFileBusy(true);
-    try { updateWorkspace(await createDocument(settings)); setZoom(1); }
+    try { updateWorkspace(await createDocument(settings)); changeZoom(1); }
     finally { filePending.current = false; setFileBusy(false); }
-  }, [updateWorkspace]);
+  }, [updateWorkspace, changeZoom]);
 
   const importSvg = useCallback(async () => {
     if (!documentEditable || filePending.current) return;
@@ -478,7 +483,7 @@ export function Workspace() {
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
       <WorkspaceMenu outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
-        zoom={zoom} panels={panels} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
+        zoom={zoom} panels={panels} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
         onOutlineText={() => { void outlineText().then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -491,7 +496,7 @@ export function Workspace() {
         onColorMode={mode => void setColorMode(mode)}
         onBitDepth={depth => void setBitDepth(depth)}
         onColorSettings={openColorSettings}
-        onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); setZoom(1); }} onError={setError} />
+        onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); changeZoom(1); }} onError={setError} />
       <div className="workspace-preferences">
         <button className="icon-button" title={t.panels} aria-label={t.panels} aria-pressed={panels} onClick={() => setPanels(value => !value)}><Icon name="panels" /></button>
       </div>
@@ -563,7 +568,7 @@ export function Workspace() {
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
             <button disabled={placementBusy} onClick={() => void finishPlacement(true)}>{ {ja:'確定',en:'Confirm','zh-CN':'确认'}[locale] }</button>
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
-          onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
+          zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
       {panels && <Inspector thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}

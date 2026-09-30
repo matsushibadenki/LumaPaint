@@ -49,11 +49,6 @@ function initialPanelOrder(): PanelId[] {
   return [...panelIds];
 }
 
-function initialPanel(): PanelId {
-  const stored = readPreference('inspectorPanel');
-  return isPanelId(stored) ? stored : 'brush';
-}
-
 const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke' } as const;
 
 export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
@@ -77,7 +72,7 @@ export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColor
   const t = workspaceMessages[locale];
   const [order, setOrder] = useState<PanelId[]>(initialPanelOrder);
   useEffect(() => setOrder(initialPanelOrder()), []);
-  const [activePanel, setActivePanel] = useState<PanelId>(() => textPanelRequest > 0 ? 'text' : colorPanelRequest > 0 ? 'color' : initialPanel());
+  const [activePanel, setActivePanel] = useState<PanelId>(() => textPanelRequest > 0 ? 'text' : colorPanelRequest > 0 ? 'color' : 'layers');
   useEffect(() => { if (textPanelRequest > 0) setActivePanel('text'); }, [textPanelRequest]);
   useEffect(() => { if (colorPanelRequest > 0) setActivePanel('color'); }, [colorPanelRequest]);
   const [draggedPanel, setDraggedPanel] = useState<PanelId | null>(null);
@@ -98,7 +93,6 @@ export function Inspector({ thumbnailDocumentKey, onSavedPathAction, vectorColor
   const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
-  useEffect(() => savePreference('inspectorPanel', activePanel), [activePanel]);
   useEffect(() => {
     setSettings({ name: document.name, width: document.width, height: document.height, unit: document.unit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio });
     setDisplayDimensions({ width: displaySize(document.width, document.unit, document.resolution), height: displaySize(document.height, document.unit, document.resolution) });

@@ -8,8 +8,9 @@ import type { ColorPickerOcclusion } from './components/ColorPickerPopover';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, tool, zoom, channel = 0, visible = true, occlusion = null, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
+  zoomCommand: { zoom: number; revision: number };
   channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
@@ -21,7 +22,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, channel = 0, v
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const dark = theme === 'dark' || (theme === 'system' && systemDark);
-  const settings = useRef({ zoom, dark, brush, tool, visible, channel, occlusion });
+  const settings = useRef({ zoomCommand, dark, brush, tool, visible, channel, occlusion });
   const schedule = useRef<() => void>(() => {});
   const retry = () => { setError(''); setStatus('loading'); setAttempt(value => value + 1); };
 
@@ -33,9 +34,9 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, channel = 0, v
   }, []);
 
   useEffect(() => {
-    settings.current = { zoom, dark, brush, tool, visible, channel, occlusion };
+    settings.current = { zoomCommand, dark, brush, tool, visible, channel, occlusion };
     schedule.current();
-  }, [zoom, dark, brush, tool, visible, channel, occlusion]);
+  }, [zoomCommand, dark, brush, tool, visible, channel, occlusion]);
 
   useEffect(() => {
     const finishOutside = (event: PointerEvent) => {
@@ -59,7 +60,8 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, channel = 0, v
     let frame = 0;
     let unlisten = () => {};
     const requestSettings = () => ({
-      zoom: settings.current.zoom, dark: settings.current.dark, brush: settings.current.brush,
+      zoom: settings.current.zoomCommand.zoom, zoomRevision: settings.current.zoomCommand.revision,
+      dark: settings.current.dark, brush: settings.current.brush,
       tool: settings.current.tool, visible: settings.current.visible, channel: settings.current.channel,
     });
 
