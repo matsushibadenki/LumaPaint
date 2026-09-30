@@ -669,10 +669,6 @@ impl PaintView {
             }
             let tool = TOOL.with(|tool| tool.get());
             if tool == CanvasTool::TextFrame
-                && point.x >= 0.0
-                && point.y >= 0.0
-                && point.x < viewport.document_width
-                && point.y < viewport.document_height
                 && DOCUMENT.with(|doc| {
                     selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
                 })
@@ -691,10 +687,11 @@ impl PaintView {
                         selected_text_resize_handle(&doc.borrow(), [point.x, point.y]).is_none()
                     }))
             {
-                if point.x >= 0.0
-                    && point.y >= 0.0
-                    && point.x < viewport.document_width
-                    && point.y < viewport.document_height
+                if DOCUMENT.with(|doc| doc.borrow().text_at([point.x, point.y]).is_some())
+                    || (point.x >= 0.0
+                        && point.y >= 0.0
+                        && point.x < viewport.document_width
+                        && point.y < viewport.document_height)
                 {
                     if let Err(error) =
                         text_editor::begin_at([point.x, point.y], tool == CanvasTool::Text)
@@ -4083,6 +4080,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         }
         if slot.is_none() {
             let view = PaintView::new(mtm, frame);
+            view.setClipsToBounds(true);
             parent.addSubview(&view);
             // The view is attached before creating Metal's layer so its backing scale is known.
             let result = (|| {

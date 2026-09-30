@@ -20,6 +20,7 @@ use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUnd
 
 struct EditorState {
     undo: Retained<NSUndoManager>,
+    selecting: std::cell::Cell<bool>,
 }
 
 define_class!(
@@ -54,11 +55,16 @@ define_class!(
         #[unsafe(method(setSelectedRange:affinity:stillSelecting:))]
         fn select_range(&self, range: NSRange, affinity: NSSelectionAffinity, selecting: bool) {
             unsafe { msg_send![super(self), setSelectedRange: range, affinity: affinity, stillSelecting: selecting] }
-            if !selecting { publish(); }
+            if !selecting && !self.ivars().selecting.get() { publish(); }
         }
-        #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) {
-            unsafe { msg_send![super(self), mouseUp: event] }
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let _keep_alive = unsafe { Retained::retain(self as *const Self as *mut Self) };
+            // AppKit tracks the entire drag in mouseDown. Publish only when the
+            // tracking loop returns; serializing a long document blocks selection.
+            self.ivars().selecting.set(true);
+            unsafe { msg_send![super(self), mouseDown: event] }
+            self.ivars().selecting.set(false);
             publish();
         }
         // Imported rich text may contain attachments or attributes outside our portable model.
@@ -280,15 +286,9 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
                 line.origin.y + manager.locationForGlyphAtIndex(glyph).y + origin.y + y_correction;
             let column_baseline =
                 if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
-                    // SVG vertical text uses the em-axis center; AppKit reports its
-                    // rotated horizontal baseline. Preserve the actual font metrics.
-                    let offset = manager.characterIndexForGlyphAtIndex(glyph);
-                    let midpoint = attributes(text, &text.style_at(offset, color))
-                        .ok()
-                        .and_then(|attrs| attrs.objectForKey(unsafe { NSFontAttributeName }))
-                        .and_then(|font| font.downcast::<NSFont>().ok())
-                        .map_or(0., |font| (font.ascender() + font.descender()) * 0.5);
-                    baseline - midpoint
+                    // A vertical fragment spans the complete column, including
+                    // its largest run. Its center is independent of the first font.
+                    line.origin.y + line.size.height * 0.5 + origin.y
                 } else {
                     baseline
                 };
@@ -311,8 +311,32 @@ fn measured_layout(view: &NSTextView, text: &VectorText, color: [u8; 3]) -> Meas
             glyph = (range.location + range.length).max(glyph + 1);
         }
     }
-    // An empty trailing paragraph has no glyph fragment to measure. Keep the
-    // legacy line-spacing fallback rather than saving an incomplete layout.
+    // A terminal newline creates an extra paragraph without a glyph. Include
+    // it rather than discarding every preceding measured baseline and width.
+    if text.content.ends_with('\n') {
+        if let Some(manager) = unsafe { view.layoutManager() } {
+            let extra = manager.extraLineFragmentRect();
+            let used = manager.extraLineFragmentUsedRect();
+            let origin = view.textContainerOrigin();
+            let baseline = if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+                extra.origin.y + extra.size.height * 0.5 + origin.y
+            } else {
+                // The empty final paragraph draws no glyph. Preserve its position
+                // after the last populated line without affecting their metrics.
+                baselines.last().map_or(text.font_size, |last| {
+                    *last
+                        + extra
+                            .size
+                            .height
+                            .max(f64::from(text.font_size * text.line_height))
+                            as f32
+                }) as f64
+            };
+            baselines.push(baseline as f32);
+            widths.push(used.size.width as f32);
+            origins.push((used.origin.x + origin.x) as f32);
+        }
+    }
     let mut measured_text = text.clone();
     measured_text.soft_breaks = breaks.clone();
     if baselines.len() != measured_text.visual_lines().len()
@@ -735,6 +759,7 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
     let allocated = InlineEditor::alloc(mtm).set_ivars(EditorState {
         undo: NSUndoManager::new(mtm),
+        selecting: std::cell::Cell::new(false),
     });
     let view: Retained<InlineEditor> = unsafe { msg_send![super(allocated), initWithFrame: frame] };
     let clip_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
@@ -742,6 +767,14 @@ pub fn begin(settings: TextSettings) -> Result<(), String> {
     let page_clip: Retained<PageClip> =
         unsafe { msg_send![super(allocated), initWithFrame: clip_frame] };
     page_clip.setClipsToBounds(true);
+    // Native selection painting must also be clipped in Core Animation, including rotated text.
+    page_clip.setWantsLayer(true);
+    unsafe {
+        let layer: Option<Retained<AnyObject>> = msg_send![&*page_clip, layer];
+        if let Some(layer) = layer {
+            let _: () = msg_send![&*layer, setMasksToBounds: true];
+        }
+    }
     view.setRichText(true);
     view.setImportsGraphics(false);
     if let Some(manager) = unsafe { view.layoutManager() } {
@@ -953,8 +986,15 @@ fn editor_display_transform(text: &VectorText, matrix: [f32; 6]) -> (f32, f32, f
     )
 }
 
-fn vertical_container_size(width: f32, height: f32) -> NSSize {
-    NSSize::new(height.into(), width.into())
+/// The artboard is a page inside the workspace; native selection stays within the canvas.
+fn workspace_editor_rect(page: NSRect, viewport: NSSize) -> (NSRect, NSPoint) {
+    (NSRect::new(NSPoint::new(0.0, 0.0), viewport), page.origin)
+}
+
+fn vertical_container_size(_width: f32, height: f32) -> NSSize {
+    // Lay out overflow as well: unlaid glyphs have zero fragments and would
+    // invalidate all measured column positions. The physical view/frame clips it.
+    NSSize::new(height.into(), 100_000.0)
 }
 
 pub fn layout() -> Result<(), String> {
@@ -984,20 +1024,29 @@ pub fn layout() -> Result<(), String> {
             * viewport.zoom;
         let page_x = width * 0.5 + viewport.pan_x - viewport.document_width * fit * 0.5;
         let page_y = height * 0.5 + viewport.pan_y - viewport.document_height * fit * 0.5;
-        session.page_clip.setFrame(NSRect::new(
+        let page = NSRect::new(
             NSPoint::new(page_x.into(), page_y.into()),
             NSSize::new(
                 (viewport.document_width * fit).into(),
                 (viewport.document_height * fit).into(),
             ),
-        ));
+        );
+        let (clip, offset) = workspace_editor_rect(page, NSSize::new(width.into(), height.into()));
+        session.page_clip.setFrame(clip);
+        session
+            .page_clip
+            .setHidden(clip.size.width == 0.0 || clip.size.height == 0.0);
         let (scale_x, scale_y, rotation) = editor_display_transform(text, session.object_transform);
-        let x = session.settings.position[0] * fit;
-        let y = session.settings.position[1] * fit;
+        let document_y = session.settings.position[1] * fit;
+        // Shift the editor relative to the canvas viewport so zoom/pan never moves the actual text.
+        let x = session.settings.position[0] * fit + offset.x as f32;
+        let y = document_y + offset.y as f32;
         let logical_height = text
             .box_height
             .or_else(|| vertical.then_some(text.box_width))
-            .unwrap_or_else(|| ((height - page_y - y) / (fit * scale_y)).max(text.font_size * 2.0));
+            .unwrap_or_else(|| {
+                ((height - page_y - document_y) / (fit * scale_y)).max(text.font_size * 2.0)
+            });
         view.setFrameRotation(0.0);
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),
@@ -1016,6 +1065,8 @@ pub fn layout() -> Result<(), String> {
             container.setHeightTracksTextView(false);
             if vertical {
                 container.setContainerSize(vertical_container_size(text.box_width, logical_height));
+            } else {
+                container.setContainerSize(NSSize::new(text.box_width.into(), 100_000.0));
             }
         }
         view.setFrameRotation(f64::from(rotation));
@@ -1128,7 +1179,9 @@ fn attributes(
     });
     paragraph.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
     paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
-    paragraph.setMaximumLineHeight((text.font_size * text.line_height).into());
+    // Keep the requested spacing as a minimum, but let larger runs expand
+    // their line/column. A fixed maximum causes overlapping mixed-size text.
+    paragraph.setMaximumLineHeight(0.0);
     paragraph.setHeadIndent(text.indent_left.into());
     paragraph.setFirstLineHeadIndent((text.indent_left + text.indent_first).into());
     paragraph.setTailIndent((-text.indent_right).into());
@@ -1231,11 +1284,17 @@ fn apply_all_attributes() -> Result<(), String> {
 fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Result<(), String> {
     if let Some(storage) = unsafe { view.textStorage() } {
         let base = attributes(&settings.text, &settings.text.base_style(settings.color))?;
+        let runs = settings
+            .text
+            .runs
+            .iter()
+            .map(|run| attributes(&settings.text, &run.style).map(|style| (run, style)))
+            .collect::<Result<Vec<_>, _>>()?;
+        storage.beginEditing();
         unsafe {
             storage.setAttributes_range(Some(&base), NSRange::new(0, storage.length()));
         }
-        for run in &settings.text.runs {
-            let style = attributes(&settings.text, &run.style)?;
+        for (run, style) in runs {
             unsafe {
                 storage.setAttributes_range(
                     Some(&style),
@@ -1243,6 +1302,7 @@ fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Resul
                 );
             }
         }
+        storage.endEditing();
         unsafe {
             view.setTypingAttributes(&base);
         }
@@ -1334,10 +1394,35 @@ mod transform_tests {
     }
 
     #[test]
+    fn editor_workspace_clip_stays_inside_canvas_and_preserves_page_coordinates() {
+        let viewport = NSSize::new(800.0, 600.0);
+        for origin in [
+            NSPoint::new(100.0, 50.0),
+            NSPoint::new(-200.0, -100.0),
+            NSPoint::new(900.0, 700.0),
+        ] {
+            let page = NSRect::new(origin, NSSize::new(1600.0, 1200.0));
+            let (clip, offset) = workspace_editor_rect(page, viewport);
+            assert_eq!(clip, NSRect::new(NSPoint::new(0.0, 0.0), viewport));
+            assert_eq!(clip.origin.x + offset.x + 123.0, page.origin.x + 123.0);
+            assert_eq!(clip.origin.y + offset.y + 234.0, page.origin.y + 234.0);
+        }
+    }
+
+    #[test]
     fn vertical_container_uses_physical_height_for_column_length() {
-        assert_eq!(vertical_container_size(260., 430.), NSSize::new(430., 260.));
-        assert_eq!(vertical_container_size(430., 260.), NSSize::new(260., 430.));
-        assert_eq!(vertical_container_size(300., 300.), NSSize::new(300., 300.));
+        assert_eq!(
+            vertical_container_size(260., 430.),
+            NSSize::new(430., 100_000.)
+        );
+        assert_eq!(
+            vertical_container_size(430., 260.),
+            NSSize::new(260., 100_000.)
+        );
+        assert_eq!(
+            vertical_container_size(300., 300.),
+            NSSize::new(300., 100_000.)
+        );
     }
 
     #[test]

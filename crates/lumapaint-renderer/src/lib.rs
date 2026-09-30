@@ -13,6 +13,7 @@ pub mod frame_cache;
 mod frame_overlay;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
+mod workspace;
 pub use frame_overlay::FrameOverlay;
 mod paint_cache;
 pub mod pixel_paint;
@@ -1266,6 +1267,9 @@ pub struct Renderer {
     brush_bind_layout: wgpu::BindGroupLayout,
     brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
+    workspace_pipeline: wgpu::RenderPipeline,
+    workspace_cache: workspace::WorkspaceCache,
+    workspace_image: Option<Vec<CachedSvg>>,
     tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
@@ -2108,6 +2112,14 @@ impl Renderer {
             ..Default::default()
         });
         let (svg_bind_layout, svg_pipeline) = create_svg_pipeline(&device, &bind_layout, format);
+        let workspace_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            format,
+            include_str!("workspace.wgsl"),
+            "Artboard exterior",
+        );
         let tile_pipeline = create_textured_layer_pipeline(
             &device,
             &bind_layout,
@@ -2170,6 +2182,9 @@ impl Renderer {
             brush_bind_layout,
             brush_sampler,
             svg_pipeline,
+            workspace_pipeline,
+            workspace_cache: workspace::WorkspaceCache::default(),
+            workspace_image: None,
             tile_pipeline,
             svg_bind_layout,
             svg_sampler,
@@ -2560,6 +2575,31 @@ impl Renderer {
             self.install_prepared_svg(prepared)?;
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
+        let exterior_needed = offset != [0.0, 0.0]
+            || document.visible_svg_layers().any(|layer| {
+                self.svg_cache
+                    .get(&layer.id)
+                    .is_none_or(|cached| cached.source != layer.source || !cached.fully_contained)
+            });
+        if exterior_needed {
+            if let Some(prepared) = self.workspace_cache.prepare(document, viewport, offset)? {
+                match prepared
+                    .into_iter()
+                    .map(|image| self.make_cached_svg(image))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(images) => self.workspace_image = Some(images),
+                    Err(error) => {
+                        self.workspace_cache.clear();
+                        self.workspace_image = None;
+                        return Err(error);
+                    }
+                }
+            }
+        } else {
+            self.workspace_cache.clear();
+            self.workspace_image = None;
+        }
         let translated_uniforms = if translated_layers.is_empty() && partial_layers.is_empty() {
             None
         } else {
@@ -2785,6 +2825,14 @@ impl Renderer {
                 pass.set_bind_group(0, uniforms, &[]);
                 pass.set_bind_group(1, bind_group, &[]);
                 pass.draw(0..6, 0..1);
+            }
+            if let Some(workspace) = &self.workspace_image {
+                pass.set_pipeline(&self.workspace_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                for image in workspace {
+                    pass.set_bind_group(1, &image.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
             drop(pass);
             if let Some((_, group)) = &self.channel_target {

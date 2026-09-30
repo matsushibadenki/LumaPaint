@@ -437,7 +437,7 @@ pub(crate) struct SvgRegionRaster {
 }
 
 pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster, String> {
-    rasterize_svg_region(source, width, height, false).map(|region| region.raster)
+    rasterize_svg_region(source, width, height, false, None).map(|region| region.raster)
 }
 
 /// Same SVG parser, transform, resource policy and render backend, with a smaller surface.
@@ -446,7 +446,20 @@ pub(crate) fn rasterize_svg_cropped(
     width: u32,
     height: u32,
 ) -> Result<SvgRegionRaster, String> {
-    rasterize_svg_region(source, width, height, true)
+    rasterize_svg_region(source, width, height, true, None)
+}
+
+pub(crate) fn rasterize_svg_workspace(
+    source: &str,
+    document: [u32; 2],
+    size: [u32; 2],
+    rect: [f32; 4],
+) -> Result<Vec<u8>, String> {
+    if rect.iter().any(|value| !value.is_finite()) || rect[2] <= 0.0 || rect[3] <= 0.0 {
+        return Err("Invalid workspace bounds".into());
+    }
+    rasterize_svg_region(source, size[0], size[1], false, Some((document, rect)))
+        .map(|region| region.raster.pixels)
 }
 
 fn rasterize_svg_region(
@@ -454,6 +467,7 @@ fn rasterize_svg_region(
     width: u32,
     height: u32,
     crop: bool,
+    workspace: Option<([u32; 2], [f32; 4])>,
 ) -> Result<SvgRegionRaster, String> {
     if source.len() > 4 * 1024 * 1024 || width == 0 || height == 0 || width > 8192 || height > 8192
     {
@@ -470,9 +484,22 @@ fn rasterize_svg_region(
     };
     let tree = usvg::Tree::from_str(source, &options).map_err(|error| error.to_string())?;
     let size = tree.size();
-    let scale = (width as f32 / size.width()).min(height as f32 / size.height());
-    let x = (width as f32 - size.width() * scale) * 0.5;
-    let y = (height as f32 - size.height() * scale) * 0.5;
+    let (scale, x, y) = if let Some((document, rect)) = workspace {
+        let doc_scale = (document[0] as f32 / size.width()).min(document[1] as f32 / size.height());
+        let pixels_per_unit = width as f32 / rect[2];
+        (
+            doc_scale * pixels_per_unit,
+            ((document[0] as f32 - size.width() * doc_scale) * 0.5 - rect[0]) * pixels_per_unit,
+            ((document[1] as f32 - size.height() * doc_scale) * 0.5 - rect[1]) * pixels_per_unit,
+        )
+    } else {
+        let scale = (width as f32 / size.width()).min(height as f32 / size.height());
+        (
+            scale,
+            (width as f32 - size.width() * scale) * 0.5,
+            (height as f32 - size.height() * scale) * 0.5,
+        )
+    };
 
     let bounds = tree.root().abs_layer_bounding_box();
     // One pixel of padding prevents reusing a texture whose antialiasing was clipped.

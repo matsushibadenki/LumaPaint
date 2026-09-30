@@ -1863,3 +1863,156 @@ fn gpu_background_and_pixel_layer_brush_width_match_across_zoom() {
         }
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_artboard_exterior_pipeline_is_valid() {
+    let gpu = Gpu::new();
+    gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+    let _pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        format,
+        include_str!("workspace.wgsl"),
+        "Artboard exterior test",
+    );
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert!(pollster::block_on(gpu.device.pop_error_scope()).is_none());
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn gpu_artboard_exterior_masks_page_pixels() {
+    let gpu = Gpu::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+    let pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        format,
+        include_str!("workspace.wgsl"),
+        "Exterior mask test",
+    );
+    let size = wgpu::Extent3d {
+        width: 1,
+        height: 1,
+        depth_or_array_layers: 1,
+    };
+    let texture = |usage| {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let source = texture(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+    let output = texture(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+    gpu.queue.write_texture(
+        source.as_image_copy(),
+        &[255, 0, 0, 128],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        size,
+    );
+    let source_view = source.create_view(&Default::default());
+    let output_view = output.create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&Default::default());
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    for (pan, expected_alpha) in [(0.0, 0), (100.0, 128)] {
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&Uniforms {
+                    viewport: [100., 100., 1., 1.],
+                    appearance: [0., pan, 0., 0.],
+                    document: [4., 4., 0., 0.],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniforms = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniforms, &[]);
+            pass.set_bind_group(1, &group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            size,
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let bytes = readback.slice(..).get_mapped_range();
+        assert_eq!(bytes[3], expected_alpha, "pan {pan}: {bytes:?}");
+    }
+}

@@ -16,6 +16,5 @@ struct VertexOut {
     return out;
 }
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    if any(in.point < vec2(0.0)) || any(in.point >= u.document.xy) { discard; }
     return in.color;
 }
