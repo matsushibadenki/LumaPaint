@@ -134,6 +134,8 @@ pub fn run() {
             canvas::set_document_settings,
             canvas::project_action,
             canvas::import_svg_layer,
+            canvas::import_raster_layer,
+            canvas::finish_raster_import,
             canvas::recovery_info,
             canvas::restore_recovery,
             canvas::delete_recovery,

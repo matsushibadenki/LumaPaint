@@ -17,6 +17,7 @@ export const workspaceMessages = {
     recoveryFound: 'Recover unfinished work', recoveryHint: 'Restore a local recovery copy as an unsaved project. Your saved file stays unchanged.',
     recoveryCopy: 'Recovery copy', recoveryLegacy: 'Standard', recoveryTiled: 'Tiled', restoreRecovery: 'Restore', recoveryLater: 'Later', deleteRecovery: 'Delete', deleteAllRecoveries: 'Delete all',
     deleteRecoveryConfirm: 'Delete the selected recovery copy?', deleteAllRecoveriesConfirm: 'Delete all previous recovery copies?',
+    confirmDeleteRecovery: 'Delete', cancelDeleteRecovery: 'Cancel',
 
     undo: 'Undo', redo: 'Redo', brush: 'Brush', size: 'Size', hardness: 'Hardness', foreground: 'Foreground', background: 'Background', swapColors: 'Swap foreground and background colors',
     sessionOnly: 'Unsaved changes', saved: 'Saved', empty: 'Ready to draw', tiledReadOnly: 'Tiled document · read-only', open: 'Open', save: 'Save', saveAs: 'Save as', fileBusy: 'File operation…', untitled: 'Untitled-1', untitledBase: 'Untitled', closeDocument: 'Close document', openDocuments: 'Open documents', noDocument: 'No document open', properties: 'Properties',
@@ -45,6 +46,7 @@ export const workspaceMessages = {
     recoveryFound: '前回の作業を復旧', recoveryHint: '復旧用コピーを未保存の作品として開きます。保存済みファイルは変更しません。',
     recoveryCopy: '復旧用コピー', recoveryLegacy: '標準形式', recoveryTiled: 'タイル形式', restoreRecovery: '復旧する', recoveryLater: '後で', deleteRecovery: '削除', deleteAllRecoveries: 'すべて削除',
     deleteRecoveryConfirm: '選択した復旧用コピーを削除しますか？', deleteAllRecoveriesConfirm: '過去の復旧用コピーをすべて削除しますか？',
+    confirmDeleteRecovery: '削除する', cancelDeleteRecovery: 'キャンセル',
 
     undo: '取り消す', redo: 'やり直す', brush: 'ブラシ', size: 'サイズ', hardness: '硬さ', foreground: '描画色', background: '背景色', swapColors: '描画色と背景色を入れ替え',
     sessionOnly: '未保存の変更があります', saved: '保存済み', empty: '描画できます', tiledReadOnly: 'タイル文書 · 読み取り専用', open: '開く', save: '保存', saveAs: '別名で保存', fileBusy: 'ファイルを処理中…', untitled: '名称未設定-1', untitledBase: '名称未設定', closeDocument: 'ドキュメントを閉じる', openDocuments: '開いているドキュメント', noDocument: 'ドキュメントは開かれていません', properties: 'プロパティ',
@@ -73,6 +75,7 @@ export const workspaceMessages = {
     recoveryFound: '恢复上次的工作', recoveryHint: '将本地恢复副本作为未保存的作品打开，不会修改已保存的文件。',
     recoveryCopy: '恢复副本', recoveryLegacy: '标准格式', recoveryTiled: '分块格式', restoreRecovery: '恢复', recoveryLater: '稍后', deleteRecovery: '删除', deleteAllRecoveries: '全部删除',
     deleteRecoveryConfirm: '要删除所选的恢复副本吗？', deleteAllRecoveriesConfirm: '要删除所有以前的恢复副本吗？',
+    confirmDeleteRecovery: '删除', cancelDeleteRecovery: '取消',
 
     undo: '撤销', redo: '重做', brush: '画笔', size: '大小', hardness: '硬度', foreground: '前景色', background: '背景色', swapColors: '交换前景色和背景色',
     sessionOnly: '有未保存的更改', saved: '已保存', empty: '可以开始绘画', tiledReadOnly: '分块文档 · 只读', open: '打开', save: '保存', saveAs: '另存为', fileBusy: '正在处理文件…', untitled: '未命名-1', untitledBase: '未命名', closeDocument: '关闭文档', openDocuments: '打开的文档', noDocument: '未打开文档', properties: '属性',

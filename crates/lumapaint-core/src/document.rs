@@ -578,6 +578,7 @@ pub struct Document {
     revision: u64,
     point_count: usize,
     saved_revision: u64,
+    text_change_generation: u64,
     file_name: Option<String>,
 }
 
@@ -622,6 +623,7 @@ impl Default for Document {
             revision: 0,
             point_count: 0,
             saved_revision: 0,
+            text_change_generation: 0,
             file_name: None,
         }
     }
@@ -1296,6 +1298,54 @@ impl Document {
     pub fn translate_pixel_selection(&mut self, selection: Option<Selection>, dx: f32, dy: f32) {
         self.selection = selection.map(|s| s.translated(dx, dy));
     }
+    /// Move a whole image layer without decompressing/re-encoding its pixels.
+    pub fn translated_pixel_layer_source(
+        &self,
+        dx: f32,
+        dy: f32,
+        copy: bool,
+    ) -> Result<Option<String>, String> {
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() > 100_000. || dy.abs() > 100_000. {
+            return Err("Invalid image translation".into());
+        }
+        let Some(layer) = self
+            .svg_layers
+            .iter()
+            .find(|l| Some(&l.id) == self.selected_layer.as_ref())
+        else {
+            return Ok(None);
+        };
+        if layer.vector_layer {
+            return Ok(None);
+        }
+        if layer.locked || layer.alpha_locked || !layer.visible {
+            return Err("Unlock and show the pixel layer / ピクセルレイヤーのロックを解除し表示してください / 请解锁并显示像素图层".into());
+        }
+        let source = layer
+            .source
+            .find("<svg")
+            .map(|i| &layer.source[i..])
+            .ok_or("Invalid image source")?;
+        // A nested document-sized SVG creates a new clipping viewport. Older
+        // moves accumulated these viewports, permanently hiding off-canvas pixels.
+        // Keep the coordinate system and attributes, but make these wrappers groups.
+        let source = unclipped_pixel_source(source, self.width, self.height)?;
+        let content = if copy {
+            // One encoded image payload, referenced twice. IDs must be unique across repeated copies.
+            let mut serial = self.revision;
+            while source.contains(&format!("pixel-copy-{serial}")) {
+                serial += 1;
+            }
+            format!("<defs><g id=\"pixel-copy-{serial}\">{source}</g></defs><use href=\"#pixel-copy-{serial}\"/><use href=\"#pixel-copy-{serial}\" transform=\"translate({dx} {dy})\"/>")
+        } else {
+            format!("<g transform=\"translate({dx} {dy})\">{source}</g>")
+        };
+        Ok(Some(format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\">{content}</svg>",
+            self.width, self.height
+        )))
+    }
+
     pub fn replace_moved_pixels(
         &mut self,
         source: String,
@@ -1614,6 +1664,16 @@ impl Document {
         }
     }
 
+    pub fn import_raster_layer(&mut self, name: String, source: String) -> Result<(), String> {
+        if self.path_editing.is_some() {
+            return Err("Finish path editing before importing / パスの編集を終了してから読み込んでください / 请先结束路径编辑".into());
+        }
+        self.paste_content(Some(source), Vec::new())?;
+        // The paste history already contains the state before this new layer.
+        self.svg_layers.last_mut().unwrap().name = name;
+        Ok(())
+    }
+
     pub fn import_svg(&mut self, name: String, source: String) -> Result<(), String> {
         if let Some(id) = self.selected_layer.clone() {
             let index = self.svg_layers.iter().position(|layer| layer.id == id)
@@ -1766,7 +1826,7 @@ impl Document {
             .map(|object| object.id.clone())
     }
 
-    pub fn set_text_object(&mut self, settings: TextSettings) -> Result<(), String> {
+    pub fn set_text_object(&mut self, mut settings: TextSettings) -> Result<(), String> {
         if self.path_editing.is_some() {
             return Err(
                 "Paths accept geometry only / パスには文字を追加できません / 路径不支持文字".into(),
@@ -1794,6 +1854,10 @@ impl Document {
                         .map(|object| (layer.id.clone(), object.clone()))
                 })
                 .ok_or("Text object not found")?;
+            if let Some(text) = &object.text {
+                settings.text.change_generation = text.change_generation;
+                settings.text.updated_at_ms = text.updated_at_ms;
+            }
             if object.text.as_ref() == Some(&settings.text)
                 && object.transform[4..] == settings.position
                 && object.fill
@@ -4813,6 +4877,49 @@ impl Document {
         }
     }
     fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        let previous_objects: std::collections::HashMap<_, _> = previous
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.vector_objects)
+            .map(|object| (object.id.as_str(), object))
+            .collect();
+        self.text_change_generation = self
+            .text_change_generation
+            .max(
+                previous
+                    .layers
+                    .iter()
+                    .flat_map(|layer| &layer.vector_objects)
+                    .filter_map(|object| object.text.as_ref())
+                    .map(|text| text.change_generation)
+                    .max()
+                    .unwrap_or(0),
+            )
+            .saturating_add(1);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| {
+                duration.as_millis().min(u64::MAX as u128) as u64
+            });
+        for layer in &mut self.svg_layers {
+            for object in &mut layer.vector_objects {
+                if object.text.is_none() {
+                    continue;
+                }
+                let old = previous_objects.get(object.id.as_str()).copied();
+                let metadata = old
+                    .and_then(|old| old.text.as_ref())
+                    .map(|text| (text.change_generation, text.updated_at_ms));
+                // Native previews and IPC callers cannot overwrite engine-owned metadata.
+                let text = object.text.as_mut().unwrap();
+                (text.change_generation, text.updated_at_ms) = metadata.unwrap_or((0, 0));
+                if old != Some(object) {
+                    let text = object.text.as_mut().unwrap();
+                    text.change_generation = self.text_change_generation;
+                    text.updated_at_ms = now.max(text.updated_at_ms);
+                }
+            }
+        }
         self.sync_saved_path();
         self.vector_undo.push(previous);
         self.vector_redo.clear();
@@ -5952,6 +6059,40 @@ fn validate_saved_paths(paths: &[SavedPath], clip: Option<&str>) -> Result<(), S
         return Err("Invalid clipping path reference or size".into());
     }
     Ok(())
+}
+
+fn unclipped_pixel_source(source: &str, width: u32, height: u32) -> Result<String, String> {
+    let tree = roxmltree::Document::parse(source).map_err(|e| e.to_string())?;
+    let mut replacements = Vec::new();
+    for node in tree
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "svg")
+    {
+        let dimension = |name| node.attribute(name).and_then(|s| s.parse::<f32>().ok());
+        if dimension("width") != Some(width as f32)
+            || dimension("height") != Some(height as f32)
+            || ["viewBox", "x", "y"]
+                .iter()
+                .any(|name| node.attribute(*name).is_some())
+        {
+            continue;
+        }
+        let range = node.range();
+        let tag = &source[range.clone()];
+        if !tag.starts_with("<svg") {
+            continue;
+        }
+        replacements.push(range.start + 1..range.start + 4);
+        if let Some(end) = tag.rfind("</svg") {
+            replacements.push(range.start + end + 2..range.start + end + 5);
+        }
+    }
+    replacements.sort_by_key(|r| r.start);
+    let mut result = source.to_string();
+    for range in replacements.into_iter().rev() {
+        result.replace_range(range, "g");
+    }
+    Ok(result)
 }
 
 fn validate_svg_layer(layer: &SvgLayer) -> Result<(), String> {
@@ -7281,6 +7422,32 @@ mod text_tests {
     }
 
     #[test]
+    fn raster_import_creates_named_pixel_layer_and_round_trips_history() {
+        let mut doc = Document::default();
+        let vector = doc.add_vector_layer().unwrap();
+        doc.select_layer(vector).unwrap();
+        let count = doc.svg_layers.len();
+        let source = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"20\"><rect width=\"10\" height=\"20\" fill=\"red\"/></svg>";
+        doc.import_raster_layer("Photo".into(), source.into())
+            .unwrap();
+        let added = doc.svg_layers.last().unwrap();
+        assert_eq!(added.name, "Photo");
+        assert!(added.paint_layer && !added.vector_layer);
+        assert_eq!(doc.selected_layer.as_ref(), Some(&added.id));
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.svg_layers.last().unwrap().name, "Photo");
+        doc.undo();
+        assert_eq!(doc.svg_layers.len(), count);
+        doc.redo();
+        assert_eq!(doc.svg_layers.last().unwrap().name, "Photo");
+        let before = doc.encode().unwrap();
+        assert!(doc
+            .import_raster_layer("Bad".into(), "not an image".into())
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), before);
+    }
+
+    #[test]
     fn arrange_objects_preserves_groups_order_and_atomic_history() {
         let mut doc = Document::default();
         let source = doc.add_vector_layer().unwrap();
@@ -7789,6 +7956,7 @@ mod text_tests {
         assert!(source.contains("text-anchor=\"end\""));
         assert!(source.contains("text-decoration=\"underline\""));
         let encoded = doc.encode().unwrap();
+        next.text = doc.snapshot().text_objects[0].text.clone();
         assert_eq!(
             Document::decode(&encoded).unwrap().snapshot().text_objects[0].text,
             next.text
@@ -7836,6 +8004,7 @@ mod text_tests {
                 edit.text.content
             );
             let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+            edit.text = doc.snapshot().text_objects[0].text.clone();
             assert_eq!(restored.snapshot().text_objects[0].text, edit.text);
         }
         let legacy: VectorText = serde_json::from_str(r#"{"content":"Legacy"}"#).unwrap();
@@ -7880,6 +8049,65 @@ mod text_tests {
         assert_eq!(doc.snapshot().layers.len(), 1);
         doc.redo();
         assert_eq!(doc.snapshot().text_objects.len(), 1);
+    }
+    #[test]
+    fn text_edit_metadata_is_owned_by_document_and_restored_with_history() {
+        let mut doc = Document::default();
+        doc.set_text_object(settings()).unwrap();
+        let original = doc.snapshot().text_objects[0].clone();
+        assert!(original.text.change_generation > 0);
+        assert!(original.text.updated_at_ms > 0);
+        let source = doc.svg_layers[0].source.clone();
+        let mut second = settings();
+        second.position[0] += 200.0;
+        doc.set_text_object(second).unwrap();
+        assert_eq!(doc.snapshot().text_objects[0].text, original.text);
+        let untouched = doc.snapshot().text_objects[1].text.clone();
+        let mut edit = settings();
+        edit.id = Some(original.id.clone());
+        edit.text.content = "日本語 English 简体中文 👩‍🎨".into();
+        edit.text.change_generation = u64::MAX;
+        edit.text.updated_at_ms = u64::MAX;
+        doc.set_text_object(edit.clone()).unwrap();
+        let changed = doc.snapshot().text_objects[0].text.clone();
+        assert!(changed.change_generation > original.text.change_generation);
+        assert!(changed.change_generation < u64::MAX);
+        assert!(changed.updated_at_ms < u64::MAX);
+        assert_eq!(doc.snapshot().text_objects[1].text, untouched);
+        doc.undo();
+        assert_eq!(doc.snapshot().text_objects[0].text, original.text);
+        doc.redo();
+        assert_eq!(doc.snapshot().text_objects[0].text, changed);
+        let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.snapshot().text_objects[0].text, changed);
+        edit.text.content = "New branch".into();
+        loaded.set_text_object(edit.clone()).unwrap();
+        let generation = loaded.snapshot().text_objects[0].text.change_generation;
+        loaded.undo();
+        edit.text.content = "Another branch".into();
+        loaded.set_text_object(edit).unwrap();
+        assert!(loaded.snapshot().text_objects[0].text.change_generation > generation);
+        // Metadata alone never enters SVG or affects the raster-cache content key.
+        doc.undo();
+        doc.svg_layers[0].vector_objects[0]
+            .text
+            .as_mut()
+            .unwrap()
+            .updated_at_ms += 1;
+        assert_eq!(
+            vector_svg(
+                doc.width,
+                doc.height,
+                &doc.svg_layers[0].vector_objects[..1]
+            ),
+            source
+        );
+        let mut legacy = serde_json::to_value(&original.text).unwrap();
+        legacy.as_object_mut().unwrap().remove("changeGeneration");
+        legacy.as_object_mut().unwrap().remove("updatedAtMs");
+        let legacy: VectorText = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.change_generation, 0);
+        assert_eq!(legacy.updated_at_ms, 0);
     }
     #[test]
     fn translated_text_preview_preserves_document_styles_history_and_other_objects() {
@@ -8003,7 +8231,7 @@ mod text_tests {
                 .unwrap();
             doc.set_text_object(edit.clone()).unwrap();
             edit.id = Some(doc.snapshot().text_objects[0].id.clone());
-            let original = edit.text.clone();
+            let original = doc.snapshot().text_objects[0].text.clone();
             // Native selection offsets use UTF-16: the emoji occupies two units.
             for color in [[255, 0, 0], [0, 80, 255]] {
                 edit.text
@@ -8031,6 +8259,7 @@ mod text_tests {
             }
             doc.set_text_object(edit.clone()).unwrap();
             let saved = Document::decode(&doc.encode().unwrap()).unwrap();
+            edit.text = doc.snapshot().text_objects[0].text.clone();
             assert_eq!(saved.snapshot().text_objects[0].text, edit.text);
             let svg = vector_svg(960, 640, &doc.svg_layers[0].vector_objects);
             assert!(svg.contains("fill=\"#0050ff\""));

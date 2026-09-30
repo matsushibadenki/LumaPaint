@@ -30,6 +30,8 @@ export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
+  changeGeneration: number;
+  updatedAtMs: number;
   writingMode?: 'horizontal' | 'vertical';
   runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; characterOrigins?: number[][]; glyphClusters?: TextGlyphCluster[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
@@ -39,6 +41,7 @@ export interface VectorText {
   listStyle: 'none' | 'bullets' | 'numbers'; kinsoku: 'none' | 'standard' | 'strict'; mojikumi: 'none' | 'japanese'; hyphenation: boolean;
 }
 export const defaultVectorText: VectorText = {
+  changeGeneration: 0, updatedAtMs: 0,
   content: 'Text', runs: [], softBreaks: [], fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
   italic: false, tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
   underline: false, strikethrough: false, alignment: 'left', boxWidth: 480,
@@ -294,6 +297,19 @@ export function projectAction(action: 'open' | 'save' | 'saveAs'): Promise<Docum
   return result;
 }
 
+export function finishRasterImport(commit: boolean): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('finish_raster_import', { commit }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export async function subscribeRasterPlacement(onChange: (active: boolean) => void) {
+  return listen<boolean>('raster-placement', event => onChange(event.payload));
+}
+export function importRasterLayer(format: 'all' | 'jpeg' | 'png'): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('import_raster_layer', { format }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 export function importSvgLayer(): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('import_svg_layer'));
   canvasQueue = result.then(() => undefined, () => undefined);

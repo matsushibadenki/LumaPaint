@@ -315,9 +315,11 @@ h1, h2, h3 { font-style: normal; }
 .recovery-controls { flex-shrink: 0; background: var(--color-panel); }
 .recovery-state { padding: 5px 12px; font-size: var(--text-small); color: var(--color-muted); border-bottom: 1px solid var(--color-rule); }
 .recovery-banner, .recovery-warning { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--color-rule); }
-.recovery-banner > div { flex: 1 1 100%; }
+.recovery-banner > div:first-child { flex: 1 1 100%; }
 .recovery-banner p { margin-top: 4px; color: var(--color-muted); line-height: 1.5; }
 .recovery-banner select { min-width: 0; max-width: 100%; }
+.recovery-delete-confirmation { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; }
+.recovery-delete-confirmation span { color: var(--color-text); }
 .recovery-warning { color: var(--color-error); }
 .recovery-warning details { flex-basis: 100%; overflow-wrap: anywhere; }
 
@@ -545,3 +547,6 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .layer-group-row svg, .layer-object-select svg { width: 12px; height: 12px; flex-basis: 12px; }
 .layer-actions { gap: 6px; padding-block: 4px; }
 .layer-actions .icon-button svg, .layer-lock-row .icon-button svg { width: 13px; height: 13px; }
+
+.image-placement-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.image-placement-controls span { font-size: 11px; }

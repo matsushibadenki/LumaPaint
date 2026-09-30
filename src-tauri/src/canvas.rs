@@ -780,6 +780,60 @@ pub async fn project_action(
 }
 
 #[tauri::command]
+pub async fn finish_raster_import(
+    window: tauri::WebviewWindow,
+    commit: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::finish_raster_import(commit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, commit);
+        Err("Image placement unavailable".into())
+    }
+}
+#[tauri::command]
+pub async fn import_raster_layer(
+    window: tauri::WebviewWindow,
+    format: String,
+) -> Result<DocumentSnapshot, String> {
+    if window.label() != "main" {
+        return Err("Import is only available in the main window".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let chosen_format = format.clone();
+        let path = on_main(window.clone(), move || {
+            platform::pick_raster_file(chosen_format)
+        })
+        .await?;
+        let Some(path) = path else {
+            return on_main(window, platform::raster_import_snapshot).await;
+        };
+        let (name, bytes, info) = tauri::async_runtime::spawn_blocking(move || -> Result<_,String> {
+            // Embedded raster data shares the current document storage limit.
+            if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 3 * 1024 * 1024 - 1024 {
+                return Err("Image exceeds the current 3 MiB import limit / 現在の読み込み上限は約3MiBです / 当前导入上限约为3MiB".into());
+            }
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let info = lumapaint_renderer::vector::imported_raster_info(&bytes, &format)?;
+            let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            Ok((name, bytes, info))
+        }).await.map_err(|e| e.to_string())??;
+        on_main(window, move || {
+            platform::apply_raster_import(name, bytes, info)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, format);
+        Err("Image import is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
 pub async fn import_svg_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
     if window.label() != "main" {
         return Err("Project is only available in the main window".into());

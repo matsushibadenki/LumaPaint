@@ -25,6 +25,7 @@ type Props = {
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
+  onImportImage: () => void;
   onArrange: (action: ArrangeAction) => void;
   onTransform: (action: TransformAction) => void;
   onOutlineText: () => void;
@@ -62,7 +63,7 @@ export function WorkspaceMenu(props: Props) {
       { label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
       { label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
       { label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
-      { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, future(t.export)],
+      { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, { label: { ja: '読み込み…', en: 'Import…', 'zh-CN': '导入…' }[locale], enabled: canFile && hasDocument && canEdit, action: props.onImportImage }, future(t.export)],
     [{ label: w.undo, enabled: canEdit && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
       { label: w.redo, enabled: canEdit && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
       { label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, { label: t.cut, enabled: canEdit, shortcut: 'CmdOrCtrl+X', action: () => onEdit('cut') }, { label: t.copy, enabled: canEdit, shortcut: 'CmdOrCtrl+C', action: () => onEdit('copy') }, { label: t.paste, enabled: canEdit, shortcut: 'CmdOrCtrl+V', action: () => onEdit('paste') }, null,

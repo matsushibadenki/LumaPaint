@@ -410,6 +410,24 @@ pub struct SvgRaster {
 }
 
 /// Fit and center SVG in document pixels. Never resolve external files or network URLs.
+/// Document-space content bounds, excluding the empty outer SVG viewport.
+pub fn pixel_source_bounds(source: &str) -> Result<[f32; 4], String> {
+    if source.len() > 4 * 1024 * 1024 {
+        return Err("Invalid image source size".into());
+    }
+    let options = usvg::Options {
+        fontdb: system_fonts(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree = usvg::Tree::from_str(source, &options).map_err(|e| e.to_string())?;
+    let bounds = tree.root().abs_layer_bounding_box();
+    Ok([bounds.x(), bounds.y(), bounds.width(), bounds.height()])
+}
+
 pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster, String> {
     if source.len() > 4 * 1024 * 1024 || width == 0 || height == 0 || width > 8192 || height > 8192
     {
@@ -1598,4 +1616,183 @@ mod clipping_tests {
         doc.ungroup_selected_vectors(true).unwrap();
         assert_eq!(doc.svg_layers().next().unwrap().source, original);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImportedRasterInfo {
+    pub width: u32,
+    pub height: u32,
+    pub encoded_width: u32,
+    pub encoded_height: u32,
+    /// EXIF orientation, using the standard values 1 through 8.
+    pub orientation: u8,
+}
+
+impl ImportedRasterInfo {
+    pub fn image_transform(self) -> Option<[f32; 6]> {
+        let (w, h) = (self.encoded_width as f32, self.encoded_height as f32);
+        match self.orientation {
+            1 => None,
+            2 => Some([-1., 0., 0., 1., w, 0.]),
+            3 => Some([-1., 0., 0., -1., w, h]),
+            4 => Some([1., 0., 0., -1., 0., h]),
+            5 => Some([0., 1., 1., 0., 0., 0.]),
+            6 => Some([0., 1., -1., 0., h, 0.]),
+            7 => Some([0., -1., -1., 0., h, w]),
+            8 => Some([0., -1., 1., 0., 0., w]),
+            _ => None,
+        }
+    }
+}
+
+/// Validate raster contents and read its displayed orientation before placement.
+#[cfg(feature = "skia")]
+pub fn imported_raster_info(bytes: &[u8], format: &str) -> Result<ImportedRasterInfo, String> {
+    let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+    let jpeg = bytes.starts_with(&[0xff, 0xd8, 0xff]);
+    if !matches!(format, "all" | "png" | "jpeg")
+        || !(png || jpeg)
+        || (format == "png" && !png)
+        || (format == "jpeg" && !jpeg)
+    {
+        return Err("Choose a matching JPEG or PNG image / 指定形式のJPEGまたはPNGを選択してください / 请选择匹配格式的JPEG或PNG图片".into());
+    }
+    let mut codec = skia_safe::Codec::from_data(skia_safe::Data::new_copy(bytes))
+        .ok_or("Invalid image / 画像を読み取れません / 无法读取图片")?;
+    let size = codec.dimensions();
+    let origin = codec.origin();
+    if size.width <= 0 || size.height <= 0 || size.width > 8192 || size.height > 8192 {
+        return Err("Image dimensions must be at most 8192px / 画像は各辺8192pxまでです / 图片每边最多8192像素".into());
+    }
+    codec
+        .get_image(None, None)
+        .map_err(|_| "Damaged image / 画像データが破損しています / 图片数据已损坏")?;
+    let (encoded_width, encoded_height) = (size.width as u32, size.height as u32);
+    let (width, height) = if origin.swaps_width_height() {
+        (encoded_height, encoded_width)
+    } else {
+        (encoded_width, encoded_height)
+    };
+    Ok(ImportedRasterInfo {
+        width,
+        height,
+        encoded_width,
+        encoded_height,
+        orientation: origin as u8,
+    })
+}
+
+#[cfg(feature = "skia")]
+pub fn imported_raster_size(bytes: &[u8], format: &str) -> Result<(u32, u32), String> {
+    let info = imported_raster_info(bytes, format)?;
+    Ok((info.width, info.height))
+}
+
+#[cfg(all(test, feature = "skia"))]
+#[test]
+#[allow(deprecated)]
+fn raster_import_validates_jpeg_png_and_rejects_mismatches() {
+    let mut surface = skia_safe::surfaces::raster_n32_premul((12, 7)).unwrap();
+    surface.canvas().clear(skia_safe::Color::RED);
+    let image = surface.image_snapshot();
+    for (encoding, format, wrong) in [
+        (skia_safe::EncodedImageFormat::PNG, "png", "jpeg"),
+        (skia_safe::EncodedImageFormat::JPEG, "jpeg", "png"),
+    ] {
+        let data = image.encode_to_data(encoding).unwrap();
+        assert_eq!(
+            imported_raster_size(data.as_bytes(), format).unwrap(),
+            (12, 7)
+        );
+        assert_eq!(
+            imported_raster_size(data.as_bytes(), "all").unwrap(),
+            (12, 7)
+        );
+        assert!(imported_raster_size(data.as_bytes(), wrong).is_err());
+        assert!(imported_raster_size(&data.as_bytes()[..12], format).is_err());
+    }
+    assert!(imported_raster_size(b"not an image", "all").is_err());
+
+    for orientation in 1..=8 {
+        let info = ImportedRasterInfo {
+            width: if orientation >= 5 { 7 } else { 12 },
+            height: if orientation >= 5 { 12 } else { 7 },
+            encoded_width: 12,
+            encoded_height: 7,
+            orientation,
+        };
+        let matrix = info.image_transform().unwrap_or([1., 0., 0., 1., 0., 0.]);
+        let corners = [[0., 0.], [12., 0.], [12., 7.], [0., 7.]].map(|[x, y]| {
+            [
+                matrix[0] * x + matrix[2] * y + matrix[4],
+                matrix[1] * x + matrix[3] * y + matrix[5],
+            ]
+        });
+        let min_x = corners.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+        let min_y = corners.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let max_x = corners
+            .iter()
+            .map(|p| p[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = corners
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(
+            [min_x, min_y, max_x, max_y],
+            [0., 0., info.width as f32, info.height as f32]
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn pixel_layer_moves_outside_and_back_without_accumulating_crops() {
+    use lumapaint_core::document::Document;
+    let image = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="100" y="80" width="400" height="300" fill="red"/></svg>"#;
+    let mut doc = Document::default();
+    doc.import_raster_layer("Image".into(), image.into())
+        .unwrap();
+    let initial = rasterize_svg(image, 960, 640).unwrap().pixels;
+    for (dx, dy) in [
+        (800., 0.),
+        (-800., 0.),
+        (-600., -500.),
+        (600., 500.),
+        (100., 150.),
+        (-100., -150.),
+    ] {
+        let source = doc
+            .translated_pixel_layer_source(dx, dy, false)
+            .unwrap()
+            .unwrap();
+        doc.replace_moved_pixels(source, None).unwrap();
+    }
+    let source = doc.svg_layers().last().unwrap().source.clone();
+    assert_eq!(rasterize_svg(&source, 960, 640).unwrap().pixels, initial);
+    assert_eq!(source.matches("<svg ").count(), 1);
+    let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+    let layer_id = loaded.svg_layers().last().unwrap().id.clone();
+    loaded.select_layer(layer_id).unwrap();
+    let source = loaded
+        .translated_pixel_layer_source(900., 700., false)
+        .unwrap()
+        .unwrap();
+    loaded.replace_moved_pixels(source, None).unwrap();
+    let source = loaded
+        .translated_pixel_layer_source(-900., -700., false)
+        .unwrap()
+        .unwrap();
+    loaded.replace_moved_pixels(source.clone(), None).unwrap();
+    assert_eq!(rasterize_svg(&source, 960, 640).unwrap().pixels, initial);
+    // Recover the retained image data from document-sized clipping wrappers written by old moves.
+    let old = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><g transform="translate(-800 0)"><svg width="960" height="640"><g transform="translate(800 0)">{image}</g></svg></g></svg>"#
+    );
+    doc.replace_moved_pixels(old, None).unwrap();
+    let source = doc
+        .translated_pixel_layer_source(0., 0., false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rasterize_svg(&source, 960, 640).unwrap().pixels, initial);
 }

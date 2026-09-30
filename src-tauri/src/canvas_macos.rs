@@ -4,8 +4,9 @@ use super::{
     DocumentWorkspaceSnapshot,
 };
 use lumapaint_core::document::{
-    Brush, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot, LayerSettings,
-    LayerSnapshot, PaintProjectionState, SelectionMode, SelectionShape, Stroke, TextSettings,
+    Brush, CanvasColor, ColorMode, ColorProfile, Document, DocumentSettings, DocumentSnapshot,
+    DocumentUnit, LayerSettings, LayerSnapshot, NewDocumentSettings, PaintProjectionState,
+    SelectionMode, SelectionShape, Stroke, TextSettings,
 };
 use lumapaint_core::graph::{ChangeTarget, ProcessingGraph};
 use lumapaint_core::tiles::{TileInvalidation, TiledRasterDocument};
@@ -46,6 +47,8 @@ mod clipboard;
 mod pixel_move;
 #[path = "pixel_paint_macos.rs"]
 mod pixel_paint;
+#[path = "raster_import_macos.rs"]
+mod raster_import;
 #[path = "text_editor_macos.rs"]
 mod text_editor;
 
@@ -390,7 +393,7 @@ impl PaintView {
             }
             if TOOL.with(|t|t.get()) == CanvasTool::VectorSelect {
                 let viewport=CANVAS.with(|slot|slot.borrow().as_ref().map(|c|c.viewport));
-                let corners=DOCUMENT.with(|d|d.borrow().selected_vector_box());
+                let corners=raster_import::corners().or_else(|| DOCUMENT.with(|d|d.borrow().selected_vector_box()));
                 if let (Some(v),Some(c))=(viewport,corners) {
                     let w=v.width as f32/v.scale; let h=v.height as f32/v.scale;
                     let fit=((w-48.)/v.document_width).min((h-48.)/v.document_height).max(0.01)*v.zoom;
@@ -456,6 +459,12 @@ impl PaintView {
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             if self.isHidden() { return; }
+            if raster_import::active() {
+                if [36,76,53].contains(&event.keyCode()) {
+                    if let Err(error) = raster_import::finish(event.keyCode()!=53) { emit_error(error); }
+                }
+                return;
+            }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
             else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
@@ -523,6 +532,7 @@ impl PaintView {
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
             if self.isHidden() || text_editor::active() { return false.into(); }
+            if raster_import::active() { return event.modifierFlags().contains(NSEventModifierFlags::Command).into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
             if command && [7,8,9].contains(&event.keyCode()) {
                 report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
@@ -599,6 +609,13 @@ impl PaintView {
             return;
         };
         let point = viewport.document_point(location.x as f32, location.y as f32);
+        if raster_import::active() {
+            raster_import::pointer(point, phase, event.modifierFlags());
+            if let Err(error) = redraw() {
+                emit_error(error);
+            }
+            return;
+        }
         let tool = TOOL.with(|tool| tool.get());
         if tool == CanvasTool::VectorPen
             && phase == 0
@@ -1881,7 +1898,9 @@ fn object_selection_tolerance() -> f32 {
     (box_tolerance() * 10. / 7.).min(256.)
 }
 fn box_hit(document: &Document, p: [f32; 2]) -> Option<BoxDraft> {
-    let corners = document.selected_vector_box()?;
+    box_hit_corners(document.selected_vector_box()?, p)
+}
+fn box_hit_corners(corners: [[f32; 2]; 4], p: [f32; 2]) -> Option<BoxDraft> {
     let tolerance = box_tolerance();
     for rotate in [false, true] {
         for h in [
@@ -2574,6 +2593,9 @@ fn report_edit(action: DocumentAction) {
 }
 
 pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
+    if raster_import::active() {
+        return Err("Confirm or cancel image placement / 画像の配置を確定またはキャンセルしてください / 请确认或取消图片放置".into());
+    }
     if text_editor::active() {
         match action {
             DocumentAction::Undo => text_editor::history(false),
@@ -2905,6 +2927,38 @@ pub fn set_document_settings(settings: DocumentSettings) -> Result<DocumentSnaps
     Ok(snapshot)
 }
 
+pub fn pick_raster_file(format: String) -> Result<Option<std::path::PathBuf>, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    let extensions: &[&str] = match format.as_str() {
+        "all" => &["jpg", "jpeg", "png"],
+        "jpeg" => &["jpg", "jpeg"],
+        "png" => &["png"],
+        _ => return Err("Unknown image format".into()),
+    };
+    Ok(rfd::FileDialog::new()
+        .add_filter("JPEG / PNG", extensions)
+        .pick_file())
+}
+
+pub fn apply_raster_import(
+    name: String,
+    bytes: Vec<u8>,
+    info: lumapaint_renderer::vector::ImportedRasterInfo,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    raster_import::begin(name, bytes, info)?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn finish_raster_import(commit: bool) -> Result<DocumentSnapshot, String> {
+    raster_import::finish(commit)
+}
+pub fn raster_import_snapshot() -> Result<DocumentSnapshot, String> {
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     let Some(path) = rfd::FileDialog::new()
@@ -2990,10 +3044,16 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return Ok(());
     }
     canvas.renderer.set_frame_overlay(None);
+    if let Some(result) = raster_import::render(canvas) {
+        return result;
+    }
     if let Some(prepared) = PIXEL_PAINT_COMMIT.with(|pending| pending.borrow_mut().take()) {
         canvas.renderer.install_prepared_svg(prepared)?;
     }
     if let Some(result) = pixel_paint::render(canvas) {
+        return result;
+    }
+    if let Some(result) = pixel_move::render(canvas) {
         return result;
     }
     if let Some(overlay) = pixel_move::overlay() {
@@ -3711,6 +3771,7 @@ fn next_document_id() -> u64 {
 }
 
 fn park_active_document() {
+    raster_import::cancel();
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return;
     }
@@ -3737,8 +3798,29 @@ fn park_active_document() {
     });
 }
 
+fn sync_viewport_document(
+    viewport: &mut Viewport,
+    width: u32,
+    height: u32,
+    canvas_color: CanvasColor,
+) {
+    viewport.document_width = width as f32;
+    viewport.document_height = height as f32;
+    viewport.canvas_color = canvas_color;
+}
+
 fn activate_document(entry: OpenDocument) {
     cancel_vector_drag();
+    let (width, height, canvas_color) = match &entry.content {
+        OpenDocumentContent::Legacy(document) => {
+            let snapshot = document.snapshot();
+            (snapshot.width, snapshot.height, snapshot.canvas_color)
+        }
+        OpenDocumentContent::Tiled(document) => {
+            let (width, height) = document.document.dimensions();
+            (width, height, CanvasColor::White)
+        }
+    };
     match entry.content {
         OpenDocumentContent::Legacy(mut document) => {
             let id = document.snapshot().layer_id;
@@ -3751,6 +3833,11 @@ fn activate_document(entry: OpenDocument) {
             ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(document));
         }
     }
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            sync_viewport_document(&mut canvas.viewport, width, height, canvas_color);
+        }
+    });
     PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
     PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
     ACTIVE_DOCUMENT_ID.with(|active| active.set(entry.id));
@@ -4144,6 +4231,68 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activating_a_different_document_size_updates_the_viewport_aspect_ratio() {
+        let mut viewport = Viewport::new(1200., 800., 2., 1., true).unwrap();
+        sync_viewport_document(&mut viewport, 1600, 900, CanvasColor::White);
+        assert_eq!(
+            (viewport.document_width, viewport.document_height),
+            (1600., 900.)
+        );
+
+        sync_viewport_document(&mut viewport, 900, 1600, CanvasColor::Transparent);
+        assert_eq!(
+            (viewport.document_width, viewport.document_height),
+            (900., 1600.)
+        );
+        assert_eq!(viewport.canvas_color, CanvasColor::Transparent);
+    }
+
+    #[test]
+    fn opening_png_and_jpeg_creates_matching_unsaved_documents() {
+        let (width, height) = (37u32, 23u32);
+        let pixels = [24, 120, 210, 255]
+            .into_iter()
+            .cycle()
+            .take((width * height * 4) as usize)
+            .collect();
+        let png = lumapaint_renderer::vector::document_png(width, height, pixels).unwrap();
+        let info = lumapaint_renderer::vector::imported_raster_info(&png, "png").unwrap();
+        for (bytes, name, mime, rasterizes) in [
+            (png, "sample.png", "image/png", true),
+            // JPEG decoding/header validation is covered in lumapaint-renderer;
+            // this verifies the opened document's JPEG MIME and persistence path.
+            (
+                vec![0xff, 0xd8, 0xff, 0xd9],
+                "sample.jpeg",
+                "image/jpeg",
+                false,
+            ),
+        ] {
+            let mut document = opened_raster_document(name.into(), bytes, info).unwrap();
+            let snapshot = document.snapshot();
+            assert_eq!((snapshot.width, snapshot.height), (37, 23));
+            assert_eq!(snapshot.name, name);
+            assert!(snapshot.dirty);
+            assert!(snapshot.file_name.is_none());
+            let layer = document.svg_layers().last().unwrap();
+            assert_eq!(layer.name, name);
+            assert!(layer.paint_layer && !layer.vector_layer);
+            assert!(layer.source.contains(mime));
+            assert!(layer.source.contains("width=\"37\" height=\"23\""));
+            if rasterizes {
+                let raster =
+                    lumapaint_renderer::vector::rasterize_svg(&layer.source, 37, 23).unwrap();
+                assert_eq!(raster.pixels.len(), 37 * 23 * 4);
+                assert!(raster.pixels[3] > 0);
+                assert!(raster.pixels[raster.pixels.len() - 1] > 0);
+            }
+            let saved = document.encode().unwrap();
+            let reopened = Document::decode(&saved).unwrap().snapshot();
+            assert_eq!((reopened.width, reopened.height), (37, 23));
+        }
+    }
 
     #[test]
     fn pen_closure_uses_screen_distance_at_all_zoom_and_backing_scales() {
@@ -5358,6 +5507,9 @@ fn confirm_unsaved_changes() -> bool {
 }
 
 fn ensure_document_open() -> Result<(), String> {
+    if raster_import::active() {
+        return Err("Confirm or cancel image placement / 画像の配置を確定またはキャンセルしてください / 请确认或取消图片放置".into());
+    }
     finish_open_pen()?;
     cancel_vector_drag();
     text_editor::finish(true)?;
@@ -5459,11 +5611,47 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
     match action {
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
-                .add_filter("LumaPaint", &["lumapaint"])
+                .add_filter(
+                    "LumaPaint / JPEG / PNG",
+                    &["lumapaint", "jpg", "jpeg", "png"],
+                )
                 .pick_file()
             else {
                 return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
             };
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
+                let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+                if metadata.len() > 3 * 1024 * 1024 - 1024 {
+                    return Err("Image exceeds the current 3 MiB import limit / 現在の読み込み上限は約3MiBです / 当前导入上限约为3MiB".into());
+                }
+                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+                let format = if extension == "png" { "png" } else { "jpeg" };
+                let info = lumapaint_renderer::vector::imported_raster_info(&bytes, format)?;
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let document = opened_raster_document(name, bytes, info)?;
+                park_active_document();
+                activate_document(OpenDocument {
+                    id: next_document_id(),
+                    content: OpenDocumentContent::Legacy(Box::new(document)),
+                    // Opening an image creates a new unsaved LumaPaint document.
+                    path: None,
+                    fingerprint: None,
+                });
+                if let Err(error) = redraw() {
+                    emit_error(error);
+                }
+                emit_document();
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
             // Validate before replacing anything or asking to discard work.
             let (project, fingerprint) = crate::project_file::read_any_with_fingerprint(&path)?;
             let name = path
@@ -5564,6 +5752,51 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
     }
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+fn opened_raster_document(
+    name: String,
+    bytes: Vec<u8>,
+    info: lumapaint_renderer::vector::ImportedRasterInfo,
+) -> Result<Document, String> {
+    use base64::Engine;
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let (width, height) = (info.width, info.height);
+    let (raw_width, raw_height) = (info.encoded_width, info.encoded_height);
+    let transform = info
+        .image_transform()
+        .map(|m| {
+            format!(
+                " transform=\"matrix({} {} {} {} {} {})\"",
+                m[0], m[1], m[2], m[3], m[4], m[5]
+            )
+        })
+        .unwrap_or_default();
+    let source = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\"><image width=\"{raw_width}\" height=\"{raw_height}\"{transform} href=\"data:{mime};base64,{data}\"/></svg>"
+    );
+    let mut document = Document::from_preset(NewDocumentSettings {
+        document: DocumentSettings {
+            name: name.clone(),
+            width,
+            height,
+            unit: DocumentUnit::Pixels,
+            resolution: 72,
+            artboards: false,
+            canvas_color: CanvasColor::Transparent,
+            pixel_aspect_ratio: 1.0,
+        },
+        color_mode: ColorMode::Rgb,
+        color_profile: ColorProfile::Srgb,
+        bit_depth: 8,
+    })?;
+    document.import_raster_layer(name, source)?;
+    Ok(document)
 }
 
 pub fn shutdown() {

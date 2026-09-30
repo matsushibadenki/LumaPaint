@@ -139,6 +139,12 @@ pub enum WritingMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    /// Persisted edit metadata. Rendering continues to use content and dimensions.
+    #[serde(default)]
+    pub change_generation: u64,
+    /// Unix epoch milliseconds; zero identifies legacy text without edit metadata.
+    #[serde(default)]
+    pub updated_at_ms: u64,
     #[serde(default)]
     pub writing_mode: WritingMode,
     pub content: String,
@@ -235,6 +241,8 @@ pub enum MojikumiMode {
 impl Default for VectorText {
     fn default() -> Self {
         Self {
+            change_generation: 0,
+            updated_at_ms: 0,
             writing_mode: WritingMode::Horizontal,
             content: String::new(),
             runs: Vec::new(),

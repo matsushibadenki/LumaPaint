@@ -1,3 +1,5 @@
+import { ImportImageDialog } from './components/ImportImageDialog';
+import { importRasterLayer, finishRasterImport, subscribeRasterPlacement } from './bridge';
 import { SelectionOptions } from './components/SelectionOptions';
 import { ColorPickerPopover, colorPickerVisibilityEvent, type ColorPickerOcclusion } from './components/ColorPickerPopover';
 import { setVectorPaint, setVectorAppearance, savedPathAction } from './bridge';
@@ -111,6 +113,9 @@ export function Workspace() {
   const [textPanelRequest, setTextPanelRequest] = useState(0);
   const showTextPanel = useCallback(() => { setPanels(true); setTextPanelRequest(value => value + 1); }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [placingImage, setPlacingImage] = useState(false);
+  const [placementBusy, setPlacementBusy] = useState(false);
+  const [importImageOpen, setImportImageOpen] = useState(false);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
   const startupChecked = useRef(false);
   const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
@@ -120,7 +125,7 @@ export function Workspace() {
   const closeColorSettings = useCallback(() => setColorSettingsOpen(false), []);
   const t = workspaceMessages[locale];
   const common = messages[locale];
-  const documentEditable = documentAvailable && documents.find(document => document.id === activeDocumentId)?.format !== 'tiled';
+  const documentEditable = !placingImage && documentAvailable && documents.find(document => document.id === activeDocumentId)?.format !== 'tiled';
   const updateDocument = useCallback((next: DocumentSnapshot) => {
     setDocumentState(next);
   }, []);
@@ -240,6 +245,20 @@ export function Workspace() {
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
   }, [swapColors]);
+  useEffect(() => {
+    let active = true; let stop = () => {};
+    subscribeRasterPlacement(value => { if (active) setPlacingImage(value); })
+      .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
+      .catch(cause => setError(String(cause)));
+    return () => { active = false; stop(); };
+  }, []);
+  const finishPlacement = useCallback(async (commit: boolean) => {
+    if (placementBusy) return;
+    setPlacementBusy(true); setError('');
+    try { updateDocument(await finishRasterImport(commit)); }
+    catch (cause) { setError(String(cause)); }
+    finally { setPlacementBusy(false); }
+  }, [placementBusy, updateDocument]);
   const selectedPaths = documentState.layers.flatMap(layer=>layer.objects).filter(object=>documentState.selectedVectorObjects.includes(object.id));
   const vectorColorMode = !inlineText && selectedPaths.length > 0 && selectedPaths.every(object=>object.kind!=='text');
   const pathColor = (key:'fillColor'|'strokeColor') => (selectedPaths[0]?.[key]?.slice(0,3) ?? [0,0,0]) as Brush['color'];
@@ -402,7 +421,12 @@ export function Workspace() {
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
-      if (newDocumentOpen) return;
+      if (placingImage) {
+        event.preventDefault();
+        if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
+        return;
+      }
+      if (newDocumentOpen || importImageOpen) return;
 
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
@@ -446,13 +470,13 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
-        zoom={zoom} panels={panels} onFile={action => void file(action)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
+      <WorkspaceMenu outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
+        zoom={zoom} panels={panels} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={setZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
         onOutlineText={() => { void outlineText().then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -530,8 +554,12 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen && !transformAction} occlusion={colorPickerOcclusion}
-          footerAccessory={<RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
+        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction} occlusion={colorPickerOcclusion}
+          footerAccessory={placingImage ? <div className="image-placement-controls">
+            <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
+            <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
+            <button disabled={placementBusy} onClick={() => void finishPlacement(true)}>{ {ja:'確定',en:'Confirm','zh-CN':'确认'}[locale] }</button>
+          </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           onZoom={setZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
       {panels && <Inspector thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
@@ -540,6 +568,12 @@ export function Workspace() {
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {settingsOpen && <SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} />}
+    {importImageOpen && <ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {
+      if (filePending.current) throw new Error('Another file operation is in progress');
+      filePending.current = true; setFileBusy(true);
+      try { updateDocument(await importRasterLayer(format)); }
+      finally { filePending.current = false; setFileBusy(false); }
+    }} />}
     {newDocumentOpen && <NewDocumentDialog locale={locale} onCreate={createFromPreset} onClose={() => setNewDocumentOpen(false)} />}
     {colorSettingsOpen && <ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} />}
   </div>;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { deleteAllRecoveries, deleteRecovery, getRecoveryInfo, restoreRecovery, retryRecovery, type DocumentSnapshot, type RecoveryInfo } from '../bridge';
 import type { Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
@@ -12,11 +12,14 @@ export function RecoveryControls({ locale, document, onDocument }: {
   const [dismissed, setDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [deleteRequest, setDeleteRequest] = useState<{ all: boolean; id?: string } | null>(null);
+  const infoRequest = useRef(0);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
-      try { const next = await getRecoveryInfo(); if (active) setInfo(next); }
+      const request = ++infoRequest.current;
+      try { const next = await getRecoveryInfo(); if (active && request === infoRequest.current) setInfo(next); }
       catch (cause) { if (active) setError(String(cause)); }
       finally { if (active) timer = setTimeout(() => void refresh(), 2000); }
     };
@@ -35,16 +38,19 @@ export function RecoveryControls({ locale, document, onDocument }: {
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   };
-  const remove = async (all: boolean) => {
+  const requestRemoval = (all: boolean) => {
     if (busy || (!all && !id)) return;
-    const message = all ? t.deleteAllRecoveriesConfirm : t.deleteRecoveryConfirm;
-    if (!window.confirm(message)) return;
+    setDeleteRequest({ all, id: all ? undefined : id });
+  };
+  const confirmRemoval = async () => {
+    if (busy || !deleteRequest || (!deleteRequest.all && !deleteRequest.id)) return;
     setBusy(true); setError('');
+    ++infoRequest.current;
     try {
-      const next = all ? await deleteAllRecoveries() : await deleteRecovery(id!);
+      const next = deleteRequest.all ? await deleteAllRecoveries() : await deleteRecovery(deleteRequest.id!);
       setInfo(next); setSelected('');
     } catch (cause) { setError(String(cause)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setDeleteRequest(null); }
   };
   const failure = error || info?.status.error;
   const protectedRevision = info?.status.savedRevision === document.revision;
@@ -59,8 +65,13 @@ export function RecoveryControls({ locale, document, onDocument }: {
         {candidates.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{index + 1} · {candidate.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} · {new Date(candidate.modifiedMs).toLocaleString(locale)}</option>)}
       </select>
       <button disabled={busy} onClick={() => void run(true)}>{t.restoreRecovery}</button>
-      <button disabled={busy} onClick={() => void remove(false)}>{t.deleteRecovery}</button>
-      {candidates.length > 1 && <button disabled={busy} onClick={() => void remove(true)}>{t.deleteAllRecoveries}</button>}
+      {!deleteRequest && <button disabled={busy} onClick={() => requestRemoval(false)}>{t.deleteRecovery}</button>}
+      {!deleteRequest && candidates.length > 1 && <button disabled={busy} onClick={() => requestRemoval(true)}>{t.deleteAllRecoveries}</button>}
+      {deleteRequest && <div className="recovery-delete-confirmation" role="alert">
+        <span>{deleteRequest.all ? t.deleteAllRecoveriesConfirm : t.deleteRecoveryConfirm}</span>
+        <button disabled={busy} onClick={() => void confirmRemoval()}>{t.confirmDeleteRecovery}</button>
+        <button disabled={busy} onClick={() => setDeleteRequest(null)}>{t.cancelDeleteRecovery}</button>
+      </div>}
       <button disabled={busy} onClick={() => setDismissed(true)}>{t.recoveryLater}</button>
     </section>}
   </div>;
