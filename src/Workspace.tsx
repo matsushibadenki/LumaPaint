@@ -1,3 +1,4 @@
+import { DirectControlDialog, directControlLabels } from './components/DirectControlDialog';
 import { ImportImageDialog } from './components/ImportImageDialog';
 import { importRasterLayer, finishRasterImport, subscribeRasterPlacement } from './bridge';
 import { SelectionOptions } from './components/SelectionOptions';
@@ -57,6 +58,7 @@ export function Workspace() {
   const [selectionTool, setSelectionTool] = useState<SelectionTool | null>(null);
   const canvasTool = zoomTool ?? transformTool ?? selectionTool ?? toolState.tools[toolMode];
   const [lastSelectionTool, setLastSelectionTool] = useState<SelectionTool>('rectangle');
+  const [directControlOpen,setDirectControlOpen] = useState(false);
   const [transformAction, setTransformAction] = useState<TransformAction | null>(null);
   const [lastTransformTool, setLastTransformTool] = useState<'vectorScale' | 'vectorRotate'>('vectorScale');
   const [lastVectorSelectTool, setLastVectorSelectTool] = useState<'vectorSelect' | 'vectorDirectSelect'>('vectorSelect');
@@ -426,7 +428,7 @@ export function Workspace() {
         if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
         return;
       }
-      if (newDocumentOpen || importImageOpen) return;
+      if (newDocumentOpen || importImageOpen || directControlOpen) return;
 
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
@@ -438,6 +440,7 @@ export function Workspace() {
         return;
       }
       const target = event.target as HTMLElement;
+      if (directControlOpen || target.closest('dialog[open]')) return;
       if (target.closest('input, textarea, select, [contenteditable=true]')) return;
       if (documentAvailable && !settingsOpen && !colorSettingsOpen) {
         const key = event.key.toLowerCase();
@@ -470,7 +473,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
@@ -495,13 +498,13 @@ export function Workspace() {
       </div>
     </header>
     <div className="options-bar" aria-label={zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
-      <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}</span></span>
-      {documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
+      <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{zoomTool ? common[zoomTool] : canvasTool === 'vectorDirectSelect' ? t.vectorDirectSelect : t[toolState.tools[toolMode]]}</span></span>
+      {documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool && canvasTool !== 'vectorDirectSelect' ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
         onAppearance={async (opacity, blendMode) => { updateDocument(await setVectorAppearance([...documentState.selectedVectorObjects], opacity, blendMode)); }}
         onPaint={async (target,color) => { updateDocument(await setVectorPaint([...documentState.selectedVectorObjects],target,color)); }}
         onWidth={async width => { updateDocument(await setVectorStrokeWidth(width,brush.color)); }}
         onTransform={async (action,values) => { updateDocument(await transformObjects(action,values)); }}
-        onCombine={async operation => { updateDocument(await combineSelectedVectors(operation)); }} onTransformMenu={setTransformAction} onError={setError} /> : zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : canvasTool === 'vectorRotate' ? t.rotateHint : canvasTool === 'vectorScale' ? t.scaleHint : canvasTool === 'vectorDirectSelect' ? t.directHint : canvasTool.startsWith('vectorAnchor') ? t.anchorHint : canvasTool === 'vectorPen' ? t.penHint : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || documentState.selectedVectorObjects.length !== 2} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : (canvasTool === 'brush' || canvasTool === 'eraser') ? <>
+        onCombine={async operation => { updateDocument(await combineSelectedVectors(operation)); }} onTransformMenu={setTransformAction} onError={setError} /> : zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : canvasTool === 'vectorRotate' ? t.rotateHint : canvasTool === 'vectorScale' ? t.scaleHint : canvasTool === 'vectorDirectSelect' ? t.directHint : canvasTool.startsWith('vectorAnchor') ? t.anchorHint : canvasTool === 'vectorPen' ? t.penHint : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorDirectSelect' && <button disabled={!documentEditable || busy} onClick={()=>setDirectControlOpen(true)}>{directControlLabels[locale].title}</button>}{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || documentState.selectedVectorObjects.length !== 2} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : (canvasTool === 'brush' || canvasTool === 'eraser') ? <>
       <label className="size-control">{t.size}<SizeInput label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><ColorPickerPopover locale={locale} color={brush.color} label={t.foreground} onChange={changeForeground} /></label>
@@ -511,6 +514,7 @@ export function Workspace() {
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
     <main className="editor-layout">
+      {directControlOpen && <DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} />}
       {transformAction && <TransformDialog key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} />}
       <nav className="tool-rail" aria-label={t.tools}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
@@ -554,7 +558,7 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction} occlusion={colorPickerOcclusion}
+        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>

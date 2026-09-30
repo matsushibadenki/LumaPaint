@@ -3404,6 +3404,7 @@ mod tests {
                 .upsert_vector_object(
                     &layer_id,
                     VectorObject {
+                        live_corners: None,
                         opacity: 1.0,
                         blend_mode: "normal".into(),
                         id: id.into(),

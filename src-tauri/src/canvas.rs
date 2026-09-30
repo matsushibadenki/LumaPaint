@@ -1283,3 +1283,55 @@ pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailS
         Err("Panel thumbnails are pending on this platform".into())
     }
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectControlInfo {
+    pub id: String,
+    pub index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub anchor: bool,
+    pub radius: Option<f32>,
+}
+#[derive(Serialize)]
+pub struct DirectEditResult {
+    pub snapshot: DocumentSnapshot,
+    pub preview: String,
+}
+#[tauri::command]
+pub async fn direct_control_info(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<DirectControlInfo>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::direct_control_info).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(vec![])
+    }
+}
+#[tauri::command]
+pub async fn edit_direct_controls(
+    window: tauri::WebviewWindow,
+    mode: String,
+    values: Vec<f32>,
+    preview: bool,
+    expected: Vec<(String, usize)>,
+    revision: u64,
+) -> Result<DirectEditResult, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::edit_direct_controls(mode, values, preview, expected, revision)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, mode, values, preview, expected, revision);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}

@@ -1893,6 +1893,7 @@ impl Document {
         }
         let id = format!("text-{serial}");
         let object = VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.clone(),
@@ -3151,7 +3152,12 @@ impl Document {
         layer_id: &str,
         object: VectorObject,
     ) -> Result<(), String> {
-        if self.path_editing.is_none() {
+        if self.path_editing.is_none()
+            && self
+                .svg_layers
+                .iter()
+                .any(|l| l.id == layer_id && l.vector_layer)
+        {
             return self.upsert_vector_object(layer_id, object);
         }
         object.validate()?;
@@ -4735,98 +4741,281 @@ impl Document {
                     .map(|(index, _)| (object.id.clone(), index))
             })
     }
-    pub fn delete_vector_anchors(&mut self, controls: &[(String, usize)]) -> Result<(), String> {
-        let mut layers = self.svg_layers.clone();
-        let mut changed = false;
-        for layer in &mut layers {
-            let mut layer_changed = false;
-            for object in &mut layer.vector_objects {
-                let mut indices: Vec<_> = controls
-                    .iter()
-                    .filter(|(id, index)| id == &object.id && index.is_multiple_of(3))
-                    .map(|(_, index)| *index)
-                    .collect();
-                if indices.is_empty() {
-                    continue;
-                }
-                if layer.locked || !layer.visible || !object.visible {
-                    return Err("Vector path is hidden or locked".into());
-                }
-                let mut edited = crate::bezier::editable(object)
-                    .ok_or("Path does not support direct selection")?;
-                indices.sort_unstable();
-                indices.dedup();
-                for index in indices.into_iter().rev() {
-                    crate::bezier::remove(&mut edited, index)?;
-                }
-                *object = edited;
-                layer_changed = true;
-            }
-            if layer_changed {
-                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
-                validate_svg_layer(layer)?;
-                changed = true;
-            }
+    pub fn direct_objects(&self) -> Vec<(String, VectorObject)> {
+        self.svg_layers
+            .iter()
+            .filter(|l| self.can_edit_path_layer(l) && l.visible && !l.locked && !l.paint_layer)
+            .flat_map(|l| {
+                let objects = if l.vector_layer {
+                    l.vector_objects
+                        .iter()
+                        .filter(|o| o.visible)
+                        .filter_map(crate::bezier::editable)
+                        .collect::<Vec<_>>()
+                } else {
+                    crate::svg_edit::targets(
+                        &l.source,
+                        &l.id,
+                        [self.width as f32, self.height as f32],
+                    )
+                    .into_iter()
+                    .map(|t| t.object)
+                    .collect()
+                };
+                objects
+                    .into_iter()
+                    .map(|o| (l.id.clone(), o))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+    pub fn select_direct_objects(&mut self, ids: Vec<String>) -> Result<(), String> {
+        let targets = self.direct_objects();
+        if ids.len() > 4096
+            || ids
+                .iter()
+                .any(|id| !targets.iter().any(|(_, o)| &o.id == id))
+        {
+            return Err("Direct path not found".into());
         }
-        if changed {
-            let before = self.vector_history_state();
-            self.svg_layers = layers;
-            self.record_vector_edit(before);
-            self.revision += 1;
-        }
+        self.selected_vector_objects = ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         Ok(())
     }
-
+    fn edit_direct_controls(
+        &mut self,
+        controls: &[(String, usize)],
+        mut edit: impl FnMut(&VectorObject, &[usize]) -> Result<Option<VectorObject>, String>,
+    ) -> Result<(), String> {
+        if controls.is_empty() {
+            return Ok(());
+        }
+        let mut layers = self.svg_layers.clone();
+        let mut found = 0;
+        for layer in &mut layers {
+            if !self.can_edit_path_layer(layer)
+                || layer.locked
+                || !layer.visible
+                || layer.paint_layer
+            {
+                continue;
+            }
+            if layer.vector_layer {
+                for object in &mut layer.vector_objects {
+                    let indices: Vec<_> = controls
+                        .iter()
+                        .filter(|(id, _)| id == &object.id)
+                        .map(|(_, i)| *i)
+                        .collect();
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    if !object.visible {
+                        return Err("Path is hidden".into());
+                    }
+                    let source = crate::bezier::editable(object).ok_or("Path cannot be edited")?;
+                    if indices
+                        .iter()
+                        .any(|i| !crate::bezier::control_indices(&source).contains(i))
+                    {
+                        return Err("Invalid controls".into());
+                    }
+                    found += indices.len();
+                    if let Some(edited) = edit(&source, &indices)? {
+                        *object = edited;
+                    } else {
+                        object.path.data.clear();
+                    }
+                }
+                layer.vector_objects.retain(|o| !o.path.data.is_empty());
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+            } else {
+                let targets = crate::svg_edit::targets(
+                    &layer.source,
+                    &layer.id,
+                    [self.width as f32, self.height as f32],
+                );
+                for target in targets.into_iter().rev() {
+                    let indices: Vec<_> = controls
+                        .iter()
+                        .filter(|(id, _)| id == &target.object.id)
+                        .map(|(_, i)| *i)
+                        .collect();
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    if indices
+                        .iter()
+                        .any(|i| !crate::bezier::control_indices(&target.object).contains(i))
+                    {
+                        return Err("Invalid SVG controls".into());
+                    }
+                    found += indices.len();
+                    let edited = edit(&target.object, &indices)?;
+                    crate::svg_edit::replace(&mut layer.source, target, edited)?;
+                }
+            }
+            validate_svg_layer(layer)?;
+        }
+        if found != controls.len() {
+            return Err("Select visible, unlocked path controls / 表示中のロックされていない節点を選択してください / 请选择可见且未锁定的路径节点".into());
+        }
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Too much vector data".into());
+        }
+        if layers
+            .iter()
+            .zip(&self.svg_layers)
+            .all(|(a, b)| a.source == b.source && a.vector_objects == b.vector_objects)
+        {
+            return Ok(());
+        }
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+    pub fn delete_vector_anchors(&mut self, controls: &[(String, usize)]) -> Result<(), String> {
+        let anchors: Vec<_> = controls
+            .iter()
+            .filter(|(_, i)| i.is_multiple_of(3))
+            .cloned()
+            .collect();
+        self.edit_direct_controls(&anchors, crate::bezier::split_deleted)
+    }
     pub fn move_vector_controls(
         &mut self,
         controls: &[(String, usize)],
         delta: [f32; 2],
         break_smooth: bool,
     ) -> Result<(), String> {
-        if controls.is_empty() || delta == [0., 0.] {
-            return Ok(());
-        }
-        if delta.iter().any(|n| !n.is_finite()) {
+        if delta.iter().any(|v| !v.is_finite()) {
             return Err("Invalid control movement".into());
         }
-        let mut layers = self.svg_layers.clone();
-        let mut found = 0;
-        for layer in &mut layers {
-            let mut changed = false;
-            for object in &mut layer.vector_objects {
-                let indices: Vec<_> = controls
-                    .iter()
-                    .filter(|(id, _)| id == &object.id)
-                    .map(|(_, index)| *index)
-                    .collect();
-                if indices.is_empty() {
-                    continue;
-                }
-                if layer.locked || !layer.visible || !layer.vector_layer || !object.visible {
-                    return Err("Vector path is hidden or locked".into());
-                }
-                let mut edited = crate::bezier::editable(object)
-                    .ok_or("Path does not support direct selection")?;
-                crate::bezier::translate_controls(&mut edited, &indices, delta, break_smooth)?;
-                *object = edited;
-                found += indices.len();
-                changed = true;
-            }
-            if changed {
-                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
-                validate_svg_layer(layer)?;
-            }
+        if delta == [0., 0.] {
+            return Ok(());
         }
-        if found != controls.len() {
-            return Err("Control point not found".into());
+        self.edit_direct_controls(controls, |o, indices| {
+            let mut edited = o.clone();
+            crate::bezier::translate_controls(&mut edited, indices, delta, break_smooth)?;
+            Ok(Some(edited))
+        })
+    }
+    pub fn set_direct_coordinates(
+        &mut self,
+        controls: &[(String, usize)],
+        position: [f32; 2],
+    ) -> Result<(), String> {
+        if controls.len() != 1
+            || position
+                .iter()
+                .any(|v| !v.is_finite() || v.abs() >= 100_000.)
+        {
+            return Err("Select one control for absolute coordinates / 絶対座標の編集は1点を選択してください / 编辑绝对坐标请选择一个控制点".into());
         }
-        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
-            return Err("Project contains too much vector data".into());
+        let o = self
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == controls[0].0)
+            .ok_or("Path missing")?
+            .1;
+        let p = *o
+            .control_points
+            .get(controls[0].1)
+            .ok_or("Control missing")?;
+        let p = crate::bezier::world_point(&o, p);
+        self.move_vector_controls(controls, [position[0] - p[0], position[1] - p[1]], false)
+    }
+    pub fn set_direct_corner_radius(
+        &mut self,
+        controls: &[(String, usize)],
+        radius: f32,
+    ) -> Result<(), String> {
+        self.edit_direct_controls(controls, |o, indices| {
+            Ok(Some(crate::bezier::round_corners(o, indices, radius)?))
+        })
+    }
+    pub fn direct_preview_svg(&self, ids: &[String]) -> String {
+        let objects: Vec<_> = self
+            .direct_objects()
+            .into_iter()
+            .filter(|(_, o)| ids.contains(&o.id))
+            .map(|(_, mut o)| {
+                o.stroke = Some(crate::vector::VectorPaint {
+                    color: [70, 150, 255, 255],
+                });
+                o.stroke_width = 1.;
+                o.stroke_style = Default::default();
+                o.fill = None;
+                o
+            })
+            .collect();
+        let points: Vec<_> = objects
+            .iter()
+            .flat_map(|o| {
+                crate::bezier::control_indices(o)
+                    .into_iter()
+                    .map(|i| crate::bezier::world_point(o, o.control_points[i]))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut svg = vector_svg(self.width, self.height, &objects);
+        if !points.is_empty() {
+            let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+            let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+            let max_x = points
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let max_y = points
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let pad = ((max_x - min_x).max(max_y - min_y) * 0.1).max(4.);
+            svg = svg.replacen(
+                &format!("viewBox=\"0 0 {} {}\"", self.width, self.height),
+                &format!(
+                    "viewBox=\"{} {} {} {}\"",
+                    min_x - pad,
+                    min_y - pad,
+                    (max_x - min_x).max(1.) + pad * 2.,
+                    (max_y - min_y).max(1.) + pad * 2.
+                ),
+                1,
+            );
         }
-        let before = self.vector_history_state();
-        self.svg_layers = layers;
-        self.record_vector_edit(before);
-        self.revision += 1;
+        svg.replace("<path ", "<path vector-effect=\"non-scaling-stroke\" ")
+    }
+    pub fn direct_object_preview(
+        &mut self,
+        layer_id: &str,
+        object: VectorObject,
+    ) -> Result<(), String> {
+        if self
+            .svg_layers
+            .iter()
+            .any(|l| l.id == layer_id && l.vector_layer)
+        {
+            return self.upsert_vector_object(layer_id, object);
+        }
+        let layer = self
+            .svg_layers
+            .iter_mut()
+            .find(|l| l.id == layer_id)
+            .ok_or("SVG layer missing")?;
+        let target = crate::svg_edit::targets(
+            &layer.source,
+            layer_id,
+            [self.width as f32, self.height as f32],
+        )
+        .into_iter()
+        .find(|t| t.object.id == object.id)
+        .ok_or("SVG path missing")?;
+        crate::svg_edit::replace(&mut layer.source, target, Some(object))?;
         Ok(())
     }
 
@@ -5444,6 +5633,7 @@ mod tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -6814,6 +7004,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    live_corners: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -6864,6 +7055,7 @@ mod persistence_tests {
                 .upsert_vector_object(
                     &layer_id,
                     VectorObject {
+                        live_corners: None,
                         opacity: 1.0,
                         blend_mode: "normal".into(),
                         text: None,
@@ -6927,6 +7119,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    live_corners: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -7007,6 +7200,7 @@ mod persistence_tests {
             .upsert_vector_object(
                 &layer_id,
                 VectorObject {
+                    live_corners: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -7081,6 +7275,7 @@ mod persistence_tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -8412,6 +8607,7 @@ mod stroke_width_tests {
             doc.upsert_vector_object(
                 &layer,
                 VectorObject {
+                    live_corners: None,
                     id: id.into(),
                     name: id.into(),
                     opacity: 1.,
@@ -8523,6 +8719,7 @@ mod stroke_width_tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let object = VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "path-a".into(),
@@ -8706,6 +8903,7 @@ mod independent_saved_path_tests {
 
     fn square(id: &str) -> VectorObject {
         VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -9073,5 +9271,102 @@ mod independent_saved_path_tests {
         let decoded = Document::decode(&doc.encode().unwrap()).unwrap();
         assert_eq!(decoded.saved_paths[0].objects.len(), 1);
         assert!(decoded.svg_layers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod direct_import_tests {
+    use super::*;
+    fn imported() -> Document {
+        let mut doc = Document {
+            selected_layer: None,
+            width: 200,
+            height: 200,
+            ..Default::default()
+        };
+        doc.import_svg("SVG".into(),r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient><clipPath id="c"><path d="M0 0H100V100H0Z"/></clipPath></defs><g transform="translate(5 10)" clip-path="url(#c)"><path id="art" fill="url(#g)" d="M0 0H40V40H0Z M10 10V30H30V10Z"/><path id="other" d="M50 50L80 80"/></g></svg>"##.into()).unwrap();
+        doc
+    }
+    #[test]
+    fn imported_svg_moves_path_without_losing_xml_paints_clips_or_other_paths() {
+        let mut doc = imported();
+        let targets = doc.direct_objects();
+        assert_eq!(targets.len(), 2);
+        let id = targets[0].1.id.clone();
+        doc.select_direct_objects(vec![id.clone()]).unwrap();
+        let encoded = doc.encode().unwrap();
+        let original = doc.svg_layers[0].source.clone();
+        doc.move_vector_controls(&[(id.clone(), 0)], [10., 20.], false)
+            .unwrap();
+        let changed = doc.svg_layers[0].source.clone();
+        assert!(changed.contains("fill=\"url(#g)\""));
+        assert!(changed.contains("clip-path=\"url(#c)\""));
+        assert!(changed.contains("id=\"other\" d=\"M50 50L80 80\""));
+        assert!(changed.contains("<path d=\"M0 0H100V100H0Z\"/>"));
+        assert_eq!(doc.direct_objects()[0].1.control_points[0], [5., 10.]);
+        let saved = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(saved.svg_layers[0].source, changed);
+        doc.undo();
+        assert_eq!(doc.svg_layers[0].source, original);
+        assert_eq!(doc.encode().unwrap(), encoded);
+        doc.redo();
+        assert_ne!(doc.svg_layers[0].source, original);
+    }
+    #[test]
+    fn imported_live_corners_save_original_path_and_can_restore_after_reload() {
+        let mut doc = imported();
+        let id = doc.direct_objects()[0].1.id.clone();
+        doc.set_direct_corner_radius(&[(id, 3)], 12.).unwrap();
+        assert!(doc.svg_layers[0].source.contains("data-lumapaint-corners="));
+        let mut saved = Document::decode(&doc.encode().unwrap()).unwrap();
+        let target = saved.direct_objects().remove(0).1;
+        assert_eq!(target.live_corners.as_ref().unwrap().radius, 12.);
+        saved
+            .set_direct_corner_radius(&[(target.id, 3)], 0.)
+            .unwrap();
+        assert_eq!(
+            saved.direct_objects()[0].1.control_points,
+            imported().direct_objects()[0].1.control_points
+        );
+    }
+    #[test]
+    fn failed_mixed_edit_is_atomic_and_coordinates_respect_transforms() {
+        let mut doc = imported();
+        let id = doc.direct_objects()[0].1.id.clone();
+        let original = doc.encode().unwrap();
+        assert!(doc
+            .move_vector_controls(&[(id.clone(), 0), ("missing".into(), 0)], [10., 10.], false)
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), original);
+        doc.set_direct_coordinates(&[(id.clone(), 0)], [50., 70.])
+            .unwrap();
+        let o = doc.direct_objects()[0].1.clone();
+        assert_eq!(
+            crate::bezier::world_point(&o, o.control_points[0]),
+            [50., 70.]
+        );
+        let original = doc.encode().unwrap();
+        assert!(doc
+            .set_direct_coordinates(&[(id, 0)], [f32::INFINITY, 0.])
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), original);
+        doc.svg_layers[0].locked = true;
+        assert!(doc
+            .move_vector_controls(&[(o.id, 0)], [1., 1.], false)
+            .is_err());
+    }
+    #[test]
+    fn svg_deletion_splits_closed_path_keeps_defs_and_undo_restores_source() {
+        let mut doc = imported();
+        let id = doc.direct_objects()[0].1.id.clone();
+        let before = doc.svg_layers[0].source.clone();
+        doc.delete_vector_anchors(&[(id, 3)]).unwrap();
+        let object = doc.direct_objects()[0].1.clone();
+        let ranges = crate::bezier::contour_ranges(&object);
+        assert!(!ranges[0].2);
+        assert!(ranges[1].2);
+        assert!(doc.svg_layers[0].source.contains("<defs>"));
+        doc.undo();
+        assert_eq!(doc.svg_layers[0].source, before);
     }
 }

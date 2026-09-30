@@ -801,6 +801,8 @@ pub struct VectorObject {
     pub stroke_width: f32,
     #[serde(default)]
     pub stroke_style: crate::stroke::StrokeStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_corners: Option<crate::bezier::LiveCorners>,
     pub visible: bool,
     #[serde(default)]
     pub kind: VectorObjectKind,
@@ -813,6 +815,9 @@ pub struct VectorObject {
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
         self.stroke_style.validate()?;
+        if let Some(corners) = &self.live_corners {
+            corners.validate()?;
+        }
         if !self.opacity.is_finite()
             || !(0.0..=1.0).contains(&self.opacity)
             || !OBJECT_BLEND_MODES.contains(&self.blend_mode.as_str())
@@ -1483,6 +1488,7 @@ mod path_hit_tests {
             data.push_str(&format!(" L {x} {y}"));
         }
         VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "hit-test".into(),

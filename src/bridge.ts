@@ -429,3 +429,9 @@ export function setVectorAppearance(ids: string[], opacity: number | null, blend
   canvasQueue = result.then(() => {}, () => {});
   return result;
 }
+
+export interface DirectControlInfo { id:string; index:number; x:number; y:number; anchor:boolean; radius:number|null }
+export function directControlInfo():Promise<DirectControlInfo[]> { return isTauri()?textCommand('direct_control_info',{}):Promise.resolve([]); }
+export function editDirectControls(mode:'position'|'move'|'corner',values:number[],preview:boolean,points:DirectControlInfo[],revision:number):Promise<{snapshot:DocumentSnapshot;preview:string}> {
+  return textCommand('edit_direct_controls',{mode,values,preview,expected:points.map(p=>[p.id,p.index]),revision});
+}

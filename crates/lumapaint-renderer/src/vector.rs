@@ -1461,6 +1461,7 @@ mod clipping_tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let shape = |id: &str, color| VectorObject {
+            live_corners: None,
             opacity: 1.,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -1529,6 +1530,7 @@ mod clipping_tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let shape = |id: &str, size: f32, color| VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),

@@ -163,6 +163,9 @@ pub fn editable(object: &VectorObject) -> Option<VectorObject> {
             result.kind = VectorObjectKind::Bezier;
             result.path.data = path_data(&result.control_points, true).ok()?;
         }
+        VectorObjectKind::Compound => {
+            pack(&mut result, cubic_contours(&object.path.data).ok()?).ok()?;
+        }
         VectorObjectKind::Bezier => {}
         VectorObjectKind::Path if object.control_points.len() >= 2 => {
             let points = &object.control_points;
@@ -182,6 +185,219 @@ pub fn editable(object: &VectorObject) -> Option<VectorObject> {
     Some(result)
 }
 
+/// Parse SVG commands (including quadratic curves and arcs) into cubic contours.
+pub type CubicContour = (Vec<[f32; 2]>, bool);
+pub fn cubic_contours(data: &str) -> Result<Vec<CubicContour>, String> {
+    use svgtypes::SimplePathSegment::*;
+    let mut result = Vec::new();
+    let mut points = Vec::new();
+    let mut closed = false;
+    let mut at = [0., 0.];
+    for item in svgtypes::SimplifyingPathParser::from(data) {
+        match item.map_err(|e| e.to_string())? {
+            MoveTo { x, y } => {
+                if !points.is_empty() {
+                    result.push((std::mem::take(&mut points), closed));
+                }
+                at = [x as f32, y as f32];
+                points.push(at);
+                closed = false;
+            }
+            LineTo { x, y } => {
+                let end = [x as f32, y as f32];
+                points.extend([at, end, end]);
+                at = end;
+            }
+            CurveTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => {
+                at = [x as f32, y as f32];
+                points.extend([[x1 as f32, y1 as f32], [x2 as f32, y2 as f32], at]);
+            }
+            Quadratic { x1, y1, x, y } => {
+                let q = [x1 as f32, y1 as f32];
+                let end = [x as f32, y as f32];
+                points.extend([lerp(at, q, 2. / 3.), lerp(end, q, 2. / 3.), end]);
+                at = end;
+            }
+            ClosePath => {
+                let first = *points.first().ok_or("Missing contour start")?;
+                if at != first {
+                    points.extend([at, first, first]);
+                }
+                at = first;
+                closed = true;
+            }
+        }
+        if points.len() > 65_536 || result.len() > 4096 {
+            return Err("Too many path controls".into());
+        }
+    }
+    if !points.is_empty() {
+        result.push((points, closed));
+    }
+    if result.is_empty() || result.iter().map(|(p, _)| p.len() + 2).sum::<usize>() > 65_536 {
+        return Err("Invalid path contours".into());
+    }
+    Ok(result)
+}
+
+/// Contours use two inert padding controls so every anchor retains a multiple-of-three index.
+fn pack(object: &mut VectorObject, contours: Vec<(Vec<[f32; 2]>, bool)>) -> Result<(), String> {
+    let single = contours.len() == 1;
+    let mut data = String::new();
+    let mut points = Vec::new();
+    for (p, closed) in contours {
+        if !points.is_empty() {
+            points.extend([points[0]; 2]);
+        }
+        data.push_str(&path_data(&p, closed)?);
+        data.push(' ');
+        points.extend(p);
+    }
+    object.kind = if single && object.kind != VectorObjectKind::Compound {
+        VectorObjectKind::Bezier
+    } else {
+        VectorObjectKind::Compound
+    };
+    object.path.data = data.trim_end().into();
+    object.control_points = points;
+    object.validate()
+}
+
+pub fn contour_ranges(object: &VectorObject) -> Vec<(usize, usize, bool)> {
+    if object.kind != VectorObjectKind::Compound {
+        return vec![(
+            0,
+            object.control_points.len(),
+            object.path.data.trim_end().ends_with(['Z', 'z']),
+        )];
+    }
+    let mut start = 0;
+    cubic_contours(&object.path.data)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(p, c)| {
+            let range = (start, start + p.len(), c);
+            start += p.len() + 2;
+            range
+        })
+        .collect()
+}
+
+pub fn anchor_indices(object: &VectorObject) -> Vec<usize> {
+    contour_ranges(object)
+        .into_iter()
+        .flat_map(|(start, end, closed)| {
+            (start..end.saturating_sub(usize::from(closed))).step_by(3)
+        })
+        .collect()
+}
+pub fn segment_indices(object: &VectorObject) -> Vec<usize> {
+    contour_ranges(object)
+        .into_iter()
+        .flat_map(|(start, end, _)| (start..end.saturating_sub(3)).step_by(3))
+        .collect()
+}
+pub fn control_indices(object: &VectorObject) -> Vec<usize> {
+    contour_ranges(object)
+        .into_iter()
+        .flat_map(|(start, end, _)| start..end)
+        .collect()
+}
+pub fn canonical_anchor(object: &VectorObject, index: usize) -> usize {
+    contour_ranges(object)
+        .into_iter()
+        .find(|&(s, e, _)| index >= s && index < e)
+        .map_or(
+            index,
+            |(s, e, c)| if c && index == e - 1 { s } else { index },
+        )
+}
+
+fn edit_contour(
+    object: &mut VectorObject,
+    index: usize,
+    edit: impl FnOnce(&mut VectorObject, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    object.live_corners = None;
+    let mut contours = cubic_contours(&object.path.data)?;
+    let mut offset = 0;
+    for (p, closed) in &mut contours {
+        if index >= offset && index < offset + p.len() {
+            let mut part = object.clone();
+            part.kind = VectorObjectKind::Bezier;
+            part.control_points = p.clone();
+            part.path.data = path_data(p, *closed)?;
+            edit(&mut part, index - offset)?;
+            *p = part.control_points;
+            return pack(object, contours);
+        }
+        offset += p.len() + 2;
+    }
+    Err("Invalid contour control".into())
+}
+
+/// Delete selected anchors and their incident edges without inventing connecting segments.
+pub fn split_deleted(
+    object: &VectorObject,
+    indices: &[usize],
+) -> Result<Option<VectorObject>, String> {
+    let object = editable(object).ok_or("Path cannot be edited")?;
+    let selected: std::collections::BTreeSet<_> = indices.iter().copied().collect();
+    let mut output = Vec::new();
+    for (start, end, closed) in contour_ranges(&object) {
+        let p = &object.control_points[start..end];
+        let n = (p.len() - 1) / 3 + usize::from(!closed);
+        let deleted: Vec<_> = (0..n)
+            .map(|i| {
+                selected.contains(&(start + i * 3))
+                    || (closed && i == 0 && selected.contains(&(end - 1)))
+            })
+            .collect();
+        if !deleted.iter().any(|d| *d) {
+            output.push((p.to_vec(), closed));
+            continue;
+        }
+        let mut run = Vec::new();
+        let first = if closed {
+            (deleted.iter().position(|d| *d).unwrap() + 1) % n
+        } else {
+            0
+        };
+        for step in 0..n {
+            let i = (first + step) % n;
+            if deleted[i] {
+                if run.len() >= 4 {
+                    output.push((std::mem::take(&mut run), false));
+                } else {
+                    run.clear();
+                }
+            } else if run.is_empty() {
+                run.push(p[i * 3]);
+            } else {
+                let previous = (i + n - 1) % n;
+                run.extend([p[previous * 3 + 1], p[previous * 3 + 2], p[i * 3]]);
+            }
+        }
+        if run.len() >= 4 {
+            output.push((run, false));
+        }
+    }
+    if output.is_empty() {
+        return Ok(None);
+    }
+    let mut result = object;
+    result.live_corners = None;
+    pack(&mut result, output)?;
+    Ok(Some(result))
+}
+
 pub fn control_hit(
     object: &VectorObject,
     point: [f32; 2],
@@ -189,9 +405,13 @@ pub fn control_hit(
     handles: bool,
 ) -> Option<usize> {
     // Prefer anchors when a collapsed handle occupies the same position.
-    (0..object.control_points.len())
-        .step_by(3)
-        .chain((0..object.control_points.len()).filter(|index| handles && !index.is_multiple_of(3)))
+    anchor_indices(object)
+        .into_iter()
+        .chain(
+            control_indices(object)
+                .into_iter()
+                .filter(|index| handles && !index.is_multiple_of(3)),
+        )
         .find(|&index| {
             distance(world_point(object, object.control_points[index]), point) <= tolerance
         })
@@ -204,7 +424,7 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 pub fn segment_hit(object: &VectorObject, point: [f32; 2], tolerance: f32) -> Option<(usize, f32)> {
     let mut best = None;
     let mut best_distance = tolerance;
-    for start in (0..object.control_points.len().saturating_sub(3)).step_by(3) {
+    for start in segment_indices(object) {
         let segment =
             std::array::from_fn(|i| world_point(object, object.control_points[start + i]));
         let length: f32 = segment.windows(2).map(|p| distance(p[0], p[1])).sum();
@@ -240,6 +460,9 @@ pub fn segment_hit(object: &VectorObject, point: [f32; 2], tolerance: f32) -> Op
 
 /// De Casteljau subdivision preserves the exact shape of the curve.
 pub fn insert(object: &mut VectorObject, start: usize, t: f32) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_contour(object, start, |p, i| insert(p, i, t));
+    }
     if !start.is_multiple_of(3)
         || start + 3 >= object.control_points.len()
         || !(0.0..1.0).contains(&t)
@@ -262,6 +485,9 @@ pub fn insert(object: &mut VectorObject, start: usize, t: f32) -> Result<(), Str
 }
 
 pub fn remove(object: &mut VectorObject, mut index: usize) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_contour(object, index, remove);
+    }
     let closed = object.path.data.trim_end().ends_with(['Z', 'z']);
     let count = (object.control_points.len() - 1) / 3 + usize::from(!closed);
     if !index.is_multiple_of(3) || index >= object.control_points.len() {
@@ -295,6 +521,9 @@ pub fn convert(
     index: usize,
     handle: Option<[f32; 2]>,
 ) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_contour(object, index, |p, i| convert(p, i, handle));
+    }
     let last = object
         .control_points
         .len()
@@ -326,6 +555,7 @@ pub fn convert(
 }
 
 fn rebuild(object: &mut VectorObject) -> Result<(), String> {
+    object.live_corners = None;
     object.path.data = path_data(
         &object.control_points,
         object.path.data.trim_end().ends_with(['Z', 'z']),
@@ -333,7 +563,30 @@ fn rebuild(object: &mut VectorObject) -> Result<(), String> {
     object.validate()
 }
 
+fn edit_all_contours(
+    object: &mut VectorObject,
+    mut edit: impl FnMut(&mut VectorObject) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut contours = cubic_contours(&object.path.data)?;
+    let mut result = object.clone();
+    result.live_corners = None;
+    for (points, closed) in &mut contours {
+        let mut part = result.clone();
+        part.kind = VectorObjectKind::Bezier;
+        part.control_points = points.clone();
+        part.path.data = path_data(points, *closed)?;
+        edit(&mut part)?;
+        *points = part.control_points;
+    }
+    pack(&mut result, contours)?;
+    *object = result;
+    Ok(())
+}
+
 pub fn reverse(object: &mut VectorObject) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_all_contours(object, reverse);
+    }
     let mut edited = editable(object).ok_or("Path cannot be edited")?;
     let original = edited.control_points.clone();
     let mut reversed = vec![*original.last().ok_or("Missing path points")?];
@@ -347,6 +600,9 @@ pub fn reverse(object: &mut VectorObject) -> Result<(), String> {
 }
 
 pub fn subdivide_all(object: &mut VectorObject) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_all_contours(object, subdivide_all);
+    }
     let mut edited = editable(object).ok_or("Path cannot be edited")?;
     let starts: Vec<_> = (0..edited.control_points.len().saturating_sub(3))
         .step_by(3)
@@ -359,6 +615,9 @@ pub fn subdivide_all(object: &mut VectorObject) -> Result<(), String> {
 }
 
 pub fn remove_alternate_anchors(object: &mut VectorObject) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_all_contours(object, remove_alternate_anchors);
+    }
     let mut edited = editable(object).ok_or("Path cannot be edited")?;
     let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
     let anchors = (edited.control_points.len() - 1) / 3 + usize::from(!closed);
@@ -427,6 +686,9 @@ fn rebuild_polyline(
 }
 
 pub fn simplify(object: &mut VectorObject, tolerance: f32) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_all_contours(object, |p| simplify(p, tolerance));
+    }
     let edited = editable(object).ok_or("Path cannot be edited")?;
     let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
     let mut samples = flattened(&edited.control_points);
@@ -441,6 +703,9 @@ pub fn simplify(object: &mut VectorObject, tolerance: f32) -> Result<(), String>
 }
 
 pub fn smooth(object: &mut VectorObject) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Compound {
+        return edit_all_contours(object, smooth);
+    }
     let mut edited = editable(object).ok_or("Path cannot be edited")?;
     let closed = edited.path.data.trim_end().ends_with(['Z', 'z']);
     let last = edited.control_points.len() - 1;
@@ -505,6 +770,7 @@ mod anchor_tests {
     fn curve() -> VectorObject {
         let points = vec![[0., 0.], [0., 100.], [100., 100.], [100., 0.]];
         VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "curve".into(),
@@ -648,6 +914,32 @@ pub fn translate_controls(
     delta: [f32; 2],
     break_smooth: bool,
 ) -> Result<(), String> {
+    object.live_corners = None;
+    if object.kind == VectorObjectKind::Compound {
+        let mut contours = cubic_contours(&object.path.data)?;
+        let mut offset = 0;
+        let mut found = 0;
+        for (p, c) in &mut contours {
+            let local: Vec<_> = indices
+                .iter()
+                .filter(|&&i| i >= offset && i < offset + p.len())
+                .map(|&i| i - offset)
+                .collect();
+            found += local.len();
+            let mut part = object.clone();
+            part.kind = VectorObjectKind::Bezier;
+            part.control_points = p.clone();
+            part.path.data = path_data(p, *c)?;
+            translate_controls(&mut part, &local, delta, break_smooth)?;
+            *p = part.control_points;
+            offset += p.len() + 2;
+        }
+        if found != indices.len() {
+            return Err("Invalid contour controls".into());
+        }
+        return pack(object, contours);
+    }
+    object.live_corners = None;
     let original = object.control_points.clone();
     let last = original.len().checked_sub(1).ok_or("Missing controls")?;
     let closed = object.path.data.trim_end().ends_with(['Z', 'z']);
@@ -729,6 +1021,7 @@ mod direct_tests {
     use crate::vector::{FillRule, VectorPaint, VectorPath};
     fn shape() -> VectorObject {
         VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "shape".into(),
@@ -786,5 +1079,293 @@ mod direct_tests {
             smooth.control_points[11][1] - anchor[1],
         ];
         assert!((a[0] * b[1] - a[1] * b[0]).abs() < 0.001);
+    }
+}
+
+/// The unrounded path is persisted so a live radius can be changed without cumulative loss.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveCorners {
+    pub source: String,
+    pub anchors: Vec<usize>,
+    pub radius: f32,
+}
+impl LiveCorners {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.radius.is_finite()
+            || !(0.0..=4096.).contains(&self.radius)
+            || self.source.len() > 1024 * 1024
+            || self.anchors.len() > 65_536
+        {
+            return Err("Invalid live corners".into());
+        }
+        let contours = cubic_contours(&self.source)?;
+        let mut valid = Vec::new();
+        let mut offset = 0;
+        for (p, c) in contours {
+            valid.extend((offset..offset + p.len() - usize::from(c)).step_by(3));
+            offset += p.len() + 2;
+        }
+        let valid: std::collections::BTreeSet<_> = valid.into_iter().collect();
+        if self.anchors.is_empty() || self.anchors.iter().any(|i| !valid.contains(i)) {
+            return Err("Invalid corner anchors".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn round_corners(
+    object: &VectorObject,
+    indices: &[usize],
+    radius: f32,
+) -> Result<VectorObject, String> {
+    if !radius.is_finite() || !(0.0..=4096.).contains(&radius) {
+        return Err("Invalid corner radius".into());
+    }
+    let (source, indices) = object
+        .live_corners
+        .as_ref()
+        .map_or((object.path.data.clone(), indices.to_vec()), |c| {
+            (c.source.clone(), c.anchors.clone())
+        });
+    let mut original = object.clone();
+    original.live_corners = None;
+    original.kind = VectorObjectKind::Compound;
+    original.path.data = source.clone();
+    let original = editable(&original).ok_or("Invalid corner source")?;
+    let aliases: std::collections::BTreeMap<_, _> = contour_ranges(&original)
+        .into_iter()
+        .filter(|(_, _, c)| *c)
+        .map(|(s, e, _)| (e - 1, s))
+        .collect();
+    let anchors: Vec<_> = indices
+        .iter()
+        .map(|i| aliases.get(i).copied().unwrap_or(*i))
+        .collect();
+    let valid: std::collections::BTreeSet<_> = anchor_indices(&original).into_iter().collect();
+    if anchors.is_empty() || anchors.iter().any(|i| !valid.contains(i)) {
+        return Err("Select corner anchors / 角の節点を選択してください / 请选择角点".into());
+    }
+    let selected: std::collections::BTreeSet<_> = anchors.iter().copied().collect();
+    let mut contours = Vec::new();
+    for (start, end, closed) in contour_ranges(&original) {
+        let p = &original.control_points[start..end];
+        if !anchors.iter().any(|i| *i >= start && *i < end) || radius == 0. {
+            contours.push((p.to_vec(), closed));
+            continue;
+        }
+        let world: Vec<_> = p.iter().map(|&p| world_point(&original, p)).collect();
+        for segment in world.windows(4).step_by(3) {
+            if point_line_distance(segment[1], segment[0], segment[3]) > 0.001
+                || point_line_distance(segment[2], segment[0], segment[3]) > 0.001
+            {
+                return Err("Live corners require straight edges / ライブコーナーは直線の角に対応しています / 实时圆角需要直线边".into());
+            }
+        }
+        let n = (p.len() - 1) / 3 + usize::from(!closed);
+        let mut corners = Vec::new();
+        for i in 0..n {
+            let at = world[i * 3];
+            let mut incoming = at;
+            let mut outgoing = at;
+            let mut c1 = at;
+            let mut c2 = at;
+            if selected.contains(&(start + i * 3)) && (closed || (i > 0 && i + 1 < n)) {
+                let prev = world[((i + n - 1) % n) * 3];
+                let next = world[((i + 1) % n) * 3];
+                let l1 = distance(prev, at);
+                let l2 = distance(next, at);
+                if l1 > 0.0001 && l2 > 0.0001 {
+                    let u = [(prev[0] - at[0]) / l1, (prev[1] - at[1]) / l1];
+                    let v = [(next[0] - at[0]) / l2, (next[1] - at[1]) / l2];
+                    let angle = (u[0] * v[0] + u[1] * v[1]).clamp(-1., 1.).acos();
+                    if angle > 0.001 && angle < std::f32::consts::PI - 0.001 {
+                        let tangent = (angle / 2.).tan();
+                        let d = (radius / tangent).min(l1 / 2.).min(l2 / 2.);
+                        let effective = d * tangent;
+                        let h = 4. / 3. * ((std::f32::consts::PI - angle) / 4.).tan() * effective;
+                        incoming = [at[0] + u[0] * d, at[1] + u[1] * d];
+                        outgoing = [at[0] + v[0] * d, at[1] + v[1] * d];
+                        c1 = [incoming[0] - u[0] * h, incoming[1] - u[1] * h];
+                        c2 = [outgoing[0] - v[0] * h, outgoing[1] - v[1] * h];
+                    }
+                }
+            }
+            corners.push((incoming, c1, c2, outgoing));
+        }
+        let mut rounded = vec![corners[0].0];
+        for (i, &(a, c1, c2, b)) in corners.iter().enumerate() {
+            if i > 0 {
+                rounded.extend([*rounded.last().unwrap(), a, a]);
+            }
+            if a != b {
+                rounded.extend([c1, c2, b]);
+            }
+        }
+        if closed {
+            let first = rounded[0];
+            rounded.extend([*rounded.last().unwrap(), first, first]);
+        }
+        let local = rounded
+            .into_iter()
+            .map(|p| local_point(&original, p))
+            .collect::<Result<Vec<_>, _>>()?;
+        contours.push((local, closed));
+    }
+    let mut result = original;
+    result.kind = object.kind;
+    pack(&mut result, contours)?;
+    result.live_corners = Some(LiveCorners {
+        source,
+        anchors,
+        radius,
+    });
+    result.validate()?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod contour_edit_tests {
+    use super::*;
+    use crate::vector::{FillRule, VectorPaint, VectorPath};
+    pub fn object(data: &str) -> VectorObject {
+        editable(&VectorObject {
+            live_corners: None,
+            id: "test".into(),
+            name: "Test".into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            text: None,
+            path: VectorPath {
+                data: data.into(),
+                fill_rule: FillRule::EvenOdd,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            fill: Some(VectorPaint {
+                color: [0, 0, 0, 255],
+            }),
+            stroke: None,
+            stroke_width: 1.,
+            stroke_style: Default::default(),
+            opacity: 1.,
+            blend_mode: "normal".into(),
+            visible: true,
+            kind: VectorObjectKind::Compound,
+            control_points: vec![],
+        })
+        .unwrap()
+    }
+    #[test]
+    fn compound_edit_keeps_hole_seams_and_never_selects_padding() {
+        let mut o = object("M0 0H100V100H0Z M30 30V70H70V30Z");
+        let ranges = contour_ranges(&o);
+        assert_eq!(ranges.len(), 2);
+        let second = ranges[1].0;
+        let original = o.control_points.clone();
+        assert!(!control_indices(&o).contains(&(second - 1)));
+        translate_controls(&mut o, &[second], [10., 5.], false).unwrap();
+        assert_eq!(&o.control_points[..ranges[0].1], &original[..ranges[0].1]);
+        assert_eq!(o.control_points[second], [40., 35.]);
+        assert_eq!(o.control_points[ranges[1].1 - 1], [40., 35.]);
+        assert_eq!(canonical_anchor(&o, ranges[1].1 - 1), second);
+        assert_eq!(o.path.fill_rule, FillRule::EvenOdd);
+        assert_eq!(segment_indices(&o).len(), 8);
+        insert(&mut o, second, 0.5).unwrap();
+        assert_eq!(segment_indices(&o).len(), 9);
+        o.validate().unwrap();
+    }
+    #[test]
+    fn svg_quadratic_arc_relative_commands_become_cubics() {
+        let o = object("m10 10q20 40 40 0a20 20 0 0 1 40 0m20 0l10 20");
+        assert_eq!(contour_ranges(&o).len(), 2);
+        assert!(segment_indices(&o).len() >= 4);
+        assert!(cubic_contours("M0 0 Q invalid").is_err());
+    }
+    #[test]
+    fn deleting_middle_anchor_retains_only_original_incident_free_edges() {
+        let o = object("M0 0C1 2 8 2 10 0C12 1 18 1 20 0C22 3 28 3 30 0C32 4 38 4 40 0");
+        let split = split_deleted(&o, &[6]).unwrap().unwrap();
+        let ranges = contour_ranges(&split);
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges.iter().all(|r| !r.2));
+        assert_eq!(&split.control_points[0..4], &o.control_points[0..4]);
+        assert_eq!(
+            &split.control_points[ranges[1].0..ranges[1].1],
+            &o.control_points[9..13]
+        );
+        assert_eq!(segment_indices(&split).len(), 2);
+        assert!(split_deleted(&o, &[0, 3, 6, 9, 12]).unwrap().is_none());
+    }
+    #[test]
+    fn deleting_closed_seam_opens_path_and_preserves_other_contour() {
+        let o = object("M0 0H100V100H0Z M200 0L300 0");
+        let split = split_deleted(&o, &[0]).unwrap().unwrap();
+        let parts = cubic_contours(&split.path.data).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[0].1);
+        assert_eq!(parts[0].0[0], [100., 0.]);
+        assert_eq!(parts[0].0.last(), Some(&[0., 100.]));
+        assert_eq!(parts[1].0, cubic_contours(&o.path.data).unwrap()[1].0);
+    }
+    #[test]
+    fn corners_are_reversible_and_use_world_radius_after_transform() {
+        let mut o = object("M0 0H100V100H0Z");
+        o.transform = [2., 0., 0., 3., 10., 20.];
+        let rounded = round_corners(&o, &[3], 20.).unwrap();
+        let p: Vec<_> = rounded
+            .control_points
+            .iter()
+            .map(|&p| world_point(&rounded, p))
+            .collect();
+        assert!(p.contains(&[190., 20.]));
+        assert!(p.contains(&[210., 40.]));
+        let larger = round_corners(&rounded, &[3], 40.).unwrap();
+        assert_eq!(larger.live_corners.as_ref().unwrap().source, o.path.data);
+        let restored = round_corners(&larger, &[3], 0.).unwrap();
+        assert_eq!(restored.path.data, o.path.data);
+        assert_eq!(restored.control_points, o.control_points);
+        let encoded = serde_json::to_string(&larger).unwrap();
+        let decoded: VectorObject = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, larger);
+        let mut moved = larger;
+        translate_controls(&mut moved, &[0], [1., 1.], false).unwrap();
+        assert!(moved.live_corners.is_none());
+    }
+    #[test]
+    fn corners_clamp_adjacent_edges_and_reject_curves_handles_and_bad_radius() {
+        let o = object("M0 0H10V10H0Z");
+        let rounded = round_corners(&o, &[0, 3, 6, 9], 1000.).unwrap();
+        rounded.validate().unwrap();
+        for p in &rounded.control_points {
+            assert!((0.0..=10.).contains(&p[0]) && (0.0..=10.).contains(&p[1]));
+        }
+        assert!(round_corners(&o, &[1], 5.).is_err());
+        assert!(round_corners(&o, &[3], f32::NAN).is_err());
+        let curve = object("M0 0C0 100 100 100 100 0L200 0");
+        assert!(round_corners(&curve, &[3], 5.).is_err());
+    }
+}
+
+#[cfg(test)]
+mod contour_operation_tests {
+    use super::contour_edit_tests::object;
+    use super::*;
+    #[test]
+    fn reversing_and_subdividing_compound_paths_keep_independent_contours() {
+        let mut o = object("M100 100L200 100 M300 300L400 300");
+        let original = o.clone();
+        assert!(!o.hit_test([0., 0.], 1.));
+        reverse(&mut o).unwrap();
+        assert_eq!(contour_ranges(&o).len(), 2);
+        assert_eq!(cubic_contours(&o.path.data).unwrap()[0].0[0], [200., 100.]);
+        reverse(&mut o).unwrap();
+        assert_eq!(o.control_points, original.control_points);
+        subdivide_all(&mut o).unwrap();
+        assert_eq!(segment_indices(&o).len(), 4);
+        remove_alternate_anchors(&mut o).unwrap();
+        assert_eq!(segment_indices(&o).len(), 2);
+        smooth(&mut o).unwrap();
+        assert_eq!(contour_ranges(&o).len(), 2);
     }
 }

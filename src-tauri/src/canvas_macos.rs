@@ -905,6 +905,7 @@ impl PenDraft {
             ]);
         }
         Ok(VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -1194,7 +1195,9 @@ impl AnchorDraft {
     fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
         use std::fmt::Write;
         let mut preview = document.clone();
-        preview.upsert_vector_object(&self.layer, self.object.clone())?;
+        if self.original != self.object {
+            preview.direct_object_preview(&self.layer, self.object.clone())?;
+        }
         let mut guide = self.object.clone();
         guide.clipping_group = None;
         guide.group_path.clear();
@@ -1216,7 +1219,8 @@ impl AnchorDraft {
             .iter()
             .map(|&p| lumapaint_core::bezier::world_point(&self.object, p))
             .collect();
-        for segment in points.windows(4).step_by(3) {
+        for start in lumapaint_core::bezier::segment_indices(&self.object) {
+            let segment = &points[start..start + 4];
             let _ = write!(
                 guide.path.data,
                 " M {} {} C {} {} {} {} {} {}",
@@ -1243,7 +1247,8 @@ impl AnchorDraft {
             );
         }
         let r = 3. / zoom;
-        for (index, point) in points.into_iter().enumerate() {
+        for index in lumapaint_core::bezier::control_indices(&self.object) {
+            let point = points[index];
             if !index.is_multiple_of(3) {
                 let _ = write!(
                     guide.path.data,
@@ -1425,6 +1430,7 @@ fn vector_pointer(
     document.upsert_vector_object(
         &layer_id,
         VectorObject {
+            live_corners: None,
             text: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
@@ -1459,43 +1465,21 @@ struct DirectGesture {
 }
 
 fn direct_objects(document: &Document) -> Vec<(String, VectorObject)> {
-    document
-        .svg_layers()
-        .filter(|layer| {
-            document.can_edit_path_layer(layer)
-                && layer.vector_layer
-                && layer.visible
-                && !layer.locked
-        })
-        .flat_map(|layer| {
-            layer
-                .vector_objects
-                .iter()
-                .filter(|object| object.visible)
-                .filter_map(|object| {
-                    lumapaint_core::bezier::editable(object)
-                        .map(|object| (layer.id.clone(), object))
-                })
-        })
-        .collect()
+    document.direct_objects()
 }
 
 fn direct_select_ids(document: &mut Document) -> Result<(), String> {
     let ids: Vec<String> =
         DIRECT_POINTS.with(|points| points.borrow().iter().map(|(id, _)| id.clone()).collect());
     let layer = document
-        .svg_layers()
-        .find(|layer| {
-            layer
-                .vector_objects
-                .iter()
-                .any(|object| ids.contains(&object.id))
-        })
-        .map(|layer| layer.id.clone());
+        .direct_objects()
+        .into_iter()
+        .find(|(_, o)| ids.contains(&o.id))
+        .map(|(l, _)| l);
     if let Some(layer) = layer {
         document.select_layer(layer)?;
     }
-    document.select_vector_objects(ids)
+    document.select_direct_objects(ids)
 }
 
 fn direct_pointer(
@@ -1527,23 +1511,15 @@ fn direct_pointer(
                     tolerance,
                     document.selected_vector_ids().contains(&object.id),
                 )
-                .map(|mut index| {
-                    if index == object.control_points.len() - 1 && object.path.data.ends_with('Z') {
-                        index = 0;
-                    }
+                .map(|index| {
+                    let index = bezier::canonical_anchor(object, index);
                     vec![(object.id.clone(), index)]
                 })
             })
             .or_else(|| {
                 objects.iter().rev().find_map(|(_, object)| {
                     bezier::segment_hit(object, position, tolerance).map(|(index, _)| {
-                        let end = if index + 3 == object.control_points.len() - 1
-                            && object.path.data.ends_with('Z')
-                        {
-                            0
-                        } else {
-                            index + 3
-                        };
+                        let end = bezier::canonical_anchor(object, index + 3);
                         vec![(object.id.clone(), index), (object.id.clone(), end)]
                     })
                 })
@@ -1554,12 +1530,8 @@ fn direct_pointer(
                     .rev()
                     .find(|(_, object)| object.hit_test(position, tolerance))
                     .map(|(_, object)| {
-                        (0..object.control_points.len())
-                            .step_by(3)
-                            .filter(|&index| {
-                                index != object.control_points.len() - 1
-                                    || !object.path.data.ends_with('Z')
-                            })
+                        bezier::anchor_indices(object)
+                            .into_iter()
                             .map(|index| (object.id.clone(), index))
                             .collect()
                     })
@@ -1621,12 +1593,7 @@ fn direct_pointer(
                 if draft.marquee {
                     let mut points = draft.baseline;
                     for (_, object) in direct_objects(document) {
-                        for index in (0..object.control_points.len()).step_by(3) {
-                            if index == object.control_points.len() - 1
-                                && object.path.data.ends_with('Z')
-                            {
-                                continue;
-                            }
+                        for index in bezier::anchor_indices(&object) {
                             let p = bezier::world_point(&object, object.control_points[index]);
                             if p[0] >= draft.start[0].min(position[0])
                                 && p[0] <= draft.start[0].max(position[0])
@@ -1748,6 +1715,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
         preview.upsert_vector_object(
             &layer,
             VectorObject {
+                live_corners: None,
                 opacity: 1.0,
                 blend_mode: "normal".into(),
                 id: "direct-marquee".into(),
@@ -6105,4 +6073,172 @@ pub fn thumbnail_document() -> Result<super::ThumbnailDocument, String> {
             doc.borrow().clone(),
         )))
     })
+}
+
+pub fn direct_control_info() -> Result<Vec<crate::canvas::DirectControlInfo>, String> {
+    ensure_document_open()?;
+    let points = DIRECT_POINTS.with(|p| p.borrow().clone());
+    let info = DOCUMENT.with(|doc| {
+        let doc = doc.borrow();
+        let objects = doc.direct_objects();
+        points
+            .into_iter()
+            .filter_map(|(id, index)| {
+                if !doc.selected_vector_ids().contains(&id) {
+                    return None;
+                }
+                let object = &objects.iter().find(|(_, o)| o.id == id)?.1;
+                let p =
+                    lumapaint_core::bezier::world_point(object, *object.control_points.get(index)?);
+                Some(crate::canvas::DirectControlInfo {
+                    id,
+                    index,
+                    x: p[0],
+                    y: p[1],
+                    anchor: index.is_multiple_of(3),
+                    radius: object.live_corners.as_ref().map(|c| c.radius),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    DIRECT_POINTS
+        .with(|p| *p.borrow_mut() = info.iter().map(|p| (p.id.clone(), p.index)).collect());
+    Ok(info)
+}
+pub fn edit_direct_controls(
+    mode: String,
+    values: Vec<f32>,
+    preview: bool,
+    expected: Vec<(String, usize)>,
+    revision: u64,
+) -> Result<crate::canvas::DirectEditResult, String> {
+    ensure_document_open()?;
+    let points = DIRECT_POINTS.with(|p| p.borrow().clone());
+    if points != expected
+        || points.is_empty()
+        || DOCUMENT.with(|d| d.borrow().snapshot().revision) != revision
+    {
+        return Err("Selection changed; reopen the control editor / 選択が変わりました。節点編集を開き直してください / 选择已更改，请重新打开节点编辑器".into());
+    }
+    let mut draft = DOCUMENT.with(|doc| doc.borrow().clone());
+    match (mode.as_str(), values.as_slice()) {
+        ("position", [x, y]) => draft.set_direct_coordinates(&points, [*x, *y])?,
+        ("move", [x, y]) => draft.move_vector_controls(&points, [*x, *y], false)?,
+        ("corner", [radius]) => draft.set_direct_corner_radius(&points, *radius)?,
+        _ => return Err("Invalid direct edit".into()),
+    }
+    let svg =
+        draft.direct_preview_svg(&points.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>());
+    let snapshot = draft.snapshot();
+    if !preview {
+        DOCUMENT.with(|doc| *doc.borrow_mut() = draft);
+        if mode == "corner" {
+            DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        }
+        redraw()?;
+        emit_document();
+    }
+    Ok(crate::canvas::DirectEditResult {
+        snapshot,
+        preview: svg,
+    })
+}
+
+#[cfg(test)]
+mod direct_command_tests {
+    use super::*;
+    fn fixture() -> (String, u64) {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let object = VectorObject {
+            live_corners: None,
+            id: "direct-command".into(),
+            name: "Test".into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            text: None,
+            path: VectorPath {
+                data: "M0 0H100V100H0Z M20 20V80H80V20Z".into(),
+                fill_rule: FillRule::EvenOdd,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            fill: Some(VectorPaint {
+                color: [10, 20, 30, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.,
+            stroke_style: Default::default(),
+            opacity: 1.,
+            blend_mode: "normal".into(),
+            visible: true,
+            kind: VectorObjectKind::Compound,
+            control_points: vec![[0., 0.], [100., 100.]],
+        };
+        doc.upsert_vector_object(&layer, object).unwrap();
+        doc.select_direct_objects(vec!["direct-command".into()])
+            .unwrap();
+        let revision = doc.snapshot().revision;
+        DOCUMENT.with(|d| *d.borrow_mut() = doc);
+        DOCUMENT_OPEN.with(|v| v.set(true));
+        ACTIVE_TILED_DOCUMENT.with(|d| *d.borrow_mut() = None);
+        DIRECT_POINTS.with(|p| *p.borrow_mut() = vec![("direct-command".into(), 3)]);
+        ("direct-command".into(), revision)
+    }
+    #[test]
+    fn numeric_preview_leaves_authoritative_document_and_history_untouched() {
+        let (id, revision) = fixture();
+        let before = DOCUMENT.with(|d| d.borrow_mut().encode().unwrap());
+        let info = direct_control_info().unwrap();
+        assert_eq!((info[0].x, info[0].y), (100., 0.));
+        let result =
+            edit_direct_controls("corner".into(), vec![20.], true, vec![(id, 3)], revision)
+                .unwrap();
+        assert!(result.preview.contains(" C "));
+        assert_eq!(DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()), before);
+        assert_eq!(DIRECT_POINTS.with(|p| p.borrow().len()), 1);
+    }
+    #[test]
+    fn numeric_commit_is_one_edit_and_rejects_stale_revision() {
+        let (id, revision) = fixture();
+        let expected = vec![(id, 3)];
+        let before = DOCUMENT.with(|d| d.borrow_mut().encode().unwrap());
+        edit_direct_controls(
+            "position".into(),
+            vec![120., 10.],
+            false,
+            expected.clone(),
+            revision,
+        )
+        .unwrap();
+        assert_eq!(direct_control_info().unwrap()[0].x, 120.);
+        let after = DOCUMENT.with(|d| d.borrow_mut().encode().unwrap());
+        assert!(edit_direct_controls(
+            "position".into(),
+            vec![130., 20.],
+            false,
+            expected,
+            revision
+        )
+        .is_err());
+        assert_eq!(DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()), after);
+        DOCUMENT.with(|d| d.borrow_mut().undo());
+        assert_eq!(DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()), before);
+    }
+    #[test]
+    fn imported_svg_selection_preview_guides_preserve_source_and_clip_definitions() {
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        let mut doc = Document::default();
+        doc.import_svg("Imported".into(),r##"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><defs><clipPath id="clip"><path d="M0 0H100V100H0Z"/></clipPath></defs><g clip-path="url(#clip)"><path fill="#3070ff" d="M20 20H80V80H20Z"/></g></svg>"##.into()).unwrap();
+        let original = doc.svg_layers().next().unwrap().source.clone();
+        let p = lumapaint_core::document::Point { x: 20., y: 20. };
+        let flags = NSEventModifierFlags::empty();
+        direct_pointer(&mut doc, p, 0, flags).unwrap();
+        direct_pointer(&mut doc, p, 2, flags).unwrap();
+        assert_eq!(DIRECT_POINTS.with(|p| p.borrow().len()), 1);
+        let preview = direct_preview(&doc, 1.).unwrap();
+        assert_eq!(doc.svg_layers().next().unwrap().source, original);
+        assert_eq!(preview.svg_layers().next().unwrap().source, original);
+        assert!(preview.svg_layers().count() > 1);
+    }
 }

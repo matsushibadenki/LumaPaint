@@ -276,6 +276,7 @@ mod tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let shape = |id: &str, data: &str| VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -382,6 +383,7 @@ mod tests {
     #[test]
     fn outline_offset_and_grid_return_portable_geometry() {
         let object = VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "shape".into(),
@@ -452,6 +454,7 @@ mod tests {
         let mut document = Document::default();
         let layer_id = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
+            live_corners: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
