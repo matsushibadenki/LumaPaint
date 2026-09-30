@@ -1275,6 +1275,8 @@ pub struct Renderer {
     paint_cache_installed: bool,
     brush_cache: Vec<CachedBrushGpu>,
     svg_cache: HashMap<String, CachedSvg>,
+    // Inline editing and resize previews share unchanged text frames across render calls.
+    frame_raster_cache: frame_cache::FrameRasterCache,
     drag_cache: HashMap<String, DragLayerCache>,
     uniform_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
@@ -2177,6 +2179,7 @@ impl Renderer {
             paint_cache_installed: false,
             brush_cache: Vec::new(),
             svg_cache: HashMap::new(),
+            frame_raster_cache: frame_cache::FrameRasterCache::default(),
             drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
             uniforms,
@@ -2550,7 +2553,9 @@ impl Renderer {
                 continue;
             }
             let started = std::time::Instant::now();
-            let prepared = prepare_svg_layer(layer, width, height)?;
+            let prepared = self
+                .frame_raster_cache
+                .prepare_layer(layer, width, height)?;
             drag_metrics.upload_bytes += prepared.pixels.len();
             self.install_prepared_svg(prepared)?;
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;

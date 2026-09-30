@@ -307,7 +307,7 @@ impl SvgLayer {
     /// their order. Imported or mixed SVG keeps the full-layer compatibility path.
     pub fn text_frame_sources(&self, width: u32, height: u32) -> Option<Vec<(String, String)>> {
         if !self.vector_layer
-            || self.vector_objects.len() < 2
+            || self.vector_objects.is_empty()
             || self
                 .vector_objects
                 .iter()

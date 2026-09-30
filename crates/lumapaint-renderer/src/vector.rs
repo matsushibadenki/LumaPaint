@@ -430,7 +430,31 @@ pub fn pixel_source_bounds(source: &str) -> Result<[f32; 4], String> {
     Ok([bounds.x(), bounds.y(), bounds.width(), bounds.height()])
 }
 
+pub(crate) struct SvgRegionRaster {
+    pub raster: SvgRaster,
+    pub origin: (usize, usize),
+    pub width: usize,
+}
+
 pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster, String> {
+    rasterize_svg_region(source, width, height, false).map(|region| region.raster)
+}
+
+/// Same SVG parser, transform, resource policy and render backend, with a smaller surface.
+pub(crate) fn rasterize_svg_cropped(
+    source: &str,
+    width: u32,
+    height: u32,
+) -> Result<SvgRegionRaster, String> {
+    rasterize_svg_region(source, width, height, true)
+}
+
+fn rasterize_svg_region(
+    source: &str,
+    width: u32,
+    height: u32,
+    crop: bool,
+) -> Result<SvgRegionRaster, String> {
     if source.len() > 4 * 1024 * 1024 || width == 0 || height == 0 || width > 8192 || height > 8192
     {
         return Err("Invalid SVG source size or raster dimensions".into());
@@ -457,6 +481,42 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
         && bounds.right() * scale + x <= width as f32 - 1.0
         && bounds.bottom() * scale + y <= height as f32 - 1.0;
 
+    // Conservative drawable bounds including strokes/effects, rounded to integral pixels.
+    // Integer origin and the unchanged document transform retain the full-surface AA phase.
+    let (left, top, right, bottom) = if crop {
+        let left = (bounds.left() * scale + x - 2.0)
+            .floor()
+            .clamp(0.0, width as f32) as u32;
+        let top = (bounds.top() * scale + y - 2.0)
+            .floor()
+            .clamp(0.0, height as f32) as u32;
+        let right = (bounds.right() * scale + x + 2.0)
+            .ceil()
+            .clamp(0.0, width as f32) as u32;
+        let bottom = (bounds.bottom() * scale + y + 2.0)
+            .ceil()
+            .clamp(0.0, height as f32) as u32;
+        (left, top, right, bottom)
+    } else {
+        (0, 0, width, height)
+    };
+    let origin = (left as usize, top as usize);
+    if right <= left || bottom <= top || (crop && tree.root().children().is_empty()) {
+        return Ok(SvgRegionRaster {
+            raster: SvgRaster {
+                pixels: Vec::new(),
+                backend: SvgBackend::Resvg,
+                fully_contained,
+            },
+            origin,
+            width: 0,
+        });
+    }
+    let width = right - left;
+    let height = bottom - top;
+    let x = x - left as f32;
+    let y = y - top as f32;
+
     #[cfg(feature = "skia")]
     if supports_skia(tree.root()) {
         // Normalize with the same parser as the compatibility renderer. No raw resource URLs
@@ -480,10 +540,14 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
         if !surface.read_pixels(&info, &mut pixels, width as usize * 4, (0, 0)) {
             return Err("Skia pixel conversion failed".into());
         }
-        return Ok(SvgRaster {
-            pixels,
-            backend: SvgBackend::Skia,
-            fully_contained,
+        return Ok(SvgRegionRaster {
+            raster: SvgRaster {
+                pixels,
+                backend: SvgBackend::Skia,
+                fully_contained,
+            },
+            origin,
+            width: width as usize,
         });
     }
 
@@ -493,10 +557,14 @@ pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster,
         tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, x, y),
         &mut pixmap.as_mut(),
     );
-    Ok(SvgRaster {
-        pixels: pixmap.take(),
-        backend: SvgBackend::Resvg,
-        fully_contained,
+    Ok(SvgRegionRaster {
+        raster: SvgRaster {
+            pixels: pixmap.take(),
+            backend: SvgBackend::Resvg,
+            fully_contained,
+        },
+        origin,
+        width: width as usize,
     })
 }
 

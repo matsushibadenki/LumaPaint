@@ -183,9 +183,22 @@ impl FrameRasterCache {
         if let Some(old) = self.entries.remove(&key) {
             self.used_bytes -= old.pixels.len() + old.source.len();
         }
-        let raster = vector::rasterize_svg(source, size.0, size.1)?;
+        let region = vector::rasterize_svg_cropped(source, size.0, size.1)?;
+        let fully_contained = region.raster.fully_contained;
         self.rasterized_frames += 1;
-        let pixels = Arc::new(CroppedFrame::from_pixels(raster.pixels, size.0, size.1));
+        let region_height = if region.width == 0 {
+            0
+        } else {
+            region.raster.pixels.len() / (region.width * 4)
+        };
+        let mut frame = CroppedFrame::from_pixels(
+            region.raster.pixels,
+            region.width as u32,
+            region_height as u32,
+        );
+        frame.origin.0 += region.origin.0;
+        frame.origin.1 += region.origin.1;
+        let pixels = Arc::new(frame);
         let entry_bytes = pixels.len().saturating_add(source.len());
         if entry_bytes <= MAX_CACHE_BYTES {
             while self.used_bytes + entry_bytes > MAX_CACHE_BYTES
@@ -210,12 +223,12 @@ impl FrameRasterCache {
                     source: source.to_owned(),
                     size,
                     pixels: Arc::clone(&pixels),
-                    fully_contained: raster.fully_contained,
+                    fully_contained,
                     last_used: self.clock,
                 },
             );
         }
-        Ok((pixels, raster.fully_contained))
+        Ok((pixels, fully_contained))
     }
 }
 
@@ -238,6 +251,95 @@ mod tests {
             position: [20.0, y],
             color: [0, 0, 0],
         }
+    }
+
+    #[test]
+    #[ignore = "manual text rendering timing; not an FPS guarantee"]
+    fn text_frame_render_timing() {
+        use std::time::Instant;
+        let mut state = Document::default().document_state();
+        state.width = 2048;
+        state.height = 2048;
+        let mut document = Document::from_document_state(state).unwrap();
+        for index in 0..8 {
+            document
+                .set_text_object(text(
+                    &format!("Frame {index} 日本語 简体中文"),
+                    20.0 + index as f32 * 140.0,
+                ))
+                .unwrap();
+            let id = document.svg_layers().next().unwrap().id.clone();
+            document.select_layer(id).unwrap();
+        }
+        let mut cache = FrameRasterCache::default();
+        let start = Instant::now();
+        cache
+            .prepare_layer(document.svg_layers().next().unwrap(), 2048, 2048)
+            .unwrap();
+        let cold = start.elapsed();
+        let start = Instant::now();
+        cache
+            .prepare_layer(document.svg_layers().next().unwrap(), 2048, 2048)
+            .unwrap();
+        let warm = start.elapsed();
+        let frame = document.snapshot().text_objects[0].clone();
+        let mut changed = TextSettings {
+            id: Some(frame.id),
+            text: frame.text,
+            position: frame.position,
+            color: frame.color,
+        };
+        changed.text.content.push_str(" edited");
+        document.set_text_object(changed).unwrap();
+        let start = Instant::now();
+        cache
+            .prepare_layer(document.svg_layers().next().unwrap(), 2048, 2048)
+            .unwrap();
+        eprintln!("text frames=8 canvas=2048x2048 cold_ms={:.2} warm_ms={:.2} edit_ms={:.2} rasterized={} reused={}", cold.as_secs_f64()*1000.0, warm.as_secs_f64()*1000.0, start.elapsed().as_secs_f64()*1000.0, cache.rasterized_frames, cache.reused_frames);
+    }
+
+    #[test]
+    fn cropped_render_matches_full_surface_for_transforms_clipping_and_effects() {
+        for source in [
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><text x="-10" y="20" font-size="24">日本語 English 简体中文</text></svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><g transform="translate(160 180) rotate(37) scale(.8 1.2)"><text font-size="32" stroke="red" stroke-width="3">日本語 text</text></g></svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><defs><clipPath id="c"><rect x="40" y="40" width="80" height="80"/></clipPath><filter id="b"><feGaussianBlur stdDeviation="3"/></filter></defs><g clip-path="url(#c)" opacity=".5"><text x="30" y="60" font-size="24" filter="url(#b)">Text clipping</text></g></svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><text x="-300" y="-200">offscreen</text></svg>"#,
+        ] {
+            let full = vector::rasterize_svg(source, 200, 200).unwrap();
+            let region = vector::rasterize_svg_cropped(source, 200, 200).unwrap();
+            let frame = CroppedFrame {
+                pixels: region.raster.pixels,
+                origin: region.origin,
+                width: region.width,
+            };
+            let mut restored = vec![0; full.pixels.len()];
+            frame.composite(&mut restored, 200);
+            assert_eq!(restored, full.pixels, "{source}");
+            assert_eq!(region.raster.fully_contained, full.fully_contained);
+        }
+    }
+
+    #[test]
+    fn single_text_box_uses_a_small_surface_and_reuses_unchanged_content() {
+        let mut state = Document::default().document_state();
+        state.width = 4096;
+        state.height = 4096;
+        let mut document = Document::from_document_state(state).unwrap();
+        document
+            .set_text_object(text("English 日本語 简体中文", 80.0))
+            .unwrap();
+        let layer = document.svg_layers().next().unwrap();
+        let sources = layer.text_frame_sources(4096, 4096).unwrap();
+        let region = vector::rasterize_svg_cropped(&sources[0].1, 4096, 4096).unwrap();
+        assert!(region.raster.pixels.len() < 4096 * 4096 * 4 / 64);
+        let mut cache = FrameRasterCache::default();
+        let first = cache.prepare_layer(layer, 4096, 4096).unwrap();
+        let second = cache.prepare_layer(layer, 4096, 4096).unwrap();
+        assert_eq!(first.pixels, second.pixels);
+        assert_eq!(cache.rasterized_frames, 1);
+        assert_eq!(cache.reused_frames, 1);
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]
