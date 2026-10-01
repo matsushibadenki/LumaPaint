@@ -2073,7 +2073,9 @@ fn rotate_pointer(
     } else {
         ROTATE_DRAFT.with(|d| {
             if let Some(d) = d.borrow_mut().as_mut() {
-                if (point.x - d.center[0]).hypot(point.y - d.center[1]) >= current_vector_sample_spacing() {
+                if (point.x - d.center[0]).hypot(point.y - d.center[1])
+                    >= current_vector_sample_spacing()
+                {
                     d.angle = (point.y - d.center[1]).atan2(point.x - d.center[0])
                         - (d.start[1] - d.center[1]).atan2(d.start[0] - d.center[0]);
                     if modifiers.contains(NSEventModifierFlags::Shift) {
@@ -5049,10 +5051,11 @@ mod tests {
         assert_eq!(pinch_zoom(0.0313, -0.9), 0.0313);
         assert_eq!(pinch_zoom(1., f32::NAN), 1.);
         assert_eq!(pinch_zoom(1., 0.), 1.);
-        let viewport = Viewport::new(800., 500., 1., 1., false).unwrap().with_screen_zoom(640.);
+        let viewport = Viewport::new(800., 500., 1., 1., false)
+            .unwrap()
+            .with_screen_zoom(640.);
         assert!((vector_sample_spacing(Some(viewport)) - 1. / 640.).abs() < 0.000001);
         assert_eq!(vector_sample_spacing(None), 1.);
-
     }
 
     #[test]

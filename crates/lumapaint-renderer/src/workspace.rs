@@ -149,7 +149,8 @@ mod tests {
             .unwrap();
         assert_eq!(images[0].size, (800, 500));
         assert_eq!(images[0].pixels.len(), 800 * 500 * 4);
-        let pixel = |x: usize, y: usize| &images[0].pixels[(y * 800 + x) * 4..(y * 800 + x) * 4 + 4];
+        let pixel =
+            |x: usize, y: usize| &images[0].pixels[(y * 800 + x) * 4..(y * 800 + x) * 4 + 4];
         assert_eq!(pixel(400, 250), &[255, 0, 0, 255]);
         assert_eq!(pixel(200, 250), &[0, 0, 0, 0]);
         assert_eq!(pixel(600, 250), &[0, 0, 0, 0]);
