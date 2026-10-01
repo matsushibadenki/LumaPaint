@@ -20,6 +20,10 @@ Skiaはパス描画・図形演算のエンジンであり、制御点編集UI�
 
 macOSではキャッシュ生成用のSkia Ganesh／Metalコンテキストを描画スレッドごとに再利用する。GPU初期化・サーフェス確保・画素読み戻しに失敗した場合はSkia CPUで同じ描画データを処理する。互換SVGの未対応表現はresvg CPUへ戻す。GPUコンテキストが失われた場合や読み戻し失敗時は、そのスレッドでGPUを無効化してCPU処理を継続する。Skia GPUのresource cacheはスレッドあたり64 MiBを上限とする。
 
+編集可能なベクター／文字のオブジェクトキャッシュはmacOSで別経路を優先する：`usvg → Skia Metal → shared Metal texture → wgpu`。wgpuが使用中のMetal Deviceからprivate RGBA8 textureを確保し、Skiaで描画・透明クリアしてから完了を同期し、初期化済みのtextureをwgpuへimportする。色の符号化とpremultiplied alphaを従来経路と揃えるため、RGBA8Unormへの描画とsRGB sampling viewを分離する。CPU画素配列とQueue::write_textureはこの経路では使用しない。コンテキストはスレッドごと・Deviceごとに再利用し最大4個、キャッシュのtexture寿命はコンテキストから独立する。非Metalや共有不可・複雑なSVGでは従来のGPU読み戻し／CPUラスタ化＋uploadへ戻る。従来Metalとの画素差1以内（半透明曲線・日本語・レイヤー不透明度）、コンテキスト破棄後のwgpu使用、未対応描画と共有失敗のフォールバックを実機テストで確認する。
+
+2026-10-01、Apple M4のdebugビルドで単色の半透明長方形＋円のオブジェクトキャッシュ生成を比較。1回ウォームアップ後8回の中央値は1024pxで従来2.505ms→共有0.717ms、2048pxで6.271ms→1.409ms。CPU読み戻し＋再uploadの合計はそれぞれ8,454,272／33,685,632bytes→0（境界padding込み）。従来側はwgpuへのupload完了まで計測する。実行用ignored testは`benchmark_shared_texture_transfer`。これは対象キャッシュのローカル測定であり、長文編集全体の応答時間や60/120fpsを保証する測定ではない。
+
 現在のキャッシュAPIはRust内のRGBA画像を受け渡すため、GPUで生成した画像も一度読み戻してwgpuへ転送する。大容量画像をJavaScriptへ渡すことはない。Metalテクスチャの直接共有による読み戻し削減と解像度に依存しない再描画は後続の性能設計で扱う。macOS以外は現段階ではCPU生成経路を使用する。
 
 ## 編集エンジンの境界

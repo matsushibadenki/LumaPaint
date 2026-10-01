@@ -20,6 +20,8 @@ pub struct CanvasRequest {
     pub width: f64,
     pub height: f64,
     pub zoom: f64,
+    #[serde(default)]
+    pub absolute_zoom: bool,
     // Part of the shared IPC schema; native zoom synchronization is macOS-only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[serde(default)]
@@ -80,7 +82,11 @@ impl CanvasRequest {
             || self.y.abs() > 32768.0
             || !(0.0..=16384.0).contains(&self.width)
             || !(0.0..=16384.0).contains(&self.height)
-            || !(0.25..=4.0).contains(&self.zoom)
+            || !(if self.absolute_zoom {
+                self.zoom == 0.0 || (0.0313..=640.0).contains(&self.zoom)
+            } else {
+                (0.000001..=64000.0).contains(&self.zoom)
+            })
         {
             return Err("Invalid canvas bounds or zoom".into());
         }
@@ -97,6 +103,7 @@ pub struct CanvasInfo {
     pub physical_width: u32,
     pub physical_height: u32,
     pub scale_factor: f64,
+    pub zoom: Option<f32>,
     pub document: Option<DocumentSnapshot>,
 }
 
@@ -109,6 +116,7 @@ impl CanvasInfo {
             physical_width: 0,
             physical_height: 0,
             scale_factor: 1.0,
+            zoom: None,
             document: None,
         }
     }
@@ -301,6 +309,10 @@ pub enum DocumentAction {
     InvertSelection,
     DeleteSelectedObjects,
     ClearLayer,
+    LockSelection,
+    LockArtworkAbove,
+    LockOtherLayers,
+    UnlockAllObjects,
     Copy,
     Cut,
     Paste,
@@ -858,6 +870,7 @@ mod tests {
             width: 640.0,
             height: 480.0,
             zoom: 1.0,
+            absolute_zoom: false,
             zoom_revision: None,
             dark: false,
             visible: true,
@@ -875,6 +888,15 @@ mod tests {
         request.width = 0.0;
         request.visible = false;
         assert!(request.validate().is_ok());
+        request.absolute_zoom = true;
+        for zoom in [0.0, 0.0313, 1.0, 640.0] {
+            request.zoom = zoom;
+            assert!(request.validate().is_ok());
+        }
+        for zoom in [-1.0, 0.001, 640.01, f64::NAN, f64::INFINITY] {
+            request.zoom = zoom;
+            assert!(request.validate().is_err());
+        }
     }
 }
 

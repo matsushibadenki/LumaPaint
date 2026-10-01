@@ -1,5 +1,7 @@
 //! Session document: a stable layer identity and retained brush strokes.
 //! This is deliberately independent of pixels, AppKit, and the renderer.
+#[path = "object_lock.rs"]
+mod object_lock;
 #[path = "transform_panel.rs"]
 mod transform_panel;
 use crate::selection::SelectionGesture;
@@ -10,6 +12,7 @@ use crate::vector::{
     PathEditAction, PathOperation, PortablePathGeometry, VectorObject, VectorObjectKind,
     VectorPaint, VectorPath, VectorText,
 };
+pub use object_lock::ObjectLockAction;
 use serde::{Deserialize, Serialize};
 pub use transform_panel::{TransformPanelEdit, TransformPanelInfo};
 
@@ -358,6 +361,7 @@ pub struct LayerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerObjectSnapshot {
+    pub locked: bool,
     pub opacity: f32,
     pub blend_mode: String,
     pub fill_color: Option<[u8; 4]>,
@@ -415,6 +419,7 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub has_locked_objects: bool,
     pub selected_bounds: Option<[f32; 4]>,
     pub transform_panel: Option<TransformPanelInfo>,
     pub active_saved_path: Option<String>,
@@ -477,6 +482,9 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    locked_objects: std::collections::BTreeSet<String>,
+    locked_artwork_layers: std::collections::BTreeSet<String>,
+    background_locked: bool,
     path_editing: Option<PathEditing>,
     saved_paths: Vec<SavedPath>,
     clipping_path_id: Option<String>,
@@ -546,6 +554,8 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    locked_objects: std::collections::BTreeSet<String>,
+    locked_artwork_layers: std::collections::BTreeSet<String>,
     svg_geometry_backend: Option<std::sync::Arc<dyn crate::svg_backend::SvgGeometryBackend>>,
     path_editing: Option<PathEditing>,
     saved_paths: Vec<SavedPath>,
@@ -592,6 +602,8 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            locked_objects: Default::default(),
+            locked_artwork_layers: Default::default(),
             svg_geometry_backend: None,
             path_editing: None,
             saved_paths: Vec::new(),
@@ -712,6 +724,7 @@ impl Document {
                         .vector_objects
                         .iter()
                         .map(|object| LayerObjectSnapshot {
+                            locked: self.object_is_locked(&object.id),
                             opacity: object.opacity,
                             blend_mode: object.blend_mode.clone(),
                             fill_color: object.fill.map(|p| p.color),
@@ -752,6 +765,7 @@ impl Document {
                 }),
         );
         DocumentSnapshot {
+            has_locked_objects: self.has_locked_objects(),
             selected_bounds: self.selected_vector_bounds(),
             transform_panel: self.transform_panel_info(),
             active_saved_path: self.path_editing.as_ref().map(|edit| edit.id.clone()),
@@ -800,7 +814,10 @@ impl Document {
                                 text: text.clone(),
                                 position: [object.transform[4], object.transform[5]],
                                 color: [color[0], color[1], color[2]],
-                                editable: !layer.locked && layer.visible && object.visible,
+                                editable: !layer.locked
+                                    && layer.visible
+                                    && object.visible
+                                    && !self.object_is_locked(&object.id),
                             }
                         })
                     })
@@ -818,6 +835,8 @@ impl Document {
     /// Callers that need an in-progress stroke should finish a clone before taking this state.
     pub fn document_state(&self) -> DocumentState {
         DocumentState {
+            locked_objects: self.locked_objects.clone(),
+            locked_artwork_layers: self.locked_artwork_layers.clone(),
             saved_paths: self.saved_paths.clone(),
             clipping_path_id: self.clipping_path_id.clone(),
             name: Some(self.name.clone()),
@@ -927,8 +946,20 @@ impl Document {
             return Err("Invalid paint image".into());
         }
         validate_saved_paths(&file.saved_paths, file.clipping_path_id.as_deref())?;
+        if file.locked_objects.len() > 65536
+            || file.locked_artwork_layers.len() > 17
+            || file
+                .locked_objects
+                .iter()
+                .chain(&file.locked_artwork_layers)
+                .any(|id| id.is_empty() || id.len() > 256)
+        {
+            return Err("Invalid object locks".into());
+        }
         let stroke_count = file.strokes.len();
         Ok(Self {
+            locked_objects: file.locked_objects,
+            locked_artwork_layers: file.locked_artwork_layers,
             path_editing: None,
             saved_paths: file.saved_paths,
             clipping_path_id: file.clipping_path_id,
@@ -1220,6 +1251,18 @@ impl Document {
             || !(0.0..=1.0).contains(&settings.mask_density)
         {
             return Err("Invalid layer settings".into());
+        }
+        let was_locked = if settings.id == "layer-1" {
+            self.layer_locked
+        } else {
+            self.svg_layers
+                .iter()
+                .find(|layer| layer.id == settings.id)
+                .ok_or("Layer not found")?
+                .locked
+        };
+        if was_locked != settings.locked {
+            self.locked_artwork_layers.remove(&settings.id);
         }
         if settings.id == "layer-1" {
             self.layer_name = name.into();
@@ -1543,6 +1586,18 @@ impl Document {
             before.strokes = Some(std::mem::take(&mut self.strokes));
             self.point_count = 0;
         } else {
+            let imported_locked = self
+                .svg_layers
+                .iter()
+                .find(|layer| layer.id == id && !layer.vector_layer)
+                .is_some_and(|layer| {
+                    self.imported_svg_objects(&layer.source, &layer.id)
+                        .iter()
+                        .any(|object| self.object_is_locked(&object.id))
+                });
+            if imported_locked {
+                return Err("Unlock the artwork first / アートワークのロックを解除してください / 请先解锁图稿".into());
+            }
             let layer = self
                 .svg_layers
                 .iter_mut()
@@ -1554,8 +1609,15 @@ impl Document {
             }
             self.selected_vector_objects
                 .retain(|id| !layer.vector_objects.iter().any(|object| &object.id == id));
-            layer.vector_objects.clear();
-            layer.source = empty;
+            if layer.vector_layer {
+                layer
+                    .vector_objects
+                    .retain(|object| self.locked_objects.contains(&object.id));
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+            } else {
+                layer.vector_objects.clear();
+                layer.source = empty;
+            }
         }
         self.record_vector_edit(before);
         self.revision += 1;
@@ -1567,6 +1629,27 @@ impl Document {
         if id == "layer-1" {
             return Err("The paint layer cannot be deleted yet".into());
         }
+        let removed_ids: std::collections::BTreeSet<_> = self
+            .svg_layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .map(|layer| {
+                if layer.vector_layer {
+                    layer
+                        .vector_objects
+                        .iter()
+                        .map(|object| object.id.clone())
+                        .collect()
+                } else {
+                    self.imported_svg_objects(&layer.source, &layer.id)
+                        .into_iter()
+                        .map(|object| object.id)
+                        .collect()
+                }
+            })
+            .unwrap_or_default();
+        let had_locks = removed_ids.iter().any(|id| self.object_is_locked(id))
+            || self.locked_artwork_layers.contains(id);
         let before_state = self.vector_history_state();
         let before = self.svg_layers.len();
         let was_vector = self
@@ -1577,7 +1660,9 @@ impl Document {
         if self.svg_layers.len() == before {
             return Err("Layer not found".into());
         }
-        if was_vector {
+        self.locked_objects.retain(|id| !removed_ids.contains(id));
+        self.locked_artwork_layers.remove(id);
+        if was_vector || had_locks {
             let layers = &self.svg_layers;
             self.selected_vector_objects.retain(|selected| {
                 layers.iter().any(|layer| {
@@ -1834,7 +1919,11 @@ impl Document {
                 .iter_mut()
                 .find(|object| object.id == id)
                 .unwrap();
-            if layer.locked || !layer.visible || !object.visible {
+            if layer.locked
+                || !layer.visible
+                || !object.visible
+                || self.object_is_locked(&object.id)
+            {
                 return Err("Text layer is locked or hidden".into());
             }
             object.visible = false;
@@ -1847,9 +1936,13 @@ impl Document {
         self.svg_layers
             .iter()
             .rev()
-            .filter(|layer| layer.visible)
+            .filter(|layer| layer.visible && !layer.locked)
             .flat_map(|layer| layer.vector_objects.iter().rev())
-            .find(|object| object.text.is_some() && object.hit_test(point, 0.0))
+            .find(|object| {
+                !self.object_is_locked(&object.id)
+                    && object.text.is_some()
+                    && object.hit_test(point, 0.0)
+            })
             .map(|object| object.id.clone())
     }
 
@@ -1869,6 +1962,7 @@ impl Document {
         }
         let [r, g, b] = settings.color;
         if let Some(id) = settings.id {
+            self.ensure_object_unlocked(&id)?;
             let (layer_id, mut object) = self
                 .svg_layers
                 .iter()
@@ -1999,6 +2093,7 @@ impl Document {
     ) -> Result<(), String> {
         self.finish();
         object.validate()?;
+        self.ensure_object_unlocked(&object.id)?;
         if self
             .path_editing
             .as_ref()
@@ -2062,6 +2157,7 @@ impl Document {
                 if !layer.visible
                     || layer.locked
                     || !object.visible
+                    || self.object_is_locked(&object.id)
                     || object.kind == VectorObjectKind::Text
                 {
                     return Err("Select unlocked visible vector paths / ロックされていない表示中のパスを選択してください / 请选择未锁定的可见路径".into());
@@ -2118,6 +2214,7 @@ impl Document {
                 if !layer.visible
                     || layer.locked
                     || !object.visible
+                    || self.object_is_locked(&object.id)
                     || object.kind == VectorObjectKind::Text
                 {
                     return Err("Select unlocked visible vector paths / ロックされていない表示中のパスを選択してください / 请选择未锁定的可见路径".into());
@@ -2165,7 +2262,11 @@ impl Document {
             let exists = self.svg_layers.iter().any(|layer| {
                 self.can_edit_path_layer(layer)
                     && layer.vector_layer
-                    && layer.vector_objects.iter().any(|object| object.id == id)
+                    && layer.visible
+                    && !layer.locked
+                    && layer.vector_objects.iter().any(|object| {
+                        object.id == id && object.visible && !self.object_is_locked(&object.id)
+                    })
             });
             if !exists {
                 return Err("Vector object not found".into());
@@ -2180,11 +2281,9 @@ impl Document {
 
     fn expand_group_selection(&self, ids: &[String]) -> Vec<String> {
         let mut expanded = Vec::new();
-        for layer in self
-            .svg_layers
-            .iter()
-            .filter(|layer| self.can_edit_path_layer(layer) && layer.vector_layer)
-        {
+        for layer in self.svg_layers.iter().filter(|layer| {
+            self.can_edit_path_layer(layer) && layer.vector_layer && layer.visible && !layer.locked
+        }) {
             let roots: Vec<&str> = layer
                 .vector_objects
                 .iter()
@@ -2197,7 +2296,11 @@ impl Document {
                         .group_path
                         .first()
                         .is_some_and(|root| roots.contains(&root.as_str()));
-                if selected && !expanded.contains(&object.id) {
+                if selected
+                    && object.visible
+                    && !self.object_is_locked(&object.id)
+                    && !expanded.contains(&object.id)
+                {
                     expanded.push(object.id.clone());
                 }
             }
@@ -2330,7 +2433,12 @@ impl Document {
                 if !ids.contains(&object.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible || object.text.is_some() {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                    || object.text.is_some()
+                {
                     return Err("Select visible paths on unlocked layers / ロックされていない表示中のパスを選択してください / 请选择未锁定且可见的路径".into());
                 }
                 if let Some(value) = opacity {
@@ -2387,7 +2495,12 @@ impl Document {
                 if !ids.contains(&object.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible || object.text.is_some() {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                    || object.text.is_some()
+                {
                     return Err("Select visible paths on unlocked layers / ロックされていない表示中のパスを選択してください / 请选择未锁定且可见的路径".into());
                 }
                 if target == "swap" {
@@ -2701,7 +2814,11 @@ impl Document {
                 if !selected.contains(&object.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                {
                     return Err("Selected path is hidden or locked / 選択したパスが非表示またはロックされています / 所选路径已隐藏或锁定".into());
                 }
                 if object.kind == VectorObjectKind::Text
@@ -2845,7 +2962,11 @@ impl Document {
                 if selected.is_empty() {
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                {
                     return Err("Selected path is hidden or locked".into());
                 }
                 let mut edited = crate::bezier::editable(object).ok_or("Path cannot be edited")?;
@@ -3476,7 +3597,11 @@ impl Document {
                 let Some(text) = &mut object.text else {
                     continue;
                 };
-                if layer.locked || !layer.visible || !object.visible {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                {
                     return Err("Unlock and show text / 文字のロックを解除し表示してください / 请解锁并显示文字".into());
                 }
                 if text.writing_mode == mode {
@@ -3582,7 +3707,11 @@ impl Document {
                     }
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                {
                     return Err("Unlock and show selected text / 選択した文字のロックを解除し表示してください / 请解锁并显示所选文字".into());
                 }
                 let mut source_object = object.clone();
@@ -3654,7 +3783,11 @@ impl Document {
                 if !selected.contains(&object.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !object.visible {
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                {
                     return Err("Selected path is hidden or locked / 選択したパスが非表示またはロックされています / 所选路径已隐藏或锁定".into());
                 }
                 let (path, points) = replace(object)?;
@@ -4213,7 +4346,7 @@ impl Document {
                 if !selected.contains(&o.id) {
                     continue;
                 }
-                if l.locked || !l.visible || !o.visible {
+                if l.locked || !l.visible || !o.visible || self.object_is_locked(&o.id) {
                     return Err("Selected object is locked or hidden".into());
                 }
                 if action == "reset" {
@@ -4348,7 +4481,7 @@ impl Document {
                 if !selected.contains(&o.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !o.visible {
+                if layer.locked || !layer.visible || !o.visible || self.object_is_locked(&o.id) {
                     return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
                 }
                 let [a, b, c, d, e, f] = matrix;
@@ -4399,7 +4532,7 @@ impl Document {
                 if !selected.contains(&o.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !o.visible {
+                if layer.locked || !layer.visible || !o.visible || self.object_is_locked(&o.id) {
                     return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
                 }
                 for v in &mut o.transform[..4] {
@@ -4446,7 +4579,7 @@ impl Document {
                 if !selected.contains(&o.id) {
                     continue;
                 }
-                if layer.locked || !layer.visible || !o.visible {
+                if layer.locked || !layer.visible || !o.visible || self.object_is_locked(&o.id) {
                     return Err("Selected object is locked or hidden / 選択対象がロックまたは非表示です / 所选对象已锁定或隐藏".into());
                 }
                 let (sin, cos) = angle.sin_cos();
@@ -4501,11 +4634,9 @@ impl Document {
                 .iter()
                 .filter(|l| self.can_edit_path_layer(l) && l.vector_layer && l.visible && !l.locked)
             {
-                for object in layer
-                    .vector_objects
-                    .iter()
-                    .filter(|o| o.visible && !o.control_points.is_empty())
-                {
+                for object in layer.vector_objects.iter().filter(|o| {
+                    o.visible && !self.object_is_locked(&o.id) && !o.control_points.is_empty()
+                }) {
                     if object.intersects_selection(
                         [min[0], min[1], max[0] - min[0], max[1] - min[1]],
                         false,
@@ -4534,7 +4665,9 @@ impl Document {
                     && !layer.locked
             })
             .flat_map(|layer| layer.vector_objects.iter().rev())
-            .find(|object| object.hit_test([point.x, point.y], tolerance))
+            .find(|object| {
+                !self.object_is_locked(&object.id) && object.hit_test([point.x, point.y], tolerance)
+            })
             .map(|object| object.id.clone())
     }
 
@@ -4926,7 +5059,7 @@ impl Document {
                 let objects = if l.vector_layer {
                     l.vector_objects
                         .iter()
-                        .filter(|o| o.visible)
+                        .filter(|o| o.visible && !self.object_is_locked(&o.id))
                         .filter_map(crate::bezier::editable)
                         .collect::<Vec<_>>()
                 } else {
@@ -4934,6 +5067,7 @@ impl Document {
                 };
                 objects
                     .into_iter()
+                    .filter(|o| !self.object_is_locked(&o.id))
                     .map(|o| (l.id.clone(), o))
                     .collect::<Vec<_>>()
             })
@@ -4983,7 +5117,7 @@ impl Document {
                     if indices.is_empty() {
                         continue;
                     }
-                    if !object.visible {
+                    if !object.visible || self.object_is_locked(&object.id) {
                         return Err("Path is hidden".into());
                     }
                     let source = crate::bezier::editable(object).ok_or("Path cannot be edited")?;
@@ -5287,6 +5421,9 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            locked_objects: self.locked_objects.clone(),
+            locked_artwork_layers: self.locked_artwork_layers.clone(),
+            background_locked: self.layer_locked,
             path_editing: self.path_editing.clone(),
             saved_paths: self.saved_paths.clone(),
             clipping_path_id: self.clipping_path_id.clone(),
@@ -5299,6 +5436,9 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.locked_objects = state.locked_objects;
+        self.locked_artwork_layers = state.locked_artwork_layers;
+        self.layer_locked = state.background_locked;
         let editing = self.path_editing.as_ref().map(|edit| edit.id.clone());
         self.path_editing = state.path_editing;
         self.saved_paths = state.saved_paths;
@@ -5505,6 +5645,7 @@ impl Document {
                     {
                         for object in &layer.vector_objects {
                             if object.visible
+                                && !self.object_is_locked(&object.id)
                                 && !object.control_points.is_empty()
                                 && object.intersects_selection(
                                     bounds,
@@ -6493,6 +6634,10 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub locked_objects: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub locked_artwork_layers: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub saved_paths: Vec<SavedPath>,
     #[serde(default)]

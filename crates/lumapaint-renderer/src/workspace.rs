@@ -136,6 +136,27 @@ mod tests {
     use lumapaint_formats::native::NativeDocumentCodec;
 
     #[test]
+    fn extreme_zoom_rasterizes_only_the_viewport_without_changing_the_document() {
+        let mut document = Document::default();
+        document.import_svg("detail".into(), r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="479.75" y="319.75" width="0.5" height="0.5" fill="red"/></svg>"#.into()).unwrap();
+        let before = document.encode().unwrap();
+        let viewport = Viewport::new(800.0, 500.0, 1.0, 1.0, false)
+            .unwrap()
+            .with_screen_zoom(640.0);
+        let images = WorkspaceCache::default()
+            .prepare(&document, viewport, [0.0, 0.0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(images[0].size, (800, 500));
+        assert_eq!(images[0].pixels.len(), 800 * 500 * 4);
+        let pixel = |x: usize, y: usize| &images[0].pixels[(y * 800 + x) * 4..(y * 800 + x) * 4 + 4];
+        assert_eq!(pixel(400, 250), &[255, 0, 0, 255]);
+        assert_eq!(pixel(200, 250), &[0, 0, 0, 0]);
+        assert_eq!(pixel(600, 250), &[0, 0, 0, 0]);
+        assert_eq!(document.encode().unwrap(), before);
+    }
+
+    #[test]
     fn outside_content_is_visible_without_changing_document_or_export_bounds() {
         let mut document = Document::default();
         document.import_svg("outside".into(), r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-60" y="20" width="100" height="60" fill="red"/></svg>"#.into()).unwrap();

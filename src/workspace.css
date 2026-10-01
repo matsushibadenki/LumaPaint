@@ -119,7 +119,7 @@ h1, h2, h3 { font-style: normal; }
 .canvas-failure pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; user-select: text; }
 .canvas-footer { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: 5px var(--space-md); min-height: 38px; background: var(--color-bar); border-top: 1px solid var(--color-rule); }
 .zoom-controls { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
-.zoom-controls output { width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.zoom-controls select { width: 100px; min-width: 100px; text-align: center; font-variant-numeric: tabular-nums; }
 .zoom-controls button:last-child { margin-left: var(--space-sm); }
 .canvas-state { color: var(--color-muted); font-size: var(--text-small); text-align: right; line-height: 1.4; }
 .canvas-error { padding: var(--space-sm) var(--space-md); background: var(--color-panel); }
@@ -594,3 +594,6 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .pathfinder-modes > button:hover:not(:disabled), .pathfinder-operations > button:hover:not(:disabled) { background: var(--color-hover); border-color: var(--color-rule); }
 .pathfinder-modes > .pathfinder-expand { flex: 1; margin-left: 10px; background: var(--color-field); font-size: 12px; }
 .pathfinder-content > .pathfinder-error { color: var(--color-error); font-size: 11px; overflow-wrap: anywhere; }
+
+.object-lock-indicator { display: inline-flex; flex: 0 0 14px; margin-left: auto; color: var(--color-muted); }
+.object-lock-indicator svg { width: 14px; height: 14px; }

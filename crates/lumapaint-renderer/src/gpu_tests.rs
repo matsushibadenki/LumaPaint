@@ -1946,13 +1946,17 @@ fn gpu_artboard_exterior_masks_page_pixels() {
             },
         ],
     });
-    for (pan, expected_alpha) in [(0.0, 0), (100.0, 128)] {
+    for (pan, zoom, expected_alpha) in [
+        (0.0, 1.0 / 13.0, 0),
+        (100.0, 1.0 / 13.0, 128),
+        (0.0, 640.0 / 13.0, 128),
+    ] {
         let buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
-                    viewport: [100., 100., 1., 1.],
+                    viewport: [100., 100., 1., zoom],
                     appearance: [0., pan, 0., 0.],
                     document: [4., 4., 0., 0.],
                 }),
@@ -2021,6 +2025,17 @@ fn gpu_artboard_exterior_masks_page_pixels() {
 #[test]
 #[ignore = "requires a GPU adapter"]
 fn gpu_object_texture_moves_across_artboard_without_reupload() {
+    verify_object_texture_moves(false);
+}
+
+#[cfg(all(feature = "skia", target_os = "macos"))]
+#[test]
+#[ignore = "requires a Metal adapter"]
+fn gpu_shared_object_texture_moves_across_artboard_without_reupload() {
+    verify_object_texture_moves(true);
+}
+
+fn verify_object_texture_moves(shared: bool) {
     let gpu = Gpu::new();
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let (texture_layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
@@ -2046,7 +2061,7 @@ fn gpu_object_texture_moves_across_artboard_without_reupload() {
         include_str!("object.wgsl"),
         "Object translation regression",
     );
-    let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-20" y="10" width="60" height="30" fill="red" opacity="0.5"/></svg>"#;
+    let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-20" y="10" width="60" height="30" fill="red" fill-opacity="0.5"/></svg>"#;
     let (pixels, rectangle) = vector::rasterize_svg_object(source, (960, 640)).unwrap();
     // This upload and the object rectangle are reused for every drag frame.
     let texture = gpu.device.create_texture_with_data(
@@ -2068,7 +2083,21 @@ fn gpu_object_texture_moves_across_artboard_without_reupload() {
         wgpu::util::TextureDataOrder::LayerMajor,
         &pixels,
     );
-    let texture_view = texture.create_view(&Default::default());
+    #[cfg(all(feature = "skia", target_os = "macos"))]
+    let texture = if shared {
+        let (shared_texture, bounds) =
+            vector::rasterize_svg_object_shared(&gpu.device, source, (960, 640), 1.0).unwrap();
+        assert_eq!(bounds, rectangle);
+        shared_texture
+    } else {
+        texture
+    };
+    #[cfg(not(all(feature = "skia", target_os = "macos")))]
+    assert!(!shared);
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(format),
+        ..Default::default()
+    });
     let sampler = gpu.device.create_sampler(&Default::default());
     let image = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,

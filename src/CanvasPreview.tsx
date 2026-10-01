@@ -1,3 +1,4 @@
+import { MIN_ZOOM, MAX_ZOOM, ZOOM_PERCENTAGES, stepZoom, zoomLabel } from './zoom';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { onNativeScaleChange, finishCanvasPath, resetCanvasPan, syncCanvas, type DisplayChannel, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
@@ -8,13 +9,15 @@ import type { ColorPickerOcclusion } from './components/ColorPickerPopover';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, footerAccessory, onZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
   zoomCommand: { zoom: number; revision: number };
+  onDisplayZoom: (zoom: number) => void;
   channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
   const t = messages[locale];
+  const selectedZoom = ZOOM_PERCENTAGES.find(percent => Math.abs(percent / 100 - zoom) < 0.000001 * Math.max(1, zoom));
   const slot = useRef<HTMLDivElement>(null);
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
   const [status, setStatus] = useState<Status>('loading');
@@ -60,7 +63,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
     let frame = 0;
     let unlisten = () => {};
     const requestSettings = () => ({
-      zoom: settings.current.zoomCommand.zoom, zoomRevision: settings.current.zoomCommand.revision,
+      zoom: settings.current.zoomCommand.zoom, absoluteZoom: true, zoomRevision: settings.current.zoomCommand.revision,
       dark: settings.current.dark, brush: settings.current.brush,
       tool: settings.current.tool, visible: settings.current.visible, channel: settings.current.channel,
     });
@@ -92,6 +95,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
         });
         if (!active || failed) return;
         setInfo(result);
+        if (result?.zoom != null) onDisplayZoom(result.zoom);
         if (result?.document) onDocument(result.document);
         setStatus(result?.status ?? 'browser');
       } catch (cause) {
@@ -136,7 +140,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
       document.removeEventListener('visibilitychange', requestRender);
       void syncCanvas({ x: 0, y: 0, width: 0, height: 0, ...requestSettings(), visible: false }).catch(() => {});
     };
-  }, [attempt, onDocument]);
+  }, [attempt, onDocument, onDisplayZoom]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
     <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
@@ -149,10 +153,14 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
     </div>
     <div className="canvas-footer">
       <div className="zoom-controls">
-        <button type="button" className="icon-button" title={t.zoomOut} aria-label={t.zoomOut} disabled={status !== 'ready' || zoom <= 0.25} onClick={() => onZoom(Math.max(0.25, zoom / 1.25))}><Icon name="minus" /></button>
-        <output aria-label={t.zoom}>{Math.round(zoom * 100)}%</output>
-        <button type="button" className="icon-button" title={t.zoomIn} aria-label={t.zoomIn} disabled={status !== 'ready' || zoom >= 4} onClick={() => onZoom(Math.min(4, zoom * 1.25))}><Icon name="plus" /></button>
-        <button type="button" disabled={status !== 'ready'} onClick={() => { void resetCanvasPan().then(() => onZoom(1)); }}>{t.fit}</button>
+        <button type="button" className="icon-button" title={t.zoomOut} aria-label={t.zoomOut} disabled={status !== 'ready' || zoom <= MIN_ZOOM} onClick={() => onZoom(stepZoom(zoom, -1))}><Icon name="minus" /></button>
+        <select aria-label={t.zoom} disabled={status !== 'ready'} value={String(selectedZoom != null ? selectedZoom / 100 : zoom)} onChange={event => onZoom(Number(event.target.value))}>
+          {selectedZoom == null && <option value={String(zoom)}>{zoomLabel(zoom)}</option>}
+          {[...ZOOM_PERCENTAGES].reverse().map(percent => <option key={percent} value={String(percent / 100)}>{percent}%</option>)}
+          <option value="0">{t.fit}</option>
+        </select>
+        <button type="button" className="icon-button" title={t.zoomIn} aria-label={t.zoomIn} disabled={status !== 'ready' || zoom >= MAX_ZOOM - 0.0001} onClick={() => onZoom(stepZoom(zoom, 1))}><Icon name="plus" /></button>
+        <button type="button" disabled={status !== 'ready'} onClick={() => { void resetCanvasPan().then(() => onZoom(0)); }}>{t.fit}</button>
       </div>
       {footerAccessory}
       <span className="canvas-state" role="status" title={info ? `${info.backend} · ${info.adapterName} · ${info.physicalWidth} × ${info.physicalHeight} px · ${info.scaleFactor}×` : undefined}>{t.canvasStatus[status]}</span>

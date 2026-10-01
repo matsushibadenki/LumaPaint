@@ -17,6 +17,9 @@ impl SvgGeometryBackend for UsvgGeometryBackend {
             .map(|t| t.object)
             .collect()
     }
+    fn stabilize_ids(&self, source: &str) -> Result<String, String> {
+        edit::stabilize_ids(source)
+    }
     fn apply(
         &self,
         source: &str,

@@ -155,7 +155,7 @@ export function LayerList({ thumbnails = {}, thumbnailError, layers, textObjects
       previousPath = object.groupPath;
       if (object.groupPath.some(groupId => collapsedGroups.has(`${layer.id}:${groupId}`))) continue;
       rows.push(<div className={`layer-object-row${objectDrag?.targetId === object.id ? ' object-drop-target' : ''}`} style={{ '--group-depth': object.groupPath.length } as CSSProperties} role="listitem" key={object.id}
-        draggable={enabled && !layer.locked && object.groupPath.length === 0} onDragStart={event => {
+        draggable={enabled && !layer.locked && !object.locked && object.groupPath.length === 0} onDragStart={event => {
           event.stopPropagation();
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', object.id);
@@ -165,15 +165,16 @@ export function LayerList({ thumbnails = {}, thumbnailError, layers, textObjects
           event.preventDefault(); event.dataTransfer.dropEffect = 'move';
           if (objectDrag.targetId !== object.id) setObjectDrag({ ...objectDrag, targetId: object.id });
         }} onDrop={event => dropObject(event, layer, object.id)} onDragEnd={() => setObjectDrag(null)}>
-        <button type="button" className="icon-button object-visibility" disabled={!enabled || layer.locked || !layer.visible}
+        <button type="button" className="icon-button object-visibility" disabled={!enabled || layer.locked || !layer.visible || object.locked}
           title={object.visible ? t.hideObject : t.showObject} aria-label={`${object.visible ? t.hideObject : t.showObject}: ${object.name}`}
           aria-pressed={object.visible} onClick={() => onToggleObject(layer.id, object.id, !object.visible)}>
           <Icon name={object.visible ? 'eye' : 'eyeOff'} />
         </button>
-        <button type="button" className="layer-object-select" disabled={!enabled || layer.locked || !layer.visible || !object.visible}
+        <button type="button" className="layer-object-select" disabled={!enabled || layer.locked || !layer.visible || !object.visible || object.locked}
           aria-pressed={selectedObjects.includes(object.id)} onClick={() => onSelectObject(layer.id, object.id)}>
           <Icon name={object.kind === 'text' ? 'text' : object.kind === 'rectangle' ? 'vectorRectangle' : object.kind === 'ellipse' ? 'vectorEllipse' : 'vector'} />
           <span>{object.name}</span>
+          {object.locked && <span className="object-lock-indicator" title={t.lockLayer}><Icon name="lock" /></span>}
           <span className="object-target" aria-hidden="true" />
         </button>
       </div>);

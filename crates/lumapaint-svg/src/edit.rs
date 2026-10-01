@@ -108,6 +108,43 @@ fn ordinals(xml: &roxmltree::Document<'_>) -> HashMap<usize, usize> {
         .map(|(i, n)| (n.range().start, i))
         .collect()
 }
+/// Assign the same fallback identities currently used for picking before any nodes are removed.
+pub fn stabilize_ids(source: &str) -> Result<String, String> {
+    let xml = roxmltree::Document::parse(source).map_err(|error| error.to_string())?;
+    let ordinals = ordinals(&xml);
+    let mut insertions = Vec::new();
+    for node in xml
+        .descendants()
+        .filter(|node| node.is_element() && node.attribute("data-lumapaint-edit-id").is_none())
+    {
+        let Some(ordinal) = ordinals.get(&node.range().start) else {
+            continue;
+        };
+        let range = opening(source, node.range().start).ok_or("Invalid SVG opening tag")?;
+        let at = range.end
+            - if source.get(range.end - 2..range.end) == Some("/>") {
+                2
+            } else {
+                1
+            };
+        let prefix =
+            if node.has_tag_name("use") || node.attribute("data-lumapaint-instance").is_some() {
+                "svg-use"
+            } else {
+                "svg"
+            };
+        insertions.push((
+            at,
+            format!(" data-lumapaint-edit-id=\"{prefix}:{ordinal}\""),
+        ));
+    }
+    let mut result = source.to_owned();
+    for (at, value) in insertions.into_iter().rev() {
+        result.insert_str(at, &value);
+    }
+    Ok(result)
+}
+
 fn identity(
     source: &usvg::PathSource,
     xml: &roxmltree::Document<'_>,

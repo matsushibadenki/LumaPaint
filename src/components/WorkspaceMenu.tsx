@@ -1,3 +1,4 @@
+import { MIN_ZOOM, MAX_ZOOM, stepZoom } from '../zoom';
 import { transformLabels } from './TransformDialog';
 import type { ArrangeAction, TransformAction } from '../bridge';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
@@ -71,7 +72,12 @@ export function WorkspaceMenu(props: Props) {
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
-    [{ label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
+    [{ label: t.lock, enabled: canEdit && !doc.activeSavedPath, children: [
+      { label: t.lockSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+2', action: () => onEdit('lockSelection') },
+      { label: t.lockArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('lockArtworkAbove') },
+      { label: t.lockOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('lockOtherLayers') },
+    ]}, { label: t.unlockAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasLockedObjects, shortcut: 'CmdOrCtrl+Alt+2', action: () => onEdit('unlockAllObjects') }, null,
+    { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
       label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
     })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
       { label: t.pathJoin, enabled: doc.selectedVectorObjects.length >= 1 && doc.selectedVectorObjects.length <= 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
@@ -106,9 +112,9 @@ export function WorkspaceMenu(props: Props) {
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
     [{ label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
       { label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
-      { label: common.zoomIn, enabled: canEdit && zoom < 4, action: () => onZoom(Math.min(4, zoom * 1.25)) },
-      { label: common.zoomOut, enabled: canEdit && zoom > .25, action: () => onZoom(Math.max(.25, zoom / 1.25)) },
-      { label: common.fit, enabled: canEdit, action: () => onZoom(1) }],
+      { label: common.zoomIn, enabled: canEdit && zoom < MAX_ZOOM - 0.0001, action: () => onZoom(stepZoom(zoom, 1)) },
+      { label: common.zoomOut, enabled: canEdit && zoom > MIN_ZOOM, action: () => onZoom(stepZoom(zoom, -1)) },
+      { label: common.fit, enabled: canEdit, action: () => onZoom(0) }],
     [future(t.managePlugins), future(t.browsePlugins)],
     [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
     [{ label: 'LumaPaint 0.1.0' }, null, { label: t.guide }, { label: t.drawHint }, { label: t.saveHint }, { label: t.recoveryHint }],

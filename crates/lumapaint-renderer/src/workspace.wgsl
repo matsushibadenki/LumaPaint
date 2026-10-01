@@ -15,6 +15,6 @@ struct VertexOut { @builtin(position) position: vec4<f32>, @location(0) uv: vec2
     let scale = max(0.01, min((size.x-48.0)/u.document.x, (size.y-48.0)/u.document.y)) * u.viewport.w;
     let point = (in.uv * size-size*0.5-u.appearance.yz)/scale+u.document.xy*0.5;
     // The existing document pass owns the artboard; exterior pixels never double-composite it.
-    if all(point >= vec2(0.0)) && all(point < u.document.xy) { discard; }
+    if scale <= 1.5 && all(point >= vec2(0.0)) && all(point < u.document.xy) { discard; }
     return textureSample(image, image_sampler, in.uv);
 }

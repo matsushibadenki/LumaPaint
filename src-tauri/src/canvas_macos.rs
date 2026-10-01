@@ -307,8 +307,14 @@ fn pan_offset(current: (f32, f32), delta: (f32, f32)) -> (f32, f32) {
         return current;
     }
     (
-        (current.0 + delta.0).clamp(-8192., 8192.),
-        (current.1 + delta.1).clamp(-8192., 8192.),
+        (current.0 + delta.0).clamp(
+            -lumapaint_renderer::MAX_CANVAS_PAN,
+            lumapaint_renderer::MAX_CANVAS_PAN,
+        ),
+        (current.1 + delta.1).clamp(
+            -lumapaint_renderer::MAX_CANVAS_PAN,
+            lumapaint_renderer::MAX_CANVAS_PAN,
+        ),
     )
 }
 
@@ -316,7 +322,10 @@ fn pinch_zoom(current: f32, magnification: f32) -> f32 {
     if !magnification.is_finite() {
         return current;
     }
-    (current * (1. + magnification).max(0.01)).clamp(0.25, 4.)
+    (current * (1. + magnification).max(0.01)).clamp(
+        lumapaint_renderer::MIN_SCREEN_ZOOM,
+        lumapaint_renderer::MAX_SCREEN_ZOOM,
+    )
 }
 
 // UI echoes describe a displayed scale; only a newer explicit command can
@@ -492,7 +501,7 @@ impl PaintView {
             let location=self.convertPoint_fromView(event.locationInWindow(),None);
             let viewport=CANVAS.with(|slot|slot.borrow().as_ref().map(|c|c.viewport));
             if let Some(viewport)=viewport {
-                let zoom=pinch_zoom(viewport.zoom,delta);
+                let zoom=pinch_zoom(viewport.screen_zoom(),delta)/viewport.fit_zoom();
                 self.apply_zoom(viewport,location,zoom);
             }
         }
@@ -624,7 +633,9 @@ impl PaintView {
             if !focused { return false.into(); }
             if raster_import::active() { return event.modifierFlags().contains(NSEventModifierFlags::Command).into(); }
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
-            if command && [7,8,9].contains(&event.keyCode()) {
+            if command && event.keyCode() == 19 {
+                report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::UnlockAllObjects } else { DocumentAction::LockSelection }); true
+            } else if command && [7,8,9].contains(&event.keyCode()) {
                 report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
             } else if command && [0, 2].contains(&event.keyCode()) {
                 report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
@@ -732,7 +743,11 @@ impl PaintView {
         }
         self.refresh_cursor();
         if let Some(app) = APP.get() {
-            let _ = app.emit_to(current_label(), "canvas-zoom-changed", zoom);
+            let _ = app.emit_to(
+                current_label(),
+                "canvas-zoom-changed",
+                viewport.screen_zoom(),
+            );
         }
     }
 
@@ -785,7 +800,10 @@ impl PaintView {
                 } else {
                     0.8
                 };
-                let zoom = (viewport.zoom * factor).clamp(0.25, 4.0);
+                let zoom = (viewport.screen_zoom() * factor).clamp(
+                    lumapaint_renderer::MIN_SCREEN_ZOOM,
+                    lumapaint_renderer::MAX_SCREEN_ZOOM,
+                ) / viewport.fit_zoom();
                 self.apply_zoom(viewport, location, zoom);
             }
             return;
@@ -1490,6 +1508,13 @@ impl AnchorDraft {
     }
 }
 
+fn vector_sample_spacing(viewport: Option<Viewport>) -> f32 {
+    viewport.map_or(1.0, |viewport| 1.0 / viewport.screen_zoom())
+}
+fn current_vector_sample_spacing() -> f32 {
+    CANVAS.with(|slot| vector_sample_spacing(slot.borrow().as_ref().map(|canvas| canvas.viewport)))
+}
+
 fn vector_pointer(
     document: &mut Document,
     tool: CanvasTool,
@@ -1520,6 +1545,7 @@ fn vector_pointer(
     if tool == CanvasTool::VectorSelect {
         return vector_select_pointer(document, point, phase, modifiers);
     }
+    let spacing = current_vector_sample_spacing();
     if phase == 0 {
         VECTOR_DRAFT.with(|draft| {
             let mut draft = draft.borrow_mut();
@@ -1533,7 +1559,7 @@ fn vector_pointer(
             let mut draft = draft.borrow_mut();
             if draft
                 .last()
-                .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= 1.0)
+                .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= spacing)
             {
                 draft.push(point);
             }
@@ -1548,7 +1574,7 @@ fn vector_pointer(
     if tool == CanvasTool::VectorPencil {
         if points
             .last()
-            .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= 1.0)
+            .is_none_or(|last| (point.x - last.x).hypot(point.y - last.y) >= spacing)
         {
             points.push(point);
         }
@@ -1562,7 +1588,7 @@ fn vector_pointer(
     let end = *points.last().unwrap_or(&start);
     let width = (end.x - start.x).abs();
     let height = (end.y - start.y).abs();
-    if tool != CanvasTool::VectorPencil && (width < 1.0 || height < 1.0) {
+    if tool != CanvasTool::VectorPencil && (width < spacing || height < spacing) {
         return Ok(());
     }
 
@@ -1998,7 +2024,7 @@ fn scale_pointer(
             if let Some(draft) = draft.borrow_mut().as_mut() {
                 let initial =
                     (draft.start[0] - draft.center[0]).hypot(draft.start[1] - draft.center[1]);
-                draft.scale = if initial >= 1. {
+                draft.scale = if initial >= current_vector_sample_spacing() {
                     ((point.x - draft.center[0]).hypot(point.y - draft.center[1]) / initial)
                         .clamp(0.01, 100.)
                 } else {
@@ -2034,7 +2060,7 @@ fn rotate_pointer(
         }
         if let Some([x, y, right, bottom]) = document.selected_vector_bounds() {
             let center = [(x + right) * 0.5, (y + bottom) * 0.5];
-            if (point.x - center[0]).hypot(point.y - center[1]) >= 1. {
+            if (point.x - center[0]).hypot(point.y - center[1]) >= current_vector_sample_spacing() {
                 ROTATE_DRAFT.with(|d| {
                     *d.borrow_mut() = Some(RotateDraft {
                         center,
@@ -2047,7 +2073,7 @@ fn rotate_pointer(
     } else {
         ROTATE_DRAFT.with(|d| {
             if let Some(d) = d.borrow_mut().as_mut() {
-                if (point.x - d.center[0]).hypot(point.y - d.center[1]) >= 1. {
+                if (point.x - d.center[0]).hypot(point.y - d.center[1]) >= current_vector_sample_spacing() {
                     d.angle = (point.y - d.center[1]).atan2(point.x - d.center[0])
                         - (d.start[1] - d.center[1]).atan2(d.start[0] - d.center[0]);
                     if modifiers.contains(NSEventModifierFlags::Shift) {
@@ -2933,6 +2959,22 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
     if raster_import::active() {
         return Err("Confirm or cancel image placement / 画像の配置を確定またはキャンセルしてください / 请确认或取消图片放置".into());
     }
+    if matches!(
+        action,
+        DocumentAction::LockSelection
+            | DocumentAction::LockArtworkAbove
+            | DocumentAction::LockOtherLayers
+            | DocumentAction::UnlockAllObjects
+    ) {
+        finish_open_pen()?;
+        cancel_vector_drag();
+        if matches!(
+            action,
+            DocumentAction::LockSelection | DocumentAction::UnlockAllObjects
+        ) {
+            DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+        }
+    }
     if text_editor::active() {
         match action {
             DocumentAction::Undo => text_editor::history(false),
@@ -2991,6 +3033,18 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             DocumentAction::Deselect => doc.deselect(),
             DocumentAction::InvertSelection => doc.invert_selection()?,
             DocumentAction::ClearLayer => doc.clear_selected_layer()?,
+            DocumentAction::LockSelection => {
+                doc.lock_objects(lumapaint_core::document::ObjectLockAction::Selection)?
+            }
+            DocumentAction::LockArtworkAbove => {
+                doc.lock_objects(lumapaint_core::document::ObjectLockAction::ArtworkAbove)?
+            }
+            DocumentAction::LockOtherLayers => {
+                doc.lock_objects(lumapaint_core::document::ObjectLockAction::OtherLayers)?
+            }
+            DocumentAction::UnlockAllObjects => {
+                doc.lock_objects(lumapaint_core::document::ObjectLockAction::UnlockAll)?
+            }
             DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste => unreachable!(),
             DocumentAction::DeleteSelectedObjects => {
                 if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
@@ -4498,25 +4552,58 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             TiledSession::snapshot,
         )
     });
-    let zoom = CANVAS.with(|slot| {
-        slot.borrow().as_ref().map_or(request.zoom, |canvas| {
-            synchronized_zoom(
-                canvas.viewport.zoom,
-                canvas.zoom_revision,
-                request.zoom,
-                request.zoom_revision,
-            )
-        })
-    });
-    let viewport = Viewport::new(
+    let base = Viewport::new(
         frame.size.width,
         frame.size.height,
         scale,
-        zoom,
+        1.0,
         request.dark,
     )?
-    .with_pan(pan_x, pan_y)?
     .with_document(document.width, document.height, document.canvas_color)?;
+    let requested_zoom = if request.absolute_zoom {
+        if request.zoom == 0.0 {
+            base.fit_zoom() as f64
+        } else {
+            request.zoom
+        }
+    } else {
+        request.zoom * base.fit_zoom() as f64
+    };
+    let (zoom, explicit, previous_zoom) = CANVAS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or((requested_zoom, true, requested_zoom), |canvas| {
+                (
+                    synchronized_zoom(
+                        canvas.viewport.screen_zoom(),
+                        canvas.zoom_revision,
+                        requested_zoom,
+                        request.zoom_revision,
+                    ),
+                    request.zoom_revision.is_none() || request.zoom_revision > canvas.zoom_revision,
+                    canvas.viewport.screen_zoom() as f64,
+                )
+            })
+    });
+    let (pan_x, pan_y) = if explicit && request.absolute_zoom && request.zoom == 0.0 {
+        (0.0, 0.0)
+    } else if explicit {
+        let ratio = (zoom / previous_zoom) as f32;
+        (
+            (pan_x * ratio).clamp(
+                -lumapaint_renderer::MAX_CANVAS_PAN,
+                lumapaint_renderer::MAX_CANVAS_PAN,
+            ),
+            (pan_y * ratio).clamp(
+                -lumapaint_renderer::MAX_CANVAS_PAN,
+                lumapaint_renderer::MAX_CANVAS_PAN,
+            ),
+        )
+    } else {
+        (pan_x, pan_y)
+    };
+    PAN.with(|pan| pan.set((pan_x, pan_y)));
+    let viewport = base.with_screen_zoom(zoom as f32).with_pan(pan_x, pan_y)?;
 
     let result = CANVAS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -4597,6 +4684,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             physical_width: viewport.width,
             physical_height: viewport.height,
             scale_factor: scale,
+            zoom: Some(viewport.screen_zoom()),
             document: DOCUMENT_OPEN.with(|open| open.get()).then(|| {
                 ACTIVE_TILED_DOCUMENT.with(|tiled| {
                     tiled.borrow().as_ref().map_or_else(
@@ -4944,7 +5032,10 @@ mod tests {
     fn trackpad_pan_uses_both_axes_in_view_points_and_limits_offsets() {
         assert_eq!(pan_offset((10., 20.), (12.5, -8.)), (22.5, 12.));
         assert_eq!(pan_offset((10., 20.), (-12.5, 8.)), (-2.5, 28.));
-        assert_eq!(pan_offset((8190., -8190.), (10., -10.)), (8192., -8192.));
+        assert_eq!(
+            pan_offset((8_388_606., -8_388_606.), (10., -10.)),
+            (8_388_608., -8_388_608.)
+        );
         assert_eq!(pan_offset((10., 20.), (f32::NAN, 1.)), (10., 20.));
         let first = pan_offset((0., 0.), (8., 4.));
         assert_eq!(pan_offset(first, (4., 2.)), (12., 6.));
@@ -4954,10 +5045,14 @@ mod tests {
     fn pinch_zoom_in_out_limits_and_invalid_events() {
         assert!((pinch_zoom(1., 0.2) - 1.2).abs() < 0.0001);
         assert!((pinch_zoom(1., -0.2) - 0.8).abs() < 0.0001);
-        assert_eq!(pinch_zoom(4., 1.), 4.);
-        assert_eq!(pinch_zoom(0.25, -0.9), 0.25);
+        assert_eq!(pinch_zoom(640., 1.), 640.);
+        assert_eq!(pinch_zoom(0.0313, -0.9), 0.0313);
         assert_eq!(pinch_zoom(1., f32::NAN), 1.);
         assert_eq!(pinch_zoom(1., 0.), 1.);
+        let viewport = Viewport::new(800., 500., 1., 1., false).unwrap().with_screen_zoom(640.);
+        assert!((vector_sample_spacing(Some(viewport)) - 1. / 640.).abs() < 0.000001);
+        assert_eq!(vector_sample_spacing(None), 1.);
+
     }
 
     #[test]
@@ -6046,6 +6141,7 @@ mod tests {
             width: 1042.0,
             height: 436.0,
             zoom: 1.0,
+            absolute_zoom: false,
             zoom_revision: None,
             dark: false,
             visible: true,
@@ -6076,6 +6172,7 @@ mod tests {
             width: 700.0,
             height: 100.0,
             zoom: 1.0,
+            absolute_zoom: false,
             zoom_revision: None,
             dark: false,
             visible: true,

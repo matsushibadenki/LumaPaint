@@ -10,6 +10,7 @@
 
 - `PaintCache`とタイル投影がペイントを保持し、変更タイルを転送する。
 - `CachedSvg`がレイヤー単位のGPUテクスチャを再利用する。同寸法の変更は変更行を転送する。
+- [Done] macOSの編集可能ベクター／文字のオブジェクトキャッシュは、対応する単色パスをSkia Metalからwgpuへ共有テクスチャで渡す。CPU画素読み戻しと再uploadを省略し、移動・パン・ズームでは既存テクスチャを再利用する。非Metal・未対応SVG・共有初期化失敗時は従来経路へ戻す。GPUの計上メモリは引き続き64MiB以内、診断のupload_bytesは実転送のみを数える。
 - `FrameRasterCache`が文字フレームの描画結果を実際の画素範囲へ切り詰め、CPUキャッシュの計上ペイロードを64MiB・512エントリー以内に制限する。Undo/Redoでも以前の版を再利用する。
 - `svg-raster`・`tile-project`ワーカーが重い処理を行い、待機要求を最新のものへまとめる。文書・表示キーで採用結果を確認する。
 - `LUMAPAINT_RENDER_METRICS=1`で描画、待機、ラスタ化、転送量を記録する。文字キャッシュの件数・計上ペイロード・予算・追い出し数も記録する。
@@ -19,6 +20,13 @@
 また現在は編集可能ベクターレイヤーごとに4096オブジェクト、SVGレイヤー16、SVGソース合計6MiB、v1ファイル8MiBという制約がある。上限を先に外して100万対応と称さない。Sceneと保存・読込・履歴・選択・メモリの検証後に、新しい文書容量契約として拡張する。
 
 ## 依存とデータの流れ
+
+### GPU描画の段階的な拡張
+
+- [Done] Zero-copy GPUの第一段階：macOSのオブジェクトキャッシュ。wgpuの実Metal Deviceからテクスチャを確保し、Skiaは同じDeviceで描画する。透明領域を含め初期化し、Ganeshの完了を同期してからwgpuへ所有権を渡す。保存・CPU差分比較・外部SVG互換・workspace画像のRGBA経路は維持する。現段階はCPU同期を伴うため、完全な非同期GPUパイプラインとは扱わない。
+- [Next] 変更Journalとgeometry／style／transform世代、BVHによる可視範囲検索を追加し、変更対象だけSceneを更新する。次いでVector／Group／Effectの局所タイルキャッシュ、互換SVGの共有GPU出力と非同期queue同期へ拡張する。
+- [Later] GPU resident vector scene：Geometry／Style／Transform／BoundsをGPUへ保持し、表示用precisionとzoom bucketを管理する。Documentの精度や保存データは変えない。
+- [Later] GPU-driven renderer：GPU可視判定とindirect drawingを段階導入する。GPU-native Bézier／analytic AAは複雑なfill・stroke・互換性を検証してから追加し、Skia／resvgを併用する。RGBA16F・linear-light合成とICC変換は別の品質検証工程で扱う。
 
 ```text
 LP Document ─────────────────────────→ 独立I/O

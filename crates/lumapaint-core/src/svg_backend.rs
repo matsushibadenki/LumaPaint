@@ -14,6 +14,10 @@ pub struct SvgEdit {
 /// document state, modify its input, or retain references to a document.
 pub trait SvgGeometryBackend: Send + Sync {
     fn objects(&self, source: &str, layer_id: &str, document_size: [f32; 2]) -> Vec<VectorObject>;
+    /// Preserve object identities across unrelated removals, without changing the rendered artwork.
+    fn stabilize_ids(&self, source: &str) -> Result<String, String> {
+        Ok(source.to_owned())
+    }
     /// Return a complete replacement source atomically, leaving the original untouched on failure.
     fn apply(
         &self,

@@ -114,9 +114,9 @@ export function Workspace() {
   const filePending = useRef(false);
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
-  const [zoomCommand, setZoomCommand] = useState({ zoom: 1, revision: 0 });
+  const [zoomCommand, setZoomCommand] = useState({ zoom: 0, revision: 0 });
   const changeZoom = useCallback((next: number) => {
-    setZoom(next);
+    if (next > 0) setZoom(next);
     setZoomCommand(current => ({ zoom: next, revision: current.revision + 1 }));
   }, []);
   const [channel, setChannel] = useState<DisplayChannel>(0);
@@ -403,7 +403,7 @@ export function Workspace() {
   const createFromPreset = useCallback(async (settings: NewDocumentSettings) => {
     if (filePending.current) throw new Error('Another file operation is in progress');
     filePending.current = true; setFileBusy(true);
-    try { updateWorkspace(await createDocument(settings)); changeZoom(1); }
+    try { updateWorkspace(await createDocument(settings)); changeZoom(0); }
     finally { filePending.current = false; setFileBusy(false); }
   }, [updateWorkspace, changeZoom]);
 
@@ -470,6 +470,9 @@ export function Workspace() {
       if (target.closest('input, textarea, select, [contenteditable=true]')) return;
       if (documentAvailable && !settingsOpen && !colorSettingsOpen) {
         const key = event.key.toLowerCase();
+        if ((event.metaKey || event.ctrlKey) && event.code === 'Digit2') {
+          event.preventDefault(); void edit(event.altKey ? 'unlockAllObjects' : 'lockSelection'); return;
+        }
         if ((event.metaKey || event.ctrlKey) && key === 'g') {
           event.preventDefault(); void changeGroup(event.shiftKey ? 'ungroup' : 'group');
           return;
@@ -506,7 +509,7 @@ export function Workspace() {
     if (!isTauri()) return;
     const listener = getCurrentWebviewWindow().listen<{ type: string; locale: Locale; theme: Theme }>('modal-change', event => {
       if (event.payload.type === 'preferences') { setLocale(event.payload.locale); setTheme(event.payload.theme); }
-      if (event.payload.type === 'createdDocument') changeZoom(1);
+      if (event.payload.type === 'createdDocument') changeZoom(0);
     });
     return () => { void listener.then(unlisten => unlisten()); };
   }, [changeZoom]);
@@ -528,7 +531,7 @@ export function Workspace() {
         onColorMode={mode => void setColorMode(mode)}
         onBitDepth={depth => void setBitDepth(depth)}
         onColorSettings={openColorSettings}
-        onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); changeZoom(1); }} onError={setError} />
+        onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); changeZoom(0); }} onError={setError} />
       <div className="workspace-preferences">
         <button className="icon-button" title={t.panels} aria-label={t.panels} aria-pressed={panels} onClick={() => setPanels(value => !value)}><Icon name="panels" /></button>
       </div>
@@ -595,7 +598,7 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <DocumentDock locale={locale}><CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale}><CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>

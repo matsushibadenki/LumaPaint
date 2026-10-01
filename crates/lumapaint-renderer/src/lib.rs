@@ -38,6 +38,10 @@ struct VectorDragMetrics {
     full_prepare_upload_ms: f64,
 }
 
+pub const MIN_SCREEN_ZOOM: f32 = 0.0313;
+pub const MAX_SCREEN_ZOOM: f32 = 640.0;
+pub const MAX_CANVAS_PAN: f32 = 8_388_608.0;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Viewport {
     pub width: u32,
@@ -53,6 +57,20 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    /// Screen points per document pixel. The internal zoom remains relative to fit.
+    pub fn fit_zoom(&self) -> f32 {
+        ((self.width as f32 / self.scale - 48.0) / self.document_width)
+            .min((self.height as f32 / self.scale - 48.0) / self.document_height)
+            .max(0.01)
+    }
+    pub fn screen_zoom(&self) -> f32 {
+        self.fit_zoom() * self.zoom
+    }
+    pub fn with_screen_zoom(mut self, zoom: f32) -> Self {
+        self.zoom = zoom / self.fit_zoom();
+        self
+    }
+
     fn tile_pixels_per_document_pixel(&self) -> f32 {
         let width = self.width as f32 / self.scale;
         let height = self.height as f32 / self.scale;
@@ -118,9 +136,9 @@ impl Viewport {
             .max(0.01);
         self.zoom = zoom;
         self.pan_x = (x - width * 0.5 - (anchor.x - self.document_width * 0.5) * fit * zoom)
-            .clamp(-8192.0, 8192.0);
+            .clamp(-MAX_CANVAS_PAN, MAX_CANVAS_PAN);
         self.pan_y = (y - height * 0.5 - (anchor.y - self.document_height * 0.5) * fit * zoom)
-            .clamp(-8192.0, 8192.0);
+            .clamp(-MAX_CANVAS_PAN, MAX_CANVAS_PAN);
         self
     }
     pub fn new(width: f64, height: f64, scale: f64, zoom: f64, dark: bool) -> Result<Self, String> {
@@ -128,7 +146,7 @@ impl Viewport {
             || width <= 0.0
             || height <= 0.0
             || !(0.5..=8.0).contains(&scale)
-            || !(0.25..=4.0).contains(&zoom)
+            || !(0.000001..=64000.0).contains(&zoom)
         {
             return Err("Invalid viewport dimensions, scale, or zoom".into());
         }
@@ -152,7 +170,8 @@ impl Viewport {
     }
 
     pub fn with_pan(mut self, x: f32, y: f32) -> Result<Self, String> {
-        if !x.is_finite() || !y.is_finite() || x.abs() > 8192.0 || y.abs() > 8192.0 {
+        if !x.is_finite() || !y.is_finite() || x.abs() > MAX_CANVAS_PAN || y.abs() > MAX_CANVAS_PAN
+        {
             return Err("Invalid canvas pan offset".into());
         }
         self.pan_x = x;
@@ -1516,6 +1535,7 @@ struct ObjectLayerCache {
     document_size: (u32, u32),
     runs: Vec<ObjectRun>,
     bytes: usize,
+    upload_bytes: usize,
 }
 fn layer_selected_ids(document: &Document, layer: &SvgLayer) -> Vec<String> {
     document
@@ -2034,7 +2054,14 @@ impl Renderer {
             wgpu::util::TextureDataOrder::LayerMajor,
             &prepared.pixels,
         );
-        let view = texture.create_view(&Default::default());
+        Ok(self.cached_svg_texture(texture, prepared))
+    }
+
+    fn cached_svg_texture(&self, texture: wgpu::Texture, prepared: PreparedSvgLayer) -> CachedSvg {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SVG layer"),
             layout: &self.svg_bind_layout,
@@ -2049,7 +2076,7 @@ impl Renderer {
                 },
             ],
         });
-        Ok(CachedSvg {
+        CachedSvg {
             comparison_pixels: Vec::new(),
             fully_contained: prepared.fully_contained,
             source: prepared.source,
@@ -2057,7 +2084,7 @@ impl Renderer {
             size: prepared.size,
             _texture: texture,
             bind_group,
-        })
+        }
     }
 
     fn prepare_object_cache(
@@ -2083,27 +2110,52 @@ impl Renderer {
         }
         let in_use: usize = self.object_cache.values().map(|cache| cache.bytes).sum();
         let mut bytes = 0;
+        let mut upload_bytes = 0;
         let mut prepared = Vec::new();
         for (selected, run) in runs {
-            let (mut pixels, rect) = vector::rasterize_svg_object(&run.source, size)?;
-            bytes += pixels.len();
+            let opacity = run.effective_opacity();
+            #[cfg(all(feature = "skia", target_os = "macos"))]
+            let shared =
+                vector::rasterize_svg_object_shared(&self.device, &run.source, size, opacity);
+            #[cfg(not(all(feature = "skia", target_os = "macos")))]
+            let shared: Option<(wgpu::Texture, [f32; 4])> = None;
+            let (cached, rect, allocation, uploaded) = if let Some((texture, rect)) = shared {
+                let allocation = rect[2] as usize * rect[3] as usize * 4;
+                let cached = self.cached_svg_texture(
+                    texture,
+                    PreparedSvgLayer {
+                        id: run.id,
+                        source: String::new(),
+                        opacity,
+                        size: (rect[2] as u32, rect[3] as u32),
+                        pixels: Vec::new(),
+                        fully_contained: true,
+                    },
+                );
+                (cached, rect, allocation, 0)
+            } else {
+                let (mut pixels, rect) = vector::rasterize_svg_object(&run.source, size)?;
+                let allocation = pixels.len();
+                if opacity != 1.0 {
+                    for value in &mut pixels {
+                        *value = (*value as f32 * opacity).round() as u8;
+                    }
+                }
+                let cached = self.make_cached_svg(PreparedSvgLayer {
+                    id: run.id,
+                    source: String::new(),
+                    opacity,
+                    size: (rect[2] as u32, rect[3] as u32),
+                    pixels,
+                    fully_contained: true,
+                })?;
+                (cached, rect, allocation, allocation)
+            };
+            bytes += allocation;
+            upload_bytes += uploaded;
             if bytes + in_use > 64 * 1024 * 1024 {
                 return Err("Object cache budget exceeded".into());
             }
-            let opacity = run.effective_opacity();
-            if opacity != 1.0 {
-                for value in &mut pixels {
-                    *value = (*value as f32 * opacity).round() as u8;
-                }
-            }
-            let cached = self.make_cached_svg(PreparedSvgLayer {
-                id: run.id,
-                source: String::new(),
-                opacity,
-                size: (rect[2] as u32, rect[3] as u32),
-                pixels,
-                fully_contained: true,
-            })?;
             let buffer = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2135,6 +2187,7 @@ impl Renderer {
             document_size: size,
             runs: prepared,
             bytes,
+            upload_bytes,
         })
     }
 
@@ -2743,8 +2796,9 @@ impl Renderer {
         self.object_cache
             .retain(|id, _| document.visible_svg_layers().any(|layer| &layer.id == id));
         let mut object_layers = std::collections::HashSet::new();
+        let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
-            if original.vector_layer {
+            if original.vector_layer && !high_zoom {
                 let local_selection = layer_selected_ids(document, original);
                 // Selecting/deselecting a complete layer only retags its retained
                 // image. Unrelated layers keep their caches when selection changes.
@@ -2800,8 +2854,9 @@ impl Renderer {
                             document_size: (width, height),
                             runs: Vec::new(),
                             bytes: 0,
+                            upload_bytes: 0,
                         });
-                    drag_metrics.upload_bytes += cache.bytes;
+                    drag_metrics.upload_bytes += cache.upload_bytes;
                     drag_metrics.cache_builds += usize::from(!cache.runs.is_empty());
                     drag_metrics.cache_setup_ms += started.elapsed().as_secs_f64() * 1000.0;
                     self.object_cache.insert(original.id.clone(), cache);
@@ -2887,19 +2942,20 @@ impl Renderer {
             self.install_prepared_svg(prepared)?;
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
-        let exterior_needed = document
-            .visible_svg_layers()
-            .filter(|layer| !object_layers.contains(layer.id.as_str()))
-            .any(|layer| {
-                (offset != [0.0, 0.0]
-                    && layer
-                        .vector_objects
-                        .iter()
-                        .any(|object| document.selected_vector_ids().contains(&object.id)))
-                    || self.svg_cache.get(&layer.id).is_none_or(|cached| {
-                        cached.source != layer.source || !cached.fully_contained
-                    })
-            });
+        let exterior_needed = high_zoom
+            || document
+                .visible_svg_layers()
+                .filter(|layer| !object_layers.contains(layer.id.as_str()))
+                .any(|layer| {
+                    (offset != [0.0, 0.0]
+                        && layer
+                            .vector_objects
+                            .iter()
+                            .any(|object| document.selected_vector_ids().contains(&object.id)))
+                        || self.svg_cache.get(&layer.id).is_none_or(|cached| {
+                            cached.source != layer.source || !cached.fully_contained
+                        })
+                });
         if exterior_needed {
             if let Some(prepared) =
                 self.workspace_cache
@@ -3145,6 +3201,9 @@ impl Renderer {
                     pass.set_bind_group(0, &self.bind_group, &[]);
                     pass.set_bind_group(1, &image.bind_group, &[]);
                     pass.draw(0..6, 0..1);
+                    if high_zoom {
+                        continue;
+                    }
                 }
                 if partial_layers.contains(layer.id.as_str()) {
                     if let Some(cache) = self.drag_cache.get(&layer.id) {
@@ -3985,6 +4044,33 @@ mod tests {
         let viewport = Viewport::new(800.0, 500.0, 2.0, 2.0, true).unwrap();
         let point = viewport.document_point(400.0, 250.0);
         assert_eq!((point.x, point.y), (480.0, 320.0));
+    }
+
+    #[test]
+    fn absolute_zoom_reaches_64000_percent_independent_of_fit_and_retina() {
+        for scale in [1.0, 2.0] {
+            for dimensions in [(960, 640), (8192, 8192)] {
+                let viewport = Viewport::new(800.0, 500.0, scale, 1.0, false)
+                    .unwrap()
+                    .with_document(dimensions.0, dimensions.1, CanvasColor::White)
+                    .unwrap();
+                let anchor = viewport.document_point(250.0, 170.0);
+                let zoomed =
+                    viewport.zoom_around(250.0, 170.0, MAX_SCREEN_ZOOM / viewport.fit_zoom());
+                assert!((zoomed.screen_zoom() - 640.0).abs() < 0.001);
+                let after = zoomed.document_point(250.0, 170.0);
+                assert!((after.x - anchor.x).abs() < 0.001);
+                assert!((after.y - anchor.y).abs() < 0.001);
+                assert!(zoomed.pan_x.abs() > 8192.0);
+                assert!(zoomed.with_pan(zoomed.pan_x, zoomed.pan_y).is_ok());
+                let one_to_one = viewport.with_screen_zoom(1.0);
+                let p = one_to_one.document_point(250.0, 170.0);
+                let q = one_to_one.document_point(251.0, 170.0);
+                assert!((q.x - p.x - 1.0).abs() < 0.001);
+            }
+        }
+        assert!(Viewport::new(800.0, 500.0, 1.0, 64000.0, false).is_ok());
+        assert!(Viewport::new(800.0, 500.0, 1.0, 64001.0, false).is_err());
     }
 
     #[test]

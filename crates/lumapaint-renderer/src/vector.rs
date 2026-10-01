@@ -516,6 +516,72 @@ pub(crate) fn rasterize_svg_workspace(
 
 /// Object-local texture, including pixels outside the artboard. Its rectangle
 /// remains in document coordinates and is translated only by the GPU.
+#[cfg(all(feature = "skia", target_os = "macos"))]
+pub(crate) fn rasterize_svg_object_shared(
+    device: &wgpu::Device,
+    source: &str,
+    document: (u32, u32),
+    opacity: f32,
+) -> Option<(wgpu::Texture, [f32; 4])> {
+    if source.len() > 4 * 1024 * 1024 {
+        return None;
+    }
+    let options = usvg::Options {
+        fontdb: system_fonts(),
+        font_resolver: font_resolver(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    };
+    let tree = usvg::Tree::from_str(source, &options).ok()?;
+    if !supports_skia(tree.root()) || tree.root().children().is_empty() {
+        return None;
+    }
+    let scale =
+        (document.0 as f32 / tree.size().width()).min(document.1 as f32 / tree.size().height());
+    let x = (document.0 as f32 - tree.size().width() * scale) * 0.5;
+    let y = (document.1 as f32 - tree.size().height() * scale) * 0.5;
+    let bounds = tree.root().abs_layer_bounding_box();
+    let left = (bounds.left() * scale + x - 2.0).floor();
+    let top = (bounds.top() * scale + y - 2.0).floor();
+    let width = (bounds.right() * scale + x + 2.0).ceil() - left;
+    let height = (bounds.bottom() * scale + y + 2.0).ceil() - top;
+    if [left, top, width, height].iter().any(|v| !v.is_finite())
+        || width <= 0.0
+        || height <= 0.0
+        || width > 8192.0
+        || height > 8192.0
+        || width * height * 4.0 > 64.0 * 1024.0 * 1024.0
+        || width > device.limits().max_texture_dimension_2d as f32
+        || height > device.limits().max_texture_dimension_2d as f32
+    {
+        return None;
+    }
+    let normalized = tree.to_string(&usvg::WriteOptions::default());
+    let dom = skia_safe::svg::Dom::from_str(&normalized, skia_safe::FontMgr::empty()).ok()?;
+    let info = skia_safe::ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Premul,
+        None,
+    );
+    let texture = gpu_cache::rasterize_shared(device, &info, |surface| {
+        let canvas = surface.canvas();
+        canvas.clear(skia_safe::Color::TRANSPARENT);
+        canvas.translate((x - left, y - top)).scale((scale, scale));
+        if opacity != 1.0 {
+            canvas.save_layer_alpha_f(None, opacity);
+        }
+        dom.render(canvas);
+        if opacity != 1.0 {
+            canvas.restore();
+        }
+    })?;
+    Some((texture, [left, top, width, height]))
+}
+
 pub(crate) fn rasterize_svg_object(
     source: &str,
     document: (u32, u32),
@@ -2483,5 +2549,63 @@ mod object_cache_tests {
             .iter()
             .enumerate()
             .any(|(index, p)| rect[0] + ((index % rect[2] as usize) as f32) < 0.0 && p[3] > 0));
+    }
+}
+
+#[cfg(test)]
+mod object_lock_tests {
+    use super::*;
+    use lumapaint_core::document::{Document, ObjectLockAction};
+
+    #[test]
+    fn svg_instance_locks_keep_rendering_and_identity_after_other_nodes_are_deleted() {
+        let mut doc = Document::default();
+        lumapaint_svg::attach(&mut doc);
+        doc.import_svg("instances".into(), r##"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><defs><rect id="model" width="30" height="30" fill="red"/></defs><rect x="10" y="10" width="20" height="20" fill="blue"/><use href="#model" x="50" y="10"/><use href="#model" x="100" y="10"/></svg>"##.into()).unwrap();
+        let targets = doc.direct_objects();
+        assert_eq!(targets.len(), 3);
+        let locked = targets[1].1.id.clone();
+        let sibling = targets[2].1.id.clone();
+        let original = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640)
+            .unwrap()
+            .pixels;
+        doc.select_direct_objects(vec![locked.clone()]).unwrap();
+        doc.lock_objects(ObjectLockAction::Selection).unwrap();
+        let after = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640)
+            .unwrap()
+            .pixels;
+        assert_eq!(original, after);
+        assert!(!doc
+            .direct_objects()
+            .iter()
+            .any(|(_, object)| object.id == locked));
+        assert!(doc.select_direct_objects(vec![locked.clone()]).is_err());
+        let first = &targets[0].1;
+        let anchors: Vec<_> = lumapaint_core::bezier::control_indices(first)
+            .into_iter()
+            .map(|index| (first.id.clone(), index))
+            .collect();
+        doc.delete_vector_anchors(&anchors).unwrap();
+        assert!(doc.object_is_locked(&locked));
+        assert!(!doc
+            .direct_objects()
+            .iter()
+            .any(|(_, object)| object.id == locked));
+        assert!(doc
+            .direct_objects()
+            .iter()
+            .any(|(_, object)| object.id == sibling));
+        let bytes = doc.encode().unwrap();
+        let mut loaded = Document::decode(&bytes).unwrap();
+        lumapaint_svg::attach(&mut loaded);
+        assert!(loaded.object_is_locked(&locked));
+        loaded.lock_objects(ObjectLockAction::UnlockAll).unwrap();
+        assert!(loaded
+            .direct_objects()
+            .iter()
+            .any(|(_, object)| object.id == locked));
+        assert_eq!(loaded.selected_vector_ids(), [locked]);
+        loaded.undo();
+        assert!(loaded.has_locked_objects());
     }
 }
