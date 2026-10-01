@@ -3880,6 +3880,8 @@ mod tests {
                             fill_rule: FillRule::NonZero,
                         },
                         transform: [1.0, 0.0, 0.0, 1.0, x, 20.0],
+                        fill_gradient: None,
+                        stroke_gradient: None,
                         fill: Some(VectorPaint { color }),
                         stroke: None,
                         stroke_style: Default::default(),

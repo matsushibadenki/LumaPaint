@@ -473,6 +473,9 @@ export function Workspace() {
         if ((event.metaKey || event.ctrlKey) && event.code === 'Digit2') {
           event.preventDefault(); void edit(event.altKey ? 'unlockAllObjects' : 'lockSelection'); return;
         }
+        if ((event.metaKey || event.ctrlKey) && event.code === 'Digit3') {
+          event.preventDefault(); void edit(event.altKey ? 'showAllObjects' : 'hideSelection'); return;
+        }
         if ((event.metaKey || event.ctrlKey) && key === 'g') {
           event.preventDefault(); void changeGroup(event.shiftKey ? 'ungroup' : 'group');
           return;

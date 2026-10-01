@@ -77,6 +77,11 @@ export function WorkspaceMenu(props: Props) {
       { label: t.lockArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('lockArtworkAbove') },
       { label: t.lockOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('lockOtherLayers') },
     ]}, { label: t.unlockAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasLockedObjects, shortcut: 'CmdOrCtrl+Alt+2', action: () => onEdit('unlockAllObjects') }, null,
+    { label: t.hide, enabled: canEdit && !doc.activeSavedPath, children: [
+      { label: t.hideSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+3', action: () => onEdit('hideSelection') },
+      { label: t.hideArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('hideArtworkAbove') },
+      { label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
+    ]}, { label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
     { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
       label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
     })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [

@@ -149,3 +149,47 @@ fn svg_deletion_splits_closed_path_keeps_defs_and_undo_restores_source() {
     doc.undo();
     assert_eq!(source(&doc), before);
 }
+
+#[test]
+fn hide_css_shapes_and_use_instances_preserves_style_identity_and_survives_reload() {
+    use lumapaint_core::document::ObjectVisibilityAction as Action;
+    let mut doc = document(160, 100);
+    doc.import_svg("Visibility".into(), r##"<svg width="160" height="100"><style>rect {fill:red!important} #already-hidden{display:none}</style><defs><rect id="model" width="20" height="20"/></defs><rect id="plain" width="20" height="20" style="fill:blue;stroke:black"/><use id="one" href="#model" x="30"/><use id="two" href="#model" x="70"/><rect id="already-hidden" x="100" width="20" height="20"/></svg>"##.into()).unwrap();
+    let original = doc.direct_objects();
+    assert_eq!(original.len(), 3);
+    let ids: Vec<_> = original.iter().map(|(_, o)| o.id.clone()).collect();
+    doc.select_direct_objects(ids[..2].to_vec()).unwrap();
+    let before = doc.encode().unwrap();
+    doc.hide_objects(Action::Selection).unwrap();
+    assert!(doc.has_hidden_objects());
+    assert!(doc.selected_vector_ids().is_empty());
+    assert_eq!(doc.direct_objects().len(), 1);
+    assert_eq!(
+        crate::edit::targets(source(&doc), "render", [160., 100.]).len(),
+        1,
+        "{}",
+        source(&doc)
+    );
+    assert_eq!(doc.direct_objects()[0].1.id, ids[2]);
+    assert!(doc.select_direct_objects(vec![ids[0].clone()]).is_err());
+    let mut saved = reload(&doc.encode().unwrap());
+    assert_eq!(saved.direct_objects().len(), 1);
+    saved.hide_objects(Action::ShowAll).unwrap();
+    let shown = saved.direct_objects();
+    assert_eq!(
+        shown.iter().map(|(_, o)| o.id.clone()).collect::<Vec<_>>(),
+        ids
+    );
+    for (a, b) in original.iter().zip(&shown) {
+        assert_eq!(a.1.transform, b.1.transform);
+        assert_eq!(a.1.path.data, b.1.path.data);
+    }
+    assert!(source(&saved).contains("style=\"fill:blue;stroke:black\""));
+    assert!(!source(&saved).contains("data-lumapaint-hidden-style"));
+    assert!(source(&saved).contains("#already-hidden{display:none}"));
+    assert!(source(&saved).contains("<use id=\"one\""));
+    doc.undo();
+    assert_eq!(doc.encode().unwrap(), before);
+    doc.redo();
+    assert_eq!(doc.direct_objects().len(), 1);
+}

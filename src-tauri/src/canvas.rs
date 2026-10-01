@@ -313,6 +313,10 @@ pub enum DocumentAction {
     LockArtworkAbove,
     LockOtherLayers,
     UnlockAllObjects,
+    HideSelection,
+    HideArtworkAbove,
+    HideOtherLayers,
+    ShowAllObjects,
     Copy,
     Cut,
     Paste,
@@ -1494,5 +1498,40 @@ pub(crate) async fn prepare_modal(
     #[cfg(not(target_os = "macos"))]
     {
         document_workspace(window).await
+    }
+}
+
+#[tauri::command]
+pub async fn apply_gradient(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+    target: String,
+    gradient: lumapaint_core::gradient::Gradient,
+) -> Result<DocumentSnapshot, String> {
+    gradient.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        if target == "pixels" {
+            let job = on_main(window.clone(), move || {
+                platform::prepare_pixel_gradient(&ids)
+            })
+            .await?;
+            let job = tauri::async_runtime::spawn_blocking(move || {
+                platform::render_pixel_gradient(job, gradient)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            on_main(window, move || platform::commit_pixel_gradient(job)).await
+        } else {
+            on_main(window, move || {
+                platform::apply_gradient(&ids, &target, gradient)
+            })
+            .await
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids, target, gradient);
+        Err("Native canvas is pending on this platform".into())
     }
 }

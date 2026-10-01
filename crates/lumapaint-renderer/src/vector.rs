@@ -809,10 +809,10 @@ fn supports_skia(group: &usvg::Group) -> bool {
                 && path.rendering_mode() == usvg::ShapeRendering::GeometricPrecision
                 && path
                     .fill()
-                    .is_none_or(|fill| matches!(fill.paint(), usvg::Paint::Color(_)))
+                    .is_none_or(|fill| !matches!(fill.paint(), usvg::Paint::Pattern(_)))
                 && path
                     .stroke()
-                    .is_none_or(|stroke| matches!(stroke.paint(), usvg::Paint::Color(_)))
+                    .is_none_or(|stroke| !matches!(stroke.paint(), usvg::Paint::Pattern(_)))
         }
         usvg::Node::Text(text) => supports_skia(text.flattened()),
         usvg::Node::Image(_) => false,
@@ -1769,6 +1769,8 @@ mod clipping_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint { color }),
             stroke: None,
             stroke_style: Default::default(),
@@ -1839,6 +1841,8 @@ mod clipping_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint { color }),
             stroke: None,
             stroke_style: Default::default(),
@@ -2608,4 +2612,65 @@ mod object_lock_tests {
         loaded.undo();
         assert!(loaded.has_locked_objects());
     }
+}
+
+#[cfg(all(test, feature = "skia"))]
+#[test]
+fn gradient_skia_cpu_matches_independent_svg_renderer() {
+    for body in [
+        r#"<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="64" y2="32"><stop stop-color="red"/><stop offset="1" stop-color="blue" stop-opacity=".3"/></linearGradient>"#,
+        r#"<radialGradient id="g" cx=".5" cy=".5" r=".5"><stop stop-color="white"/><stop offset="1" stop-color="black"/></radialGradient>"#,
+    ] {
+        let svg=format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"32\"><defs>{body}</defs><rect width=\"64\" height=\"32\" fill=\"url(#g)\"/></svg>");
+        let actual = rasterize_svg(&svg, 64, 32).unwrap();
+        assert!(matches!(
+            actual.backend,
+            SvgBackend::Skia | SvgBackend::SkiaGpu
+        ));
+        let expected = with_compatibility_renderer(|| rasterize_svg(&svg, 64, 32)).unwrap();
+        let difference = actual
+            .pixels
+            .iter()
+            .zip(&expected.pixels)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(difference <= 3, "Gradient difference {difference}");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn gradient_dither_changes_rgb_without_changing_alpha() {
+    use lumapaint_core::gradient::*;
+    let mut gradient = Gradient {
+        kind: GradientKind::Linear,
+        angle: 0.,
+        aspect: 1.,
+        dither: false,
+        method: GradientMethod::Classic,
+        stops: vec![
+            GradientStop {
+                position: 0.,
+                color: [100, 100, 100, 128],
+                midpoint: 0.5,
+            },
+            GradientStop {
+                position: 1.,
+                color: [115, 115, 115, 128],
+                midpoint: 0.5,
+            },
+        ],
+    };
+    let source = |g: &Gradient| {
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"96\" height=\"32\"><defs>{}{}</defs><rect width=\"96\" height=\"32\" fill=\"url(#g)\" {}/></svg>",g.svg_definition_in_bounds("g",[0.,0.,96.,32.]),g.svg_dither_filter("dither"),if g.dither{"filter=\"url(#dither)\""}else{""})
+    };
+    let plain = rasterize_svg(&source(&gradient), 96, 32).unwrap();
+    gradient.dither = true;
+    let noise = rasterize_svg(&source(&gradient), 96, 32).unwrap();
+    assert_eq!(
+        plain.pixels.iter().skip(3).step_by(4).collect::<Vec<_>>(),
+        noise.pixels.iter().skip(3).step_by(4).collect::<Vec<_>>()
+    );
+    assert!(plain.pixels != noise.pixels, "Dither did not add noise");
 }

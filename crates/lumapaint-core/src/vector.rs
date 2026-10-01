@@ -846,6 +846,10 @@ pub struct VectorObject {
     pub path: VectorPath,
     /// SVG-compatible affine matrix: [a, b, c, d, e, f].
     pub transform: [f32; 6],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_gradient: Option<crate::gradient::Gradient>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_gradient: Option<crate::gradient::Gradient>,
     pub fill: Option<VectorPaint>,
     pub stroke: Option<VectorPaint>,
     pub stroke_width: f32,
@@ -867,6 +871,12 @@ pub struct VectorObject {
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
         self.stroke_style.validate()?;
+        for gradient in [&self.fill_gradient, &self.stroke_gradient]
+            .into_iter()
+            .flatten()
+        {
+            gradient.validate()?;
+        }
         if self.rectangle_radii.is_some_and(|radii| {
             radii
                 .iter()
@@ -1740,6 +1750,8 @@ mod path_hit_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [30, 60, 90, 255],
             }),

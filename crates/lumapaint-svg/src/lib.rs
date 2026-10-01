@@ -12,10 +12,22 @@ use std::sync::Arc;
 pub struct UsvgGeometryBackend;
 impl SvgGeometryBackend for UsvgGeometryBackend {
     fn objects(&self, source: &str, layer_id: &str, size: [f32; 2]) -> Vec<VectorObject> {
-        edit::targets(source, layer_id, size)
-            .into_iter()
-            .map(|t| t.object)
-            .collect()
+        edit::objects_with_hidden(source, layer_id, size)
+    }
+    fn has_hidden_objects(&self, source: &str) -> bool {
+        edit::has_hidden_objects(source)
+    }
+    fn hide_objects(
+        &self,
+        source: &str,
+        layer: &str,
+        size: [f32; 2],
+        ids: &[String],
+    ) -> Result<String, String> {
+        edit::hide_objects(source, layer, size, ids)
+    }
+    fn show_all_objects(&self, source: &str) -> Result<String, String> {
+        edit::show_all_objects(source)
     }
     fn stabilize_ids(&self, source: &str) -> Result<String, String> {
         edit::stabilize_ids(source)

@@ -792,6 +792,8 @@ mod anchor_tests {
             },
             control_points: points,
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: None,
             stroke: Some(VectorPaint {
                 color: [0, 0, 0, 255],
@@ -1043,6 +1045,8 @@ mod direct_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [2., 0., 0., 3., 10., 20.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [0, 0, 0, 255],
             }),
@@ -1251,6 +1255,8 @@ mod contour_edit_tests {
                 fill_rule: FillRule::EvenOdd,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [0, 0, 0, 255],
             }),

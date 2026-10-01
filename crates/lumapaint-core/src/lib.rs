@@ -3,6 +3,7 @@
 use serde::Serialize;
 pub mod bezier;
 pub mod document;
+pub mod gradient;
 pub mod graph;
 pub mod selection;
 pub mod stroke;

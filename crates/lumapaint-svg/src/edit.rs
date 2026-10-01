@@ -291,6 +291,8 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
                     },
                 },
                 transform,
+                fill_gradient: None,
+                stroke_gradient: None,
                 fill: path.fill().and(paint),
                 stroke: path.stroke().and(paint),
                 stroke_width: path.stroke().map_or(0., |s| s.width().get()),
@@ -977,4 +979,147 @@ mod resolved_edit_tests {
         );
         assert!(source.contains("clip-path"));
     }
+}
+
+const HIDDEN_STYLE: &str = "data-lumapaint-hidden-style";
+
+pub fn has_hidden_objects(source: &str) -> bool {
+    source.contains(HIDDEN_STYLE)
+        && roxmltree::Document::parse(source).is_ok_and(|xml| {
+            xml.descendants()
+                .any(|node| node.attribute(HIDDEN_STYLE).is_some())
+        })
+}
+
+// Store the original inline style, including whether the attribute existed. CSS,
+// transforms, definitions and use instances are never flattened for visibility.
+fn restore_hidden(source: &str, remove_markers: bool) -> Result<String, String> {
+    if !source.contains(HIDDEN_STYLE) {
+        return Ok(source.to_owned());
+    }
+    let xml = roxmltree::Document::parse(source).map_err(|e| e.to_string())?;
+    let mut edits = Vec::new();
+    for node in xml.descendants().filter(|n| n.is_element()) {
+        let Some(marker) = node.attributes().find(|a| a.name() == HIDDEN_STYLE) else {
+            continue;
+        };
+        let style: Option<String> =
+            serde_json::from_str(marker.value()).map_err(|e| e.to_string())?;
+        if remove_markers {
+            edits.push((marker.range(), String::new()));
+        }
+        if let Some(attribute) = node.attributes().find(|a| a.name() == "style") {
+            edits.push((
+                attribute.range(),
+                style.map_or_else(String::new, |s| format!("style=\"{}\"", escape(&s))),
+            ));
+        }
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut output = source.to_owned();
+    for (range, text) in edits {
+        output.replace_range(range, &text);
+    }
+    Ok(output)
+}
+
+pub fn show_all_objects(source: &str) -> Result<String, String> {
+    restore_hidden(source, true)
+}
+
+pub fn objects_with_hidden(source: &str, layer: &str, size: [f32; 2]) -> Vec<VectorObject> {
+    if !has_hidden_objects(source) {
+        return targets(source, layer, size)
+            .into_iter()
+            .map(|t| t.object)
+            .collect();
+    }
+    let Ok(restored) = restore_hidden(source, false) else {
+        return Vec::new();
+    };
+    let Ok(xml) = roxmltree::Document::parse(&restored) else {
+        return Vec::new();
+    };
+    targets(&restored, layer, size)
+        .into_iter()
+        .map(|mut target| {
+            let hidden = target
+                .source
+                .instances
+                .iter()
+                .chain(std::iter::once(&target.source.element))
+                .any(|range| {
+                    xml.descendants()
+                        .find(|n| n.is_element() && n.range().start == range.start)
+                        .is_some_and(|n| n.ancestors().any(|a| a.attribute(HIDDEN_STYLE).is_some()))
+                });
+            target.object.visible = !hidden;
+            target.object
+        })
+        .collect()
+}
+
+pub fn hide_objects(
+    source: &str,
+    layer: &str,
+    size: [f32; 2],
+    ids: &[String],
+) -> Result<String, String> {
+    let source = stabilize_ids(source)?;
+    let targets = targets(&source, layer, size);
+    let mut ranges = HashSet::new();
+    for id in ids {
+        let target = targets
+            .iter()
+            .find(|t| &t.object.id == id)
+            .ok_or("SVG visibility target missing")?;
+        ranges.insert(
+            target
+                .source
+                .instances
+                .first()
+                .unwrap_or(&target.source.element)
+                .start,
+        );
+    }
+    let xml = roxmltree::Document::parse(&source).map_err(|e| e.to_string())?;
+    let mut edits = Vec::new();
+    for node in xml
+        .descendants()
+        .filter(|n| n.is_element() && ranges.contains(&n.range().start))
+    {
+        let original = node.attribute("style");
+        let style = format!(
+            "{}display:none!important",
+            original
+                .filter(|s| !s.is_empty())
+                .map_or_else(String::new, |s| format!(
+                    "{};",
+                    s.trim_end_matches([';', ' ', '\n', '\r', '\t'])
+                ))
+        );
+        let replacement = attributes(
+            &source,
+            node,
+            None,
+            &[
+                (
+                    HIDDEN_STYLE,
+                    serde_json::to_string(&original).map_err(|e| e.to_string())?,
+                ),
+                ("style", style),
+            ],
+        )?;
+        let end = opening(&replacement, 0).ok_or("Invalid SVG tag")?.end;
+        edits.push((
+            opening(&source, node.range().start).ok_or("Invalid SVG tag")?,
+            replacement[..end].to_owned(),
+        ));
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut output = source;
+    for (range, text) in edits {
+        output.replace_range(range, &text);
+    }
+    Ok(output)
 }

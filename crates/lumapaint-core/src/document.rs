@@ -2,6 +2,8 @@
 //! This is deliberately independent of pixels, AppKit, and the renderer.
 #[path = "object_lock.rs"]
 mod object_lock;
+#[path = "object_visibility.rs"]
+mod object_visibility;
 #[path = "transform_panel.rs"]
 mod transform_panel;
 use crate::selection::SelectionGesture;
@@ -13,6 +15,7 @@ use crate::vector::{
     VectorPaint, VectorPath, VectorText,
 };
 pub use object_lock::ObjectLockAction;
+pub use object_visibility::ObjectVisibilityAction;
 use serde::{Deserialize, Serialize};
 pub use transform_panel::{TransformPanelEdit, TransformPanelInfo};
 
@@ -364,6 +367,8 @@ pub struct LayerObjectSnapshot {
     pub locked: bool,
     pub opacity: f32,
     pub blend_mode: String,
+    pub fill_gradient: Option<crate::gradient::Gradient>,
+    pub stroke_gradient: Option<crate::gradient::Gradient>,
     pub fill_color: Option<[u8; 4]>,
     pub stroke_color: Option<[u8; 4]>,
     pub stroke_width: f32,
@@ -419,6 +424,7 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub has_hidden_objects: bool,
     pub has_locked_objects: bool,
     pub selected_bounds: Option<[f32; 4]>,
     pub transform_panel: Option<TransformPanelInfo>,
@@ -482,6 +488,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    background_visible: bool,
     locked_objects: std::collections::BTreeSet<String>,
     locked_artwork_layers: std::collections::BTreeSet<String>,
     background_locked: bool,
@@ -727,6 +734,8 @@ impl Document {
                             locked: self.object_is_locked(&object.id),
                             opacity: object.opacity,
                             blend_mode: object.blend_mode.clone(),
+                            fill_gradient: object.fill_gradient.clone(),
+                            stroke_gradient: object.stroke_gradient.clone(),
                             fill_color: object.fill.map(|p| p.color),
                             stroke_color: object.stroke.map(|p| p.color),
                             stroke_style: object.stroke_style.clone(),
@@ -766,6 +775,7 @@ impl Document {
         );
         DocumentSnapshot {
             has_locked_objects: self.has_locked_objects(),
+            has_hidden_objects: self.has_hidden_objects(),
             selected_bounds: self.selected_vector_bounds(),
             transform_panel: self.transform_panel_info(),
             active_saved_path: self.path_editing.as_ref().map(|edit| edit.id.clone()),
@@ -2033,6 +2043,8 @@ impl Document {
                 settings.position[0],
                 settings.position[1],
             ],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(crate::vector::VectorPaint {
                 color: [r, g, b, 255],
             }),
@@ -2505,12 +2517,18 @@ impl Document {
                 }
                 if target == "swap" {
                     std::mem::swap(&mut object.fill, &mut object.stroke);
+                    std::mem::swap(&mut object.fill_gradient, &mut object.stroke_gradient);
                 } else {
                     let paint = if target == "fill" {
                         &mut object.fill
                     } else {
                         &mut object.stroke
                     };
+                    if target == "fill" {
+                        object.fill_gradient = None;
+                    } else {
+                        object.stroke_gradient = None;
+                    }
                     *paint = color.map(|[r, g, b]| VectorPaint {
                         color: [r, g, b, paint.map_or(255, |p| p.color[3])],
                     });
@@ -2528,6 +2546,93 @@ impl Document {
         }
         if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn set_selected_vector_gradient(
+        &mut self,
+        ids: &[String],
+        target: &str,
+        gradient: crate::gradient::Gradient,
+    ) -> Result<(), String> {
+        gradient.validate()?;
+        if target == "stroke" && gradient.dither {
+            return Err(
+                "Dither applies only to fills / ディザは塗りにのみ適用できます / 仿色仅用于填色"
+                    .into(),
+            );
+        }
+        if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+            || ids.is_empty()
+            || ids.len() != self.selected_vector_objects.len()
+            || !ids
+                .iter()
+                .all(|id| self.selected_vector_objects.contains(id))
+        {
+            return Err("Selection changed / 選択が変更されました / 选区已更改".into());
+        }
+        if !["fill", "stroke"].contains(&target) {
+            return Err("Invalid paint target".into());
+        }
+        if !ids.iter().all(|id| {
+            self.svg_layers
+                .iter()
+                .any(|l| l.vector_objects.iter().any(|o| &o.id == id))
+        }) {
+            return Err("Imported SVG gradient editing requires native paths / SVGのパスを編集可能なパスに変換してください / 请将 SVG 转换为可编辑路径".into());
+        }
+        let mut layers = self.svg_layers.clone();
+        for layer in &mut layers {
+            let mut changed = false;
+            for object in &mut layer.vector_objects {
+                if !ids.contains(&object.id) {
+                    continue;
+                }
+                if layer.locked
+                    || !layer.visible
+                    || !object.visible
+                    || self.object_is_locked(&object.id)
+                    || object.text.is_some()
+                {
+                    return Err("Select visible paths on unlocked layers / ロックされていない表示中のパスを選択してください / 请选择未锁定且可见的路径".into());
+                }
+                if target == "fill" {
+                    object.fill_gradient = Some(gradient.clone());
+                    object.fill = Some(VectorPaint {
+                        color: gradient.stops[0].color,
+                    });
+                } else {
+                    object.stroke_gradient = Some(gradient.clone());
+                    object.stroke = Some(VectorPaint {
+                        color: gradient.stops[0].color,
+                    });
+                }
+                if object.stroke.is_some() && object.stroke_width <= 0. {
+                    object.stroke_width = 1.;
+                }
+                object.validate()?;
+                changed = true;
+            }
+            if changed {
+                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                validate_svg_layer(layer)?;
+            }
+        }
+        if layers.iter().map(|layer| layer.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        if layers
+            .iter()
+            .zip(&self.svg_layers)
+            .all(|(a, b)| a.source == b.source && a.vector_objects == b.vector_objects)
+        {
+            return Ok(());
         }
         self.finish();
         let before = self.vector_history_state();
@@ -3368,6 +3473,8 @@ impl Document {
                     *object = curve;
                 }
             }
+            object.fill_gradient = None;
+            object.stroke_gradient = None;
             object.fill = None;
             object.stroke = Some(crate::vector::VectorPaint {
                 color: self.layer_guide_color(&edit.layer_id),
@@ -3508,6 +3615,8 @@ impl Document {
             .iter()
             .cloned()
             .map(|mut object| {
+                object.fill_gradient = None;
+                object.stroke_gradient = None;
                 object.fill = Some(crate::vector::VectorPaint { color: [255; 4] });
                 object.stroke = None;
                 object
@@ -3796,8 +3905,12 @@ impl Document {
                 object.transform = [1., 0., 0., 1., 0., 0.];
                 object.kind = VectorObjectKind::Compound;
                 if outline {
+                    if object.stroke.is_some() {
+                        object.fill_gradient = object.stroke_gradient.take();
+                    }
                     object.fill = object.stroke.or(object.fill);
                     object.stroke = None;
+                    object.stroke_gradient = None;
                     object.stroke_width = 0.;
                 }
                 object.validate()?;
@@ -5067,7 +5180,7 @@ impl Document {
                 };
                 objects
                     .into_iter()
-                    .filter(|o| !self.object_is_locked(&o.id))
+                    .filter(|o| o.visible && !self.object_is_locked(&o.id))
                     .map(|o| (l.id.clone(), o))
                     .collect::<Vec<_>>()
             })
@@ -5262,6 +5375,8 @@ impl Document {
             .into_iter()
             .filter(|(_, o)| ids.contains(&o.id))
             .map(|(_, mut o)| {
+                o.fill_gradient = None;
+                o.stroke_gradient = None;
                 o.stroke = Some(crate::vector::VectorPaint {
                     color: [70, 150, 255, 255],
                 });
@@ -5421,6 +5536,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            background_visible: self.visible,
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
             background_locked: self.layer_locked,
@@ -5436,6 +5552,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.visible = state.background_visible;
         self.locked_objects = state.locked_objects;
         self.locked_artwork_layers = state.locked_artwork_layers;
         self.layer_locked = state.background_locked;
@@ -6044,6 +6161,8 @@ mod tests {
                 fill_rule: crate::vector::FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 10.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [40, 80, 160, 255],
             }),
@@ -6847,6 +6966,41 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
         let stroke = object
             .stroke
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
+        let mut fill = fill;
+        let mut stroke = stroke;
+        for (target, gradient) in [
+            ("fill", &object.fill_gradient),
+            ("stroke", &object.stroke_gradient),
+        ] {
+            if let Some(gradient) = gradient.as_ref().filter(|_| {
+                if target == "fill" {
+                    object.fill.is_some()
+                } else {
+                    object.stroke.is_some()
+                }
+            }) {
+                let id = format!("lp-gradient-{object_index}-{target}");
+                svg.push_str("<defs>");
+                let mut bounds =
+                    crate::stroke::path_bounds(&object.path.data).unwrap_or([0., 0., 1., 1.]);
+                let padding = object.stroke_width.max(1.) * 0.5;
+                if bounds[0] == bounds[2] {
+                    bounds[0] -= padding;
+                    bounds[2] += padding;
+                }
+                if bounds[1] == bounds[3] {
+                    bounds[1] -= padding;
+                    bounds[3] += padding;
+                }
+                svg.push_str(&gradient.svg_definition_in_bounds(&id, bounds));
+                svg.push_str("</defs>");
+                if target == "fill" {
+                    fill = format!("url(#{id})");
+                } else {
+                    stroke = format!("url(#{id})");
+                }
+            }
+        }
         if let Some(text) = &object.text {
             let anchor = match text.alignment {
                 crate::vector::TextAlignment::Left => "start",
@@ -7120,7 +7274,30 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
         };
         let data = escape_xml(&object.path.data);
         let appearance = &object.stroke_style;
-        if appearance.profile == crate::stroke::WidthProfile::Uniform
+        let dither = object
+            .fill_gradient
+            .as_ref()
+            .filter(|g| g.dither && object.fill.is_some());
+        if let Some(gradient) = dither {
+            let id = format!("lp-dither-{object_index}");
+            svg.push_str("<defs>");
+            svg.push_str(&gradient.svg_dither_filter(&id));
+            svg.push_str("</defs>");
+            let _ = write!(
+                svg,
+                r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><path d="{data}" fill="{fill}" fill-rule="{rule}" filter="url(#{id})"/>"#
+            );
+            svg.push_str(&crate::stroke::svg_stroke(
+                &data,
+                &object.path.data,
+                rule,
+                object.stroke_width,
+                &object.stroke_style,
+                &stroke,
+                object_index,
+            ));
+            svg.push_str("</g>");
+        } else if appearance.profile == crate::stroke::WidthProfile::Uniform
             && appearance.alignment == crate::stroke::StrokeAlignment::Center
             && appearance.start_arrow == crate::stroke::Arrowhead::None
             && appearance.end_arrow == crate::stroke::Arrowhead::None
@@ -7557,6 +7734,8 @@ mod persistence_tests {
                         fill_rule: FillRule::EvenOdd,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 5.0, 6.0],
+                    fill_gradient: None,
+                    stroke_gradient: None,
                     fill: Some(VectorPaint {
                         color: [10, 80, 220, 255],
                     }),
@@ -7609,6 +7788,8 @@ mod persistence_tests {
                             fill_rule: FillRule::NonZero,
                         },
                         transform: [1.0, 0.0, 0.0, 1.0, index as f32 * 10.0, 0.0],
+                        fill_gradient: None,
+                        stroke_gradient: None,
                         fill: Some(VectorPaint {
                             color: [50, 80, 120, 255],
                         }),
@@ -7674,6 +7855,8 @@ mod persistence_tests {
                         fill_rule: FillRule::NonZero,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    fill_gradient: None,
+                    stroke_gradient: None,
                     fill: Some(VectorPaint {
                         color: [255, 0, 0, 255],
                     }),
@@ -7756,6 +7939,8 @@ mod persistence_tests {
                         fill_rule: FillRule::NonZero,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    fill_gradient: None,
+                    stroke_gradient: None,
                     fill: Some(VectorPaint {
                         color: [0, 0, 0, 255],
                     }),
@@ -7832,6 +8017,8 @@ mod persistence_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 10.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [40, 80, 160, 255],
             }),
@@ -9164,6 +9351,8 @@ mod stroke_width_tests {
                         fill_rule: crate::vector::FillRule::NonZero,
                     },
                     transform: [1., 0., 0., 1., 0., 0.],
+                    fill_gradient: None,
+                    stroke_gradient: None,
                     fill: None,
                     stroke: Some(VectorPaint {
                         color: [10, 20, 30, 255],
@@ -9293,6 +9482,8 @@ mod stroke_width_tests {
                 fill_rule: crate::vector::FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: None,
             stroke: Some(VectorPaint {
                 color: [10, 20, 30, 255],
@@ -9477,6 +9668,8 @@ mod independent_saved_path_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [255, 0, 0, 255],
             }),
@@ -9882,5 +10075,105 @@ impl Document {
             return Err("Unsupported project format or version".into());
         }
         Self::from_document_state(serde_json::from_value(value).map_err(|e| e.to_string())?)
+    }
+}
+
+#[cfg(test)]
+mod gradient_document_tests {
+    use super::*;
+    use crate::gradient::*;
+    fn fixture() -> (Document, String, Gradient) {
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let object:VectorObject=serde_json::from_value(serde_json::json!({"id":"gradient-path","name":"Gradient path","path":{"data":"M0 0H100V100H0Z","fillRule":"nonZero"},"transform":[1,0,0,1,0,0],"fill":{"color":[255,0,0,255]},"stroke":null,"strokeWidth":0,"visible":true,"controlPoints":[[0,0],[100,100]]})).unwrap();
+        doc.upsert_vector_object(&layer, object).unwrap();
+        doc.select_vector_objects(vec!["gradient-path".into()])
+            .unwrap();
+        let g = Gradient {
+            kind: GradientKind::Radial,
+            angle: 45.,
+            aspect: 0.5,
+            dither: false,
+            method: GradientMethod::Classic,
+            stops: vec![
+                GradientStop {
+                    position: 0.,
+                    color: [255, 255, 0, 255],
+                    midpoint: 0.3,
+                },
+                GradientStop {
+                    position: 1.,
+                    color: [255, 0, 0, 128],
+                    midpoint: 0.5,
+                },
+            ],
+        };
+        (doc, layer, g)
+    }
+    #[test]
+    fn gradients_persist_undo_and_replace_with_solid() {
+        let (mut doc, _, g) = fixture();
+        let ids = vec!["gradient-path".into()];
+        doc.set_selected_vector_gradient(&ids, "fill", g.clone())
+            .unwrap();
+        assert!(doc
+            .svg_layers()
+            .next()
+            .unwrap()
+            .source
+            .contains("radialGradient"));
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded
+                .snapshot()
+                .layers
+                .iter()
+                .flat_map(|l| &l.objects)
+                .find(|o| o.id == ids[0])
+                .unwrap()
+                .fill_gradient,
+            Some(g.clone())
+        );
+        let revision = doc.revision();
+        doc.set_selected_vector_gradient(&ids, "fill", g.clone())
+            .unwrap();
+        assert_eq!(doc.revision(), revision);
+        doc.undo();
+        assert!(doc.svg_layers().next().unwrap().vector_objects[0]
+            .fill_gradient
+            .is_none());
+        doc.redo();
+        assert_eq!(
+            doc.svg_layers().next().unwrap().vector_objects[0].fill_gradient,
+            Some(g)
+        );
+        doc.set_selected_vector_paint(&ids, "fill", Some([10, 20, 30]))
+            .unwrap();
+        assert!(doc.svg_layers().next().unwrap().vector_objects[0]
+            .fill_gradient
+            .is_none());
+        doc.undo();
+        assert!(doc.svg_layers().next().unwrap().vector_objects[0]
+            .fill_gradient
+            .is_some());
+    }
+    #[test]
+    fn invalid_or_stale_selection_is_atomic_and_stroke_gets_width() {
+        let (mut doc, _, mut g) = fixture();
+        let ids = vec!["gradient-path".into()];
+        let bytes = doc.encode().unwrap();
+        g.angle = f32::NAN;
+        assert!(doc.set_selected_vector_gradient(&ids, "fill", g).is_err());
+        assert_eq!(doc.encode().unwrap(), bytes);
+        let (_, _, g) = fixture();
+        assert!(doc
+            .set_selected_vector_gradient(&["missing".into()], "fill", g.clone())
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), bytes);
+        doc.set_selected_vector_gradient(&ids, "stroke", g.clone())
+            .unwrap();
+        let o = &doc.svg_layers().next().unwrap().vector_objects[0];
+        assert_eq!(o.stroke_gradient, Some(g));
+        assert_eq!(o.stroke_width, 1.);
     }
 }

@@ -283,6 +283,14 @@ mod tests {
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         for (body, opacity) in [
             (
+                r#"<defs><linearGradient id="g" x1="0" x2="1"><stop stop-color="red"/><stop offset="1" stop-color="blue" stop-opacity=".4"/></linearGradient></defs><rect x="8" y="7" width="125" height="61" fill="url(#g)"/>"#,
+                1.0,
+            ),
+            (
+                r#"<defs><radialGradient id="g"><stop stop-color="white"/><stop offset="1" stop-color="black"/></radialGradient></defs><rect x="8" y="7" width="125" height="61" fill="url(#g)"/>"#,
+                1.0,
+            ),
+            (
                 r##"<rect x="8" y="7" width="25" height="31" fill="#a83d72" fill-opacity="0.5"/><path d="M4 5 C10 40 35 3 50 40" fill="none" stroke="blue" stroke-width="3"/>"##,
                 1.0,
             ),
@@ -364,7 +372,7 @@ mod tests {
             drop(mapped);
             buffer.unmap();
         }
-        let unsupported = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect width="16" height="16" fill="url(#g)"/></svg>"#;
+        let unsupported = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><pattern id="g" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="red"/></pattern></defs><rect width="16" height="16" fill="url(#g)"/></svg>"#;
         assert!(
             super::super::rasterize_svg_object_shared(&device, unsupported, (16, 16), 1.0)
                 .is_none()

@@ -18,6 +18,21 @@ pub trait SvgGeometryBackend: Send + Sync {
     fn stabilize_ids(&self, source: &str) -> Result<String, String> {
         Ok(source.to_owned())
     }
+    fn has_hidden_objects(&self, _source: &str) -> bool {
+        false
+    }
+    fn hide_objects(
+        &self,
+        _source: &str,
+        _layer_id: &str,
+        _size: [f32; 2],
+        _ids: &[String],
+    ) -> Result<String, String> {
+        Err("SVG visibility editing is unavailable".into())
+    }
+    fn show_all_objects(&self, source: &str) -> Result<String, String> {
+        Ok(source.to_owned())
+    }
     /// Return a complete replacement source atomically, leaving the original untouched on failure.
     fn apply(
         &self,

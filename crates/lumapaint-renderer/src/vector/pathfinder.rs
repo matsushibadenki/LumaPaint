@@ -26,6 +26,7 @@ fn output(path: Path, source: &VectorObject, strip_stroke: bool) -> Result<Vecto
     object.bounds_reset = false;
     if strip_stroke {
         object.stroke = None;
+        object.stroke_gradient = None;
     }
     object.validate()?;
     Ok(object)
@@ -221,6 +222,8 @@ mod tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint { color }),
             stroke: None,
             stroke_width: 0.,

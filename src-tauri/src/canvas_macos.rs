@@ -635,6 +635,8 @@ impl PaintView {
             let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
             if command && event.keyCode() == 19 {
                 report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::UnlockAllObjects } else { DocumentAction::LockSelection }); true
+            } else if command && event.keyCode() == 20 {
+                report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::ShowAllObjects } else { DocumentAction::HideSelection }); true
             } else if command && [7,8,9].contains(&event.keyCode()) {
                 report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
             } else if command && [0, 2].contains(&event.keyCode()) {
@@ -1095,6 +1097,8 @@ impl PenDraft {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: None,
             stroke: Some(VectorPaint {
                 color: [
@@ -1671,6 +1675,8 @@ fn vector_pointer(
     document.upsert_vector_object(
         &layer_id,
         VectorObject {
+            fill_gradient: None,
+            stroke_gradient: None,
             live_corners: None,
             rectangle_radii: None,
             text: None,
@@ -1979,6 +1985,8 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                     fill_rule: FillRule::NonZero,
                 },
                 transform: [1., 0., 0., 1., 0., 0.],
+                fill_gradient: None,
+                stroke_gradient: None,
                 fill: None,
                 stroke: Some(VectorPaint {
                     color: [48, 144, 255, 255],
@@ -2967,12 +2975,21 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             | DocumentAction::LockArtworkAbove
             | DocumentAction::LockOtherLayers
             | DocumentAction::UnlockAllObjects
+            | DocumentAction::HideSelection
+            | DocumentAction::HideArtworkAbove
+            | DocumentAction::HideOtherLayers
+            | DocumentAction::ShowAllObjects
     ) {
         finish_open_pen()?;
         cancel_vector_drag();
         if matches!(
             action,
-            DocumentAction::LockSelection | DocumentAction::UnlockAllObjects
+            DocumentAction::LockSelection
+                | DocumentAction::UnlockAllObjects
+                | DocumentAction::HideSelection
+                | DocumentAction::HideArtworkAbove
+                | DocumentAction::HideOtherLayers
+                | DocumentAction::ShowAllObjects
         ) {
             DIRECT_POINTS.with(|points| points.borrow_mut().clear());
         }
@@ -3046,6 +3063,18 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             }
             DocumentAction::UnlockAllObjects => {
                 doc.lock_objects(lumapaint_core::document::ObjectLockAction::UnlockAll)?
+            }
+            DocumentAction::HideSelection => {
+                doc.hide_objects(lumapaint_core::document::ObjectVisibilityAction::Selection)?
+            }
+            DocumentAction::HideArtworkAbove => {
+                doc.hide_objects(lumapaint_core::document::ObjectVisibilityAction::ArtworkAbove)?
+            }
+            DocumentAction::HideOtherLayers => {
+                doc.hide_objects(lumapaint_core::document::ObjectVisibilityAction::OtherLayers)?
+            }
+            DocumentAction::ShowAllObjects => {
+                doc.hide_objects(lumapaint_core::document::ObjectVisibilityAction::ShowAll)?
             }
             DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste => unreachable!(),
             DocumentAction::DeleteSelectedObjects => {
@@ -6912,6 +6941,8 @@ mod direct_command_tests {
                 fill_rule: FillRule::EvenOdd,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [10, 20, 30, 255],
             }),
@@ -7035,4 +7066,210 @@ pub(super) fn prepare_modal() -> Result<DocumentWorkspaceSnapshot, String> {
 fn modal_input_blocked(label: &str) -> bool {
     APP.get()
         .is_some_and(|app| crate::modal_windows::blocked(app, label))
+}
+
+pub fn apply_gradient(
+    ids: &[String],
+    target: &str,
+    gradient: lumapaint_core::gradient::Gradient,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        d.borrow_mut()
+            .set_selected_vector_gradient(ids, target, gradient)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+pub struct PixelGradientJob {
+    document: Document,
+    id: u64,
+    revision: u64,
+    layer: String,
+    selection: Option<lumapaint_core::document::Selection>,
+}
+pub fn prepare_pixel_gradient(ids: &[String]) -> Result<PixelGradientJob, String> {
+    ensure_document_open()?;
+    let document = DOCUMENT.with(|d| {
+        d.borrow_mut().finish();
+        d.borrow().clone()
+    });
+    if !ids.is_empty()
+        || !document.selected_vector_ids().is_empty()
+        || document.selected_layer_is_vector()
+    {
+        return Err(
+            "Select a pixel layer / ピクセルレイヤーを選択してください / 请选择像素图层".into(),
+        );
+    }
+    let snapshot = document.snapshot();
+    let layer = snapshot
+        .layers
+        .iter()
+        .find(|l| l.id == snapshot.layer_id)
+        .ok_or("Layer not found")?;
+    if layer.locked || layer.alpha_locked || !layer.visible || layer.kind != "paint" {
+        return Err("Unlock and show the pixel layer / ピクセルレイヤーを表示しロックを解除してください / 请显示并解锁像素图层".into());
+    }
+    Ok(PixelGradientJob {
+        id: ACTIVE_DOCUMENT_ID.with(|i| i.get()),
+        revision: document.revision(),
+        layer: snapshot.layer_id,
+        selection: document.selection().cloned(),
+        document,
+    })
+}
+pub fn render_pixel_gradient(
+    mut job: PixelGradientJob,
+    gradient: lumapaint_core::gradient::Gradient,
+) -> Result<PixelGradientJob, String> {
+    gradient.validate()?;
+    let (w, h, mut pixels) = clipboard::raw_selected_pixels(&job.document)?;
+    let bounds =
+        job.selection
+            .as_ref()
+            .filter(|s| {
+                !s.regions.is_empty()
+                    && !s.regions.iter().any(|r| {
+                        r.operation == lumapaint_core::selection::SelectionOperation::Invert
+                    })
+            })
+            .map(|s| {
+                s.regions.iter().fold(
+                    [
+                        f32::INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::NEG_INFINITY,
+                    ],
+                    |mut b, r| {
+                        b[0] = b[0].min(r.bounds[0]);
+                        b[1] = b[1].min(r.bounds[1]);
+                        b[2] = b[2].max(r.bounds[0] + r.bounds[2]);
+                        b[3] = b[3].max(r.bounds[1] + r.bounds[3]);
+                        b
+                    },
+                )
+            })
+            .unwrap_or([0., 0., w as f32, h as f32]);
+    let definition = gradient.svg_definition_in_bounds("pixel-gradient", bounds)
+        + &gradient.svg_dither_filter("pixel-dither");
+    let filter = if gradient.dither {
+        "filter=\"url(#pixel-dither)\""
+    } else {
+        ""
+    };
+    let svg=format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\"><defs>{definition}</defs><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#pixel-gradient)\" {filter}/></svg>",bounds[0],bounds[1],bounds[2]-bounds[0],bounds[3]-bounds[1]);
+    let raster = lumapaint_renderer::vector::rasterize_svg(&svg, w, h)?;
+    for (i, (dest, source)) in pixels
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(raster.pixels.as_chunks::<4>().0)
+        .enumerate()
+    {
+        if job.selection.as_ref().is_some_and(|s| {
+            !s.contains(lumapaint_core::document::Point {
+                x: (i as u32 % w) as f32 + 0.5,
+                y: (i as u32 / w) as f32 + 0.5,
+            })
+        }) {
+            continue;
+        }
+        for c in 0..4 {
+            dest[c] =
+                (source[c] as u16 + dest[c] as u16 * (255 - source[3] as u16) / 255).min(255) as u8;
+        }
+    }
+    let png = lumapaint_renderer::vector::document_png(w, h, pixels)?;
+    job.document
+        .replace_moved_pixels(clipboard::image_svg(w, h, &png), job.selection.clone())?;
+    Ok(job)
+}
+pub fn commit_pixel_gradient(job: PixelGradientJob) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if ACTIVE_DOCUMENT_ID.with(|i| i.get()) != job.id
+        || DOCUMENT.with(|d| {
+            let d = d.borrow();
+            d.revision() != job.revision
+                || d.snapshot().layer_id != job.layer
+                || d.selection() != job.selection.as_ref()
+        })
+    {
+        return Err("Document or selection changed / ドキュメントまたは選択が変更されました / 文档或选区已更改".into());
+    }
+    DOCUMENT.with(|d| *d.borrow_mut() = job.document);
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+#[cfg(test)]
+mod pixel_gradient_tests {
+    use super::*;
+    #[test]
+    fn pixel_gradient_preserves_outside_selection_and_has_single_undo() {
+        let mut document = Document::default();
+        let mut settings:DocumentSettings=serde_json::from_value(serde_json::json!({"name":"Gradient test","width":32,"height":16,"unit":"pixels","resolution":72,"artboards":false,"canvasColor":"transparent","pixelAspectRatio":1})).unwrap();
+        settings.canvas_color = lumapaint_core::document::CanvasColor::Transparent;
+        document.set_document_settings(settings).unwrap();
+        document.select_layer("layer-1".into()).unwrap();
+        document
+            .begin_selection_edit(
+                lumapaint_core::document::Point { x: 8., y: 4. },
+                SelectionShape::Rectangle,
+                lumapaint_core::document::SelectionMode::Replace,
+            )
+            .unwrap();
+        document.extend_selection(lumapaint_core::document::Point { x: 24., y: 12. }, true);
+        let selection = document.selection().cloned();
+        let revision = document.revision();
+        let gradient = lumapaint_core::gradient::Gradient {
+            kind: lumapaint_core::gradient::GradientKind::Linear,
+            angle: 0.,
+            aspect: 1.,
+            dither: false,
+            method: lumapaint_core::gradient::GradientMethod::Classic,
+            stops: vec![
+                lumapaint_core::gradient::GradientStop {
+                    position: 0.,
+                    color: [255, 0, 0, 255],
+                    midpoint: 0.5,
+                },
+                lumapaint_core::gradient::GradientStop {
+                    position: 1.,
+                    color: [0, 0, 255, 255],
+                    midpoint: 0.5,
+                },
+            ],
+        };
+        let mut result = render_pixel_gradient(
+            PixelGradientJob {
+                document,
+                id: 1,
+                revision,
+                layer: "layer-1".into(),
+                selection: selection.clone(),
+            },
+            gradient,
+        )
+        .unwrap();
+        let raster = lumapaint_renderer::vector::rasterize_svg(
+            result.document.paint_source().unwrap(),
+            32,
+            16,
+        )
+        .unwrap();
+        assert_eq!(raster.pixels[3], 0);
+        let left = (8 * 32 + 9) * 4;
+        let right = (8 * 32 + 22) * 4;
+        assert!(raster.pixels[left] > raster.pixels[left + 2]);
+        assert!(raster.pixels[right + 2] > raster.pixels[right]);
+        assert_eq!(result.document.selection(), selection.as_ref());
+        result.document.undo();
+        assert!(result.document.paint_source().is_none());
+        result.document.redo();
+        assert!(result.document.paint_source().is_some());
+    }
 }

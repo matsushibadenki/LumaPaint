@@ -289,6 +289,8 @@ mod tests {
             bounds_reset: false,
             path: path(data),
             transform: [1., 0., 0., 1., 10., 20.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [255, 0, 0, 255],
             }),
@@ -398,6 +400,8 @@ mod tests {
             text: None,
             path: path("M0 0H20V20H0Z"),
             transform: [1., 0., 0., 1., 4., 6.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [20, 40, 60, 255],
             }),
@@ -469,6 +473,8 @@ mod tests {
             bounds_reset: false,
             path: path("M0 0H20V20H0Z"),
             transform: [1.0, 0.0, 0.0, 1.0, x, 0.0],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [20, 90, 180, 255],
             }),

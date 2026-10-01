@@ -154,6 +154,7 @@ pub fn run() {
             canvas::transform_objects,
             canvas::edit_transform_panel,
             canvas::set_vector_paint,
+            canvas::apply_gradient,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,

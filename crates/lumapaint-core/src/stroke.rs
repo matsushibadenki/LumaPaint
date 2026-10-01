@@ -1082,6 +1082,23 @@ pub fn selection_geometry(
     result
 }
 
+/// Untransformed path bounds for object-local appearance coordinates.
+pub fn path_bounds(data: &str) -> Option<[f32; 4]> {
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for p in contours(data).into_iter().flat_map(|c| c.points) {
+        b[0] = b[0].min(p[0]);
+        b[1] = b[1].min(p[1]);
+        b[2] = b[2].max(p[0]);
+        b[3] = b[3].max(p[1]);
+    }
+    b.iter().all(|v| v.is_finite()).then(|| b.map(|v| v as f32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -436,6 +436,8 @@ mod tests {
                 fill_rule: crate::vector::FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            fill_gradient: None,
+            stroke_gradient: None,
             fill: Some(VectorPaint {
                 color: [20, 30, 40, 255],
             }),
