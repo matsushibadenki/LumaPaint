@@ -1,4 +1,8 @@
 //! AppKit ownership is isolated here; no Apple types enter the renderer or document core.
+#[path = "window_sessions_macos.rs"]
+pub(super) mod window_sessions;
+pub(super) use window_sessions::{current_label, SessionGuard};
+
 use super::{
     CanvasInfo, CanvasRequest, CanvasTool, DocumentAction, DocumentTabSnapshot,
     DocumentWorkspaceSnapshot,
@@ -35,7 +39,7 @@ use raw_window_handle::{
 };
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    mpsc::{sync_channel, SyncSender, TrySendError},
+    mpsc::TrySendError,
     OnceLock,
 };
 use std::time::{Duration, Instant};
@@ -54,8 +58,8 @@ mod raster_import;
 mod text_editor;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-static RASTER_SENDER: OnceLock<SyncSender<RasterJob>> = OnceLock::new();
-static TILE_SENDER: OnceLock<SyncSender<TileJob>> = OnceLock::new();
+static RASTER_SENDER: OnceLock<crate::render_queue::LatestSender<RasterJob>> = OnceLock::new();
+static TILE_SENDER: OnceLock<crate::render_queue::LatestSender<TileJob>> = OnceLock::new();
 static NEXT_CANVAS_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,16 +146,12 @@ pub fn initialize(app: tauri::AppHandle) {
     let _ = std::thread::Builder::new()
         .name("text-fonts".into())
         .spawn(lumapaint_renderer::vector::prepare_text_fonts);
-    let (sender, receiver) = sync_channel::<RasterJob>(1);
+    let (sender, receiver) = crate::render_queue::channel::<RasterJob>();
     if std::thread::Builder::new()
         .name("svg-raster".into())
         .spawn(move || {
             let mut frame_cache = FrameRasterCache::default();
-            while let Ok(mut job) = receiver.recv() {
-                // At most one request waits while a raster is running. Keep the newest.
-                while let Ok(newer) = receiver.try_recv() {
-                    job = newer;
-                }
+            while let Ok(job) = receiver.recv() {
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
                 let before_rasterized = frame_cache.rasterized_frames;
@@ -176,7 +176,9 @@ pub fn initialize(app: tauri::AppHandle) {
                     );
                 }
                 let _ = app.run_on_main_thread(move || {
-                    finish_raster_job(job.key, result, queued_for, cpu_time)
+                    if let Some(_session) = window_sessions::for_canvas(job.key.canvas_token) {
+                        finish_raster_job(job.key, result, queued_for, cpu_time);
+                    }
                 });
             }
         })
@@ -184,14 +186,11 @@ pub fn initialize(app: tauri::AppHandle) {
     {
         let _ = RASTER_SENDER.set(sender);
     }
-    let (sender, receiver) = sync_channel::<TileJob>(1);
+    let (sender, receiver) = crate::render_queue::channel::<TileJob>();
     if std::thread::Builder::new()
         .name("tile-project".into())
         .spawn(move || {
-            while let Ok(mut job) = receiver.recv() {
-                while let Ok(newer) = receiver.try_recv() {
-                    job = newer;
-                }
+            while let Ok(job) = receiver.recv() {
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
                 let result = match job.work {
@@ -282,6 +281,10 @@ pub fn initialize(app: tauri::AppHandle) {
                 });
                 let cpu_time = started.elapsed();
                 let _ = tile_app.run_on_main_thread(move || {
+                    let Some(_session) = window_sessions::for_canvas(job.key.source.canvas_token)
+                    else {
+                        return;
+                    };
                     finish_tile_job(
                         job.key,
                         job.state,
@@ -332,6 +335,7 @@ fn synchronized_zoom(
 }
 
 struct FrameState {
+    label: String,
     display_link: RefCell<Option<Retained<AnyObject>>>,
 }
 
@@ -342,6 +346,7 @@ define_class!(
 impl PaintView {
         #[unsafe(method(frameTick:))]
         fn frame_tick(&self, _link: &AnyObject) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
                 if let Err(error) = redraw() { emit_error(error); }
             }
@@ -355,6 +360,7 @@ impl PaintView {
         fn wants_update_layer(&self) -> bool { true }
         #[unsafe(method(updateLayer))]
         fn update_layer(&self) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if self.ivars().display_link.borrow().is_some() { return; }
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
                 text_editor::prepare_frame();
@@ -364,6 +370,7 @@ impl PaintView {
 
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return std::ptr::null_mut(); };
             let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
             if CANVAS_OVERLAY.with(|value| value.get()).is_some_and(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3]) {
                 return std::ptr::null_mut();
@@ -379,6 +386,7 @@ impl PaintView {
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool { true }
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             let cursor = if PANNING.with(|value| value.get()) {
                 Some(NSCursor::closedHandCursor())
             } else {
@@ -458,6 +466,8 @@ impl PaintView {
         }
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if self.isHidden() || !DOCUMENT_OPEN.with(|open|open.get()) || PANNING.with(|p|p.get()) {return;}
             if !event.hasPreciseScrollingDeltas() {return;}
             let dx=event.scrollingDeltaX() as f32;
@@ -471,6 +481,8 @@ impl PaintView {
         }
         #[unsafe(method(magnifyWithEvent:))]
         fn magnify_with_event(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if self.isHidden() || !DOCUMENT_OPEN.with(|open|open.get()) || PANNING.with(|p|p.get()) { return; }
             let delta=event.magnification() as f32;
             if !delta.is_finite() || delta==0. {return;}
@@ -485,6 +497,8 @@ impl PaintView {
         }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if let Some(window) = self.window() { window.makeFirstResponder(Some(self)); }
             if SPACE_DOWN.with(|space| space.get()) || TOOL.with(|tool| tool.get()) == CanvasTool::Hand { self.begin_pan(event); } else {
                 if matches!(TOOL.with(|tool| tool.get()), CanvasTool::Brush | CanvasTool::Eraser) {
@@ -495,17 +509,29 @@ impl PaintView {
             }
         }
         #[unsafe(method(mouseDragged:))]
-        fn mouse_dragged(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); } else { self.pointer(event, 1); } }
+        fn mouse_dragged(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; if PANNING.with(|value| value.get()) { self.update_pan(event); } else { self.pointer(event, 1); } }
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) { if PANNING.with(|value| value.get()) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); } else { self.pointer(event, 2); } end_precise_paint_input(); }
+        fn mouse_up(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; if PANNING.with(|value| value.get()) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); } else { self.pointer(event, 2); } end_precise_paint_input(); }
         #[unsafe(method(otherMouseDown:))]
-        fn other_mouse_down(&self, event: &NSEvent) { self.begin_pan(event); }
+        fn other_mouse_down(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; self.begin_pan(event); }
         #[unsafe(method(otherMouseDragged:))]
-        fn other_mouse_dragged(&self, event: &NSEvent) { self.update_pan(event); }
+        fn other_mouse_dragged(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; self.update_pan(event); }
         #[unsafe(method(otherMouseUp:))]
-        fn other_mouse_up(&self, event: &NSEvent) { self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); }
+        fn other_mouse_up(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; self.update_pan(event); PANNING.with(|value| value.set(false)); self.refresh_cursor(); }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if self.isHidden() { return; }
             if raster_import::active() {
                 if [36,76,53].contains(&event.keyCode()) {
@@ -516,17 +542,17 @@ impl PaintView {
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
             else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", CanvasTool::Eraser); }
+                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eraser); }
             }
             else if event.keyCode() == 7 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if !event.isARepeat() {
-                    if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-swap-colors", ()); }
+                    if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-swap-colors", ()); }
                 }
             }
             else if event.keyCode() == 17 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if !event.isARepeat() {
                     if let Err(error) = finish_open_pen() { emit_error(error); return; }
-                    if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-text-edit", ()); }
+                    if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-text-edit", ()); }
                 }
             }
             else if [36, 76].contains(&event.keyCode()) && TOOL.with(|tool| tool.get()) == CanvasTool::VectorPen {
@@ -556,7 +582,7 @@ impl PaintView {
                     else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
                     else { CanvasTool::Rectangle };
                 if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
+                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", tool); }
             }
             else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [0, 9, 32, 35, 45].contains(&event.keyCode()) {
                 let tool = match event.keyCode() {
@@ -568,17 +594,21 @@ impl PaintView {
                     _ => CanvasTool::VectorRectangle,
                 };
                 if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to("main", "canvas-tool-changed", tool); }
+                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", tool); }
             }
             else { unsafe { msg_send![super(self), keyDown: event] } }
         }
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(false)); PANNING.with(|value| value.set(false)); self.refresh_cursor(); }
             else { unsafe { msg_send![super(self), keyUp: event] } }
         }
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
+            if modal_input_blocked(&self.ivars().label) { return false.into(); }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return false.into(); };
             if self.isHidden() || text_editor::active() { return false.into(); }
             // WebView fields own their editing shortcuts while focused (including Cmd+A).
             // AppKit asks sibling views for key equivalents even when they are not responders.
@@ -594,8 +624,11 @@ impl PaintView {
                 report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
             } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
                 report_edit(DocumentAction::InvertSelection); true
+            } else if command && event.keyCode() == 45 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+                if let Some(app) = APP.get() { if let Err(error) = crate::editor_windows::create(app) { emit_error(error); } }
+                true
             } else if command && event.keyCode() == 45 {
-                if let Some(app) = APP.get() { let _ = app.emit_to("main", "new-document-requested", ()); }
+                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "new-document-requested", ()); }
                 true
             } else if command && event.keyCode() == 13 {
                 if DOCUMENT_OPEN.with(|open| open.get()) {
@@ -615,15 +648,20 @@ impl PaintView {
             } else { unsafe { msg_send![super(self), performKeyEquivalent: event] } }
         }
         #[unsafe(method(undo:))]
-        fn undo_action(&self, _sender: Option<&AnyObject>) { report_edit(DocumentAction::Undo); }
+        fn undo_action(&self, _sender: Option<&AnyObject>) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; report_edit(DocumentAction::Undo); }
         #[unsafe(method(redo:))]
-        fn redo_action(&self, _sender: Option<&AnyObject>) { report_edit(DocumentAction::Redo); }
+        fn redo_action(&self, _sender: Option<&AnyObject>) {
+            if modal_input_blocked(&self.ivars().label) { return; }
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; report_edit(DocumentAction::Redo); }
     }
 );
 
 impl PaintView {
     fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let view = Self::alloc(mtm).set_ivars(FrameState {
+            label: current_label(),
             display_link: RefCell::new(None),
         });
         // SAFETY: initializing the allocated NSView subclass once on the main thread.
@@ -688,7 +726,7 @@ impl PaintView {
         }
         self.refresh_cursor();
         if let Some(app) = APP.get() {
-            let _ = app.emit_to("main", "canvas-zoom-changed", zoom);
+            let _ = app.emit_to(current_label(), "canvas-zoom-changed", zoom);
         }
     }
 
@@ -2801,7 +2839,7 @@ fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
 
 fn emit_error(error: String) {
     if let Some(app) = APP.get() {
-        let _ = app.emit_to("main", "canvas-error", error);
+        let _ = app.emit_to(current_label(), "canvas-error", error);
     }
 }
 fn emit_document() {
@@ -2809,7 +2847,7 @@ fn emit_document() {
     if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none()) {
         if let Some(app) = APP.get() {
             let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
-            let _ = app.emit_to("main", "document-changed", snapshot);
+            let _ = app.emit_to(current_label(), "document-changed", snapshot);
         }
     }
     emit_workspace();
@@ -3587,7 +3625,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             dimensions: document.dimensions(),
             queued_at: Instant::now(),
         };
-        match sender.try_send(job) {
+        match sender.try_send(canvas.token, job) {
             Ok(()) => canvas.tile_job = Some(key),
             Err(TrySendError::Full(job)) => {
                 if let TileWork::Append { cache, .. } = job.work {
@@ -3617,7 +3655,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             dimensions: document.dimensions(),
             queued_at: Instant::now(),
         };
-        match sender.try_send(job) {
+        match sender.try_send(canvas.token, job) {
             Ok(()) => canvas.tile_job = Some(key),
             Err(TrySendError::Full(job)) => {
                 if let TileWork::Appearance { cache } = job.work {
@@ -3656,7 +3694,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             dimensions: document.dimensions(),
             queued_at: Instant::now(),
         };
-        match sender.try_send(job) {
+        match sender.try_send(canvas.token, job) {
             Ok(()) => canvas.tile_job = Some(key),
             Err(TrySendError::Full(job)) => {
                 if let TileWork::Reconcile { cache, .. } = job.work {
@@ -3671,13 +3709,16 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
     canvas.tile_cache = None;
     canvas.tile_ready = None;
     if sender
-        .try_send(TileJob {
-            key,
-            work: TileWork::Full(Box::new(document.clone())),
-            state,
-            dimensions: document.dimensions(),
-            queued_at: Instant::now(),
-        })
+        .try_send(
+            canvas.token,
+            TileJob {
+                key,
+                work: TileWork::Full(Box::new(document.clone())),
+                state,
+                dimensions: document.dimensions(),
+                queued_at: Instant::now(),
+            },
+        )
         .is_ok()
     {
         canvas.tile_job = Some(key);
@@ -3738,12 +3779,15 @@ fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), S
     let Some(sender) = RASTER_SENDER.get() else {
         return Ok(());
     };
-    match sender.try_send(RasterJob {
-        key,
-        layers,
-        size: document.dimensions(),
-        queued_at: Instant::now(),
-    }) {
+    match sender.try_send(
+        canvas.token,
+        RasterJob {
+            key,
+            layers,
+            size: document.dimensions(),
+            queued_at: Instant::now(),
+        },
+    ) {
         Ok(()) => canvas.raster_job = Some(key),
         Err(TrySendError::Full(_)) => {} // Completion of the running job retries the latest state.
         Err(TrySendError::Disconnected(_)) => return Err("SVG raster worker stopped".into()),
@@ -4178,7 +4222,40 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
 
 fn emit_workspace() {
     if let Some(app) = APP.get() {
-        let _ = app.emit_to("main", "documents-changed", workspace_snapshot());
+        let snapshot = workspace_snapshot();
+        let label = current_label();
+        if let Some(window) = app.get_webview_window(&label) {
+            let title = snapshot.active.as_ref().map_or_else(
+                || {
+                    if label == "main" {
+                        "LumaPaint".into()
+                    } else {
+                        format!(
+                            "LumaPaint — {}",
+                            label
+                                .strip_prefix("editor-")
+                                .and_then(|id| id.parse::<u64>().ok())
+                                .unwrap_or(0)
+                                + 1
+                        )
+                    }
+                },
+                |document| {
+                    format!(
+                        "{}{} — LumaPaint",
+                        document.name,
+                        if document.dirty { " *" } else { "" }
+                    )
+                },
+            );
+            WINDOW_TITLE.with(|last| {
+                if *last.borrow() != title {
+                    let _ = window.set_title(&title);
+                    *last.borrow_mut() = title;
+                }
+            });
+        }
+        let _ = app.emit_to(label, "documents-changed", snapshot);
     }
 }
 
@@ -5957,7 +6034,10 @@ pub fn confirm_discard() -> bool {
 }
 
 fn confirm_unsaved_changes() -> bool {
-    let Some(window) = APP.get().and_then(|app| app.get_webview_window("main")) else {
+    let Some(window) = APP
+        .get()
+        .and_then(|app| app.get_webview_window(&current_label()))
+    else {
         return false;
     };
     rfd::MessageDialog::new()
@@ -6262,16 +6342,6 @@ fn opened_raster_document(
     Ok(document)
 }
 
-pub fn shutdown() {
-    SHUTTING_DOWN.with(|flag| flag.set(true));
-    destroy();
-    RECOVERY.with(|slot| {
-        if let Some(recovery) = slot.borrow_mut().as_mut() {
-            recovery.stop();
-        }
-    });
-}
-
 thread_local! {
     static RECOVERY: RefCell<Option<crate::recovery::Recovery>> = const { RefCell::new(None) };
     static RECOVERY_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -6279,11 +6349,12 @@ thread_local! {
     static RECOVERY_DISCARDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn start_recovery() {
-    let result = APP
-        .get()
-        .ok_or_else(|| "Application is not initialized".to_string())
-        .and_then(|app| app.path().app_local_data_dir().map_err(|e| e.to_string()))
-        .and_then(|directory| crate::recovery::Recovery::start(directory.join("recovery")));
+    let result = window_sessions::fork_recovery().unwrap_or_else(|| {
+        APP.get()
+            .ok_or_else(|| "Application is not initialized".to_string())
+            .and_then(|app| app.path().app_local_data_dir().map_err(|e| e.to_string()))
+            .and_then(|directory| crate::recovery::Recovery::start(directory.join("recovery")))
+    });
     match result {
         Ok(recovery) => {
             RECOVERY.with(|slot| *slot.borrow_mut() = Some(recovery));
@@ -6763,4 +6834,22 @@ mod direct_command_tests {
         assert_eq!(preview.svg_layers().next().unwrap().source, original);
         assert!(preview.svg_layers().count() > 1);
     }
+}
+
+thread_local! { static WINDOW_TITLE: RefCell<String> = const { RefCell::new(String::new()) }; }
+
+pub(super) fn prepare_modal() -> Result<DocumentWorkspaceSnapshot, String> {
+    finish_open_pen()?;
+    cancel_vector_drag();
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| doc.borrow_mut().finish());
+    SPACE_DOWN.with(|value| value.set(false));
+    PANNING.with(|value| value.set(false));
+    checkpoint();
+    request_redraw()?;
+    Ok(workspace_snapshot())
+}
+fn modal_input_blocked(label: &str) -> bool {
+    APP.get()
+        .is_some_and(|app| crate::modal_windows::blocked(app, label))
 }

@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Basic local window capability; no filesystem or shell access.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Local editor WebviewWindows; no filesystem or shell access.",
+  "windows": [
+    "main",
+    "editor-*",
+    "modal-*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-focus"
+  ]
 }

@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU8, Ordering};
+use tauri::Manager;
 
 const EXIT_RUNNING: u8 = 0;
 const EXIT_APPROVED: u8 = 1;
@@ -42,6 +43,7 @@ fn runtime_info() -> lumapaint_core::RuntimeInfo {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            app.manage(modal_windows::Modals::default());
             canvas::initialize(app.handle());
             #[cfg(target_os = "macos")]
             {
@@ -74,6 +76,17 @@ pub fn run() {
                     ],
                 )?;
                 menu.prepend(&application)?;
+                if let Some(item) = menu.get(tauri::menu::WINDOW_SUBMENU_ID) {
+                    if let Some(windows) = item.as_submenu() {
+                        windows.prepend(&MenuItem::with_id(
+                            app,
+                            "new-editor-window",
+                            "New Window",
+                            true,
+                            Some("CmdOrCtrl+Shift+N"),
+                        )?)?;
+                    }
+                }
                 app.set_menu(menu)?;
             }
             Ok(())
@@ -81,10 +94,21 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id().as_ref() == "guarded-quit" {
                 app.exit(0);
+            } else if event.id().as_ref() == "new-editor-window" {
+                if let Err(error) = editor_windows::create(app) {
+                    eprintln!("LumaPaint window: {error}");
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             runtime_info,
+            modal_windows::open_modal_window,
+            modal_windows::modal_context,
+            modal_windows::modal_ready,
+            modal_windows::modal_busy,
+            modal_windows::modal_change,
+            modal_windows::close_modal_window,
+            editor_windows::new_editor_window,
             tool_menu::icon_tool_menu,
             canvas::sync_canvas,
             canvas::reset_canvas_pan,
@@ -148,34 +172,54 @@ pub fn run() {
             canvas::retry_recovery
         ])
         .on_window_event(|window, event| {
-            if window.label() == "main" {
+            if window.label().starts_with("modal-") {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if !EXIT.request(canvas::confirm_discard) {
+                    if !modal_windows::can_close(window.app_handle(), window.label()) {
                         api.prevent_close();
                         return;
                     }
-                    EXIT.finish(|| {
-                        canvas::discard_recovery();
-                        canvas::shutdown();
-                    });
+                    modal_windows::detach(window.app_handle(), window.label());
                 }
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    modal_windows::detach(window.app_handle(), window.label());
+                }
+                return;
             }
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
-                canvas::destroy();
+            if !editor_windows::is_editor(window.label()) {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if modal_windows::focus(window.app_handle(), Some(window.label())) {
+                    api.prevent_close();
+                    return;
+                }
+                if !canvas::confirm_window(window.label()) {
+                    api.prevent_close();
+                    return;
+                }
+                canvas::close_window(window.label());
+            }
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                modal_windows::parent_destroyed(window.app_handle(), window.label());
+                canvas::close_window(window.label());
             }
         })
         .build(tauri::generate_context!())
         .expect("failed to build LumaPaint")
-        .run(|_, event| {
+        .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 EXIT.finish(canvas::shutdown);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if modal_windows::focus(app, None) {
+                    api.prevent_exit();
+                    return;
+                }
                 if !EXIT.request(canvas::confirm_discard) {
                     api.prevent_exit();
                 } else {
                     EXIT.finish(|| {
-                        canvas::discard_recovery();
+                        canvas::discard_recoveries();
                         canvas::shutdown();
                     });
                 }
@@ -183,6 +227,10 @@ pub fn run() {
         });
 }
 mod canvas;
+mod editor_windows;
+mod modal_windows;
+#[cfg(any(target_os = "macos", test))]
+mod render_queue;
 mod tool_menu;
 
 #[cfg(any(target_os = "macos", test))]

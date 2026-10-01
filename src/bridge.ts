@@ -1,6 +1,16 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow';
+
+// Native session events must only reach this editor, including text and zoom.
+const listen: ReturnType<typeof getCurrentWebviewWindow>['listen'] = (event, handler) => getCurrentWebviewWindow().listen(event, handler);
+
+export async function newEditorWindow(): Promise<void> {
+  const label = await invoke<string>('new_editor_window');
+  const editor = await WebviewWindow.getByLabel(label);
+  if (editor) await editor.setFocus();
+}
+
 
 export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';

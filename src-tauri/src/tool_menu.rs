@@ -33,7 +33,7 @@ pub async fn icon_tool_menu(
         || request.labels.len() != request.enabled.len()
         || request.images.buttons.len() != request.enabled.len()
         || !request.enabled.iter().any(|enabled| *enabled)
-        || window.label() != "main"
+        || !crate::editor_windows::is_editor(window.label())
         || !request.x.is_finite()
         || !request.y.is_finite()
         || request

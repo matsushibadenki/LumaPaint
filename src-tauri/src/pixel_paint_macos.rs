@@ -75,18 +75,19 @@ pub(super) fn pointer(
                 completed,
             })
         });
+        let label = current_label();
         std::thread::spawn(move || {
             let pending = Arc::new(Mutex::new(None));
             let result = paint_worker(workspace, receiver, |frame| {
                 if frame.source.is_some() {
                     let _ = done.send(Ok(frame));
                 } else {
-                    publish(token, &pending, Ok(frame));
+                    publish(label.clone(), token, &pending, Ok(frame));
                 }
             });
             if let Err(error) = result {
                 let _ = done.send(Err(error.clone()));
-                publish(token, &pending, Err(error));
+                publish(label.clone(), token, &pending, Err(error));
             }
         });
         return Ok(true);
@@ -218,12 +219,20 @@ fn queue_preview(
     schedule
 }
 
-fn publish(token: u64, pending: &PendingPreview, result: Result<PaintFrame, String>) {
+fn publish(
+    label: String,
+    token: u64,
+    pending: &PendingPreview,
+    result: Result<PaintFrame, String>,
+) {
     let Some(app) = APP.get() else { return };
     let schedule = queue_preview(&mut pending.lock().unwrap(), result);
     if schedule {
         let pending = Arc::clone(pending);
         let _ = app.run_on_main_thread(move || {
+            let Ok(_session) = SessionGuard::enter(&label) else {
+                return;
+            };
             let result = pending.lock().unwrap().take();
             if let Some(result) = result {
                 receive_frame(token, result);

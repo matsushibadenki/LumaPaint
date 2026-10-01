@@ -23,7 +23,7 @@ type Props = {
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
   locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
-  onNew: () => void; onCloseDocument: () => void;
+  onNewWindow: () => void; onNew: () => void; onCloseDocument: () => void;
   onImportSvg: () => void;
   onImportImage: () => void;
   onArrange: (action: ArrangeAction) => void;
@@ -110,7 +110,7 @@ export function WorkspaceMenu(props: Props) {
       { label: common.zoomOut, enabled: canEdit && zoom > .25, action: () => onZoom(Math.max(.25, zoom / 1.25)) },
       { label: common.fit, enabled: canEdit, action: () => onZoom(1) }],
     [future(t.managePlugins), future(t.browsePlugins)],
-    [{ label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
+    [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
     [{ label: 'LumaPaint 0.1.0' }, null, { label: t.guide }, { label: t.drawHint }, { label: t.saveHint }, { label: t.recoveryHint }],
   ];
   const [open, setOpen] = useState<number | null>(null);

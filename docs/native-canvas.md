@@ -4,7 +4,7 @@
 
 macOSでTauriのWKWebViewに子NSViewを追加し、wgpu 27のMetalバックエンドで描画する。
 WebView側は配置と操作パネルを担当し、画像をCanvas 2Dへ転送する構成にはしない。
-現在は固定960×640の複数ドキュメントをタブで切り替え、円ブラシで描画する。
+可変寸法の複数ドキュメントをタブで切り替え、独立した複数のWebviewWindowで編集する。
 コアがストローク履歴を保持し、GPUが線分をインスタンス描画する。v1 JSONへの保存・再読込を実装。Sparse Tile、将来のグラフコンテナ、RGBA16F合成は後続。
 
 ## モジュール境界
@@ -33,13 +33,13 @@ Spaceキーを押しながらのドラッグ、または中ボタンドラッグ
 ## ライフサイクル
 
 1. UIの変更をrequestAnimationFrameでまとめ、同時に複数の描画IPCを送らない。
-2. main windowのwith_webview内でNSViewを作成・更新する。
+2. 呼び出し元のWebviewWindowのwith_webview内で、そのウインドウ専用のNSViewを作成・更新する。
 3. メインスレッド専用の領域がビューとレンダラーを所有する。
 4. リサイズ時のみサーフェスを再構成し、通常時はuniformを更新して1フレーム描画する。
 5. 設定画面などで一時非表示にするときはNSViewを隠し、GPUとレイヤーテクスチャを保持する。入力フォーカスをWebViewへ戻し、非表示中は描画を省略する。再表示時に最新の文書を描画する。終了・描画エラー・親WebViewの交換時はビューを取り外し、surfaceを破棄した後でNSViewのretainを解放する。
 6. Lost／Outdatedはサーフェス再構成後に一度再試行。他の失敗はUIに返し、再試行で再生成する。
 
-終了処理はメインウインドウの閉じる操作、アプリケーションメニュー、Cmd+Q、OSからの終了要求を同じ終了コーディネーターへ集約する。
+ウインドウを閉じる操作は対象のRustセッションだけを確認・破棄し、他のウインドウの描画面を維持する。アプリケーションメニュー、Cmd+Q、OSからの終了要求は全ウインドウの未保存変更を確認した後、終了コーディネーターへ集約する。
 未保存確認を通過した後の復旧コピー破棄とバックグラウンドワーカー停止は一度だけ実行し、重複する終了イベントでは再実行しない。
 
 有限値・ズーム範囲をRust側で検査し、物理8192pxを超えるプレビューはGPU割当て前に拒否する。
@@ -63,7 +63,7 @@ Spaceキーを押しながらのドラッグ、または中ボタンドラッグ
 Undo/Redoはストローク単位。新規ストローク確定でRedo分岐を破棄する。非表示レイヤーへの描画は受け付けない。
 `edit_document`で履歴・表示を更新し、`document-changed`イベントでUIへスナップショットを送る。
 開いているドキュメントはネイティブ側で個別に保持し、`documents-changed`でタブ一覧とアクティブな作品を同期する。
-最後のドキュメントを閉じてもメインウインドウは維持し、空のワークスペースから新規作成またはファイルを開ける。
+最後のドキュメントを閉じてもその編集ウインドウは維持し、空のワークスペースから新規作成またはファイルを開ける。
 ネイティブビューの一時破棄ではドキュメントを保持する。ファイルへ保存した内容は再読込できる。
 各描画時に全線分を再構築するため、大量ストロークの性能最適化は今後必要。
 
@@ -95,3 +95,17 @@ Undo/Redoはストローク単位。新規ストローク確定でRedo分岐を�
 レイヤー内の可視オブジェクトがすべて選択され、SVGの実際の描画境界が既存テクスチャ内に収まる場合は、描画済みテクスチャへGPUで平行移動を適用する。ズームとパンは共通の座標変換に従い、作品の外へ出た部分はクリップする。未選択レイヤーのテクスチャと描画順は維持する。
 
 一部選択でも、同一レイヤーの可視オブジェクトを重なり順に連続区間へ分け、各区間のラスタ結果をドラッグ中に再利用する。選択区間だけGPUで平行移動する。異なる区間の画素が交差する位置、レイヤーの実効不透明度が100%未満、選択区間の元画像が用紙端で切れる場合は、色の合成と隠れていた部分を守るため一時SVGの全面再描画へ戻す。ドラッグ用キャッシュは最大8区間・合計64MiBとし、終了時に解放する。
+
+## マルチウインドウの状態所有
+
+`editor_windows.rs`がローカルURL・一意ラベルで`WebviewWindow`を作成する。JSは`WebviewWindow`クラスでその表示先を参照し、イベントも現在のウインドウだけを購読する。「ウインドウ → 新規ウインドウ」とCmd／Ctrl+Shift+Nに対応し、新しいウインドウはドキュメント未作成から始まる。
+
+`window_sessions_macos.rs`のRustレジストリが文書・タブ・履歴・描画面・入力途中の状態を所有する。既存のメインスレッド用スロットには実行中のセッションだけを置き、IPC・AppKitの入力／画面更新・ワーカー完了ごとに`SessionGuard`で切り替える。ガードの終了時に呼び出し元へ戻すため、モーダルダイアログや文字選択の入れ子のイベントループにも対応する。交換では文書や画素を複製しない。セッション用のスロットを追加するときは、`Runtime`の既定値と`exchange`も必ず更新する。文字エディターと画像配置の私有スロットは各モジュールの`WindowContext`で交換する。
+
+GPUサーフェスとキャッシュは各Rustセッションに保持する。SVG／ペイントタイルのワーカーキューはキャンバストークンごとに待機要求を1件にまとめ、キャンバス間ではFIFOで処理する。完了結果は元のトークンを持つセッションへ戻し、閉じたウインドウの結果は破棄する。各ウインドウのWebViewには命令と状態だけを送り、大容量フレームを送らない。同じ文書の複数ビューとタブのウインドウ間移動は後続の機能。
+
+## Document-modal windows
+
+`modal_windows.rs` registers each `modal-*` WebviewWindow against its editor owner. These windows do not allocate a document session or renderer. Document commands resolve the owner and enter its Rust session; document/workspace notifications target that editor. The dialog receives an initial view snapshot, not ownership of the model.
+
+New Document, Settings, Color Settings, Transform, Direct Controls, and Import Image use this path. macOS attaches an AppKit sheet after the WebView mounts; other platforms disable the parent until the child closes. The canvas remains visible, and native input callbacks reject interaction while their owner has an open modal. Other editor windows remain usable. Close requests are rejected during an apply/import operation. Closing the modal restores parent focus; quitting or closing the editor while a modal is open focuses the modal first. Parent destruction cleans up its child windows. Browser-only previews retain the HTML dialog fallback.

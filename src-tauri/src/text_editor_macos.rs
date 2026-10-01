@@ -19,6 +19,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
 
 struct EditorState {
+    label: String,
     undo: Retained<NSUndoManager>,
     selecting: std::cell::Cell<bool>,
 }
@@ -31,12 +32,15 @@ define_class!(
         #[unsafe(method_id(undoManager))]
         fn undo_manager(&self) -> Retained<NSUndoManager> { self.ivars().undo.clone() }
         #[unsafe(method(undo:))]
-        fn undo_action(&self, _sender: Option<&AnyObject>) { history(false); }
+        fn undo_action(&self, _sender: Option<&AnyObject>) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; history(false); }
         #[unsafe(method(redo:))]
-        fn redo_action(&self, _sender: Option<&AnyObject>) { history(true); }
+        fn redo_action(&self, _sender: Option<&AnyObject>) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; }; history(true); }
 
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             TEXT_FRAME_PENDING.with(|pending| pending.set(true));
             unsafe { msg_send![super(self), didChangeText] }
             SESSION.with(|slot| { if let Ok(slot) = slot.try_borrow() { if let Some(session) = slot.as_ref() { session.edited.set(true); } } });
@@ -47,6 +51,7 @@ define_class!(
         }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             let _keep_alive = unsafe { Retained::retain(self as *const Self as *mut Self) };
             if !self.hasMarkedText() && (event.keyCode() == 53 ||
                 event.keyCode() == 36 && event.modifierFlags().contains(NSEventModifierFlags::Command)) {
@@ -55,11 +60,13 @@ define_class!(
         }
         #[unsafe(method(setSelectedRange:affinity:stillSelecting:))]
         fn select_range(&self, range: NSRange, affinity: NSSelectionAffinity, selecting: bool) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             unsafe { msg_send![super(self), setSelectedRange: range, affinity: affinity, stillSelecting: selecting] }
             if !selecting && !self.ivars().selecting.get() { publish(); }
         }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             let _keep_alive = unsafe { Retained::retain(self as *const Self as *mut Self) };
             // AppKit tracks the entire drag in mouseDown. Publish only when the
             // tracking loop returns; serializing a long document blocks selection.
@@ -71,11 +78,13 @@ define_class!(
         // Imported rich text may contain attachments or attributes outside our portable model.
         #[unsafe(method(paste:))]
         fn paste_plain(&self, sender: Option<&AnyObject>) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             unsafe { self.pasteAsPlainText(sender) }
         }
         // Keep Cmd+A/C/V/Z in the text editor instead of the canvas responder.
         #[unsafe(method(performKeyEquivalent:))]
         fn key_equivalent(&self, event: &NSEvent) -> bool {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return false.into(); };
             unsafe { msg_send![super(self), performKeyEquivalent: event] }
         }
     }
@@ -712,7 +721,7 @@ fn publish() {
         }))
     });
     if let (Some(app), Some(settings)) = (APP.get(), settings) {
-        let _ = app.emit_to("main", "canvas-text-session", settings);
+        let _ = app.emit_to(current_label(), "canvas-text-session", settings);
     }
 }
 
@@ -834,6 +843,7 @@ pub fn begin(mut settings: TextSettings) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
     let allocated = InlineEditor::alloc(mtm).set_ivars(EditorState {
+        label: current_label(),
         undo: NSUndoManager::new(mtm),
         selecting: std::cell::Cell::new(false),
     });
@@ -1676,5 +1686,18 @@ mod transform_tests {
         assert!((y - 1.6).abs() < 1e-5);
         assert!((angle - 30.).abs() < 1e-5);
         assert_eq!(text.scale_x, 1.2);
+    }
+}
+
+#[derive(Default)]
+pub(super) struct WindowContext {
+    session: Option<Session>,
+    text_frame_pending: bool,
+}
+impl WindowContext {
+    pub(super) fn exchange(&mut self) {
+        SESSION.with(|slot| std::mem::swap(&mut self.session, &mut *slot.borrow_mut()));
+        TEXT_FRAME_PENDING
+            .with(|slot| self.text_frame_pending = slot.replace(self.text_frame_pending));
     }
 }

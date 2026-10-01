@@ -202,16 +202,24 @@ pub async fn sync_canvas(
     window: tauri::WebviewWindow,
     request: CanvasRequest,
 ) -> Result<CanvasInfo, String> {
-    if window.label() != "main" {
-        return Err("Canvas is only available in the main window".into());
+    if !crate::editor_windows::is_editor(window.label()) {
+        return Err("Unknown editor window".into());
     }
     request.validate()?;
     #[cfg(target_os = "macos")]
     {
         // AppKit and surface creation must run on the main thread. Waiting happens off-thread.
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .with_webview(move |webview| {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let result = platform::sync(webview.inner(), request);
                 let _ = tx.send(result);
             })
@@ -256,9 +264,22 @@ pub async fn finish_canvas_path(window: tauri::WebviewWindow) -> Result<(), Stri
     }
 }
 
-pub fn destroy() {
+pub fn close_window(label: &str) {
     #[cfg(target_os = "macos")]
-    platform::destroy();
+    platform::window_sessions::close_window(label);
+    #[cfg(not(target_os = "macos"))]
+    let _ = label;
+}
+pub fn confirm_window(label: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        platform::window_sessions::confirm_window(label)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = label;
+        true
+    }
 }
 
 pub fn initialize(app: &tauri::AppHandle) {
@@ -289,14 +310,22 @@ pub async fn edit_document(
     window: tauri::WebviewWindow,
     action: DocumentAction,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Document is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let _ = tx.send(platform::edit(action));
             })
             .map_err(|e| e.to_string())?;
@@ -316,8 +345,8 @@ pub async fn toggle_layer(
     window: tauri::WebviewWindow,
     id: String,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Document is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
@@ -682,14 +711,22 @@ pub async fn set_color_mode(
     window: tauri::WebviewWindow,
     mode: ColorMode,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Document is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let _ = tx.send(platform::set_color_mode(mode));
             })
             .map_err(|e| e.to_string())?;
@@ -709,14 +746,22 @@ pub async fn set_bit_depth(
     window: tauri::WebviewWindow,
     depth: u8,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Document is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let _ = tx.send(platform::set_bit_depth(depth));
             })
             .map_err(|e| e.to_string())?;
@@ -736,14 +781,22 @@ pub async fn set_color_profile(
     window: tauri::WebviewWindow,
     profile: ColorProfile,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Document is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let _ = tx.send(platform::set_color_profile(profile));
             })
             .map_err(|e| e.to_string())?;
@@ -821,14 +874,22 @@ pub async fn project_action(
     window: tauri::WebviewWindow,
     action: FileAction,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Project is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
+        let label = crate::modal_windows::owner(&window)?;
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
+                let _session = match platform::SessionGuard::enter(&label) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                };
                 let _ = tx.send(platform::file_action(action));
             })
             .map_err(|e| e.to_string())?;
@@ -863,8 +924,8 @@ pub async fn import_raster_layer(
     window: tauri::WebviewWindow,
     format: String,
 ) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Import is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
@@ -899,8 +960,8 @@ pub async fn import_raster_layer(
 }
 #[tauri::command]
 pub async fn import_svg_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
-    if window.label() != "main" {
-        return Err("Project is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
     #[cfg(target_os = "macos")]
     {
@@ -916,7 +977,7 @@ pub async fn import_svg_layer(window: tauri::WebviewWindow) -> Result<DocumentSn
 pub fn confirm_discard() -> bool {
     #[cfg(target_os = "macos")]
     {
-        platform::confirm_discard()
+        platform::window_sessions::confirm_all()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -926,12 +987,7 @@ pub fn confirm_discard() -> bool {
 
 pub fn shutdown() {
     #[cfg(target_os = "macos")]
-    platform::shutdown();
-}
-
-pub fn discard_recovery() {
-    #[cfg(target_os = "macos")]
-    platform::discard_recovery();
+    platform::window_sessions::shutdown_all();
 }
 
 #[cfg(target_os = "macos")]
@@ -939,12 +995,20 @@ async fn on_main<T: Send + 'static>(
     window: tauri::WebviewWindow,
     action: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    if window.label() != "main" {
-        return Err("Recovery is only available in the main window".into());
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
     }
+    let label = crate::modal_windows::owner(&window)?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     window
         .run_on_main_thread(move || {
+            let _session = match platform::SessionGuard::enter(&label) {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
+            };
             let _ = tx.send(action());
         })
         .map_err(|e| e.to_string())?;
@@ -1373,5 +1437,23 @@ pub async fn edit_direct_controls(
     {
         let _ = (window, mode, values, preview, expected, revision);
         Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+pub fn discard_recoveries() {
+    #[cfg(target_os = "macos")]
+    platform::window_sessions::discard_all();
+}
+
+pub(crate) async fn prepare_modal(
+    window: tauri::WebviewWindow,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::prepare_modal).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        document_workspace(window).await
     }
 }

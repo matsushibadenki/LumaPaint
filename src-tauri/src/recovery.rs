@@ -1,4 +1,4 @@
-//! One writer per application profile; coalesced snapshots are encoded and written off-thread.
+//! One locked application profile, independent window writers. Snapshots stay off-thread.
 use crate::project_file;
 use lumapaint_core::document::Document;
 use lumapaint_formats::native::NativeDocumentCodec;
@@ -56,7 +56,12 @@ pub struct Recovery {
     shared: Arc<(Mutex<Shared>, Condvar)>,
     worker: Option<JoinHandle<()>>,
     // Keep the exclusive profile lock until all writes complete.
+    profile: Arc<Profile>,
+}
+
+struct Profile {
     _lock: File,
+    active: Mutex<std::collections::HashSet<PathBuf>>,
 }
 
 fn remove_if_present(path: &Path) -> Result<(), String> {
@@ -87,6 +92,19 @@ impl Recovery {
         lock.try_lock().map_err(|e| {
             format!("Recovery directory is already in use or cannot be locked: {e}")
         })?;
+        Self::from_profile(
+            directory,
+            Arc::new(Profile {
+                _lock: lock,
+                active: Mutex::new(Default::default()),
+            }),
+        )
+    }
+    /// Shares the profile lock until the final editor writer is dropped.
+    pub(crate) fn fork(&self) -> Result<Self, String> {
+        Self::from_profile(self.directory.clone(), self.profile.clone())
+    }
+    fn from_profile(directory: PathBuf, profile: Arc<Profile>) -> Result<Self, String> {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -145,13 +163,14 @@ impl Recovery {
                 }
             })
             .map_err(|e| e.to_string())?;
+        profile.active.lock().unwrap().insert(current.clone());
         Ok(Self {
             directory,
             current,
             source: None,
             shared,
             worker: Some(worker),
-            _lock: lock,
+            profile,
         })
     }
     fn enqueue(&self, job: Job) {
@@ -199,7 +218,7 @@ impl Recovery {
             let entry = entry.map_err(|e| e.to_string())?;
             let id = entry.file_name().to_string_lossy().into_owned();
             if !candidate_id(&id)
-                || entry.path() == self.current
+                || self.profile.active.lock().unwrap().contains(&entry.path())
                 || !entry.file_type().map_err(|e| e.to_string())?.is_file()
             {
                 continue;
@@ -236,7 +255,7 @@ impl Recovery {
             return Err("Invalid recovery identifier".into());
         }
         let path = self.directory.join(id);
-        if path == self.current
+        if self.profile.active.lock().unwrap().contains(&path)
             || std::fs::symlink_metadata(&path)
                 .map_err(|e| e.to_string())?
                 .file_type()
@@ -251,7 +270,7 @@ impl Recovery {
             return Err("Invalid recovery identifier".into());
         }
         let path = self.directory.join(id);
-        if path == self.current {
+        if self.profile.active.lock().unwrap().contains(&path) {
             return Err("The active recovery copy cannot be deleted".into());
         }
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
@@ -289,6 +308,7 @@ impl Recovery {
 impl Drop for Recovery {
     fn drop(&mut self) {
         self.stop();
+        self.profile.active.lock().unwrap().remove(&self.current);
     }
 }
 
@@ -400,5 +420,36 @@ mod tests {
         recovery.delete_all_candidates().unwrap();
         assert!(recovery.info().unwrap().candidates.is_empty());
         assert!(recovery.delete_candidate("../writer.lock").is_err());
+    }
+    #[test]
+    fn window_writers_share_lock_and_recover_together_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut first = Recovery::start(directory.path().into()).unwrap();
+        let mut second = first.fork().unwrap();
+        first.checkpoint(drawing());
+        second.checkpoint(drawing());
+        first.stop();
+        second.stop();
+        assert!(first.info().unwrap().candidates.is_empty());
+        let second_id = second.current.file_name().unwrap().to_str().unwrap();
+        assert!(first.read_candidate(second_id).is_err());
+        assert!(first.delete_candidate(second_id).is_err());
+        drop(first);
+        assert!(Recovery::start(directory.path().into()).is_err());
+        // The first copy is now a recovery candidate, but this window's copy remains protected.
+        assert_eq!(second.info().unwrap().candidates.len(), 1);
+        drop(second);
+        let restarted = Recovery::start(directory.path().into()).unwrap();
+        assert_eq!(restarted.info().unwrap().candidates.len(), 2);
+        for candidate in restarted.info().unwrap().candidates {
+            assert_eq!(
+                restarted
+                    .read_candidate(&candidate.id)
+                    .unwrap()
+                    .snapshot()
+                    .stroke_count,
+                1
+            );
+        }
     }
 }

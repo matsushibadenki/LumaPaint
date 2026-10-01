@@ -21,7 +21,7 @@ pub(super) fn active() -> bool {
 }
 fn notify(value: bool) {
     if let Some(app) = APP.get() {
-        let _ = app.emit_to("main", "raster-placement", value);
+        let _ = app.emit_to(current_label(), "raster-placement", value);
     }
 }
 pub(super) fn cancel() {
@@ -112,7 +112,11 @@ pub(super) fn begin(
     PLACEMENT.with(|p| *p.borrow_mut() = Some(placement));
     TOOL.with(|tool| tool.set(CanvasTool::VectorSelect));
     if let Some(app) = APP.get() {
-        let _ = app.emit_to("main", "canvas-tool-changed", CanvasTool::VectorSelect);
+        let _ = app.emit_to(
+            current_label(),
+            "canvas-tool-changed",
+            CanvasTool::VectorSelect,
+        );
     }
     notify(true);
     Ok(())
@@ -418,5 +422,15 @@ mod tests {
             DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()),
             committed
         );
+    }
+}
+
+#[derive(Default)]
+pub(super) struct WindowContext {
+    placement: Option<Placement>,
+}
+impl WindowContext {
+    pub(super) fn exchange(&mut self) {
+        PLACEMENT.with(|slot| std::mem::swap(&mut self.placement, &mut *slot.borrow_mut()));
     }
 }

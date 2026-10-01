@@ -1,3 +1,6 @@
+import { NativeModal } from './NativeModal';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { DirectControlDialog, directControlLabels } from './components/DirectControlDialog';
 import { ImportImageDialog } from './components/ImportImageDialog';
 import { importRasterLayer, finishRasterImport, subscribeRasterPlacement } from './bridge';
@@ -12,7 +15,7 @@ import { IconToolMenu, type IconToolChoice } from './components/IconToolMenu';
 import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
-import { subscribeCanvasZoom } from './bridge';
+import { subscribeCanvasZoom, newEditorWindow } from './bridge';
 import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
@@ -438,13 +441,14 @@ export function Workspace() {
         if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
         return;
       }
-      if (newDocumentOpen || importImageOpen || directControlOpen) return;
+      if (newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n'].includes(event.key.toLowerCase())) {
         event.preventDefault();
         const key = event.key.toLowerCase();
         if ((event.metaKey || event.ctrlKey) && ['c', 'x', 'v'].includes(key)) { event.preventDefault(); void edit(key === 'c' ? 'copy' : key === 'x' ? 'cut' : 'paste'); return; }
-        if (key === 'n') void documentAction('new');
+        if (key === 'n' && event.shiftKey) void newEditorWindow().catch(cause => setError(String(cause)));
+        else if (key === 'n') void documentAction('new');
         else if (key === 'w' && activeDocumentId !== null) void documentAction('close', activeDocumentId);
         else void file(key === 'o' ? 'open' : event.shiftKey ? 'saveAs' : 'save');
         return;
@@ -483,7 +487,16 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const listener = getCurrentWebviewWindow().listen<{ type: string; locale: Locale; theme: Theme }>('modal-change', event => {
+      if (event.payload.type === 'preferences') { setLocale(event.payload.locale); setTheme(event.payload.theme); }
+      if (event.payload.type === 'createdDocument') changeZoom(1);
+    });
+    return () => { void listener.then(unlisten => unlisten()); };
+  }, [changeZoom]);
 
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
@@ -498,7 +511,7 @@ export function Workspace() {
         onClipping={action => { void clippingPath(action).then(snapshot => { updateDocument(snapshot); if (action === 'edit') setTool('vectorDirectSelect'); }).catch(cause => setError(String(cause))); }}
         onGroup={action => void changeGroup(action)}
         onPathEdit={action => void editPath(action)}
-        onNew={() => void documentAction('new')} onCloseDocument={() => activeDocumentId !== null && void documentAction('close', activeDocumentId)}
+        onNewWindow={() => { void newEditorWindow().catch(cause => setError(String(cause))); }} onNew={() => void documentAction('new')} onCloseDocument={() => activeDocumentId !== null && void documentAction('close', activeDocumentId)}
         onColorMode={mode => void setColorMode(mode)}
         onBitDepth={depth => void setBitDepth(depth)}
         onColorSettings={openColorSettings}
@@ -524,8 +537,8 @@ export function Workspace() {
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
     <main className="editor-layout">
-      {directControlOpen && <DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} />}
-      {transformAction && <TransformDialog key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} />}
+      {directControlOpen && <NativeModal kind="directControls" locale={locale} theme={theme} onClose={()=>setDirectControlOpen(false)} onError={setError}><DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} /></NativeModal>}
+      {transformAction && <NativeModal kind="transform" locale={locale} theme={theme} onClose={()=>setTransformAction(null)} onError={setError} action={transformAction}><TransformDialog key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} /></NativeModal>}
       <nav className="tool-rail" aria-label={t.tools}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
         <span className="tool-mode-divider" aria-hidden="true" />
@@ -568,7 +581,7 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && !settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen} occlusion={colorPickerOcclusion}
+        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
@@ -581,14 +594,14 @@ export function Workspace() {
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
-    {settingsOpen && <SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} />}
-    {importImageOpen && <ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {
+    {settingsOpen && <NativeModal kind="settings" locale={locale} theme={theme} onClose={closeSettings} onError={setError}><SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} /></NativeModal>}
+    {importImageOpen && <NativeModal kind="importImage" locale={locale} theme={theme} onClose={()=>setImportImageOpen(false)} onError={setError}><ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {
       if (filePending.current) throw new Error('Another file operation is in progress');
       filePending.current = true; setFileBusy(true);
       try { updateDocument(await importRasterLayer(format)); }
       finally { filePending.current = false; setFileBusy(false); }
-    }} />}
-    {newDocumentOpen && <NewDocumentDialog locale={locale} onCreate={createFromPreset} onClose={() => setNewDocumentOpen(false)} />}
-    {colorSettingsOpen && <ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} />}
+    }} /></NativeModal>}
+    {newDocumentOpen && <NativeModal kind="newDocument" locale={locale} theme={theme} onClose={()=>setNewDocumentOpen(false)} onError={setError}><NewDocumentDialog locale={locale} onCreate={createFromPreset} onClose={() => setNewDocumentOpen(false)} /></NativeModal>}
+    {colorSettingsOpen && <NativeModal kind="colorSettings" locale={locale} theme={theme} onClose={closeColorSettings} onError={setError}><ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} /></NativeModal>}
   </div>;
 }
