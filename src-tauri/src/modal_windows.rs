@@ -128,6 +128,7 @@ pub(crate) fn owner(window: &WebviewWindow) -> Result<String, String> {
         .owner(window.label())
         .ok_or_else(|| "Unknown document window".into())
 }
+#[cfg(target_os = "macos")]
 pub(crate) fn blocked(app: &AppHandle, owner: &str) -> bool {
     app.state::<Modals>()
         .0
