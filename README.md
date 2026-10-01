@@ -19,12 +19,13 @@ macOSでは基本的なSVG図形をGoogle Skiaで描画し、複雑なSVGはresv
 
 ## 開発環境（macOS優先）
 
-- Node.js 22.12以上、npm
+- Node.js 26.10.0（`.nvmrc`で固定）、npm
 - Rust stable（Cargo、rustfmt、Clippyを含む）
 - Xcode Command Line Tools（`xcode-select --install`）
 - macOS 12以上。まず開発中のMacで動作確認し、対応範囲を段階的に検証します。
 
 ```sh
+nvm use # nvmを利用している場合
 npm ci
 npm run tauri dev
 ```
