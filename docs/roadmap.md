@@ -35,7 +35,7 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] CIのWindows／LinuxでmacOS専用倍率フィールドの未使用警告を限定的に処理し、アウトライン化の画像比較は同一描画エンジンで検証。GPU／CPU切替によるアンチエイリアス差を形状変換の差と混同しない。
 - [Next] Skia Metalとwgpu間のテクスチャ共有で、GPUキャッシュ生成後の読み戻し・再転送を削減。
 - [Done] ピクセル・画像・ベクター共通のスポイト（I）を追加。選択枠・表示チャンネル・アウトラインを除いた文書の合成色を取得し、描画色と選択中の編集可能パスの塗りに反映（Undo/Redo）。レイヤー順・透明度・非表示・クリッピング、用紙外のベクター、独立タイル文書に対応。Rust内で採色し、SVGは1ピクセル領域をGPU優先／CPU自動切替で描画、UIへはRGBだけ通知。日英中に対応（macOSネイティブキャンバス）。
-- [Done] Tauri 2 + React + TypeScript + Viteの起動構成。Vite 8.3.1・Reactプラグイン6.1.1へ更新し、Node.js 22.12以上を最低要件化。開発・CIはNode.js 26.10.0に統一（`.nvmrc`）
+- [Done] Tauri 2 + React + TypeScript + Viteの起動構成。TauriのRust・JavaScript API・CLIを2.12.1へ更新。ネイティブメニューと各項目のリソースを保持し、クリックによる新規・設定画面の起動に対応。Vite 8.3.1・Reactプラグイン6.1.1へ更新し、Node.js 22.12以上を最低要件化。開発・CIはNode.js 26.10.0に統一（`.nvmrc`）
 - [Done] UIから独立したRustコアのワークスペース
 - [Done] Rustコアとの読み取り専用IPCと接続状態表示
 - [Done] 英語・日本語・简体中文のUI

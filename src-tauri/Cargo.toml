@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 lumapaint-formats = { path = "../crates/lumapaint-formats" }
 lumapaint-svg = { path = "../crates/lumapaint-svg" }
-tauri = { version = "~2.11.6", features = [] }
+tauri = { version = "~2.12.1", features = [] }
 lumapaint-core = { path = "../crates/lumapaint-core" }
 serde.workspace = true
 serde_json = "1"

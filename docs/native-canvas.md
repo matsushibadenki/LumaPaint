@@ -15,7 +15,7 @@ WebView側は配置と操作パネルを担当し、画像をCanvas 2Dへ転送�
 - `src-tauri/src/canvas_macos.rs`：NSView所有、座標変換、メインスレッドでのサーフェス作成・描画。
 - `crates/lumapaint-renderer`：wgpuのGPU初期化・描画・サーフェス再構成。AppKitには依存しない。
 
-TauriはネイティブWebView APIを使用するため2.11系列に固定する。
+TauriはネイティブWebView APIを使用するため2.12系列に固定する（Rust・JavaScript API・CLIは2.12.1）。
 依存関係更新時はmacOS実機で座標、起動と終了を再検証する。
 
 ## 座標と描画

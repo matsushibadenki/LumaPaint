@@ -4,7 +4,7 @@ import type { ArrangeAction, TransformAction } from '../bridge';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
-import { Menu } from '@tauri-apps/api/menu';
+import { createNativeMenu, type NativeMenu } from '../native-menu';
 import type { CheckMenuItemOptions, MenuItemOptions, PredefinedMenuItemOptions, SubmenuOptions } from '@tauri-apps/api/menu';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -127,6 +127,12 @@ export function WorkspaceMenu(props: Props) {
   const popup = useRef<HTMLDivElement>(null);
   const triggers = useRef<(HTMLButtonElement | null)[]>([]);
   const nativeBusy = useRef(false);
+  const nativeMenu = useRef<NativeMenu | null>(null);
+  useEffect(() => () => {
+    const menu = nativeMenu.current;
+    nativeMenu.current = null;
+    void menu?.close().catch(() => {});
+  }, []);
   const lastItem = useRef(false);
   const native = isTauri();
   const close = (focus = true) => {
@@ -147,19 +153,28 @@ export function WorkspaceMenu(props: Props) {
     setFocused(index); lastItem.current = last;
     if (!native) { setOpen(index); return; }
     nativeBusy.current = true; setOpen(index);
-    let menu: Menu | undefined;
+    let menu: NativeMenu | undefined;
     try {
-      menu = await Menu.new({ items: menus[index].map(nativeEntry) });
+      const previous = nativeMenu.current;
+      nativeMenu.current = null;
+      await previous?.close();
+      menu = await createNativeMenu({ items: menus[index].map(nativeEntry) });
+      nativeMenu.current = menu;
       const rect = triggers.current[index]!.getBoundingClientRect();
       const window = getCurrentWindow();
       const [size, scale] = await Promise.all([window.innerSize(), window.scaleFactor()]);
       // AppKit's content view can include the title-bar safe area excluded from the DOM.
       const topInset = Math.max(0, size.height / scale - globalThis.innerHeight);
       await menu.popup(new LogicalPosition(rect.left, rect.bottom + topInset), window);
-    } catch (cause) { onError(String(cause)); }
+    } catch (cause) {
+      if (nativeMenu.current === menu) nativeMenu.current = null;
+      await menu?.close().catch(() => {});
+      onError(String(cause));
+    }
     finally {
       nativeBusy.current = false; setOpen(null);
-      if (menu) await menu.close().catch(cause => onError(String(cause)));
+      // popup() resolves when shown. Keep the menu alive for its later action event;
+      // release it when replaced or when this component unmounts.
     }
   };
   useLayoutEffect(() => {

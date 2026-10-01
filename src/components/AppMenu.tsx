@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
-import { Menu } from '@tauri-apps/api/menu';
+import { createNativeMenu, type NativeMenu } from '../native-menu';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Locale } from '../i18n';
 import { settingsMessages } from '../settings-i18n';
@@ -17,6 +17,12 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const busy = useRef(false);
+  const nativeMenu = useRef<NativeMenu | null>(null);
+  useEffect(() => () => {
+    const menu = nativeMenu.current;
+    nativeMenu.current = null;
+    void menu?.close().catch(() => {});
+  }, []);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0 });
 
@@ -24,22 +30,30 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
     if (busy.current) return;
     if (!native) { setOpen(value => !value); return; }
     busy.current = true; setOpen(true);
-    let menu: Menu | undefined;
+    let menu: NativeMenu | undefined;
     try {
-      menu = await Menu.new({ items: [
+      const previous = nativeMenu.current;
+      nativeMenu.current = null;
+      await previous?.close();
+      menu = await createNativeMenu({ items: [
         { text: 'LumaPaint 0.1.0', enabled: false },
         { item: 'Separator' as const },
         { text: t.settings, accelerator: 'CmdOrCtrl+,', action: onSettings },
       ] });
+      nativeMenu.current = menu;
       const rect = trigger.current!.getBoundingClientRect();
       const window = getCurrentWindow();
       const [size, scale] = await Promise.all([window.innerSize(), window.scaleFactor()]);
       const topInset = Math.max(0, size.height / scale - globalThis.innerHeight);
       await menu.popup(new LogicalPosition(rect.left, rect.bottom + topInset), window);
-    } catch (cause) { onError(String(cause)); }
+    } catch (cause) {
+      if (nativeMenu.current === menu) nativeMenu.current = null;
+      await menu?.close().catch(() => {});
+      onError(String(cause));
+    }
     finally {
       setOpen(false); busy.current = false;
-      if (menu) await menu.close().catch(cause => onError(String(cause)));
+      // popup() resolves before selection; retain its action handlers until replacement.
     }
   };
 
