@@ -160,6 +160,9 @@ pub enum WritingMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    /// Point text grows with its content instead of wrapping inside an area frame.
+    #[serde(default)]
+    pub point_text: bool,
     /// Persisted edit metadata. Rendering continues to use content and dimensions.
     #[serde(default)]
     pub change_generation: u64,
@@ -288,6 +291,7 @@ impl Default for VectorText {
             underline: false,
             strikethrough: false,
             alignment: TextAlignment::Left,
+            point_text: false,
             box_width: 480.0,
             box_height: None,
             indent_left: 0.0,
@@ -318,9 +322,14 @@ impl VectorText {
     pub fn reflow_vertical(&mut self) {
         use unicode_segmentation::UnicodeSegmentation;
         self.clear_measured_layout();
-        let limit = self.box_height.unwrap_or(self.box_width);
+        let limit = if self.point_text {
+            100_000.0
+        } else {
+            self.box_height.unwrap_or(self.box_width)
+        };
         let mut offset = 0;
         let mut advance = self.indent_left + self.indent_first;
+        let mut longest: f32 = 0.;
         for grapheme in self.content.graphemes(true) {
             if grapheme.contains('\n') {
                 advance = self.indent_left + self.indent_first;
@@ -335,12 +344,22 @@ impl VectorText {
                     advance = self.indent_left;
                 }
                 advance += step;
+                longest = longest.max(advance);
             }
             offset += grapheme.encode_utf16().count();
         }
         let columns = self.visual_lines().len() as f32;
         let span = columns * self.font_size * self.line_height;
-        self.layout_bounds = Some([self.box_width - span, 0., span, limit]);
+        self.layout_bounds = Some([
+            self.box_width - span,
+            0.,
+            span,
+            if self.point_text {
+                longest.max(self.font_size)
+            } else {
+                limit
+            },
+        ]);
     }
 
     /// Discard measurements tied to a particular font/layout engine.
@@ -388,8 +407,11 @@ impl VectorText {
             while line_start < last {
                 let mut fitting = line_start + 1;
                 let first_line = line_start == 0;
-                let available = self.box_width
-                    - self.indent_left
+                let available = if self.point_text {
+                    100_000.0
+                } else {
+                    self.box_width
+                } - self.indent_left
                     - self.indent_right
                     - if first_line { self.indent_first } else { 0.0 };
                 if !available.is_finite() || available <= 0.0 {
@@ -831,6 +853,8 @@ pub struct VectorObject {
     pub stroke_style: crate::stroke::StrokeStyle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_corners: Option<crate::bezier::LiveCorners>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rectangle_radii: Option<[f32; 4]>,
     pub visible: bool,
     #[serde(default)]
     pub kind: VectorObjectKind,
@@ -843,6 +867,13 @@ pub struct VectorObject {
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
         self.stroke_style.validate()?;
+        if self.rectangle_radii.is_some_and(|radii| {
+            radii
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=100_000.).contains(v))
+        }) {
+            return Err("Invalid rectangle corners".into());
+        }
         if let Some(corners) = &self.live_corners {
             corners.validate()?;
         }
@@ -1326,6 +1357,28 @@ pub trait VectorPathEngine {
 #[cfg(test)]
 mod text_style_tests {
     #[test]
+    fn point_text_does_not_wrap_at_legacy_frame_dimensions() {
+        let mut text = VectorText {
+            point_text: true,
+            box_width: 16.,
+            content: "abcdefghij\nklmnop".into(),
+            ..Default::default()
+        };
+        text.reflow_soft_breaks_with(|source, _| Ok(source.len() as f32 * 10.))
+            .unwrap();
+        assert!(text.soft_breaks.is_empty());
+        assert_eq!(text.visual_lines().len(), 2);
+        text.writing_mode = WritingMode::Vertical;
+        text.reflow_vertical();
+        assert!(text.soft_breaks.is_empty());
+        assert_eq!(text.layout_bounds.unwrap()[3], 10. * text.font_size);
+        let restored: VectorText =
+            serde_json::from_str(&serde_json::to_string(&text).unwrap()).unwrap();
+        assert!(restored.point_text);
+        assert_eq!(restored.box_height, None);
+    }
+
+    #[test]
     fn character_transforms_preserve_unselected_text_and_legacy_defaults() {
         let mut text = super::VectorText {
             content: "A😀BCD".into(),
@@ -1659,6 +1712,7 @@ mod path_hit_tests {
         }
         VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "hit-test".into(),

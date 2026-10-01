@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 pub struct FrameOverlay {
     pub corners: [[f32; 2]; 4],
     pub handles: bool,
+    pub baseline: Option<[[f32; 2]; 2]>,
 }
 
 #[repr(C)]
@@ -35,9 +36,11 @@ fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
         * viewport.zoom;
     let blue = [60.0 / 255.0, 160.0 / 255.0, 1.0, 1.0];
     let mut vertices = Vec::with_capacity(120);
-    for index in 0..4 {
-        let a = overlay.corners[index];
-        let b = overlay.corners[(index + 1) % 4];
+    for (index, [a, b]) in (0..4)
+        .map(|i| [overlay.corners[i], overlay.corners[(i + 1) % 4]])
+        .chain(overlay.baseline)
+        .enumerate()
+    {
         let dx = b[0] - a[0];
         let dy = b[1] - a[1];
         let length = dx.hypot(dy).max(0.001);
@@ -52,7 +55,7 @@ fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
             ],
             blue,
         );
-        if overlay.handles {
+        if overlay.handles && index < 4 {
             for center in [a, [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]] {
                 for (radius, color) in [(4.0 / scale, blue), (3.0 / scale, [1.0; 4])] {
                     quad(
@@ -137,6 +140,7 @@ mod tests {
         let overlay = FrameOverlay {
             corners: [[20.0, 20.0], [220.0, 20.0], [220.0, 120.0], [20.0, 120.0]],
             handles: true,
+            baseline: None,
         };
         let viewport = Viewport {
             width: 1008,
@@ -158,11 +162,23 @@ mod tests {
                 ..viewport
             },
         );
+        assert_eq!(
+            vertices(
+                FrameOverlay {
+                    baseline: Some([[20., 80.], [220., 80.]]),
+                    ..overlay
+                },
+                viewport
+            )
+            .len(),
+            126
+        );
         assert_eq!(normal.len(), 120); // Four lines and eight bordered handles.
         assert_eq!(
             vertices(
                 FrameOverlay {
                     handles: false,
+                    baseline: None,
                     ..overlay
                 },
                 viewport

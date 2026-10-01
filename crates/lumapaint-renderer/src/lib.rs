@@ -1261,6 +1261,7 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     frame_overlay_pipeline: wgpu::RenderPipeline,
     frame_overlay: Option<FrameOverlay>,
+    selection_overlay_visible: bool,
     outline_view: bool,
     selection_layout: wgpu::BindGroupLayout,
     brush_pipeline: wgpu::RenderPipeline,
@@ -2387,6 +2388,7 @@ impl Renderer {
             selection_pipeline,
             frame_overlay_pipeline,
             frame_overlay: None,
+            selection_overlay_visible: true,
             outline_view: false,
             selection_layout,
             brush_pipeline,
@@ -2478,6 +2480,10 @@ impl Renderer {
 
     pub fn set_outline_view(&mut self, outline: bool) {
         self.outline_view = outline;
+    }
+
+    pub fn set_selection_overlay_visible(&mut self, visible: bool) {
+        self.selection_overlay_visible = visible;
     }
 
     pub fn set_frame_overlay(&mut self, overlay: Option<FrameOverlay>) {
@@ -2700,13 +2706,17 @@ impl Renderer {
             |(texture, _)| texture.create_view(&Default::default()),
         );
         let frame_overlay = self
-            .frame_overlay
-            .or_else(|| {
-                document.selected_vector_box().map(|corners| FrameOverlay {
-                    corners: corners.map(|p| [p[0] + offset[0], p[1] + offset[1]]),
-                    handles: false,
+            .selection_overlay_visible
+            .then(|| {
+                self.frame_overlay.or_else(|| {
+                    document.selected_vector_box().map(|corners| FrameOverlay {
+                        corners: corners.map(|p| [p[0] + offset[0], p[1] + offset[1]]),
+                        handles: false,
+                        baseline: None,
+                    })
                 })
             })
+            .flatten()
             .map(|overlay| frame_overlay::buffer(&self.device, overlay, viewport));
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
@@ -3785,6 +3795,7 @@ mod tests {
                     &layer_id,
                     VectorObject {
                         live_corners: None,
+                        rectangle_radii: None,
                         opacity: 1.0,
                         blend_mode: "normal".into(),
                         id: id.into(),

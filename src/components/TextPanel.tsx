@@ -151,8 +151,8 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
             {numeric('indentLeft', t.indentLeft, '↦', 'pt', pt, 0, 4096 * pt)}
             {numeric('indentRight', t.indentRight, '↤', 'pt', pt, 0, 4096 * pt)}
             {numeric('indentFirst', t.indentFirst, '↳', 'pt', pt, -4096 * pt, 4096 * pt)}
-            {numeric('boxWidth', t.width, '↔', 'pt', pt, 16 * pt, 8192 * pt)}
-            <label className="type-field" title={t.height}><span className="type-symbol" aria-hidden="true">↕</span><NumberField label={t.height} value={base.boxHeight == null ? 0 : base.boxHeight * pt} min={0} max={8192 * pt} step="any" unit="pt" onValidChange={value => change({ boxHeight: value === 0 ? null : value / pt })} /></label>
+            {!base.pointText && numeric('boxWidth', t.width, '↔', 'pt', pt, 16 * pt, 8192 * pt)}
+            {!base.pointText && <label className="type-field" title={t.height}><span className="type-symbol" aria-hidden="true">↕</span><NumberField label={t.height} value={base.boxHeight == null ? 0 : base.boxHeight * pt} min={0} max={8192 * pt} step="any" unit="pt" onValidChange={value => change({ boxHeight: value === 0 ? null : value / pt })} /></label>}
             {numeric('spaceBefore', t.before, '↥', 'pt', pt, 0, 512 * pt)}
             {numeric('spaceAfter', t.after, '↧', 'pt', pt, 0, 512 * pt)}
           </div>

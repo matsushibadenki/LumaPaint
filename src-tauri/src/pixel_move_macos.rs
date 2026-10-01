@@ -223,6 +223,7 @@ pub(super) fn overlay() -> Option<lumapaint_renderer::FrameOverlay> {
                     [x + dx, y + h + dy],
                 ],
                 handles: false,
+                baseline: None,
             }
         })
     })

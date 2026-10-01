@@ -89,12 +89,27 @@ define_class!(
     #[ivars = ()]
     struct PreviewLayoutManager;
     impl PreviewLayoutManager {
+        #[unsafe(method(drawGlyphsForGlyphRange:atPoint:))]
+        unsafe fn draw_glyphs(&self, range: NSRange, origin: NSPoint) {
+            let selection = MainThreadMarker::new()
+                .and_then(|mtm| unsafe { self.firstTextView(mtm) })
+                .map(|view| view.selectedRange());
+            if let Some(selection) = selection.filter(|range| range.length > 0) {
+                // Temporary paint attributes preserve the document color and glyph cache.
+                unsafe { self.addTemporaryAttribute_value_forCharacterRange(
+                    NSForegroundColorAttributeName, &NSColor::whiteColor(), selection); }
+                let _: () = unsafe { msg_send![super(self), drawGlyphsForGlyphRange: range, atPoint: origin] };
+                unsafe { self.removeTemporaryAttribute_forCharacterRange(NSForegroundColorAttributeName, selection); }
+            } else {
+                let _: () = unsafe { msg_send![super(self), drawGlyphsForGlyphRange: range, atPoint: origin] };
+            }
+        }
+
         #[unsafe(method(fillBackgroundRectArray:count:forCharacterRange:color:))]
         unsafe fn fill_background(&self, rects: NonNull<NSRect>, count: usize, _range: NSRange, _color: &NSColor) {
-            let highlight = NSColor::colorWithSRGBRed_green_blue_alpha(0.15, 0.5, 1.0, 0.25);
+            let highlight = NSColor::blackColor();
             highlight.setFill();
-            // The superclass substitutes system inactive-selection gray even
-            // for a custom color. Blend directly over the GPU glyphs instead.
+            // Preserve black selection even when focus moves to a numeric field.
             for rect in unsafe { std::slice::from_raw_parts(rects.as_ptr(), count) } {
                 NSRectFillUsingOperation(*rect, NSCompositingOperation::SourceOver);
             }
@@ -153,7 +168,11 @@ pub fn render(canvas: &mut Canvas) -> Result<(), String> {
             let overlay = super::text_frame_overlay(&session.settings, false).map(|mut overlay| {
                 let [a, b, c, d, _, _] = session.object_transform;
                 let [x, y] = session.settings.position;
-                for point in &mut overlay.corners {
+                for point in overlay
+                    .corners
+                    .iter_mut()
+                    .chain(overlay.baseline.iter_mut().flatten())
+                {
                     let local = [point[0] - x, point[1] - y];
                     *point = [
                         x + a * local[0] + c * local[1],
@@ -162,6 +181,9 @@ pub fn render(canvas: &mut Canvas) -> Result<(), String> {
                 }
                 overlay
             });
+            canvas
+                .renderer
+                .set_selection_overlay_visible(!session.settings.text.point_text);
             canvas.renderer.set_frame_overlay(overlay);
             let settings = cached_current(session).unwrap_or_else(|| session.settings.clone());
             let preview = live_preview(&session.preview, settings)?;
@@ -558,11 +580,18 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     if let Some(container) = unsafe { view.textContainer() } {
         container.setLineFragmentPadding(0.0);
         container.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
-        container.setWidthTracksTextView(true);
+        container.setWidthTracksTextView(!settings.text.point_text);
+        if settings.text.point_text {
+            container.setContainerSize(NSSize::new(100_000.0, 100_000.0));
+        }
     }
     if settings.text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
         let width = settings.text.box_width;
-        let height = settings.text.box_height.unwrap_or(width);
+        let height = if settings.text.point_text {
+            100_000.0
+        } else {
+            settings.text.box_height.unwrap_or(width)
+        };
         view.setLayoutOrientation(NSTextLayoutOrientation::Vertical);
         view.setFrame(NSRect::new(
             NSPoint::new(0., 0.),
@@ -720,11 +749,11 @@ fn cached_current(session: &Session) -> Option<TextSettings> {
 fn point_text(vertical: bool) -> VectorText {
     let mut text = VectorText {
         content: "Text".into(),
+        point_text: true,
         ..Default::default()
     };
     if vertical {
         text.writing_mode = lumapaint_core::vector::WritingMode::Vertical;
-        text.box_height = Some(text.box_width);
         text.box_width = (text.font_size * text.line_height).max(16.0);
     }
     text
@@ -761,8 +790,11 @@ pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
     begin(settings)
 }
 
-pub fn begin(settings: TextSettings) -> Result<(), String> {
+pub fn begin(mut settings: TextSettings) -> Result<(), String> {
     finish(true)?;
+    if settings.text.point_text && settings.text.layout_bounds.is_none() {
+        reflow(&mut settings)?;
+    }
     settings.text.validate()?;
     // Reject an incompatible destination before creating an inline editor. Otherwise
     // the error is deferred until a tool switch commits the text during canvas sync.
@@ -1097,14 +1129,22 @@ pub fn layout() -> Result<(), String> {
         // Shift the editor relative to the canvas viewport so zoom/pan never moves the actual text.
         let x = session.settings.position[0] * fit + offset.x as f32;
         let y = document_y + offset.y as f32;
-        let logical_height = text
-            .box_height
-            .or_else(|| vertical.then_some(text.box_width))
-            .unwrap_or_else(|| {
-                ((height - page_y - document_y) / (fit * scale_y)).max(text.font_size * 2.0)
-            });
+        let logical_height = if text.point_text && vertical {
+            100_000.0
+        } else {
+            text.box_height
+                .or_else(|| vertical.then_some(text.box_width))
+                .unwrap_or_else(|| {
+                    ((height - page_y - document_y) / (fit * scale_y)).max(text.font_size * 2.0)
+                })
+        };
+        let logical_width = if text.point_text && !vertical {
+            100_000.0
+        } else {
+            text.box_width
+        };
         let layout_size = [
-            text.box_width,
+            logical_width,
             if vertical { logical_height } else { 100_000.0 },
         ];
         if session.layout_size.replace(Some(layout_size)) != Some(layout_size) {
@@ -1116,13 +1156,13 @@ pub fn layout() -> Result<(), String> {
         view.setFrame(NSRect::new(
             NSPoint::new(x.into(), y.into()),
             NSSize::new(
-                (text.box_width * fit * scale_x).into(),
+                (logical_width * fit * scale_x).into(),
                 (logical_height * fit * scale_y).into(),
             ),
         ));
-        view.setBoundsSize(NSSize::new(text.box_width.into(), logical_height.into()));
+        view.setBoundsSize(NSSize::new(logical_width.into(), logical_height.into()));
         if let Some(container) = unsafe { view.textContainer() } {
-            container.setWidthTracksTextView(!vertical);
+            container.setWidthTracksTextView(!vertical && !text.point_text);
             // NSTextView rotates its internal coordinate system for vertical text.
             // The container's width is therefore the physical column height.
             // Automatic height tracking would overwrite the cross-column extent
@@ -1131,7 +1171,7 @@ pub fn layout() -> Result<(), String> {
             if vertical {
                 container.setContainerSize(vertical_container_size(text.box_width, logical_height));
             } else {
-                container.setContainerSize(NSSize::new(text.box_width.into(), 100_000.0));
+                container.setContainerSize(NSSize::new(logical_width.into(), 100_000.0));
             }
         }
         view.setFrameRotation(f64::from(rotation));
@@ -1324,9 +1364,10 @@ fn attributes(
 fn hide_native_glyphs(view: &NSTextView) {
     let clear = NSColor::clearColor();
     view.setTextColor(Some(&clear));
-    let background = NSColor::colorWithSRGBRed_green_blue_alpha(0.15, 0.5, 1., 0.25);
+    let background = NSColor::blackColor();
+    let selected = NSColor::whiteColor();
     unsafe {
-        let values: [&AnyObject; 2] = [&clear, &background];
+        let values: [&AnyObject; 2] = [&selected, &background];
         let attributes = NSDictionary::from_slices(
             &[
                 NSForegroundColorAttributeName,
@@ -1425,11 +1466,12 @@ pub fn reflow_text(text: &mut VectorText, color: [u8; 3]) -> Result<(), String> 
 mod transform_tests {
     use super::*;
     #[test]
-    fn vertical_point_text_starts_with_a_tall_single_column_frame() {
+    fn point_text_has_no_area_frame() {
         let horizontal = point_text(false);
         let vertical = point_text(true);
-        assert!(vertical.box_height.unwrap() > vertical.box_width);
-        assert_eq!(vertical.box_height, Some(horizontal.box_width));
+        assert!(horizontal.point_text && vertical.point_text);
+        assert_eq!(horizontal.box_height, None);
+        assert_eq!(vertical.box_height, None);
         assert_eq!(vertical.font_size, horizontal.font_size);
         vertical.validate().unwrap();
     }

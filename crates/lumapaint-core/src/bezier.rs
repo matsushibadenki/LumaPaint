@@ -112,6 +112,12 @@ pub fn local_point(object: &VectorObject, p: [f32; 2]) -> Result<[f32; 2], Strin
 
 /// Convert pencil polylines to equivalent cubic segments before anchor editing.
 pub fn editable(object: &VectorObject) -> Option<VectorObject> {
+    if object.kind == VectorObjectKind::Rectangle && object.rectangle_radii.is_some() {
+        let mut source = object.clone();
+        source.kind = VectorObjectKind::Compound;
+        source.rectangle_radii = None;
+        return editable(&source);
+    }
     let mut result = object.clone();
     match object.kind {
         VectorObjectKind::Rectangle | VectorObjectKind::Ellipse
@@ -771,6 +777,7 @@ mod anchor_tests {
         let points = vec![[0., 0.], [0., 100.], [100., 100.], [100., 0.]];
         VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "curve".into(),
@@ -1022,6 +1029,7 @@ mod direct_tests {
     fn shape() -> VectorObject {
         VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "shape".into(),
@@ -1231,6 +1239,7 @@ mod contour_edit_tests {
     pub fn object(data: &str) -> VectorObject {
         editable(&VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             id: "test".into(),
             name: "Test".into(),
             group_path: vec![],

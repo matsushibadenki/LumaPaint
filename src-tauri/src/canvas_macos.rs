@@ -1011,6 +1011,7 @@ impl PenDraft {
         }
         Ok(VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -1536,6 +1537,7 @@ fn vector_pointer(
         &layer_id,
         VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             text: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
@@ -1828,6 +1830,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
             &layer,
             VectorObject {
                 live_corners: None,
+                rectangle_radii: None,
                 opacity: 1.0,
                 blend_mode: "normal".into(),
                 id: "direct-marquee".into(),
@@ -2249,7 +2252,11 @@ fn vector_select_pointer(
                     let mut slot = slot.borrow_mut();
                     if let Some(canvas) = slot.as_mut() {
                         let overlay = selected_text_frame_overlay(document).map(|mut overlay| {
-                            for corner in &mut overlay.corners {
+                            for corner in overlay
+                                .corners
+                                .iter_mut()
+                                .chain(overlay.baseline.iter_mut().flatten())
+                            {
                                 corner[0] += offset[0];
                                 corner[1] += offset[1];
                             }
@@ -2331,6 +2338,9 @@ fn selected_text_resize_handle(
         .flat_map(|layer| &layer.vector_objects)
         .find(|object| object.id == selected[0] && object.visible)?;
     let text = object.text.as_ref()?;
+    if text.point_text {
+        return None;
+    }
     let height = text_frame_height(text);
     let settings = TextSettings {
         id: Some(object.id.clone()),
@@ -2607,6 +2617,7 @@ fn text_frame_overlay(
             text_frame_point(settings, [0.0, height]),
         ],
         handles,
+        baseline: None,
     })
 }
 
@@ -2620,21 +2631,24 @@ fn draft_frame_overlay(start: [f32; 2], end: [f32; 2]) -> lumapaint_renderer::Fr
             [x, y + height],
         ],
         handles: false,
+        baseline: None,
     }
 }
 
 fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer::FrameOverlay> {
-    if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect {
-        return document
+    let fallback = if TOOL.with(|t| t.get()) == CanvasTool::VectorSelect {
+        document
             .selected_vector_box()
             .map(|corners| lumapaint_renderer::FrameOverlay {
                 corners,
                 handles: true,
-            });
-    }
-
+                baseline: None,
+            })
+    } else {
+        None
+    };
     if document.selected_vector_ids().len() != 1 {
-        return None;
+        return fallback;
     }
     let id = document.selected_vector_ids().first()?;
     let object = document
@@ -2642,13 +2656,54 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
         .filter(|layer| layer.visible && !layer.locked && layer.vector_layer)
         .flat_map(|layer| &layer.vector_objects)
         .find(|object| &object.id == id && object.visible)?;
-    let text = object.text.as_ref()?;
+    let Some(text) = object.text.as_ref() else {
+        return fallback;
+    };
+    if text.point_text {
+        let corners = document.selected_vector_box()?;
+        let bounds = text
+            .layout_bounds
+            .unwrap_or([0., 0., text.box_width, text.font_size]);
+        let baseline = text
+            .line_baselines
+            .first()
+            .copied()
+            .unwrap_or(text.font_size);
+        let points = if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+            [
+                [text.box_width - baseline, bounds[1]],
+                [text.box_width - baseline, bounds[1] + bounds[3]],
+            ]
+        } else {
+            [[bounds[0], baseline], [bounds[0] + bounds[2], baseline]]
+        };
+        let angle = text.rotation.to_radians();
+        return Some(lumapaint_renderer::FrameOverlay {
+            corners,
+            handles: true,
+            baseline: Some(points.map(|[x, y]| {
+                let (x, y) = (x * text.scale_x, y * text.scale_y);
+                lumapaint_core::bezier::world_point(
+                    object,
+                    [
+                        x * angle.cos() - y * angle.sin(),
+                        x * angle.sin() + y * angle.cos(),
+                    ],
+                )
+            })),
+        });
+    }
+    if fallback.is_some() {
+        return fallback;
+    }
+
     if object.bounds_reset {
         return document
             .selected_vector_box()
             .map(|corners| lumapaint_renderer::FrameOverlay {
                 corners,
                 handles: false,
+                baseline: None,
             });
     }
     let height = text.box_height?;
@@ -2672,6 +2727,7 @@ fn selected_text_frame_overlay(document: &Document) -> Option<lumapaint_renderer
     Some(lumapaint_renderer::FrameOverlay {
         corners,
         handles: true,
+        baseline: None,
     })
 }
 
@@ -3241,6 +3297,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if canvas.view.isHidden() {
         return Ok(());
     }
+    canvas.renderer.set_selection_overlay_visible(true);
     canvas.renderer.set_frame_overlay(None);
     if let Some(result) = raster_import::render(canvas) {
         return result;
@@ -3267,6 +3324,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
                 lumapaint_renderer::FrameOverlay {
                     corners,
                     handles: true,
+                    baseline: None,
                 }
             }));
         return canvas.renderer.render(canvas.viewport, &preview);
@@ -3289,6 +3347,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
                 .set_frame_overlay(Some(lumapaint_renderer::FrameOverlay {
                     corners,
                     handles: false,
+                    baseline: None,
                 }));
         }
         return canvas.renderer.render(canvas.viewport, &preview);
@@ -3327,7 +3386,11 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
             .set_frame_overlay(text_frame_overlay(&settings, true).map(|mut overlay| {
                 let [a, b, c, d] = draft.linear;
                 let [x, y] = settings.position;
-                for point in &mut overlay.corners {
+                for point in overlay
+                    .corners
+                    .iter_mut()
+                    .chain(overlay.baseline.iter_mut().flatten())
+                {
                     let dx = point[0] - x;
                     let dy = point[1] - y;
                     *point = [x + a * dx + c * dy, y + b * dx + d * dy];
@@ -3376,7 +3439,11 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     if matches!(
         TOOL.with(|tool| tool.get()),
-        CanvasTool::VectorSelect | CanvasTool::TextFrame | CanvasTool::TextFrameVertical
+        CanvasTool::VectorSelect
+            | CanvasTool::Text
+            | CanvasTool::TextVertical
+            | CanvasTool::TextFrame
+            | CanvasTool::TextFrameVertical
     ) && TEXT_FRAME_DRAFT.with(|draft| draft.borrow().is_none())
     {
         let overlay = DOCUMENT.with(|document| selected_text_frame_overlay(&document.borrow()));
@@ -4948,6 +5015,55 @@ mod tests {
     }
 
     #[test]
+    fn point_text_selection_uses_measured_bounds_and_transformed_baseline() {
+        for vertical in [false, true] {
+            let mut document = Document::default();
+            let layer = document.add_vector_layer().unwrap();
+            document.select_layer(layer).unwrap();
+            document
+                .set_text_object(TextSettings {
+                    id: None,
+                    text: lumapaint_core::vector::VectorText {
+                        point_text: true,
+                        content: "あいうえお".into(),
+                        writing_mode: if vertical {
+                            lumapaint_core::vector::WritingMode::Vertical
+                        } else {
+                            lumapaint_core::vector::WritingMode::Horizontal
+                        },
+                        box_width: 60.,
+                        font_size: 20.,
+                        line_baselines: vec![20.],
+                        layout_bounds: Some([0., 0., 100., 100.]),
+                        ..Default::default()
+                    },
+                    position: [50., 40.],
+                    color: [0, 0, 0],
+                })
+                .unwrap();
+            let overlay = selected_text_frame_overlay(&document).unwrap();
+            assert!(overlay.handles);
+            assert_eq!(
+                overlay.baseline,
+                Some(if vertical {
+                    [[90., 40.], [90., 140.]]
+                } else {
+                    [[50., 60.], [150., 60.]]
+                })
+            );
+            let snapshot = document.snapshot();
+            let settings = TextSettings {
+                id: Some(snapshot.text_objects[0].id.clone()),
+                text: snapshot.text_objects[0].text.clone(),
+                position: [50., 40.],
+                color: [0, 0, 0],
+            };
+            assert!(text_frame_overlay(&settings, false).is_none());
+            assert!(selected_text_resize_handle(&document, [50., 40.]).is_none());
+        }
+    }
+
+    #[test]
     fn selected_text_frame_overlay_preserves_text_raster_source() {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
@@ -6330,6 +6446,18 @@ pub fn compound_path(release: bool) -> Result<DocumentSnapshot, String> {
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
+pub fn edit_transform_panel(
+    edit: lumapaint_core::document::TransformPanelEdit,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    cancel_vector_drag();
+    DOCUMENT.with(|d| d.borrow_mut().edit_transform_panel(edit))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     cancel_vector_drag();
@@ -6518,6 +6646,7 @@ mod direct_command_tests {
         let layer = doc.add_vector_layer().unwrap();
         let object = VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             id: "direct-command".into(),
             name: "Test".into(),
             group_path: vec![],

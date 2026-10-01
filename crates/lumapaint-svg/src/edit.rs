@@ -235,6 +235,7 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
             });
             let object = VectorObject {
                 live_corners: None,
+                rectangle_radii: None,
                 id: format!("{layer_id}::{suffix}"),
                 name: label(&provenance, &xml),
                 group_path: vec![],

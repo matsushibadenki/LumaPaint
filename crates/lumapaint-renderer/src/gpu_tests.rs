@@ -1432,6 +1432,7 @@ fn gpu_text_frame_overlay_pipeline_is_valid() {
         FrameOverlay {
             corners: [[10., 10.], [400., 10.], [400., 200.], [10., 200.]],
             handles: true,
+            baseline: None,
         },
         viewport,
     );

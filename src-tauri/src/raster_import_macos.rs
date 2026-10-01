@@ -163,6 +163,7 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
                 .set_frame_overlay(Some(lumapaint_renderer::FrameOverlay {
                     corners: p.corners(),
                     handles: true,
+                    baseline: None,
                 }));
             canvas.renderer.render(canvas.viewport, &preview)
         })())

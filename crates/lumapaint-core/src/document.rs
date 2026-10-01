@@ -1,5 +1,7 @@
 //! Session document: a stable layer identity and retained brush strokes.
 //! This is deliberately independent of pixels, AppKit, and the renderer.
+#[path = "transform_panel.rs"]
+mod transform_panel;
 use crate::selection::SelectionGesture;
 pub use crate::selection::{
     Selection, SelectionMode, SelectionOperation, SelectionRegion, SelectionShape,
@@ -9,6 +11,7 @@ use crate::vector::{
     VectorPaint, VectorPath, VectorText,
 };
 use serde::{Deserialize, Serialize};
+pub use transform_panel::{TransformPanelEdit, TransformPanelInfo};
 
 pub const WIDTH: f32 = 960.0;
 pub const HEIGHT: f32 = 640.0;
@@ -413,6 +416,7 @@ pub struct TextSettings {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
     pub selected_bounds: Option<[f32; 4]>,
+    pub transform_panel: Option<TransformPanelInfo>,
     pub active_saved_path: Option<String>,
     pub saved_paths: Vec<SavedPathSnapshot>,
     pub selection: Option<Selection>,
@@ -745,6 +749,7 @@ impl Document {
         );
         DocumentSnapshot {
             selected_bounds: self.selected_vector_bounds(),
+            transform_panel: self.transform_panel_info(),
             active_saved_path: self.path_editing.as_ref().map(|edit| edit.id.clone()),
             saved_paths: self
                 .saved_paths
@@ -1910,6 +1915,7 @@ impl Document {
         let id = format!("text-{serial}");
         let object = VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.clone(),
@@ -3472,13 +3478,26 @@ impl Document {
                 if text.writing_mode == mode {
                     continue;
                 }
+                // Point text is anchored to its first glyph, independent of the
+                // container width used by a vertical layout engine.
+                let anchor = text.point_text.then(|| text.control_points()[0]);
                 text.writing_mode = mode;
+                if text.point_text && mode == crate::vector::WritingMode::Vertical {
+                    text.box_width = (text.font_size * text.line_height).clamp(16., 8192.);
+                }
                 text.clear_measured_layout();
                 let color = object
                     .fill
                     .map_or([0, 0, 0], |p| [p.color[0], p.color[1], p.color[2]]);
                 reflow(text, color)?;
                 object.control_points = text.control_points();
+                if let Some(anchor) = anchor {
+                    let next = object.control_points[0];
+                    let [a, b, c, d, _, _] = object.transform;
+                    let delta = [anchor[0] - next[0], anchor[1] - next[1]];
+                    object.transform[4] += a * delta[0] + c * delta[1];
+                    object.transform[5] += b * delta[0] + d * delta[1];
+                }
                 layer_changed = true;
             }
             if layer_changed {
@@ -5564,6 +5583,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn switching_point_text_direction_preserves_first_glyph_in_world_coordinates() {
+        use crate::vector::{VectorText, WritingMode};
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        document.select_layer(layer).unwrap();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    point_text: true,
+                    content: "あいうえお".into(),
+                    box_width: 480.,
+                    layout_bounds: Some([0., 2., 200., 50.]),
+                    scale_x: 1.5,
+                    scale_y: 0.8,
+                    rotation: 20.,
+                    ..Default::default()
+                },
+                position: [50., 60.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let object = document
+            .svg_layers
+            .iter_mut()
+            .flat_map(|layer| &mut layer.vector_objects)
+            .find(|object| object.text.is_some())
+            .unwrap();
+        object.transform = [1.2, 0.2, -0.1, 1.1, 50., 60.];
+        let anchor =
+            crate::bezier::world_point(object, object.text.as_ref().unwrap().control_points()[0]);
+        for mode in [WritingMode::Vertical, WritingMode::Horizontal] {
+            document
+                .set_text_writing_mode(mode, |text, _| {
+                    text.layout_bounds = Some(if mode == WritingMode::Vertical {
+                        [text.box_width - 50., 0., 50., 200.]
+                    } else {
+                        [0., 2., 200., 50.]
+                    });
+                    Ok(())
+                })
+                .unwrap();
+            let object = document
+                .svg_layers
+                .iter()
+                .flat_map(|layer| &layer.vector_objects)
+                .find(|object| object.text.is_some())
+                .unwrap();
+            let next = crate::bezier::world_point(object, object.control_points[0]);
+            assert!((anchor[0] - next[0]).abs() < 0.001);
+            assert!((anchor[1] - next[1]).abs() < 0.001);
+            assert!(object.text.as_ref().unwrap().box_height.is_none());
+        }
+        document.undo();
+        assert_eq!(
+            document.snapshot().text_objects[0].text.writing_mode,
+            WritingMode::Vertical
+        );
+        document.undo();
+        assert_eq!(document.snapshot().text_objects[0].text.box_width, 480.);
+    }
+
+    #[test]
     fn shared_selection_recognizes_legacy_vector_target_but_honors_pixel_layer() {
         let mut doc = Document::default();
         assert!(!doc.selected_layer_is_vector());
@@ -5696,6 +5778,7 @@ mod tests {
         let layer = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -7090,6 +7173,9 @@ fn transformed_control_points(object: &VectorObject) -> Vec<Point> {
 }
 
 fn rebuild_vector_path(object: &mut VectorObject) -> Result<(), String> {
+    if object.kind == VectorObjectKind::Rectangle && object.rectangle_radii.is_some() {
+        return transform_panel::rebuild_rectangle(object);
+    }
     use crate::vector::VectorObjectKind;
     use std::fmt::Write;
     object.path.data = match object.kind {
@@ -7201,6 +7287,7 @@ mod persistence_tests {
                 &layer_id,
                 VectorObject {
                     live_corners: None,
+                    rectangle_radii: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -7252,6 +7339,7 @@ mod persistence_tests {
                     &layer_id,
                     VectorObject {
                         live_corners: None,
+                        rectangle_radii: None,
                         opacity: 1.0,
                         blend_mode: "normal".into(),
                         text: None,
@@ -7316,6 +7404,7 @@ mod persistence_tests {
                 &layer_id,
                 VectorObject {
                     live_corners: None,
+                    rectangle_radii: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -7397,6 +7486,7 @@ mod persistence_tests {
                 &layer_id,
                 VectorObject {
                     live_corners: None,
+                    rectangle_radii: None,
                     opacity: 1.0,
                     blend_mode: "normal".into(),
                     text: None,
@@ -7472,6 +7562,7 @@ mod persistence_tests {
         let layer = document.add_vector_layer().unwrap();
         let shape = |id: &str, x: f32| VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),
@@ -8804,6 +8895,7 @@ mod stroke_width_tests {
                 &layer,
                 VectorObject {
                     live_corners: None,
+                    rectangle_radii: None,
                     id: id.into(),
                     name: id.into(),
                     opacity: 1.,
@@ -8931,6 +9023,7 @@ mod stroke_width_tests {
         let layer = document.add_vector_layer().unwrap();
         let object = VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: "path-a".into(),
@@ -9115,6 +9208,7 @@ mod independent_saved_path_tests {
     fn square(id: &str) -> VectorObject {
         VectorObject {
             live_corners: None,
+            rectangle_radii: None,
             opacity: 1.0,
             blend_mode: "normal".into(),
             id: id.into(),

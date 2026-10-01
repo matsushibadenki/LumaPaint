@@ -1134,6 +1134,22 @@ pub async fn compound_path(
 }
 
 #[tauri::command]
+pub async fn edit_transform_panel(
+    window: tauri::WebviewWindow,
+    edit: lumapaint_core::document::TransformPanelEdit,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_transform_panel(edit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, edit);
+        Err("Transforms are pending on this platform / この環境の変形は未対応です / 此平台暂不支持变换".into())
+    }
+}
+
+#[tauri::command]
 pub async fn transform_objects(
     window: tauri::WebviewWindow,
     action: String,

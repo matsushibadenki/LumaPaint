@@ -127,6 +127,7 @@ pub fn run() {
             canvas::text_writing_mode,
             canvas::outline_view,
             canvas::transform_objects,
+            canvas::edit_transform_panel,
             canvas::set_vector_paint,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,

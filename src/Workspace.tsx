@@ -296,10 +296,11 @@ export function Workspace() {
   }, [updateDocument]);
   const beginText = () => {
     const vertical = canvasTool === 'textVertical' || canvasTool === 'textFrameVertical';
-    const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText,
+    const pointText = canvasTool !== 'textFrame' && canvasTool !== 'textFrameVertical';
+    const settings: TextSettings = activeText ?? { id: null, text: { ...defaultVectorText, pointText,
       writingMode: vertical ? 'vertical' : 'horizontal',
       boxWidth: vertical ? defaultVectorText.fontSize * defaultVectorText.lineHeight : defaultVectorText.boxWidth,
-      boxHeight: vertical ? defaultVectorText.boxWidth : defaultVectorText.boxHeight,
+      boxHeight: pointText ? null : vertical ? defaultVectorText.boxWidth : 240,
       content: textMessages[locale].defaultText }, position: [48, 48], color: brush.color };
     textSessionActive.current = true;
     void beginTextEdit(settings).catch(cause => {
@@ -575,7 +576,7 @@ export function Workspace() {
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} />
       </div>
-      {panels && <Inspector thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>

@@ -7,7 +7,15 @@ export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' |
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
 export interface Brush { size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
+export interface TransformPanelInfo { corners: [number, number][]; width: number; height: number; rotation: number; shear: number; rectangle: boolean; radii: [number, number, number, number] }
+export interface TransformPanelEdit { field: 'x'|'y'|'width'|'height'|'rotation'|'shear'|'corners'; values: [number, number, number, number]; reference: [number, number]; proportional: boolean; scaleCorners: boolean; scaleStrokes: boolean; revision: number; ids: string[] }
+export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('edit_transform_panel', { edit }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 export interface DocumentSnapshot {
+  transformPanel?: TransformPanelInfo | null;
   selectedBounds?: [number, number, number, number] | null;
   activeSavedPath: string | null;
   savedPaths: { guideColor?: [number, number, number, number]; id: string; name: string; components: number; clipping: boolean }[];
@@ -39,6 +47,7 @@ export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
 export interface VectorText {
+  pointText?: boolean;
   changeGeneration: number;
   updatedAtMs: number;
   writingMode?: 'horizontal' | 'vertical';
@@ -84,7 +93,7 @@ export interface VectorPath { data: string; fillRule: 'nonZero' | 'evenOdd' }
 export type PathOperation = 'union' | 'difference' | 'intersection' | 'xor';
 export type PathEditAction = 'join' | 'average' | 'outline' | 'offset' | 'reverse' | 'simplify' | 'smooth' | 'addAnchors' | 'removeAnchors' | 'divideBelow' | 'splitGrid' | 'cleanUp';
 export interface VectorPaint { color: [number, number, number, number] }
-export interface VectorObject { id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; strokeStyle?: StrokeStyle; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
+export interface VectorObject { rectangleRadii?: [number, number, number, number]; id: string; name: string; path: VectorPath; transform: [number, number, number, number, number, number]; fill: VectorPaint | null; stroke: VectorPaint | null; strokeWidth: number; strokeStyle?: StrokeStyle; visible: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; text?: VectorText; controlPoints: [number, number][] }
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean; format: 'legacy' | 'tiled' }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
