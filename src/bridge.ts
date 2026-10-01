@@ -12,7 +12,7 @@ export async function newEditorWindow(): Promise<void> {
 }
 
 
-export type CanvasTool = 'brush' | 'eraser' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
+export type CanvasTool = 'brush' | 'eraser' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
@@ -371,6 +371,11 @@ export async function subscribeCanvasZoom(onZoom: (zoom: number) => void) {
   return listen<number>('canvas-zoom-changed', event => onZoom(event.payload));
 }
 
+export async function subscribeCanvasSampledColor(onColor: (color: Brush['color']) => void) {
+  if (!isTauri()) return () => {};
+  return listen<Brush['color']>('canvas-sampled-color', event => onColor(event.payload));
+}
+
 export async function subscribeCanvasColorSwap(onSwap: () => void) {
   if (!isTauri()) return () => {};
   return listen('canvas-swap-colors', onSwap);
@@ -456,4 +461,11 @@ export interface DirectControlInfo { id:string; index:number; x:number; y:number
 export function directControlInfo():Promise<DirectControlInfo[]> { return isTauri()?textCommand('direct_control_info',{}):Promise.resolve([]); }
 export function editDirectControls(mode:'position'|'move'|'corner',values:number[],preview:boolean,points:DirectControlInfo[],revision:number):Promise<{snapshot:DocumentSnapshot;preview:string}> {
   return textCommand('edit_direct_controls',{mode,values,preview,expected:points.map(p=>[p.id,p.index]),revision});
+}
+
+export type PathfinderOperation = 'unite' | 'minusFront' | 'intersect' | 'exclude' | 'divide' | 'trim' | 'merge' | 'crop' | 'outline' | 'minusBack';
+export function pathfinderVectors(operation: PathfinderOperation): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('pathfinder_vectors', { operation }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
 }

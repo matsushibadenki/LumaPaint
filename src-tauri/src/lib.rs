@@ -142,6 +142,7 @@ pub fn run() {
             canvas::arrange_selected_vectors,
             canvas::select_arrange_layer,
             canvas::combine_selected_vectors,
+            canvas::pathfinder_vectors,
             canvas::group_selected_vectors,
             canvas::clipping_path,
             canvas::compound_path,

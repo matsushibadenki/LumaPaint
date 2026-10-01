@@ -1,3 +1,4 @@
+import { PathfinderPanel, pathfinderLabels } from './PathfinderPanel';
 import { usePanelThumbnails } from './usePanelThumbnails';
 import { PathsPanel, type SavedPathAction } from './PathsPanel';
 import { TransformPanel, transformLabels } from './TransformPanel';
@@ -17,7 +18,7 @@ import { TextPanel } from './TextPanel';
 import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
-const panelIds = ['color', 'brush', 'stroke', 'transform', 'text', 'layers', 'document'] as const;
+const panelIds = ['color', 'brush', 'stroke', 'transform', 'pathfinder', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -50,7 +51,7 @@ function initialPanelOrder(): PanelId[] {
   return [...panelIds];
 }
 
-const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach' } as const;
+const panelIcons = { brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
 export function Inspector({ onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   onTransformUpdate: (snapshot: DocumentSnapshot) => void;
@@ -92,7 +93,7 @@ export function Inspector({ onTransformUpdate, thumbnailDocumentKey, onSavedPath
       setLayerPanelMode(mode);
     } catch (cause) { setPathTabError(String(cause)); }
   };
-  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title };
+  const labels: Record<PanelId, string> = { brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
   useEffect(() => {
@@ -171,6 +172,7 @@ export function Inspector({ onTransformUpdate, thumbnailDocumentKey, onSavedPath
       ><Icon name={panelIcons[panel]} /></button>{panel === 'color' && <span className="inspector-tab-separator" aria-hidden="true" />}</Fragment>)}
     </div>
 
+    {activePanel === 'pathfinder' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-pathfinder" aria-labelledby="inspector-tab-pathfinder"><PathfinderPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>}
     {activePanel === 'transform' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-transform" aria-labelledby="inspector-tab-transform"><TransformPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>}
     {activePanel === 'stroke' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} onStyle={onStrokeStyle} /></section>}
     {activePanel === 'text' && <section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">

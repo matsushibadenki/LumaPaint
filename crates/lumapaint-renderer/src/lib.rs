@@ -15,6 +15,7 @@ mod frame_overlay;
 pub mod text_outlines;
 mod workspace;
 pub use frame_overlay::FrameOverlay;
+pub mod color_sampler;
 mod paint_cache;
 pub mod pixel_paint;
 pub use wgpu;
@@ -1280,6 +1281,7 @@ pub struct Renderer {
     svg_sampler: wgpu::Sampler,
     tile_nearest_sampler: wgpu::Sampler,
     tile_preview: Option<TileGpuPreview>,
+    color_sampler: color_sampler::ColorSampler,
     paint_cache: Option<paint_cache::PaintCache>,
     paint_cache_installed: bool,
     brush_cache: Vec<CachedBrushGpu>,
@@ -2407,6 +2409,7 @@ impl Renderer {
             svg_sampler,
             tile_nearest_sampler,
             tile_preview: None,
+            color_sampler: Default::default(),
             paint_cache: None,
             paint_cache_installed: false,
             brush_cache: Vec::new(),
@@ -2472,6 +2475,15 @@ impl Renderer {
                 instances: samples.len() as u32,
             });
         }
+    }
+
+    /// Sample document content, without selection, channel or outline overlays.
+    pub fn sample_color(
+        &mut self,
+        document: &Document,
+        point: Point,
+    ) -> Result<Option<[u8; 3]>, String> {
+        self.color_sampler.sample(document, point)
     }
 
     pub fn render(&mut self, viewport: Viewport, document: &Document) -> Result<(), String> {

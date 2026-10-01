@@ -109,6 +109,7 @@ h1, h2, h3 { font-style: normal; }
 .native-slot[data-document='empty'] { display: block; }
 .native-slot[data-tool='zoomIn'] { cursor: zoom-in; }
 .native-slot[data-tool='zoomOut'] { cursor: zoom-out; }
+.native-slot[data-tool='eyedropper'] { cursor: crosshair; }
 .native-slot[data-tool='hand'] { cursor: grab; }
 .native-slot[data-tool='hand']:active { cursor: grabbing; }
 .paper-preview { width: min(calc(100% - 48px), calc((100cqh - 48px) * 1.5)); aspect-ratio: 1.5; background: var(--color-white); }
@@ -566,3 +567,30 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .native-modal-page .settings-dialog { width: 100%; max-height: calc(100dvh - 32px); }
 .native-modal-page dialog { box-sizing: border-box; max-width: calc(100dvw - 32px); max-height: calc(100dvh - 32px); overflow: auto; box-shadow: none; }
 .native-modal-page dialog::backdrop { background: transparent; }
+
+.document-dock { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.document-dock-canvas { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.document-dock-divider { flex: 0 0 8px; display: grid; place-items: center; cursor: row-resize; touch-action: none; user-select: none; background: var(--color-bar); border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); }
+.document-dock-divider > span { width: 32px; height: 2px; border-radius: 2px; background: var(--color-muted); opacity: .55; }
+.document-dock-divider:hover, .document-dock-divider:focus-visible { background: color-mix(in srgb, var(--color-accent) 20%, var(--color-bar)); outline: none; }
+.document-dock-panel { flex: 0 0 auto; min-height: 0; min-width: 0; overflow: auto; background: var(--color-panel); }
+.document-dock-panel-label { display: block; padding: 16px; color: var(--color-muted); font-size: var(--text-small); }
+.document-dock-bar { display: flex; align-items: center; justify-content: space-between; flex: 0 0 34px; min-width: 0; border-top: 1px solid var(--color-rule); background: var(--color-bar); }
+.document-dock-tabs { display: flex; align-self: stretch; min-width: 0; overflow-x: auto; }
+.document-dock-tabs > button { flex: 0 0 auto; padding: 0 16px; border: 0; border-right: 1px solid var(--color-rule); background: transparent; color: var(--color-muted); white-space: nowrap; font-size: var(--text-small); }
+.document-dock-tabs > button[aria-selected='true'] { background: var(--color-panel); color: var(--color-ink); box-shadow: inset 0 2px var(--color-accent); }
+.document-dock-tabs > button:hover { background: var(--color-panel); color: var(--color-ink); }
+.document-dock-close { flex: 0 0 28px; height: 26px; padding: 0; margin-right: 6px; border: 0; background: transparent; color: var(--color-muted); font-size: 18px; }
+.document-dock-close:hover { color: var(--color-ink); background: var(--color-bg); }
+
+.pathfinder-panel { color: var(--color-ink); }
+.pathfinder-panel > header { height: 34px; padding: 0 8px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--color-rule); background: var(--color-bar); }
+.pathfinder-panel h2 { margin: 0; font-size: 13px; font-weight: 500; }
+.pathfinder-panel header > span { color: var(--color-muted); }
+.pathfinder-content { padding: 8px; }
+.pathfinder-content > p { margin: 0 0 7px; font-size: 12px; }
+.pathfinder-modes, .pathfinder-operations { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 8px; }
+.pathfinder-modes > button, .pathfinder-operations > button { display: grid; place-items: center; min-width: 26px; height: 28px; padding: 2px; border: 1px solid transparent; background: transparent; color: var(--color-ink); }
+.pathfinder-modes > button:hover:not(:disabled), .pathfinder-operations > button:hover:not(:disabled) { background: var(--color-hover); border-color: var(--color-rule); }
+.pathfinder-modes > .pathfinder-expand { flex: 1; margin-left: 10px; background: var(--color-field); font-size: 12px; }
+.pathfinder-content > .pathfinder-error { color: var(--color-error); font-size: 11px; overflow-wrap: anywhere; }

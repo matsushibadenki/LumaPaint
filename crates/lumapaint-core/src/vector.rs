@@ -1327,6 +1327,21 @@ pub enum PathOperation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum PathfinderOperation {
+    Unite,
+    MinusFront,
+    Intersect,
+    Exclude,
+    Divide,
+    Trim,
+    Merge,
+    Crop,
+    Outline,
+    MinusBack,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PathEditAction {
     Join,
     Average,

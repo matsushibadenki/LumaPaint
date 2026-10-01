@@ -38,6 +38,7 @@ pub enum CanvasTool {
     #[default]
     Brush,
     Eraser,
+    Eyedropper,
     Rectangle,
     Ellipse,
     VectorSelect,
@@ -641,6 +642,22 @@ pub async fn combine_selected_vectors(
     {
         let _ = (window, operation);
         Err("Vector path operations are not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn pathfinder_vectors(
+    window: tauri::WebviewWindow,
+    operation: lumapaint_core::vector::PathfinderOperation,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::pathfinder_vectors(operation)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, operation);
+        Err("Vector operations are unavailable on this platform".into())
     }
 }
 

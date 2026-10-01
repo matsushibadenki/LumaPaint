@@ -660,6 +660,10 @@ impl Document {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+    pub fn canvas_color(&self) -> CanvasColor {
+        self.canvas_color
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -3998,6 +4002,113 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    /// Apply a portable pathfinder result atomically, in layer stacking order.
+    pub fn pathfinder_selected_vectors(
+        &mut self,
+        operation: crate::vector::PathfinderOperation,
+        compute: impl FnOnce(
+            &[VectorObject],
+            crate::vector::PathfinderOperation,
+        ) -> Result<Vec<VectorObject>, String>,
+    ) -> Result<(), String> {
+        if !(2..=64).contains(&self.selected_vector_objects.len()) {
+            return Err("Select 2 to 64 vector shapes".into());
+        }
+        let selected = &self.selected_vector_objects;
+        let matches: Vec<_> = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .flat_map(|(li, layer)| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(oi, object)| {
+                        selected.contains(&object.id).then_some((li, oi))
+                    })
+            })
+            .collect();
+        if matches.len() != selected.len() || matches.iter().any(|(li, _)| *li != matches[0].0) {
+            return Err("Select shapes on the same vector layer".into());
+        }
+        let li = matches[0].0;
+        let layer = &self.svg_layers[li];
+        let objects: Vec<_> = matches
+            .iter()
+            .map(|(_, oi)| layer.vector_objects[*oi].clone())
+            .collect();
+        if layer.locked
+            || !layer.visible
+            || objects.iter().any(|object| {
+                !object.visible
+                    || object.kind == VectorObjectKind::Text
+                    || object.fill.is_none()
+                    || !object.group_path.is_empty()
+                    || object.clipping_group.is_some()
+            })
+        {
+            return Err(
+                "Select visible, ungrouped filled paths on an unlocked layer; outline text first"
+                    .into(),
+            );
+        }
+        let mut results = compute(&objects, operation)?;
+        if results.len() > 4096 {
+            return Err("Pathfinder result exceeds 4096 objects".into());
+        }
+        let mut ids: std::collections::HashSet<String> = self
+            .svg_layers
+            .iter()
+            .flat_map(|layer| &layer.vector_objects)
+            .map(|object| object.id.clone())
+            .collect();
+        for (index, object) in results.iter_mut().enumerate() {
+            let base = format!("pf-{}-{}", self.revision, index);
+            let mut id = base.clone();
+            let mut suffix = 0;
+            while ids.contains(&id) {
+                suffix += 1;
+                id = format!("{base}-{suffix}");
+            }
+            ids.insert(id.clone());
+            object.id = id;
+            object.validate()?;
+        }
+        let mut updated = layer.clone();
+        let insertion = matches.last().unwrap().1;
+        let mut merged = Vec::new();
+        for (oi, object) in updated.vector_objects.into_iter().enumerate() {
+            if !selected.contains(&object.id) {
+                merged.push(object);
+            }
+            if oi == insertion {
+                merged.extend(results.iter().cloned());
+            }
+        }
+        updated.vector_objects = merged;
+        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
+        let total = updated.source.len()
+            + self
+                .svg_layers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != li)
+                .map(|(_, layer)| layer.source.len())
+                .sum::<usize>();
+        if total > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        validate_svg_layer(&updated)?;
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[li] = updated;
+        self.selected_vector_objects = results.iter().map(|object| object.id.clone()).collect();
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     /// One oriented bounding box shared by the selected objects.
     pub fn selected_vector_box(&self) -> Option<[[f32; 2]; 4]> {
         let objects: Vec<_> = self

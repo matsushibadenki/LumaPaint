@@ -1,5 +1,7 @@
 //! GPU-preferred vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
+#[cfg(feature = "skia")]
+pub mod pathfinder;
 #[cfg(test)]
 use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};

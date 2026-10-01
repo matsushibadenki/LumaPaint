@@ -2,7 +2,7 @@ import type { CanvasTool } from './bridge';
 
 export const toolModes = ['paint', 'vector', 'layout', 'animation'] as const;
 export type ToolMode = typeof toolModes[number];
-export type ModeTool = Exclude<CanvasTool, 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
+export type ModeTool = Exclude<CanvasTool, 'eyedropper' | 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
 
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
   paint: ['brush', 'eraser'],

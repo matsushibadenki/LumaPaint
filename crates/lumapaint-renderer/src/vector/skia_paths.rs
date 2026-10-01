@@ -118,7 +118,7 @@ impl SkiaPathEngine {
         Ok(parts)
     }
 
-    fn transformed(object: &VectorObject) -> Result<Path, String> {
+    pub(super) fn transformed(object: &VectorObject) -> Result<Path, String> {
         let [a, b, c, d, e, f] = object.transform;
         let matrix = Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0);
         let path = parse(&object.path)?.with_transform(&matrix);

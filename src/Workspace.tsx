@@ -1,3 +1,4 @@
+import { DocumentDock } from './components/DocumentDock';
 import { NativeModal } from './NativeModal';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -16,7 +17,7 @@ import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reo
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom, newEditorWindow } from './bridge';
-import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
+import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasSampledColor, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { RecoveryControls } from './components/RecoveryControls';
@@ -55,11 +56,12 @@ export function Workspace() {
   const [theme, setTheme] = useState<Theme>(() => readPreference('theme') ? initialTheme() : 'dark');
   const [toolState, setToolState] = useState({ mode: 'paint' as ToolMode, tools: initialTools });
   const toolMode = toolState.mode;
+  const [sampling, setSampling] = useState(false);
   const [zoomTool, setZoomTool] = useState<ZoomTool | null>(null);
   const [lastZoomTool, setLastZoomTool] = useState<ZoomTool>('zoomIn');
   const [transformTool, setTransformTool] = useState<'vectorScale' | 'vectorRotate' | 'vectorSelect' | 'vectorDirectSelect' | null>(null);
   const [selectionTool, setSelectionTool] = useState<SelectionTool | null>(null);
-  const canvasTool = zoomTool ?? transformTool ?? selectionTool ?? toolState.tools[toolMode];
+  const canvasTool: CanvasTool = sampling ? 'eyedropper' : zoomTool ?? transformTool ?? selectionTool ?? toolState.tools[toolMode];
   const [lastSelectionTool, setLastSelectionTool] = useState<SelectionTool>('rectangle');
   const [directControlOpen,setDirectControlOpen] = useState(false);
   const [transformAction, setTransformAction] = useState<TransformAction | null>(null);
@@ -69,10 +71,13 @@ export function Workspace() {
   const [lastVectorShapeTool, setLastVectorShapeTool] = useState<VectorShapeTool>('vectorRectangle');
   const [lastTextTool, setLastTextTool] = useState<'text' | 'textVertical' | 'textFrame' | 'textFrameVertical'>('text');
   const setToolMode = useCallback((mode: ToolMode) => {
+    setSampling(false);
     setZoomTool(null);
     setToolState(current => ({ ...current, mode }));
   }, []);
   const setTool = useCallback((next: CanvasTool) => {
+    setSampling(next === 'eyedropper');
+    if (next === 'eyedropper') { setSelectionTool(null); setTransformTool(null); setZoomTool(null); return; }
     if (next === 'zoomIn' || next === 'zoomOut' || next === 'hand') { setSelectionTool(null); setTransformTool(null); setZoomTool(next); setLastZoomTool(next); return; }
     setZoomTool(null);
     if (next === 'vectorScale' || next === 'vectorRotate' || next === 'vectorSelect' || next === 'vectorDirectSelect') { setSelectionTool(null); setTransformTool(next); if(next === 'vectorScale' || next === 'vectorRotate') setLastTransformTool(next); else setLastVectorSelectTool(next); return; }
@@ -240,6 +245,13 @@ export function Workspace() {
     setBrush(previous => ({ ...previous, color }));
     applyTextColor(color);
   }, [setBrush, applyTextColor]);
+  useEffect(() => {
+    let active = true; let stop = () => {};
+    subscribeCanvasSampledColor(color => { if (active) changeForeground(color); })
+      .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
+      .catch(cause => { if (active) setError(String(cause)); });
+    return () => { active = false; stop(); };
+  }, [changeForeground]);
   const swapColors = useCallback(() => {
     setPaintState(current => ({
       brush: { ...current.brush, color: current.backgroundColor }, backgroundColor: current.brush.color,
@@ -470,6 +482,7 @@ export function Workspace() {
           if (!inlineText && (event.key === 'Delete' || event.key === 'Backspace')) {
             event.preventDefault(); void edit('deleteSelectedObjects'); return;
           }
+          if (key === 'i') { event.preventDefault(); setTool('eyedropper'); }
           if (key === 'e') { event.preventDefault(); setTool('eraser'); }
           if (key === 'b' || key === 'm') { event.preventDefault(); setTool(key === 'b' ? 'brush' : event.shiftKey ? 'ellipse' : 'rectangle'); }
           if (key === 'a' || key === 'v' || key === 'p' || key === 'n' || key === 'u') {
@@ -548,6 +561,7 @@ export function Workspace() {
         <IconToolMenu key="vector-selection" label={t.vectorSelect} selected={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect' ? canvasTool : lastVectorSelectTool} active={canvasTool === 'vectorSelect' || canvasTool === 'vectorDirectSelect'} enabled={documentEditable} choices={[{ id: 'vectorSelect', label: t.vectorSelect, icon: 'vectorSelect', shortcut: 'V' }, { id: 'vectorDirectSelect', label: t.vectorDirectSelect, icon: 'vectorDirectSelect', shortcut: 'A' }]} onSelect={tool => setTool(tool as CanvasTool)} onError={setError} />
         <SelectionToolMenu locale={locale} selected={selectionTool ?? lastSelectionTool} active={selectionTool !== null} enabled={documentEditable} onSelect={setTool} onError={setError} />
         <IconToolMenu key="vector-transform" label={t.transformTools} selected={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate' ? canvasTool : lastTransformTool} active={canvasTool === 'vectorScale' || canvasTool === 'vectorRotate'} enabled={documentEditable} choices={[{ id: 'vectorScale', label: t.vectorScale, icon: 'vectorScale' }, { id: 'vectorRotate', label: t.vectorRotate, icon: 'vectorRotate' }, ...(['move','reflect','shear','individual','reset'] as const).map((action,i)=>({id:action,label:transformLabels[locale][action],icon:(['transformMove','transformReflect','transformShear','transformEach','transformReset'] as const)[i]}))]} onSelect={tool => { if(tool==='vectorScale'||tool==='vectorRotate') setTool(tool); else setTransformAction(tool as TransformAction); }} onError={setError} />
+        <button className={`tool-button${sampling ? ' selected' : ''}`} aria-label={t.eyedropper} title={`${t.eyedropper} (I)`} aria-pressed={sampling} disabled={!documentAvailable || !ready} onClick={() => setTool('eyedropper')}><Icon name="eyedropper" /></button>
         <ZoomToolMenu locale={locale} selected={zoomTool ?? lastZoomTool} active={zoomTool !== null} enabled={documentAvailable && ready} onSelect={setTool} onError={setError} />
         </div>
         <div className="mode-tools">
@@ -581,13 +595,13 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{documentState.width} × {documentState.height} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
-        <CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale}><CanvasPreview channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} hasDocument={documentAvailable} visible={documentAvailable && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
             <button disabled={placementBusy} onClick={() => void finishPlacement(true)}>{ {ja:'確定',en:'Confirm','zh-CN':'确认'}[locale] }</button>
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
-          zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} />
+          zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentDock>
       </div>
       {panels && <Inspector onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}

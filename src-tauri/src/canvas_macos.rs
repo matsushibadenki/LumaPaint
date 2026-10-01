@@ -393,6 +393,7 @@ impl PaintView {
                 match TOOL.with(|tool| tool.get()) {
                     CanvasTool::ZoomIn => Some(NSCursor::zoomInCursor()),
                     CanvasTool::ZoomOut => Some(NSCursor::zoomOutCursor()),
+                    CanvasTool::Eyedropper => Some(NSCursor::crosshairCursor()),
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
                     CanvasTool::Text | CanvasTool::TextVertical | CanvasTool::TextFrame | CanvasTool::TextFrameVertical => Some(NSCursor::IBeamCursor()),
                     CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
@@ -540,6 +541,11 @@ impl PaintView {
                 return;
             }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
+            else if event.keyCode() == 34 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
+                if let Err(error) = switch_canvas_tool(CanvasTool::Eyedropper) { emit_error(error); return; }
+                self.refresh_cursor();
+                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eyedropper); }
+            }
             else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
                 if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eraser); }
@@ -747,6 +753,14 @@ impl PaintView {
             return;
         }
         let tool = TOOL.with(|tool| tool.get());
+        if tool == CanvasTool::Eyedropper {
+            if phase == 0 {
+                if let Err(error) = sample_canvas_color(point) {
+                    emit_error(error);
+                }
+            }
+            return;
+        }
         if tool == CanvasTool::VectorPen
             && phase == 0
             && (point.x < 0.0
@@ -1162,6 +1176,63 @@ pub fn finish_open_pen() -> Result<(), String> {
     DOCUMENT.with(|document| finish_pen(&mut document.borrow_mut(), false))?;
     redraw()?;
     emit_document();
+    Ok(())
+}
+
+fn sample_canvas_color(point: lumapaint_core::document::Point) -> Result<(), String> {
+    text_editor::finish(true)?;
+    let color = ACTIVE_TILED_DOCUMENT
+        .with(|tiled| {
+            tiled.borrow().as_ref().map(|session| {
+                lumapaint_renderer::color_sampler::sample_tiled(&session.document, point)
+            })
+        })
+        .unwrap_or_else(|| {
+            CANVAS.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let canvas = slot.as_mut().ok_or("Canvas unavailable")?;
+                DOCUMENT.with(|document| canvas.renderer.sample_color(&document.borrow(), point))
+            })
+        })?;
+    if let Some(color) = color {
+        BRUSH.with(|brush| brush.borrow_mut().color = color);
+        // Editable path selections receive the sampled fill; raster sampling never paints.
+        let changed = if ACTIVE_TILED_DOCUMENT.with(|tiled| tiled.borrow().is_some()) {
+            false
+        } else {
+            DOCUMENT.with(|document| {
+                let mut document = document.borrow_mut();
+                let ids = document.selected_vector_ids().to_vec();
+                let editable = !ids.is_empty()
+                    && document
+                        .svg_layers()
+                        .flat_map(|layer| {
+                            layer
+                                .vector_objects
+                                .iter()
+                                .map(move |object| (layer, object))
+                        })
+                        .filter(|(_, object)| ids.contains(&object.id))
+                        .all(|(layer, object)| {
+                            !layer.locked
+                                && layer.visible
+                                && object.visible
+                                && object.text.is_none()
+                        });
+                if editable {
+                    document.set_selected_vector_paint(&ids, "fill", Some(color))?;
+                }
+                Ok::<_, String>(editable)
+            })?
+        };
+        if let Some(app) = APP.get() {
+            let _ = app.emit_to(current_label(), "canvas-sampled-color", color);
+        }
+        if changed {
+            redraw()?;
+            emit_document();
+        }
+    }
     Ok(())
 }
 
@@ -3089,6 +3160,18 @@ pub fn combine_selected_vectors(operation: PathOperation) -> Result<DocumentSnap
                 lumapaint_renderer::vector::skia_paths::SkiaPathEngine
                     .combine_objects(back, front, op)
             })
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn pathfinder_vectors(
+    operation: lumapaint_core::vector::PathfinderOperation,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .pathfinder_selected_vectors(operation, lumapaint_renderer::vector::pathfinder::compute)
     })?;
     redraw()?;
     emit_document();
