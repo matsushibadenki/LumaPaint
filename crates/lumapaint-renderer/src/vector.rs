@@ -1988,10 +1988,107 @@ pub fn imported_raster_info(bytes: &[u8], format: &str) -> Result<ImportedRaster
     })
 }
 
+/// CPU decoding keeps placement available when the Skia backend is unavailable.
+#[cfg(not(feature = "skia"))]
+pub fn imported_raster_info(bytes: &[u8], format: &str) -> Result<ImportedRasterInfo, String> {
+    use image::ImageDecoder;
+    let detected = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if !matches!(detected, image::ImageFormat::Png | image::ImageFormat::Jpeg)
+        || !matches!(format, "all" | "png" | "jpeg")
+        || (format == "png" && detected != image::ImageFormat::Png)
+        || (format == "jpeg" && detected != image::ImageFormat::Jpeg)
+    {
+        return Err("Choose a matching JPEG or PNG image / 指定形式のJPEGまたはPNGを選択してください / 请选择匹配格式的JPEG或PNG图片".into());
+    }
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), detected);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (encoded_width, encoded_height) = decoder.dimensions();
+    let orientation = decoder.orientation().map_err(|e| e.to_string())?.to_exif();
+    // Decode fully to reject corrupt images before linking them into the document.
+    image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    let (width, height) = if orientation >= 5 {
+        (encoded_height, encoded_width)
+    } else {
+        (encoded_width, encoded_height)
+    };
+    Ok(ImportedRasterInfo {
+        width,
+        height,
+        encoded_width,
+        encoded_height,
+        orientation,
+    })
+}
+
 #[cfg(feature = "skia")]
 pub fn imported_raster_size(bytes: &[u8], format: &str) -> Result<(u32, u32), String> {
     let info = imported_raster_info(bytes, format)?;
     Ok((info.width, info.height))
+}
+
+#[cfg(all(test, not(feature = "skia")))]
+#[test]
+fn cpu_raster_import_validates_formats_corruption_and_exif_orientation() {
+    let image = image::DynamicImage::new_rgb8(12, 7);
+    for (encoding, format, wrong) in [
+        (image::ImageFormat::Png, "png", "jpeg"),
+        (image::ImageFormat::Jpeg, "jpeg", "png"),
+    ] {
+        let mut output = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut output, encoding).unwrap();
+        let bytes = output.into_inner();
+        let info = imported_raster_info(&bytes, format).unwrap();
+        assert_eq!((info.width, info.height), (12, 7));
+        assert_eq!(imported_raster_info(&bytes, "all").unwrap(), info);
+        assert!(imported_raster_info(&bytes, wrong).is_err());
+        assert!(imported_raster_info(&bytes[..12], format).is_err());
+        if encoding == image::ImageFormat::Jpeg {
+            for orientation in 1..=8 {
+                let mut oriented = bytes[..2].to_vec();
+                oriented.extend_from_slice(&[0xff, 0xe1, 0, 34]);
+                oriented.extend_from_slice(b"Exif\0\0II");
+                oriented.extend_from_slice(&[
+                    42,
+                    0,
+                    8,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0x12,
+                    1,
+                    3,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0,
+                    orientation,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]);
+                oriented.extend_from_slice(&bytes[2..]);
+                let info = imported_raster_info(&oriented, "jpeg").unwrap();
+                assert_eq!(info.orientation, orientation);
+                assert_eq!((info.encoded_width, info.encoded_height), (12, 7));
+                assert_eq!(
+                    (info.width, info.height),
+                    if orientation >= 5 { (7, 12) } else { (12, 7) }
+                );
+            }
+        }
+    }
+    assert!(imported_raster_info(b"not an image", "all").is_err());
 }
 
 #[cfg(all(test, feature = "skia"))]

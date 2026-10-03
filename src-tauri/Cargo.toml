@@ -12,6 +12,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+lumapaint-renderer = { path = "../crates/lumapaint-renderer" }
 lumapaint-formats = { path = "../crates/lumapaint-formats" }
 lumapaint-svg = { path = "../crates/lumapaint-svg" }
 tauri = { version = "~2.12.1", features = [] }
@@ -28,4 +30,3 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["objc2-core-graphics", "std", "NSView", "NSPasteboard", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSColor", "NSCursor", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSButton", "NSButtonCell", "NSImage", "NSText", "NSTextView", "NSTextContainer", "NSTextStorage", "NSFont", "NSFontManager", "NSParagraphStyle", "NSAttributedString", "NSTextInputClient", "NSLayoutManager", "NSTextList"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSData", "NSDate", "NSRunLoop", "NSString", "NSRange", "NSArray", "NSDictionary", "NSAttributedString", "NSValue", "NSUndoManager"] }
 rfd = "0.17.2"
-base64 = "0.22"

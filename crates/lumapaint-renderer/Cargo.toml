@@ -8,6 +8,7 @@ default = []
 skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 lumapaint-core = { path = "../lumapaint-core" }
 wgpu = "27"
 bytemuck = { version = "1", features = ["derive"] }
