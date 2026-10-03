@@ -1,3 +1,4 @@
+import {layerGroupLabels} from './layer-group-labels';
 import { PagesPanel,pagesLabels } from './PagesPanel';
 import { useMeasurementUnit, setMeasurementUnit, unitName } from '../measurement-units';
 import {LinksPanel,linkLabels} from './LinksPanel';
@@ -60,7 +61,8 @@ function initialPanelOrder(): PanelId[] {
 
 const panelIcons = { pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
-export function Inspector({ linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
   linksPanelRequest:number;
   onTransformUpdate: (snapshot: DocumentSnapshot) => void;
   thumbnailDocumentKey: string;
@@ -130,8 +132,14 @@ export function Inspector({ linksPanelRequest, gradientTool, gradientPanelReques
     setSettings({ name: document.name, width: document.width, height: document.height, unit: measurementUnit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio });
     setDisplayDimensions({ width: displaySize(document.width, measurementUnit, document.resolution), height: displaySize(document.height, measurementUnit, document.resolution) });
   }, [document.name, document.width, document.height, document.unit, document.resolution, document.artboards, document.canvasColor, document.pixelAspectRatio, measurementUnit]);
-  const selectedLayer = document.layers.find(layer => layer.id === selectedLayerId) ?? document.layers.at(-1);
+  const selectedGroup = document.layerGroups.groups.find(group=>group.id===selectedLayerId);
+  const selectedLayer = selectedGroup ? undefined : document.layers.find(layer => layer.id === selectedLayerId) ?? document.layers.at(-1);
   const layerSettings = (layer: NonNullable<typeof selectedLayer>, changes: Partial<LayerSettings> = {}): LayerSettings => ({ id: layer.id, name: layer.name, opacity: layer.opacity, locked: layer.locked, alphaLocked: layer.alphaLocked, maskEnabled: layer.maskEnabled, maskInverted: layer.maskInverted, maskDensity: layer.maskDensity, ...changes });
+  const maskTarget=selectedGroup??selectedLayer;
+  const changeMask=(patch:Partial<{maskEnabled:boolean;maskInverted:boolean;maskDensity:number}>)=>{
+    if(selectedGroup)onLayerGroupEdit({action:'mask',id:selectedGroup.id,mask:{enabled:patch.maskEnabled??selectedGroup.maskEnabled,inverted:patch.maskInverted??selectedGroup.maskInverted,density:patch.maskDensity??selectedGroup.maskDensity}});
+    else if(selectedLayer)onLayerSettings(layerSettings(selectedLayer,patch));
+  };
   function submitDocument(event: FormEvent) {
     event.preventDefault();
     const factor = pixelsPerUnit(settings.unit, settings.resolution);
@@ -231,23 +239,30 @@ export function Inspector({ linksPanelRequest, gradientTool, gradientPanelReques
       {layerPanelMode === 'paths' ? <PathsPanel document={document} locale={locale} enabled={enabled} onAction={onSavedPathAction} /> : layerPanelMode === 'channels' ? <ChannelsPanel thumbnails={thumbnails.channels} thumbnailError={thumbnails.error} locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
         <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select disabled><option>{t.normalBlend}</option></select></label><label><span>{t.layerOpacity}</span><div><CompactSlider disabled={!enabled || !selectedLayer} min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!enabled || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
-        {selectedLayer?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider min="0" max="100" value={Math.round(selectedLayer.maskDensity * 100)} onChange={event => onLayerSettings(layerSettings(selectedLayer, { maskDensity: Number(event.target.value) / 100 }))} /><output>{Math.round(selectedLayer.maskDensity * 100)}%</output></label><button className={selectedLayer.maskInverted ? 'active' : ''} onClick={() => onLayerSettings(layerSettings(selectedLayer, { maskInverted: !selectedLayer.maskInverted }))}>{t.invertMask}</button></div>}
-        <LayerList thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
+        {maskTarget?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider disabled={!enabled} min="0" max="100" value={Math.round(maskTarget.maskDensity * 100)} onChange={event=>changeMask({maskDensity:Number(event.target.value)/100})}/><output>{Math.round(maskTarget.maskDensity*100)}%</output></label><button disabled={!enabled} className={maskTarget.maskInverted?'active':''} onClick={()=>changeMask({maskInverted:!maskTarget.maskInverted})}>{t.invertMask}</button></div>}
+        <LayerList groups={document.layerGroups} onGroupEdit={onLayerGroupEdit} thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} locale={locale}
           selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
           onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}
           onRename={(layer, name) => onLayerSettings(layerSettings(layer, { name }))} />
+        <div className="layer-actions layer-folder-actions">
+          <div className="layer-action-group">
+            <button disabled={!enabled} title={layerGroupLabels[locale].group} aria-label={layerGroupLabels[locale].group} onClick={()=>onLayerGroupEdit({action:'create',ids:[],name:layerGroupLabels[locale].name})}><Icon name="folder"/></button>
+            <button disabled={!enabled||!document.layerGroups.selected.some(id=>document.layerGroups.groups.some(g=>g.id===id))} title={layerGroupLabels[locale].ungroup} aria-label={layerGroupLabels[locale].ungroup} onClick={()=>{const id=document.layerGroups.selected.find(id=>document.layerGroups.groups.some(g=>g.id===id));if(id)onLayerGroupEdit({action:'ungroup',id});}}>▱</button>
+            <button disabled={!enabled||document.layerGroups.selected.length===0} title={layerGroupLabels[locale].root} aria-label={layerGroupLabels[locale].root} onClick={()=>onLayerGroupEdit({action:'move',ids:document.layerGroups.selected.filter(id=>id!=='layer-1'),target:''})}>↥</button>
+          </div>
+        </div>
         <div className="layer-actions">
           <div className="layer-action-group">
             <button disabled={!enabled} title={t.addPixelLayer} aria-label={t.addPixelLayer} onClick={onAddLayer}>＋</button>
             <button type="button" className="add-vector-layer" disabled={!enabled} title={t.addVectorLayer} aria-label={t.addVectorLayer} onClick={onAddVectorLayer}><Icon name="vector" /><span aria-hidden="true">＋</span></button>
-            <button disabled={!enabled || !selectedLayer?.deletable} title={t.deleteLayer} aria-label={t.deleteLayer} onClick={() => selectedLayer && onDeleteLayer(selectedLayer.id)}>⌫</button>
+            <button disabled={!enabled || (!selectedLayer?.deletable&&!document.layerGroups.selected.some(id=>document.layerGroups.groups.some(g=>g.id===id)))} title={t.deleteLayer} aria-label={t.deleteLayer} onClick={() => {const id=document.layerGroups.selected.find(id=>document.layerGroups.groups.some(g=>g.id===id));if(id)onLayerGroupEdit({action:'delete',id});else if(selectedLayer)onDeleteLayer(selectedLayer.id);}}>⌫</button>
           </div>
           <span className="layer-action-divider" aria-hidden="true" />
           <div className="layer-action-group">
             <button disabled title={t.layerOptions} aria-label={t.layerOptions}>fx</button>
-            <button disabled={!enabled || !selectedLayer} className={selectedLayer?.maskEnabled ? 'active' : ''} title={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} aria-label={selectedLayer?.maskEnabled ? t.removeMask : t.addMask} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { maskEnabled: !selectedLayer.maskEnabled, maskDensity: 1, maskInverted: false }))}>◐</button>
+            <button disabled={!enabled || !maskTarget} className={maskTarget?.maskEnabled?'active':''} title={maskTarget?.maskEnabled?t.removeMask:t.addMask} aria-label={maskTarget?.maskEnabled?t.removeMask:t.addMask} onClick={()=>maskTarget&&changeMask({maskEnabled:!maskTarget.maskEnabled,maskDensity:1,maskInverted:false})}>◐</button>
           </div>
-        </div><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
+        </div><p className="layer-group-hint">{layerGroupLabels[locale].hint}</p><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
       </>}
     </section>)}
   </aside>;

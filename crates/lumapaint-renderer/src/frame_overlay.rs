@@ -26,6 +26,9 @@ fn quad(vertices: &mut Vec<Vertex>, points: [[f32; 2]; 4], color: [f32; 4]) {
 }
 
 fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
+    styled_vertices(overlay, viewport, false)
+}
+fn styled_vertices(overlay: FrameOverlay, viewport: Viewport, highlighted: bool) -> Vec<Vertex> {
     let size = [
         viewport.width as f32 / viewport.scale,
         viewport.height as f32 / viewport.scale,
@@ -34,7 +37,11 @@ fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
         .min((size[1] - 48.0) / viewport.document_height)
         .max(0.01)
         * viewport.zoom;
-    let blue = [60.0 / 255.0, 160.0 / 255.0, 1.0, 1.0];
+    let blue = if highlighted {
+        [1., 0.35, 0.65, 1.]
+    } else {
+        [60.0 / 255.0, 160.0 / 255.0, 1.0, 1.0]
+    };
     let mut vertices = Vec::with_capacity(120);
     for (index, [a, b]) in (0..4)
         .map(|i| [overlay.corners[i], overlay.corners[(i + 1) % 4]])
@@ -44,7 +51,11 @@ fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
         let dx = b[0] - a[0];
         let dy = b[1] - a[1];
         let length = dx.hypot(dy).max(0.001);
-        let normal = [-dy / length * 0.5 / scale, dx / length * 0.5 / scale];
+        let half_width = if highlighted { 1. } else { 0.5 };
+        let normal = [
+            -dy / length * half_width / scale,
+            dx / length * half_width / scale,
+        ];
         quad(
             &mut vertices,
             [
@@ -83,14 +94,28 @@ pub(crate) fn buffer(
 ) -> (wgpu::Buffer, u32) {
     buffer_many(device, &[overlay], viewport)
 }
+#[cfg(test)]
 pub(crate) fn buffer_many(
     device: &wgpu::Device,
     overlays: &[FrameOverlay],
     viewport: Viewport,
 ) -> (wgpu::Buffer, u32) {
+    buffer_highlighted(device, overlays, &[], viewport)
+}
+pub(crate) fn buffer_highlighted(
+    device: &wgpu::Device,
+    overlays: &[FrameOverlay],
+    highlighted: &[FrameOverlay],
+    viewport: Viewport,
+) -> (wgpu::Buffer, u32) {
     let vertices: Vec<Vertex> = overlays
         .iter()
         .flat_map(|o| vertices(*o, viewport))
+        .chain(
+            highlighted
+                .iter()
+                .flat_map(|o| styled_vertices(*o, viewport, true)),
+        )
         .collect();
     (
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -205,6 +230,19 @@ pub(crate) fn document_guides(
     document: &lumapaint_core::document::Document,
     viewport: Viewport,
 ) -> Vec<FrameOverlay> {
+    guide_overlays(document, viewport, false)
+}
+pub(crate) fn selected_guides(
+    document: &lumapaint_core::document::Document,
+    viewport: Viewport,
+) -> Vec<FrameOverlay> {
+    guide_overlays(document, viewport, true)
+}
+fn guide_overlays(
+    document: &lumapaint_core::document::Document,
+    viewport: Viewport,
+    selected: bool,
+) -> Vec<FrameOverlay> {
     if !document.guides().visible {
         return vec![];
     }
@@ -217,6 +255,9 @@ pub(crate) fn document_guides(
         .guides()
         .items
         .iter()
+        .filter(|g| {
+            !selected || (!document.guides().locked && document.guides().selected.contains(&g.id))
+        })
         .flat_map(|g| {
             let edges = match g.axis.as_deref() {
                 Some("horizontal") => vec![[[start.x, g.position], [end.x, g.position]]],
@@ -302,6 +343,33 @@ mod tests {
 mod guide_tests {
     use super::*;
     use lumapaint_core::document::{Document, GuideEdit};
+    #[test]
+    fn selected_guides_are_highlighted_only_when_visible_and_unlocked() {
+        let mut d = Document::default();
+        let edit = |action: &str| GuideEdit {
+            action: action.into(),
+            id: None,
+            axis: Some("vertical".into()),
+            position: Some(100.),
+            delta: None,
+        };
+        d.edit_guides(edit("add")).unwrap();
+        d.edit_guides(edit("lock")).unwrap();
+        let id = d.guides().items[0].id.clone();
+        d.select_guide(Some(id));
+        let v = Viewport::new(1200., 800., 2., 1., true).unwrap();
+        let selected = selected_guides(&d, v);
+        assert_eq!(selected.len(), 1);
+        let normal = styled_vertices(selected[0], v, false);
+        let highlight = styled_vertices(selected[0], v, true);
+        assert_ne!(normal[0].color, highlight[0].color);
+        let width = |points: &Vec<Vertex>| (points[0].position[0] - points[2].position[0]).abs();
+        assert!((width(&highlight) - width(&normal) * 2.).abs() < 0.0001);
+        d.edit_guides(edit("lock")).unwrap();
+        assert!(selected_guides(&d, v).is_empty());
+        d.edit_guides(edit("visibility")).unwrap();
+        assert!(document_guides(&d, v).is_empty());
+    }
     #[test]
     fn guides_cover_visible_pasteboard_and_hide_without_changing_artwork() {
         let mut d = Document::default();

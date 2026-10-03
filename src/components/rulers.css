@@ -1,4 +1,4 @@
-.canvas-stage{flex:1;min-height:0;display:grid;grid-template-columns:24px minmax(0,1fr);grid-template-rows:24px minmax(0,1fr);position:relative;overflow:clip}
+.canvas-stage{flex:1;min-height:0;display:grid;grid-template-columns:16px minmax(0,1fr);grid-template-rows:16px minmax(0,1fr);position:relative;overflow:clip}
 .canvas-stage[data-document='empty']{grid-template-columns:1fr;grid-template-rows:1fr}
 .canvas-stage>.native-slot{grid-column:2;grid-row:2;min-width:0}
 .canvas-stage[data-document='empty']>.native-slot{grid-column:1;grid-row:1}

@@ -1,4 +1,6 @@
-import { editGuides } from './bridge';
+import {layerGroupLabels} from './components/layer-group-labels';
+import { GuideOptions } from './components/GuideOptions';
+import { editGuides,editLayerGroups } from './bridge';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from './measurement-units';
 import {placeImage,subscribePlaceImage} from './bridge';
 import { ToolSettingsDialog, toolSettingsLabels } from './components/ToolSettingsDialog';
@@ -504,6 +506,13 @@ export function Workspace() {
         if ((event.metaKey || event.ctrlKey) && event.code === 'Digit3') {
           event.preventDefault(); void edit(event.altKey ? 'showAllObjects' : 'hideSelection'); return;
         }
+        if ((event.metaKey || event.ctrlKey) && key === 'g' && target.closest('.layer-panel')) {
+          event.preventDefault();
+          const id=documentState.layerGroups.selected.find(id=>documentState.layerGroups.groups.some(g=>g.id===id));
+          if(event.shiftKey){if(id)void editLayerGroups({action:'ungroup',id}).then(updateDocument).catch(cause=>setError(String(cause)));}
+          else void editLayerGroups({action:'create',ids:documentState.layerGroups.selected.filter(id=>id!=='layer-1'),name:layerGroupLabels[locale].name}).then(updateDocument).catch(cause=>setError(String(cause)));
+          return;
+        }
         if ((event.metaKey || event.ctrlKey) && key === 'g') {
           event.preventDefault(); void changeGroup(event.shiftKey ? 'ungroup' : 'group');
           return;
@@ -513,6 +522,15 @@ export function Workspace() {
           return;
         }
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+          if (!inlineText && documentEditable && documentState.guides.selected.length>0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) {
+            event.preventDefault();const amount=documentState.guides.nudge[event.shiftKey?1:0];
+            const delta:[number,number]=event.key==='ArrowLeft'?[-amount,0]:event.key==='ArrowRight'?[amount,0]:event.key==='ArrowUp'?[0,-amount]:[0,amount];
+            void editGuides({action:'moveSelected',delta}).then(updateDocument).catch(e=>setError(String(e)));return;
+          }
+          if ((event.key==='Delete'||event.key==='Backspace')&&target.closest('.layer-panel')) {
+            const id=documentState.layerGroups.selected.find(id=>documentState.layerGroups.groups.some(g=>g.id===id));
+            if(id){event.preventDefault();void editLayerGroups({action:'delete',id}).then(updateDocument).catch(cause=>setError(String(cause)));return;}
+          }
           if (!inlineText && (event.key === 'Delete' || event.key === 'Backspace')) {
             event.preventDefault(); void edit('deleteSelectedObjects'); return;
           }
@@ -536,7 +554,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [placeLinkedImage, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -550,7 +568,7 @@ export function Workspace() {
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
+      <WorkspaceMenu onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -572,7 +590,7 @@ export function Workspace() {
     </header>
     <div className="options-bar" inert={toneStudioOpen} aria-label={gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
       <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : canvasTool === 'vectorDirectSelect' ? t.vectorDirectSelect : t[toolState.tools[toolMode]]}</span></span>
-      {documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool && canvasTool !== 'vectorDirectSelect' ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
+      {documentState.guides.selected.length > 0 ? <GuideOptions key={documentState.guides.selected.join('|')+measurementUnit+documentState.guides.origin.join(',')} document={documentState} locale={locale} enabled={ready && !busy && documentEditable} onUpdate={updateDocument} onError={setError}/> : documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool && canvasTool !== 'vectorDirectSelect' ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
         onAppearance={async (opacity, blendMode) => { updateDocument(await setVectorAppearance([...documentState.selectedVectorObjects], opacity, blendMode)); }}
         onPaint={async (target,color) => { updateDocument(await setVectorPaint([...documentState.selectedVectorObjects],target,color)); }}
         onWidth={async width => { updateDocument(await setVectorStrokeWidth(width,brush.color)); }}
@@ -645,7 +663,7 @@ export function Workspace() {
       </div>
       {panels && <Inspector linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
-        onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
+        onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {toneStudioLoaded&&<ToneStudio locale={locale} open={toneStudioOpen} onClose={()=>setToneStudioOpen(false)}/>}

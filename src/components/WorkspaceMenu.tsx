@@ -1,3 +1,4 @@
+import {layerGroupLabels} from './layer-group-labels';
 import { MIN_ZOOM, MAX_ZOOM, stepZoom } from '../zoom';
 import { transformLabels } from './TransformDialog';
 import type { ArrangeAction, TransformAction } from '../bridge';
@@ -21,7 +22,8 @@ type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | Pre
 const colorModes: { value: ColorMode; label: string }[] = [{ value: 'rgb', label: 'RGB' }, { value: 'cmyk', label: 'CMYK' }];
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
-  onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear')=>void;
+  onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
+  onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear'|'snap'|'selectAll'|'invertSelection'|'deselect'|'thirds'|'quarters'|'margins'|'saveLayout'|'loadLayout')=>void;
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
   locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
@@ -110,6 +112,9 @@ export function WorkspaceMenu(props: Props) {
       { label: clip[2], enabled: selectedObjects.length === 1 && selectedObjects[0].object.kind === 'compound', action: () => props.onCompound(true) },
     ]}],
     [future(t.newLayer), future(t.duplicateLayer), future(t.deleteLayer), null,
+      {label:layerGroupLabels[locale].create,enabled:canEdit,action:()=>props.onLayerGroupEdit({action:'createEmpty',name:layerGroupLabels[locale].name})},
+      {label:layerGroupLabels[locale].group,enabled:canEdit&&(doc.layerGroups.selected.some(id=>id!=='layer-1')),action:()=>props.onLayerGroupEdit({action:'create',ids:doc.layerGroups.selected.filter(id=>id!=='layer-1'),name:layerGroupLabels[locale].name})},
+      {label:layerGroupLabels[locale].ungroup,enabled:canEdit&&doc.layerGroups.selected.some(id=>doc.layerGroups.groups.some(g=>g.id===id)),action:()=>{const id=doc.layerGroups.selected.find(id=>doc.layerGroups.groups.some(g=>g.id===id));if(id)props.onLayerGroupEdit({action:'ungroup',id});}},null,
       { label: t.group, enabled: canGroup, shortcut: 'CmdOrCtrl+G', action: () => onGroup('group') },
       { label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
       { label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
@@ -127,9 +132,20 @@ export function WorkspaceMenu(props: Props) {
       {label:guides[0],enabled:canEdit,children:[
         {label:guides[doc.guides.visible?1:2],shortcut:'CmdOrCtrl+;',action:()=>props.onGuides('visibility')},
         {label:guides[doc.guides.locked?3:4],shortcut:'CmdOrCtrl+Alt+;',action:()=>props.onGuides('lock')},null,
+        {label:{ja:'すべてのガイドを選択',en:'Select All Guides','zh-CN':'选择所有参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('selectAll')},
+        {label:{ja:'ガイドの選択を解除',en:'Deselect Guides','zh-CN':'取消选择参考线'}[locale],enabled:doc.guides.selected.length>0,action:()=>props.onGuides('deselect')},
+        {label:{ja:'ガイドの選択を反転',en:'Invert Guide Selection','zh-CN':'反选参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('invertSelection')},null,
+        {label:{ja:'ガイド配置',en:'Guide Layout','zh-CN':'参考线布局'}[locale],children:[
+          {label:{ja:'3等分',en:'Thirds','zh-CN':'三等分'}[locale],action:()=>props.onGuides('thirds')},
+          {label:{ja:'4等分',en:'Quarters','zh-CN':'四等分'}[locale],action:()=>props.onGuides('quarters')},
+          {label:{ja:'10%の余白',en:'10% Margins','zh-CN':'10% 边距'}[locale],action:()=>props.onGuides('margins')},null,
+          {label:{ja:'配置を保存…',en:'Save Layout…','zh-CN':'保存布局…'}[locale],enabled:doc.guides.items.length>0,action:()=>props.onGuides('saveLayout')},
+          {label:{ja:'配置を読み込み…',en:'Load Layout…','zh-CN':'加载布局…'}[locale],action:()=>props.onGuides('loadLayout')},
+        ]},null,
         {label:guides[5],enabled:selectedObjects.some(({object,layer})=>layer.kind==='vector'&&!layer.locked&&object.kind!=='text'),shortcut:'CmdOrCtrl+5',action:()=>props.onGuides('make')},
         {label:guides[6],enabled:!doc.guides.locked&&doc.guides.selected.length>0,shortcut:'CmdOrCtrl+Alt+5',action:()=>props.onGuides('release')},
-        {label:guides[7],enabled:doc.guides.items.length>0,action:()=>props.onGuides('clear')},
+        {label:guides[7],enabled:doc.guides.items.length>0,action:()=>props.onGuides('clear')},null,
+        {label:{ja:'ガイドにスナップ',en:'Snap to Guides','zh-CN':'对齐参考线'}[locale],checked:doc.guides.snap,action:()=>props.onGuides('snap')},
       ]}],
     [future(t.managePlugins), future(t.browsePlugins)],
     [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],

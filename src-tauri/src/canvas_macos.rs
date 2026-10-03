@@ -584,6 +584,13 @@ impl PaintView {
                 if let Err(error) = DOCUMENT.with(|doc| finish_pen(&mut doc.borrow_mut(), false)).and_then(|_| redraw()) { emit_error(error); }
                 emit_document();
             }
+            else if [123,124,125,126].contains(&event.keyCode())
+                && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option)
+                && DOCUMENT.with(|d| !d.borrow().guides().selected.is_empty()) {
+                let amount=DOCUMENT.with(|d| d.borrow().guides().nudge[usize::from(event.modifierFlags().contains(NSEventModifierFlags::Shift))]);
+                let delta=match event.keyCode() {123=>[-amount,0.],124=>[amount,0.],125=>[0.,amount],_=>[0.,-amount]};
+                if let Err(error)=edit_guides(lumapaint_core::document::GuideEdit {action:"moveSelected".into(),id:None,axis:None,position:None,delta:Some(delta)}) {emit_error(error);}
+            }
             else if [123,124,125,126].contains(&event.keyCode()) && TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
                 let amount = if event.modifierFlags().contains(NSEventModifierFlags::Shift) { 10. } else { 1. };
                 let delta = match event.keyCode() { 123 => [-amount,0.], 124 => [amount,0.], 125 => [0.,amount], _ => [0.,-amount] };
@@ -806,13 +813,22 @@ impl PaintView {
                     DOCUMENT.with(|d| d.borrow().guide_hit([point.x, point.y], 6. / scale))
                 {
                     DIRECT_POINTS.with(|p| p.borrow_mut().clear());
-                    DOCUMENT.with(|d| d.borrow_mut().select_guide(Some(id.clone())));
+                    DOCUMENT.with(|d| {
+                        let mut d = d.borrow_mut();
+                        if event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+                            d.select_guide_additive(id.clone());
+                        } else if !d.guides().selected.contains(&id) {
+                            d.select_guide(Some(id.clone()));
+                        }
+                    });
                     GUIDE_DRAG.with(|g| *g.borrow_mut() = Some((id, [point.x, point.y])));
                     emit_document();
                     let _ = redraw();
                     return;
                 }
-                DOCUMENT.with(|d| d.borrow_mut().select_guide(None));
+                if !event.modifierFlags().contains(NSEventModifierFlags::Shift) {
+                    DOCUMENT.with(|d| d.borrow_mut().select_guide(None));
+                }
             }
             if let Some((id, start)) = GUIDE_DRAG.with(|g| g.borrow().clone()) {
                 if phase == 2 {
@@ -833,7 +849,12 @@ impl PaintView {
                     });
                     let position = axis.map(|a| if a == "horizontal" { point.y } else { point.x });
                     let edit = lumapaint_core::document::GuideEdit {
-                        action: "move".into(),
+                        action: if event.modifierFlags().contains(NSEventModifierFlags::Option) {
+                            "duplicate"
+                        } else {
+                            "moveSelected"
+                        }
+                        .into(),
                         id: Some(id),
                         axis: None,
                         position,
@@ -843,57 +864,49 @@ impl PaintView {
                         emit_error(e);
                     }
                 } else if phase == 1 {
-                    let axis = DOCUMENT.with(|d| {
-                        d.borrow()
-                            .guides()
+                    GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+                    let [dx, dy] = [point.x - start[0], point.y - start[1]];
+                    let edges = DOCUMENT.with(|d| {
+                        let d = d.borrow();
+                        let a = viewport.document_point(0., 0.);
+                        let b = viewport.document_point(
+                            viewport.width as f32 / viewport.scale,
+                            viewport.height as f32 / viewport.scale,
+                        );
+                        d.guides()
                             .items
                             .iter()
-                            .find(|g| g.id == id)
-                            .and_then(|g| g.axis.clone())
+                            .filter(|g| d.guides().selected.contains(&g.id))
+                            .flat_map(|g| match g.axis.as_deref() {
+                                Some("horizontal") => vec![[[a.x, g.position], [b.x, g.position]]],
+                                Some("vertical") => vec![[[g.position, a.y], [g.position, b.y]]],
+                                _ => g
+                                    .objects
+                                    .iter()
+                                    .flat_map(|o| {
+                                        lumapaint_core::stroke::path_edges(
+                                            &o.path.data,
+                                            o.transform,
+                                        )
+                                    })
+                                    .collect(),
+                            })
+                            .collect::<Vec<_>>()
                     });
-                    if let Some(axis) = axis {
-                        let pos = if axis == "horizontal" {
-                            point.y
-                        } else {
-                            point.x
-                        };
-                        GUIDE_DRAFT.with(|g| *g.borrow_mut() = Some((axis, pos)));
-                    } else {
-                        let edges = DOCUMENT.with(|d| {
-                            d.borrow()
-                                .guides()
-                                .items
-                                .iter()
-                                .find(|g| g.id == id)
-                                .map(|g| {
-                                    g.objects
-                                        .iter()
-                                        .flat_map(|o| {
-                                            lumapaint_core::stroke::path_edges(
-                                                &o.path.data,
-                                                o.transform,
-                                            )
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default()
-                        });
-                        let [dx, dy] = [point.x - start[0], point.y - start[1]];
-                        GUIDE_OBJECT_DRAFT.with(|g| {
-                            *g.borrow_mut() = edges
-                                .into_iter()
-                                .map(|[a, b]| {
-                                    let p = [a[0] + dx, a[1] + dy];
-                                    let q = [b[0] + dx, b[1] + dy];
-                                    lumapaint_renderer::FrameOverlay {
-                                        corners: [p, q, q, p],
-                                        handles: false,
-                                        baseline: None,
-                                    }
-                                })
-                                .collect()
-                        });
-                    }
+                    GUIDE_OBJECT_DRAFT.with(|g| {
+                        *g.borrow_mut() = edges
+                            .into_iter()
+                            .map(|[a, b]| {
+                                let p = [a[0] + dx, a[1] + dy];
+                                let q = [b[0] + dx, b[1] + dy];
+                                lumapaint_renderer::FrameOverlay {
+                                    corners: [p, q, q, p],
+                                    handles: false,
+                                    baseline: None,
+                                }
+                            })
+                            .collect()
+                    });
                     let _ = redraw();
                 }
                 return;
@@ -1686,6 +1699,29 @@ fn vector_pointer(
     phase: u8,
     modifiers: NSEventModifierFlags,
 ) -> Result<(), String> {
+    let point = if (phase > 0
+        || matches!(
+            tool,
+            CanvasTool::VectorRectangle
+                | CanvasTool::VectorEllipse
+                | CanvasTool::VectorPen
+                | CanvasTool::VectorPencil
+        ))
+        && !modifiers.contains(NSEventModifierFlags::Control)
+        && !matches!(
+            tool,
+            CanvasTool::VectorRotate | CanvasTool::VectorScale | CanvasTool::VectorSelect
+        ) {
+        let tolerance = CANVAS.with(|c| {
+            c.borrow()
+                .as_ref()
+                .map_or(6., |c| 6. / c.viewport.screen_zoom())
+        });
+        let p = document.snap_to_guides([point.x, point.y], tolerance);
+        lumapaint_core::document::Point { x: p[0], y: p[1] }
+    } else {
+        point
+    };
     if matches!(
         tool,
         CanvasTool::VectorAnchorAdd
@@ -1893,6 +1929,7 @@ struct DirectGesture {
 // Direct selection reaches imported SVG geometry even when its layer is an image layer.
 fn selection_uses_pixel_move(document: &Document, tool: CanvasTool) -> bool {
     !document.selected_layer_is_vector()
+        && document.guides().selected.is_empty()
         && (tool == CanvasTool::VectorSelect
             || (tool == CanvasTool::VectorDirectSelect && document.direct_objects().is_empty()))
 }
@@ -2434,6 +2471,44 @@ fn update_box(d: &mut BoxDraft, p: [f32; 2], flags: NSEventModifierFlags) {
 
 type VectorMarquee = ([f32; 2], [f32; 2], bool);
 
+fn snapped_artwork_offset(
+    document: &Document,
+    offset: [f32; 2],
+    modifiers: NSEventModifierFlags,
+) -> [f32; 2] {
+    GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
+    if modifiers.contains(NSEventModifierFlags::Control) {
+        return offset;
+    }
+    let Some(bounds) = document.selected_vector_bounds() else {
+        return offset;
+    };
+    let tolerance = current_vector_sample_spacing() * 6.;
+    let baseline: Vec<_> = selected_text_frame_overlay(document)
+        .and_then(|f| f.baseline)
+        .into_iter()
+        .flatten()
+        .collect();
+    let (offset, markers) = document.snap_guide_translation(bounds, offset, &baseline, tolerance);
+    let radius = current_vector_sample_spacing() * 3.;
+    GUIDE_OBJECT_DRAFT.with(|g| {
+        *g.borrow_mut() = markers
+            .into_iter()
+            .map(|[x, y]| lumapaint_renderer::FrameOverlay {
+                corners: [
+                    [x - radius, y - radius],
+                    [x + radius, y - radius],
+                    [x + radius, y + radius],
+                    [x - radius, y + radius],
+                ],
+                handles: false,
+                baseline: None,
+            })
+            .collect()
+    });
+    offset
+}
+
 fn vector_select_pointer(
     document: &mut Document,
     point: lumapaint_core::document::Point,
@@ -2533,12 +2608,18 @@ fn vector_select_pointer(
         if VECTOR_CONTROL.with(|control| control.borrow().is_none()) {
             let start = VECTOR_DRAFT.with(|draft| draft.borrow().first().copied());
             if let Some(start) = start {
-                VECTOR_MOVE.with(|offset| offset.set([point.x - start.x, point.y - start.y]));
+                VECTOR_MOVE.with(|offset| {
+                    offset.set(snapped_artwork_offset(
+                        document,
+                        [point.x - start.x, point.y - start.y],
+                        modifiers,
+                    ))
+                });
             }
         }
     } else if phase == 2 {
         if let Some((start, _, additive)) = VECTOR_MARQUEE.with(|draft| draft.borrow_mut().take()) {
-            return document.select_vectors_in_rect(
+            return document.select_layout_in_rect(
                 lumapaint_core::document::Point {
                     x: start[0],
                     y: start[1],
@@ -2571,7 +2652,9 @@ fn vector_select_pointer(
         }
         let start = VECTOR_DRAFT.with(|draft| std::mem::take(&mut *draft.borrow_mut()));
         if let Some(start) = start.first() {
-            let offset = [point.x - start.x, point.y - start.y];
+            let offset =
+                snapped_artwork_offset(document, [point.x - start.x, point.y - start.y], modifiers);
+            GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
             if offset != [0.0, 0.0] {
                 // Present the release position with the existing drag textures before
                 // committing. The worker can then prepare the new SVG without a blank frame.
@@ -3235,7 +3318,26 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
         match action {
             DocumentAction::Undo => doc.undo(),
             DocumentAction::Redo => doc.redo(),
-            DocumentAction::ToggleLayer => doc.toggle_visibility(),
+            DocumentAction::ToggleLayer => {
+                let snapshot = doc.layer_groups_snapshot();
+                if let Some(group) = snapshot
+                    .groups
+                    .iter()
+                    .find(|g| snapshot.selected.contains(&g.id))
+                {
+                    doc.edit_layer_groups(lumapaint_core::document::LayerGroupEdit {
+                        action: "visibility".into(),
+                        id: Some(group.id.clone()),
+                        target: None,
+                        name: None,
+                        ids: vec![],
+                        additive: false,
+                        mask: None,
+                    })?;
+                } else {
+                    doc.toggle_visibility();
+                }
+            }
             DocumentAction::SelectAll => doc.select_all(),
             DocumentAction::Deselect => doc.deselect(),
             DocumentAction::InvertSelection => doc.invert_selection()?,
@@ -3671,6 +3773,7 @@ fn ruler_viewport(viewport: Viewport) -> super::RulerViewport {
     let height = viewport.height as f32 / viewport.scale;
     let zoom = viewport.screen_zoom();
     super::RulerViewport {
+        ruler_origin: DOCUMENT.with(|d| d.borrow().guides().origin),
         width,
         height,
         origin_x: width * 0.5 + viewport.pan_x - viewport.document_width * 0.5 * zoom,
@@ -5090,6 +5193,32 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guide_selection_routes_shift_marquee_without_moving_pixel_layer() {
+        let mut d = Document::default();
+        assert!(selection_uses_pixel_move(&d, CanvasTool::VectorSelect));
+        d.edit_guides(lumapaint_core::document::GuideEdit {
+            action: "add".into(),
+            id: None,
+            axis: Some("vertical".into()),
+            position: Some(40.),
+            delta: None,
+        })
+        .unwrap();
+        d.edit_guides(lumapaint_core::document::GuideEdit {
+            action: "lock".into(),
+            id: None,
+            axis: None,
+            position: None,
+            delta: None,
+        })
+        .unwrap();
+        d.select_guide(Some(d.guides().items[0].id.clone()));
+        assert!(!selection_uses_pixel_move(&d, CanvasTool::VectorSelect));
+        d.select_guide(None);
+        assert!(selection_uses_pixel_move(&d, CanvasTool::VectorSelect));
+    }
 
     #[test]
     fn facing_preview_renders_neighbor_content_and_clips_to_its_page() {
@@ -8473,8 +8602,34 @@ pub fn page_thumbnail_documents(indices: Vec<usize>) -> Result<Vec<(String, Docu
 }
 
 thread_local! {static GUIDE_DRAFT:RefCell<Option<(String,f32)>>=const {RefCell::new(None)}; static GUIDE_DRAG:RefCell<Option<(String,[f32;2])>>=const {RefCell::new(None)};}
-pub fn edit_guides(edit: lumapaint_core::document::GuideEdit) -> Result<DocumentSnapshot, String> {
+pub fn edit_guides(
+    mut edit: lumapaint_core::document::GuideEdit,
+) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
+    if edit.action == "saveLayout" {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("LumaPaint Guide Layout", &["json"])
+            .set_file_name("LumaPaint-guides.json")
+            .save_file()
+        {
+            let source = DOCUMENT.with(|d| d.borrow().encode_guide_layout())?;
+            std::fs::write(path, source).map_err(|e| e.to_string())?;
+        }
+        return Ok(DOCUMENT.with(|d| d.borrow().snapshot()));
+    }
+    if edit.action == "loadLayout" {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("LumaPaint Guide Layout", &["json"])
+            .pick_file()
+        else {
+            return Ok(DOCUMENT.with(|d| d.borrow().snapshot()));
+        };
+        if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 {
+            return Err("Guide layout is too large".into());
+        }
+        edit.id = Some(std::fs::read_to_string(path).map_err(|e| e.to_string())?);
+        edit.action = "importLayout".into();
+    }
     GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
     GUIDE_DRAFT.with(|g| g.borrow_mut().take());
     GUIDE_DRAG.with(|g| g.borrow_mut().take());
@@ -8528,3 +8683,58 @@ pub fn ruler_guide(axis: String, position: f32, phase: u8) -> Result<(), String>
 }
 
 thread_local! {static GUIDE_OBJECT_DRAFT:RefCell<Vec<lumapaint_renderer::FrameOverlay>>=const {RefCell::new(Vec::new())};}
+
+pub fn ruler_origin(point: [f32; 2], phase: u8) -> Result<(), String> {
+    if phase > 3 || point.iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.) {
+        return Err("Invalid ruler origin gesture".into());
+    }
+    if phase == 0 {
+        ensure_document_open()?;
+    }
+    if phase == 2 {
+        if GUIDE_DRAFT.with(|g| g.borrow().is_none()) {
+            return Ok(());
+        }
+        edit_guides(lumapaint_core::document::GuideEdit {
+            action: "origin".into(),
+            id: None,
+            axis: None,
+            position: None,
+            delta: Some(point),
+        })?;
+    } else if phase == 3 {
+        GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+        GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
+    } else if phase == 0 || GUIDE_DRAFT.with(|g| g.borrow().is_some()) {
+        GUIDE_DRAFT.with(|g| *g.borrow_mut() = Some(("origin".into(), point[0])));
+        let line = CANVAS.with(|c| {
+            c.borrow().as_ref().map(|c| {
+                let v = c.viewport;
+                let a = v.document_point(0., 0.);
+                let b = v.document_point(v.width as f32 / v.scale, v.height as f32 / v.scale);
+                let p = [a.x, point[1]];
+                let q = [b.x, point[1]];
+                lumapaint_renderer::FrameOverlay {
+                    corners: [p, q, q, p],
+                    handles: false,
+                    baseline: None,
+                }
+            })
+        });
+        GUIDE_OBJECT_DRAFT.with(|g| *g.borrow_mut() = line.into_iter().collect());
+    }
+    redraw()
+}
+
+pub fn edit_layer_groups(
+    edit: lumapaint_core::document::LayerGroupEdit,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    cancel_vector_drag();
+    DOCUMENT.with(|doc| doc.borrow_mut().edit_layer_groups(edit))?;
+    redraw()?;
+    emit_document();
+    emit_workspace();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}

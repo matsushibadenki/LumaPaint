@@ -1,3 +1,6 @@
+#[path = "document_layer_groups.rs"]
+mod layer_groups;
+pub use layer_groups::{GroupMaskSettings, LayerGroupEdit, LayerGroupsSnapshot, LayerGroupsState};
 #[path = "document_guides.rs"]
 mod guides;
 pub use guides::{Guide, GuideEdit, GuidesSnapshot, GuidesState};
@@ -438,6 +441,7 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub layer_groups: LayerGroupsSnapshot,
     pub guides: GuidesSnapshot,
     pub pages: PagesSnapshot,
     pub has_hidden_objects: bool,
@@ -505,6 +509,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    layer_groups: LayerGroupsState,
     guides: GuidesState,
     background_visible: bool,
     locked_objects: std::collections::BTreeSet<String>,
@@ -579,6 +584,7 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    layer_groups: LayerGroupsState,
     guides: GuidesState,
     locked_objects: std::collections::BTreeSet<String>,
     locked_artwork_layers: std::collections::BTreeSet<String>,
@@ -631,6 +637,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            layer_groups: LayerGroupsState::default(),
             guides: GuidesState::default(),
             locked_objects: Default::default(),
             locked_artwork_layers: Default::default(),
@@ -789,9 +796,25 @@ impl Document {
                     } else {
                         "svg"
                     },
-                    visible: layer.visible,
-                    opacity: layer.opacity,
-                    locked: layer.locked,
+                    visible: self
+                        .layer_groups
+                        .members
+                        .iter()
+                        .find(|m| m.id == layer.id)
+                        .map_or(layer.visible, |m| m.visible),
+                    opacity: self
+                        .layer_groups
+                        .members
+                        .iter()
+                        .find(|m| m.id == layer.id)
+                        .and_then(|m| m.opacity)
+                        .unwrap_or(layer.opacity),
+                    locked: self
+                        .layer_groups
+                        .members
+                        .iter()
+                        .find(|m| m.id == layer.id)
+                        .map_or(layer.locked, |m| m.locked),
                     alpha_locked: layer.alpha_locked,
                     mask_enabled: layer.mask_enabled,
                     mask_inverted: layer.mask_inverted,
@@ -801,6 +824,7 @@ impl Document {
                 }),
         );
         DocumentSnapshot {
+            layer_groups: self.layer_groups_snapshot(),
             guides: self.guides.snapshot(),
             has_locked_objects: self.has_locked_objects(),
             has_hidden_objects: self.has_hidden_objects(),
@@ -831,9 +855,17 @@ impl Document {
             layer_id: self
                 .selected_layer
                 .clone()
-                .filter(|id| id == "layer-1" || self.svg_layers.iter().any(|layer| &layer.id == id))
+                .filter(|id| {
+                    id == "layer-1"
+                        || self.svg_layers.iter().any(|layer| &layer.id == id)
+                        || self.layer_groups.groups.iter().any(|group| &group.id == id)
+                })
                 .unwrap_or_else(|| "layer-1".into()),
-            layer_visible: self.visible,
+            layer_visible: self
+                .selected_layer
+                .as_ref()
+                .and_then(|id| self.layer_groups.groups.iter().find(|g| &g.id == id))
+                .map_or(self.visible, |g| g.visible),
             color_mode: self.color_mode,
             color_profile: self.color_profile,
             bit_depth: self.bit_depth,
@@ -873,7 +905,13 @@ impl Document {
     /// Owned, engine-independent state. Runtime services, selections and history are excluded.
     /// Callers that need an in-progress stroke should finish a clone before taking this state.
     pub fn document_state(&self) -> DocumentState {
+        let mut layer_groups = self.layer_groups.clone();
+        layer_groups.reconcile(&self.svg_layers);
+        if let Some(edit) = &self.path_editing {
+            layer_groups.roots.retain(|id| id != &edit.layer_id);
+        }
         DocumentState {
+            layer_groups,
             guides: self.guides.clone(),
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
@@ -986,6 +1024,7 @@ impl Document {
         {
             return Err("Invalid paint image".into());
         }
+        file.layer_groups.validate(&file.svg_layers)?;
         file.guides.validate()?;
         file.guides.selected.clear();
         validate_saved_paths(&file.saved_paths, file.clipping_path_id.as_deref())?;
@@ -1006,6 +1045,7 @@ impl Document {
             .transpose()?;
         let stroke_count = file.strokes.len();
         Ok(Self {
+            layer_groups: file.layer_groups,
             guides: file.guides,
             locked_objects: file.locked_objects,
             locked_artwork_layers: file.locked_artwork_layers,
@@ -1287,6 +1327,12 @@ impl Document {
     }
     pub fn toggle_layer(&mut self, id: &str) -> Result<(), String> {
         self.finish();
+        if let Some(member) = self.layer_groups.members.iter_mut().find(|m| m.id == id) {
+            member.visible = !member.visible;
+            self.sync_layer_group_flags();
+            self.revision += 1;
+            return Ok(());
+        }
         if id == "layer-1" {
             self.visible = !self.visible;
         } else if let Some(layer) = self.svg_layers.iter_mut().find(|layer| layer.id == id) {
@@ -1343,6 +1389,16 @@ impl Document {
             layer.mask_density = settings.mask_density;
         } else {
             return Err("Layer not found".into());
+        }
+        if let Some(member) = self
+            .layer_groups
+            .members
+            .iter_mut()
+            .find(|m| m.id == settings.id)
+        {
+            member.locked = settings.locked;
+            member.opacity = Some(settings.opacity);
+            self.sync_layer_group_flags();
         }
         self.revision += 1;
         Ok(())
@@ -1719,7 +1775,8 @@ impl Document {
         }
         self.locked_objects.retain(|id| !removed_ids.contains(id));
         self.locked_artwork_layers.remove(id);
-        if was_vector || had_locks {
+        self.layer_groups.reconcile(&self.svg_layers);
+        if was_vector || had_locks || !before_state.layer_groups.groups.is_empty() {
             let layers = &self.svg_layers;
             self.selected_vector_objects.retain(|selected| {
                 layers.iter().any(|layer| {
@@ -1754,6 +1811,7 @@ impl Document {
             serial += 1;
         }
         let id = format!("paint-layer-{serial}");
+        let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
             id: id.clone(),
             name: format!("Layer {serial}"),
@@ -1769,6 +1827,8 @@ impl Document {
             vector_layer: false,
             vector_objects: vec![],
         });
+        self.attach_new_layer_to_selected_group(&id)?;
+        self.record_vector_edit(before);
         self.revision += 1;
         Ok(id)
     }
@@ -1792,6 +1852,7 @@ impl Document {
             return Ok(());
         }
         self.finish();
+        self.sync_layer_group_order(ids_top_to_bottom)?;
         let mut reordered = Vec::with_capacity(self.svg_layers.len());
         for id in ids_top_to_bottom.iter().rev() {
             let index = self
@@ -1817,6 +1878,7 @@ impl Document {
             return Err("Layer not found".into());
         }
         self.finish();
+        self.layer_groups.selected = vec![id.clone()];
         self.selected_layer = Some(id);
         self.selected_vector_objects.clear();
         Ok(())
@@ -1954,6 +2016,7 @@ impl Document {
             vector_objects: vec![],
         });
         self.record_vector_edit(before);
+        self.attach_new_layer_to_selected_group(&id)?;
         self.revision += 1;
         Ok(id)
     }
@@ -5664,6 +5727,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            layer_groups: self.layer_groups.clone(),
             guides: self.guides.clone(),
             background_visible: self.visible,
             locked_objects: self.locked_objects.clone(),
@@ -5681,6 +5745,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.layer_groups = state.layer_groups;
         self.guides = state.guides;
         self.visible = state.background_visible;
         self.locked_objects = state.locked_objects;
@@ -6888,6 +6953,8 @@ mod tests {
 pub struct DocumentState {
     #[serde(default)]
     pub guides: GuidesState,
+    #[serde(default)]
+    pub layer_groups: LayerGroupsState,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub locked_objects: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]

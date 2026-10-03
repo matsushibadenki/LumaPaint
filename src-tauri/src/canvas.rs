@@ -111,6 +111,7 @@ impl CanvasRequest {
 #[derive(Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RulerViewport {
+    pub ruler_origin: [f32; 2],
     pub width: f32,
     pub height: f32,
     pub origin_x: f32,
@@ -2043,6 +2044,39 @@ pub async fn ruler_guide(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, axis, position, phase);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn ruler_origin(
+    window: tauri::WebviewWindow,
+    point: [f32; 2],
+    phase: u8,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::ruler_origin(point, phase)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, point, phase);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn edit_layer_groups(
+    window: tauri::WebviewWindow,
+    edit: lumapaint_core::document::LayerGroupEdit,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_layer_groups(edit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, edit);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }

@@ -202,6 +202,14 @@ impl Document {
                             return Ok(());
                         };
                         layer.locked = true;
+                        if let Some(member) = self
+                            .layer_groups
+                            .members
+                            .iter_mut()
+                            .find(|m| m.id == layer.id)
+                        {
+                            member.locked = true;
+                        }
                     }
                     self.locked_artwork_layers.insert(id);
                     self.selection = None;
@@ -237,6 +245,14 @@ impl Document {
                     if !keep.contains(&layer.id) {
                         changed |= !layer.locked;
                         layer.locked = true;
+                        if let Some(member) = self
+                            .layer_groups
+                            .members
+                            .iter_mut()
+                            .find(|m| m.id == layer.id)
+                        {
+                            member.locked = true;
+                        }
                         changed |= self.locked_artwork_layers.remove(&layer.id);
                     }
                 }
@@ -251,9 +267,18 @@ impl Document {
                         self.layer_locked = false;
                     } else if let Some(layer) = self.svg_layers.iter_mut().find(|l| &l.id == id) {
                         layer.locked = false;
+                        if let Some(member) = self
+                            .layer_groups
+                            .members
+                            .iter_mut()
+                            .find(|m| m.id == layer.id)
+                        {
+                            member.locked = false;
+                        }
                     }
                 }
                 self.locked_artwork_layers.clear();
+                self.sync_layer_group_flags();
                 // Illustrator selects the newly unlocked visible artwork; layer locks remain.
                 let selectable: BTreeSet<_> = self
                     .lock_targets()

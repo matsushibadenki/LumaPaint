@@ -27,11 +27,16 @@ export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSn
 export interface PagesSnapshot { facing:boolean; binding:'leftToRight'|'rightToLeft'; active:number; pages:{id:string;number:number;width:number;height:number;spread:number;side:'left'|'right'|'single'}[] }
 export interface PageEdit { action:'select'|'add'|'duplicate'|'delete'|'moveBefore'|'moveAfter'|'layout'; index?:number; facing?:boolean; binding?:PagesSnapshot['binding'] }
 export function editPages(edit:PageEdit):Promise<DocumentSnapshot>{return invoke('edit_pages',{edit});}
-export interface GuidesState {visible:boolean;locked:boolean;nextId:number;selected:string[];items:{id:string;axis:'horizontal'|'vertical'|null;position:number;layerId:string|null}[]}
-export interface GuideEdit {action:'visibility'|'lock'|'make'|'release'|'clear'|'delete'|'select'|'move';id?:string;position?:number;delta?:[number,number]}
+export interface GuidesState {nudge:[number,number];origin:[number,number];snap:boolean;visible:boolean;locked:boolean;nextId:number;selected:string[];items:{id:string;axis:'horizontal'|'vertical'|null;position:number;layerId:string|null}[]}
+export interface GuideEdit {action:'visibility'|'lock'|'make'|'release'|'clear'|'delete'|'select'|'move'|'snap'|'origin'|'position'|'moveSelected'|'duplicate'|'selectAll'|'invertSelection'|'deselect'|'increments'|'thirds'|'quarters'|'margins'|'saveLayout'|'loadLayout';axis?:'horizontal'|'vertical';id?:string;position?:number;delta?:[number,number]}
 export function editGuides(edit:GuideEdit):Promise<DocumentSnapshot>{return invoke('edit_guides',{edit});}
 export function rulerGuide(axis:'horizontal'|'vertical',position:number,phase:number):Promise<void>{return invoke('ruler_guide',{axis,position,phase});}
+export interface LayerGroup {id:string;name:string;visible:boolean;locked:boolean;collapsed:boolean;maskEnabled:boolean;maskInverted:boolean;maskDensity:number;children:string[]}
+export interface LayerGroupsState {groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
+export interface LayerGroupEdit {action:'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
+export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
 export interface DocumentSnapshot {
+  layerGroups:LayerGroupsState;
   guides:GuidesState;
   pages: PagesSnapshot;
   hasLockedObjects: boolean;
@@ -129,7 +134,8 @@ export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters' |
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
 export interface NewDocumentSettings { pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
-export const emptyDocument: DocumentSnapshot = { guides:{visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export const emptyDocument: DocumentSnapshot = {
+  layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -149,7 +155,7 @@ export interface CanvasRequest {
   tool?: CanvasTool;
 }
 
-export interface RulerViewport { width: number; height: number; originX: number; originY: number; zoom: number }
+export interface RulerViewport { rulerOrigin?:[number,number]; width: number; height: number; originX: number; originY: number; zoom: number }
 
 export interface CanvasInfo {
   status: 'ready' | 'hidden' | 'unsupported';
@@ -544,3 +550,5 @@ export function imageFrameAction(id:string,action:'update'|'relink'|'embed'|'go'
 export function subscribePlaceImage(handler:()=>void):Promise<()=>void>{return listen('place-image-requested',handler);}
 
 export function manageImageLinks(ids:string[],action:"update"|"relink"|"embed"):Promise<DocumentSnapshot>{return textCommand("manage_image_links",{ids,action});}
+
+export function rulerOrigin(point:[number,number],phase:number):Promise<void>{return invoke('ruler_origin',{point,phase});}

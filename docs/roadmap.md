@@ -135,6 +135,10 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Later] カスタムアルファチャンネルの作成・編集、選択範囲の保存／読み込み、ICCプロファイルによるCMYK色分解。
 - [Done] レイヤーパネルのプラスボタンによる新規空ペイントレイヤーの作成・保存・削除
 - [Done] レイヤーパネルの選択を文書の描画先へ同期。選択ベクターレイヤーへの文字・パス追加、追加ペイント／SVGレイヤーへの画像追加（SVG・PNG・JPEG・WebP）、不適合・ロック・非表示時のアラートと画像追加Undoに対応
+- [Done] Photoshopを参考にしたレイヤーグループ（フォルダ）。Cmd/Ctrl・Shiftによる複数選択、選択レイヤーからの作成／空グループ作成、開閉、名前変更、入れ子、ドラッグでフォルダに追加／兄弟順序変更、最上位への移動、表示／ロック、解除／削除、新規レイヤーのグループ内作成。子自身の表示・ロック状態を保持し、保存・旧形式読み込み・Undo/Redoに対応。Rust Document Modelで階層を所有し、UIには小さな階層情報のみ通知。英語・日本語・简体中文対応。
+- [Done] レイヤーパネルの表示・ロックアイコンをフォルダ／子／背景で固定列に統一。階層のインデントはサムネイル・名前側だけに適用し、アイコンを各行の中央に配置（macOS実機確認済み）。カラーラベルもインデントから独立した固定列とし、目アイコンのすぐ右に配置。
+- [Done] レイヤー／マスクのサムネイルを同じ34px正方形に統一。フォルダに既存レイヤーと同じ均一マスク（追加／解除・反転・濃度）を適用し、入れ子のマスクと子自身の不透明度を保持。保存、旧グループ形式読み込み、Undo/Redoに対応。
+- [Later] グループの分離合成、グループ不透明度・描画モード、空間編集可能なグループマスクと効果。現在の均一グループマスクは子レイヤーそれぞれのアルファに反映する。
 - [Done] ドラッグ＆ドロップによる追加レイヤーの重ね順変更と保存
 - [Done] レイヤー行全体からのポインタードラッグ、挿入位置表示、Esc／範囲外での取消、自動スクロール、Alt＋上下キー（macOS実機操作確認済み）
 - [Later] 複数ラスターレイヤー、描画モード、塗り、空間編集可能なラスターマスク、効果、パス
@@ -522,8 +526,14 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] Right-click/Control-click either ruler or the corner to choose pixels, millimeters, centimeters, inches or points. Rust owns and persists the application preference and broadcasts changes to editor, floating and tool windows. English, Japanese and Simplified Chinese labels and keyboard context menu navigation.
 - [Done] Common length conversion for Transform, Stroke/dashes, Text, selection coordinates, brush size, direct controls/live corners, tool/transform dialogs, image offsets and document/new-document dimensions. Internal geometry stays in pixels; percentages, angles and image pixel metadata retain their intrinsic units.
 - [Done] Ruler-drag horizontal/vertical guides with GPU preview, selection/moving/deletion when unlocked; View > Guides visibility/locking, Make/Release/Clear Guides. Portable per-page guide state, native persistence and Undo/Redo; guides excluded from artwork export.
-- [Next] Draggable ruler origin and configurable guide snapping.
-- [Later] Separate artboard/spread origins and configurable guide presets.
+- [Done] Drag the ruler corner to set a per-page origin; double-click resets it. Guide snapping toggle in View > Guides, document-space snapping for vector drawing/edit points with a screen-space tolerance; Control temporarily bypasses snapping. Origin and snap settings persist and support Undo/Redo.
+- [Done] Artwork edge/center and text baseline guide snapping with position markers; Shift-click multiple guide selection, group movement and Option-drag duplication with atomic Undo.
+- [Done] Numeric ruler-guide position editing in the selection toolbar, using global units and ruler origin; multi-guide X/Y offsets, validation and Undo; selected guides highlighted with thicker pink lines.
+- [Done] Guide marquee selection with Shift-additive selection, transformed path segment intersection and artwork selection priority; arrow-key movement by 1 px / Shift 10 px, with Undo and no-op filtering.
+- [Done] View > Guides commands to select all, deselect and invert guide selection; transient selection respects guide lock/visibility and supports English, Japanese and Simplified Chinese.
+- [Done] Configurable normal/Shift keyboard movement increments in the guide toolbar, using global measurement units; Rust-owned values persist in the native document with backward-compatible defaults and Undo.
+- [Done] Guide layouts: thirds, quarters and 10% margins; versioned JSON save/load in absolute document pixels, append with fresh IDs and Undo.
+- [Next] Separate artboard/spread origins and configurable guide margins.
 
 ### Pages and facing spreads
 

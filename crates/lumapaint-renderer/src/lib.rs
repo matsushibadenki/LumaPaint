@@ -2809,8 +2809,10 @@ impl Renderer {
                 overlays.push(overlay);
             }
         }
-        let frame_overlay = (!overlays.is_empty())
-            .then(|| frame_overlay::buffer_many(&self.device, &overlays, viewport));
+        let highlighted = frame_overlay::selected_guides(document, viewport);
+        let frame_overlay = (!overlays.is_empty()).then(|| {
+            frame_overlay::buffer_highlighted(&self.device, &overlays, &highlighted, viewport)
+        });
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();

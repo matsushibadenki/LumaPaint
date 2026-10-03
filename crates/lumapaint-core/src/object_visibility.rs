@@ -15,6 +15,7 @@ pub enum ObjectVisibilityAction {
 impl Document {
     pub fn has_hidden_objects(&self) -> bool {
         !self.visible
+            || self.layer_groups.groups.iter().any(|g| !g.visible)
             || self.svg_layers.iter().any(|layer| {
                 !layer.visible
                     || layer.vector_objects.iter().any(|object| !object.visible)
@@ -53,7 +54,8 @@ impl Document {
             .collect();
         let mut layers = self.svg_layers.clone();
         let mut visible = self.visible;
-        let mut changed = false;
+        let mut changed = matches!(action, ObjectVisibilityAction::ShowAll)
+            && self.layer_groups.groups.iter().any(|g| !g.visible);
         let mut revealed = BTreeSet::new();
         let keep: BTreeSet<_> = self
             .svg_layers
@@ -218,7 +220,23 @@ impl Document {
         if !changed {
             return Ok(());
         }
+        for member in &mut self.layer_groups.members {
+            if let Some(layer) = layers.iter().find(|l| l.id == member.id) {
+                let previous = before.layers.iter().find(|l| l.id == member.id);
+                if matches!(action, ObjectVisibilityAction::ShowAll)
+                    || previous.is_some_and(|l| l.visible != layer.visible)
+                {
+                    member.visible = layer.visible;
+                }
+            }
+        }
+        if matches!(action, ObjectVisibilityAction::ShowAll) {
+            for group in &mut self.layer_groups.groups {
+                group.visible = true;
+            }
+        }
         self.svg_layers = layers;
+        self.sync_layer_group_flags();
         self.visible = visible;
         let selectable: BTreeSet<_> = self
             .svg_layers
