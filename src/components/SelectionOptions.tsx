@@ -1,3 +1,4 @@
+import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useRef, useState } from 'react';
 import type { Brush, DocumentSnapshot, TransformAction, PathOperation } from '../bridge';
 import type { Locale } from '../i18n';
@@ -31,6 +32,7 @@ export function SelectionOptions({ document, locale, enabled, onAppearance, onPa
   onCombine: (operation: PathOperation) => Promise<void>;
   onTransformMenu: (action: TransformAction) => void; onError: (message: string) => void;
 }) {
+  const measurementUnit=useMeasurementUnit(), factor=pixelsPerMeasurement(measurementUnit,document.resolution), symbol=unitSymbols[measurementUnit];
   const appearance = appearanceLabels[locale];
   const t = labels[locale], transforms = transformLabels[locale];
   const [busy, setBusy] = useState(false);
@@ -65,7 +67,7 @@ export function SelectionOptions({ document, locale, enabled, onAppearance, onPa
   const name = objects.some(({object}) => object.kind !== kind) ? t.mixed : kind === 'rectangle' ? t.rectangle : kind === 'ellipse' ? t.ellipse : kind === 'text' ? t.text : kind === 'compound' ? t.compound : t.path;
   const mixedWidth = objects.some(({object}) => object.strokeWidth !== first?.strokeWidth);
   const bounds = document.selectedBounds;
-  const selectionKey = document.selectedVectorObjects.join('|');
+  const selectionKey = document.selectedVectorObjects.join('|')+symbol;
   return <div className="selection-options" role="group" aria-label={t.selection}>
     <span className="selection-kind" title={objects.map(({object}) => object.name).join(', ')}>{name}<small>{document.selectedVectorObjects.length} {t.count}</small></span>
     {!document.activeSavedPath && <>
@@ -87,13 +89,14 @@ export function SelectionOptions({ document, locale, enabled, onAppearance, onPa
           {(mixed || !color) && <small>{mixed ? t.mixed : t.none}</small>}</div>;
       })}
       <button disabled={!paintable} title={t.swap} aria-label={t.swap} onClick={() => void run(() => onPaint('swap',null))}>⇄</button>
-      <NumberField key={`width-${selectionKey}`} label={`${t.width} (pt)`} value={mixedWidth || !first ? null : first.strokeWidth * 72 / document.resolution} placeholder={t.mixed} disabled={!paintable}
-        onCommit={value => { const width = value * document.resolution / 72; if (width < 0 || width > 4096) { onError(t.invalid); return; } void run(() => onWidth(width)); }} />
+      <NumberField key={`width-${selectionKey}`} label={`${t.width} (${symbol})`} value={mixedWidth || !first ? null : first.strokeWidth / factor} placeholder={t.mixed} disabled={!paintable}
+        onCommit={value => { const width = value * factor; if (width < 0 || width > 4096) { onError(t.invalid); return; } void run(() => onWidth(width)); }} />
     </>}
     {bounds && <div className="selection-geometry" role="group" aria-label={t.position}>
       {(['X','Y','W','H'] as const).map((label,index) => {
         const value = index < 2 ? bounds[index] : bounds[index] - bounds[index - 2];
-        return <NumberField key={`${selectionKey}-${label}`} label={`${label} (px)`} value={value} disabled={!editable || (index >= 2 && value <= 0)} onCommit={next => {
+        return <NumberField key={`${selectionKey}-${label}`} label={`${label} (${symbol})`} value={value/factor} disabled={!editable || (index >= 2 && value <= 0)} onCommit={displayNext => {
+          const next=displayNext*factor;
           if (index < 2) void run(() => onTransform('move',[index === 0 ? next-value : 0,index === 1 ? next-value : 0,0,0]));
           else if (next > 0 && next/value >= 0.01 && next/value <= 100) void run(() => onTransform('scale',[index === 2 ? next/value : 1,index === 3 ? next/value : 1,0,0]));
           else onError(t.invalid);

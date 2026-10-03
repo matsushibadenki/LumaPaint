@@ -289,6 +289,7 @@ mod tests {
             bounds_reset: false,
             path: path(data),
             transform: [1., 0., 0., 1., 10., 20.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -400,6 +401,7 @@ mod tests {
             text: None,
             path: path("M0 0H20V20H0Z"),
             transform: [1., 0., 0., 1., 4., 6.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -473,6 +475,7 @@ mod tests {
             bounds_reset: false,
             path: path("M0 0H20V20H0Z"),
             transform: [1.0, 0.0, 0.0, 1.0, x, 0.0],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {

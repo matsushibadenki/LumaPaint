@@ -1,3 +1,4 @@
+import { Rulers } from './components/Rulers';
 import { MIN_ZOOM, MAX_ZOOM, ZOOM_PERCENTAGES, stepZoom, zoomLabel } from './zoom';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { onNativeScaleChange, finishCanvasPath, resetCanvasPan, syncCanvas, type DisplayChannel, type Brush, type CanvasTool, type CanvasInfo, type DocumentSnapshot } from './bridge';
@@ -9,11 +10,11 @@ import type { ColorPickerOcclusion } from './components/ColorPickerPopover';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, resolution=72, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
   zoomCommand: { zoom: number; revision: number };
   onDisplayZoom: (zoom: number) => void;
-  channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; footerAccessory?: ReactNode;
+  channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; resolution?:number; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
   const t = messages[locale];
@@ -91,6 +92,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
         const result = await syncCanvas({
           x: rect.x, y: rect.y, width: rect.width, height: rect.height,
           ...requestSettings(), visible: settings.current.visible && !document.hidden,
+          overlays: Array.from(document.querySelectorAll('[data-floating-panel]')).slice(0,10).map(node=>{const r=node.getBoundingClientRect();return [r.left-rect.x,r.top-rect.y,r.right-rect.x,r.bottom-rect.y] as [number,number,number,number];}),
           overlay: overlay ? [overlay.left - rect.x, overlay.top - rect.y, overlay.right - rect.x, overlay.bottom - rect.y] : null,
         });
         if (!active || failed) return;
@@ -122,6 +124,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
     const observer = new ResizeObserver(requestRender);
     observer.observe(element);
     window.addEventListener('resize', requestRender);
+    window.addEventListener('panel-layout-change',requestRender);
     document.addEventListener('visibilitychange', requestRender);
     onNativeScaleChange(requestRender).then(stop => {
       if (active) unlisten = stop; else stop();
@@ -137,19 +140,23 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
       observer.disconnect();
       unlisten();
       window.removeEventListener('resize', requestRender);
+      window.removeEventListener('panel-layout-change',requestRender);
       document.removeEventListener('visibilitychange', requestRender);
       void syncCanvas({ x: 0, y: 0, width: 0, height: 0, ...requestSettings(), visible: false }).catch(() => {});
     };
   }, [attempt, onDocument, onDisplayZoom]);
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
+    <div className="canvas-stage" data-document={hasDocument ? 'open' : 'empty'}>
+    {hasDocument && <Rulers locale={locale} resolution={resolution} viewport={info?.rulerViewport ?? null} />}
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool.startsWith('imageFrame') ? workspaceMessages[locale].frameHint : tool === 'gradient' ? workspaceMessages[locale].gradientHint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && (status === 'browser' || status === 'unsupported') && <div className="paper-preview" aria-hidden="true" />}
       {status === 'failed' ? <div className="canvas-notice canvas-failure" role="alert">
         <p>{t.canvasStatus.failed}</p>
         <pre aria-label={t.errorDetails}>{error}</pre>
         <button type="button" onClick={retry}>{t.retry}</button>
       </div> : hasDocument && status !== 'ready' && <p className="canvas-notice">{t.canvasStatus[status]}</p>}
+    </div>
     </div>
     <div className="canvas-footer">
       <div className="zoom-controls">

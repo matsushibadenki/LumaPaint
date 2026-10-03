@@ -1099,6 +1099,31 @@ pub fn path_bounds(data: &str) -> Option<[f32; 4]> {
     b.iter().all(|v| v.is_finite()).then(|| b.map(|v| v as f32))
 }
 
+/// Flattened portable centerline edges, including closed contours.
+pub fn path_edges(data: &str, transform: [f32; 6]) -> Vec<[[f32; 2]; 2]> {
+    let [a, b, c, d, e, f] = transform;
+    let map = |p: Point| {
+        [
+            a * p[0] as f32 + c * p[1] as f32 + e,
+            b * p[0] as f32 + d * p[1] as f32 + f,
+        ]
+    };
+    contours(data)
+        .into_iter()
+        .flat_map(|contour| {
+            let mut edges: Vec<_> = contour
+                .points
+                .windows(2)
+                .map(|p| [map(p[0]), map(p[1])])
+                .collect();
+            if contour.closed && contour.points.len() > 1 {
+                edges.push([map(*contour.points.last().unwrap()), map(contour.points[0])]);
+            }
+            edges
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,11 @@
+{
+  "identifier": "dialog-size",
+  "description": "Fit native dialog windows to their form content.",
+  "windows": [
+    "modal-*"
+  ],
+  "permissions": [
+    "core:window:allow-set-size",
+    "core:window:allow-center"
+  ]
+}

@@ -829,6 +829,8 @@ fn default_object_blend() -> String {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VectorObject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_frame: Option<crate::image_frame::ImageFrame>,
     #[serde(default = "default_object_opacity")]
     pub opacity: f32,
     #[serde(default = "default_object_blend")]
@@ -870,6 +872,12 @@ pub struct VectorObject {
 
 impl VectorObject {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(frame) = &self.image_frame {
+            frame.validate()?;
+            if self.text.is_some() {
+                return Err("Image frames cannot contain text".into());
+            }
+        }
         self.stroke_style.validate()?;
         for gradient in [&self.fill_gradient, &self.stroke_gradient]
             .into_iter()
@@ -922,7 +930,7 @@ impl VectorObject {
             || self.transform.iter().any(|value| !value.is_finite())
             || !self.stroke_width.is_finite()
             || !(0.0..=4096.0).contains(&self.stroke_width)
-            || (self.fill.is_none() && self.stroke.is_none())
+            || (self.fill.is_none() && self.stroke.is_none() && self.image_frame.is_none())
             || self.control_points.len() > 65_536
             || self
                 .control_points
@@ -1067,7 +1075,9 @@ impl VectorObject {
                 ]
             };
         }
-        let filled = self.fill.is_some() || self.kind == VectorObjectKind::Text;
+        let filled = self.fill.is_some()
+            || self.image_frame.is_some()
+            || self.kind == VectorObjectKind::Text;
         let closed = filled
             || matches!(
                 self.kind,
@@ -1184,7 +1194,9 @@ impl VectorObject {
         if self.fill.is_none() && self.stroke.is_some() && self.kind != VectorObjectKind::Text {
             return false;
         }
-        if self.fill.is_some() && self.kind != VectorObjectKind::Text {
+        if (self.fill.is_some() || self.image_frame.is_some())
+            && self.kind != VectorObjectKind::Text
+        {
             return crate::stroke::fill_geometry(
                 &self.path.data,
                 self.transform,
@@ -1750,6 +1762,7 @@ mod path_hit_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {

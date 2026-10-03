@@ -4,7 +4,6 @@ import type { Locale } from '../i18n';
 import { HexInput, toHex } from './BrushControls';
 import { cmykToRgb, rgbToCmyk, type CmykColor } from '../color-models';
 import { workspaceMessages } from '../workspace-i18n';
-import { ColorSwatches } from './ColorSwatches';
 
 export const colorPanelLabels = {
   ja: { color: 'カラー', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
@@ -181,6 +180,5 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     </div>
     {vectorColors && <div><span>{labels[activeColor]}{status ? ` · ${vectorLabels[locale][status]}` : ''}</span> <button type="button" onClick={()=>vectorColors.change(activeColor==='foreground'?'fill':'stroke',null)}>{vectorLabels[locale].none}</button></div>}
     <HexInput key={activeColor} color={color} onChange={onChange} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
-    <ColorSwatches locale={locale} color={color} targetLabel={labels[activeColor]} onChange={onChange} />
   </div>;
 }

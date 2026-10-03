@@ -1,7 +1,7 @@
 export const workspaceMessages = {
   en: {
     drawTools: 'Drawing tools', eraseTools: 'Erasing tools',
-    eraser: 'Eraser',
+    imageFrameRectangle:'Rectangle Frame',imageFrameEllipse:'Ellipse Frame',imageFrames:'Image frames',frameHint:'Draw an image frame, then choose File > Place',gradient: 'Gradient', gradientHint: 'Drag to set the gradient axis · Shift: constrain angle', eraser: 'Eraser',
     showObject: 'Show object', hideObject: 'Hide object',
     expandLayer: 'Expand layer', collapseLayer: 'Collapse layer', vectorGroup: 'Group',
     addPixelLayer: 'Add pixel layer', addVectorLayer: 'Add vector layer',
@@ -30,7 +30,7 @@ export const workspaceMessages = {
   },
   ja: {
     drawTools: '描くツール', eraseTools: '消すツール',
-    eraser: '消しゴム',
+    imageFrameRectangle:'長方形フレーム',imageFrameEllipse:'楕円フレーム',imageFrames:'画像フレーム',frameHint:'画像フレームを描き、ファイル ＞ 配置で画像を配置',gradient: 'グラデーション', gradientHint: 'ドラッグで方向・長さを指定 · Shift：角度を固定', eraser: '消しゴム',
     showObject: 'オブジェクトを表示', hideObject: 'オブジェクトを非表示',
     expandLayer: 'レイヤーを展開', collapseLayer: 'レイヤーを折りたたむ', vectorGroup: 'グループ',
     addPixelLayer: 'ピクセルレイヤーを追加', addVectorLayer: 'ベクターレイヤーを追加',
@@ -59,7 +59,7 @@ export const workspaceMessages = {
   },
   'zh-CN': {
     drawTools: '绘画工具', eraseTools: '擦除工具',
-    eraser: '橡皮擦',
+    imageFrameRectangle:'矩形框架',imageFrameEllipse:'椭圆框架',imageFrames:'图像框架',frameHint:'绘制图像框架，然后选择文件 > 置入',gradient: '渐变', gradientHint: '拖动设置渐变轴 · Shift：约束角度', eraser: '橡皮擦',
     showObject: '显示对象', hideObject: '隐藏对象',
     expandLayer: '展开图层', collapseLayer: '折叠图层', vectorGroup: '组',
     addPixelLayer: '添加像素图层', addVectorLayer: '添加矢量图层',

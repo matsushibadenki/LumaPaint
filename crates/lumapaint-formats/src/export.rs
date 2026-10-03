@@ -11,6 +11,19 @@ pub enum FormatId {
     Pdf,
     Illustrator,
     Psd,
+    Ora,
+    Exr,
+    Kra,
+    Png,
+    Jpeg,
+    Webp,
+    Gif,
+    Bmp,
+    Tiff,
+    Raw,
+    Heif,
+    Ico,
+    Avif,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -23,38 +36,18 @@ pub struct FormatCapabilities {
     pub partial: bool,
 }
 
-pub const CAPABILITIES: &[FormatCapabilities] = &[
-    FormatCapabilities {
-        format: FormatId::Native,
-        import: true,
-        export: true,
-        partial: false,
-    },
-    FormatCapabilities {
-        format: FormatId::Svg,
-        import: true,
-        export: true,
-        partial: true,
-    },
-    FormatCapabilities {
-        format: FormatId::Pdf,
-        import: false,
-        export: false,
-        partial: false,
-    },
-    FormatCapabilities {
-        format: FormatId::Illustrator,
-        import: false,
-        export: false,
-        partial: false,
-    },
-    FormatCapabilities {
-        format: FormatId::Psd,
-        import: true,
-        export: false,
-        partial: true,
-    },
-];
+/// Derived from the shared registry so dialogs and exporter support cannot drift apart.
+pub fn capabilities() -> Vec<FormatCapabilities> {
+    crate::io::FILE_FORMATS
+        .iter()
+        .map(|entry| FormatCapabilities {
+            format: entry.format,
+            import: entry.import_adapter,
+            export: entry.export_adapter,
+            partial: entry.partial,
+        })
+        .collect()
+}
 
 /// Captures current committed plus active content without changing revision, history or saved state.
 /// The private state prevents callers bypassing model validation.

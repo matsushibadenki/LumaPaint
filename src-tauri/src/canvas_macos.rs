@@ -1,4 +1,6 @@
 //! AppKit ownership is isolated here; no Apple types enter the renderer or document core.
+#[path = "gradient_tool_macos.rs"]
+mod gradient_tool;
 #[path = "window_sessions_macos.rs"]
 pub(super) mod window_sessions;
 pub(super) use window_sessions::{current_label, SessionGuard};
@@ -381,7 +383,7 @@ impl PaintView {
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return std::ptr::null_mut(); };
             let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
-            if CANVAS_OVERLAY.with(|value| value.get()).is_some_and(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3]) {
+            if CANVAS_OVERLAY.with(|value| value.borrow().iter().any(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3])) {
                 return std::ptr::null_mut();
             }
             // SAFETY: forward AppKit hit testing to the NSView superclass.
@@ -402,14 +404,15 @@ impl PaintView {
                 match TOOL.with(|tool| tool.get()) {
                     CanvasTool::ZoomIn => Some(NSCursor::zoomInCursor()),
                     CanvasTool::ZoomOut => Some(NSCursor::zoomOutCursor()),
-                    CanvasTool::Eyedropper => Some(NSCursor::crosshairCursor()),
+                    CanvasTool::Eyedropper => Some(tool_icon_cursor(CanvasTool::Eyedropper)),
+                    CanvasTool::Gradient => Some(NSCursor::crosshairCursor()),
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
-                    CanvasTool::Text | CanvasTool::TextVertical | CanvasTool::TextFrame | CanvasTool::TextFrameVertical => Some(NSCursor::IBeamCursor()),
+                    CanvasTool::Text | CanvasTool::TextFrame => Some(NSCursor::IBeamCursor()),
+                    CanvasTool::TextVertical | CanvasTool::TextFrameVertical => Some(NSCursor::IBeamCursorForVerticalLayout()),
                     CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
-                    CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(NSCursor::crosshairCursor()),
-                    CanvasTool::VectorDirectSelect => Some(NSCursor::crosshairCursor()),
+                    CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
+                    CanvasTool::VectorDirectSelect | CanvasTool::VectorPen | CanvasTool::VectorPencil | CanvasTool::VectorAnchorAdd | CanvasTool::VectorAnchorDelete | CanvasTool::VectorAnchorConvert | CanvasTool::VectorRectangle | CanvasTool::VectorEllipse | CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse | CanvasTool::Rectangle | CanvasTool::Ellipse => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
                     CanvasTool::Brush | CanvasTool::Eraser => BRUSH_CURSOR.with(|cursor| cursor.borrow().clone()).or_else(|| Some(NSCursor::crosshairCursor())),
-                    _ => Some(NSCursor::crosshairCursor()),
                 }
             };
             if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
@@ -555,6 +558,13 @@ impl PaintView {
                 self.refresh_cursor();
                 if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eyedropper); }
             }
+            else if event.keyCode() == 5 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
+                if let Err(error)=switch_canvas_tool(CanvasTool::Gradient){emit_error(error);return;}
+                self.refresh_cursor();
+                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",CanvasTool::Gradient);}
+            }
+            else if event.keyCode()==3 && !event.modifierFlags().intersects(NSEventModifierFlags::Command|NSEventModifierFlags::Control|NSEventModifierFlags::Option){let tool=if event.modifierFlags().contains(NSEventModifierFlags::Shift){CanvasTool::ImageFrameEllipse}else{CanvasTool::ImageFrameRectangle};if let Err(e)=switch_canvas_tool(tool){emit_error(e);return;}
+            if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",tool);}}
             else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
                 if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
                 if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eraser); }
@@ -639,8 +649,10 @@ impl PaintView {
                 report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::ShowAllObjects } else { DocumentAction::HideSelection }); true
             } else if command && [7,8,9].contains(&event.keyCode()) {
                 report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
-            } else if command && [0, 2].contains(&event.keyCode()) {
-                report_edit(if event.keyCode() == 0 { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
+            } else if command && event.keyCode() == 2 {
+                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"place-image-requested",());} true
+            } else if command && event.keyCode() == 0 {
+                report_edit(if !event.modifierFlags().contains(NSEventModifierFlags::Shift) { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
             } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
                 report_edit(DocumentAction::InvertSelection); true
             } else if command && event.keyCode() == 45 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
@@ -769,7 +781,152 @@ impl PaintView {
             }
             return;
         }
+        if let Some((axis, _)) = GUIDE_DRAFT
+            .with(|g| g.borrow().clone())
+            .filter(|_| GUIDE_DRAG.with(|g| g.borrow().is_none()))
+        {
+            let position = if axis == "horizontal" {
+                point.y
+            } else {
+                point.x
+            };
+            if let Err(e) = ruler_guide(axis, position, if phase == 2 { 2 } else { 1 }) {
+                emit_error(e);
+            }
+            return;
+        }
+        if matches!(
+            TOOL.with(|t| t.get()),
+            CanvasTool::VectorSelect | CanvasTool::VectorDirectSelect
+        ) && !text_editor::active()
+        {
+            if phase == 0 {
+                let scale = ruler_viewport(viewport).zoom;
+                if let Some(id) =
+                    DOCUMENT.with(|d| d.borrow().guide_hit([point.x, point.y], 6. / scale))
+                {
+                    DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+                    DOCUMENT.with(|d| d.borrow_mut().select_guide(Some(id.clone())));
+                    GUIDE_DRAG.with(|g| *g.borrow_mut() = Some((id, [point.x, point.y])));
+                    emit_document();
+                    let _ = redraw();
+                    return;
+                }
+                DOCUMENT.with(|d| d.borrow_mut().select_guide(None));
+            }
+            if let Some((id, start)) = GUIDE_DRAG.with(|g| g.borrow().clone()) {
+                if phase == 2 {
+                    GUIDE_DRAG.with(|g| g.borrow_mut().take());
+                    if (point.x - start[0]).hypot(point.y - start[1]) < 0.001 {
+                        GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+                        GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
+                        let _ = redraw();
+                        return;
+                    }
+                    let axis = DOCUMENT.with(|d| {
+                        d.borrow()
+                            .guides()
+                            .items
+                            .iter()
+                            .find(|g| g.id == id)
+                            .and_then(|g| g.axis.clone())
+                    });
+                    let position = axis.map(|a| if a == "horizontal" { point.y } else { point.x });
+                    let edit = lumapaint_core::document::GuideEdit {
+                        action: "move".into(),
+                        id: Some(id),
+                        axis: None,
+                        position,
+                        delta: Some([point.x - start[0], point.y - start[1]]),
+                    };
+                    if let Err(e) = edit_guides(edit) {
+                        emit_error(e);
+                    }
+                } else if phase == 1 {
+                    let axis = DOCUMENT.with(|d| {
+                        d.borrow()
+                            .guides()
+                            .items
+                            .iter()
+                            .find(|g| g.id == id)
+                            .and_then(|g| g.axis.clone())
+                    });
+                    if let Some(axis) = axis {
+                        let pos = if axis == "horizontal" {
+                            point.y
+                        } else {
+                            point.x
+                        };
+                        GUIDE_DRAFT.with(|g| *g.borrow_mut() = Some((axis, pos)));
+                    } else {
+                        let edges = DOCUMENT.with(|d| {
+                            d.borrow()
+                                .guides()
+                                .items
+                                .iter()
+                                .find(|g| g.id == id)
+                                .map(|g| {
+                                    g.objects
+                                        .iter()
+                                        .flat_map(|o| {
+                                            lumapaint_core::stroke::path_edges(
+                                                &o.path.data,
+                                                o.transform,
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        });
+                        let [dx, dy] = [point.x - start[0], point.y - start[1]];
+                        GUIDE_OBJECT_DRAFT.with(|g| {
+                            *g.borrow_mut() = edges
+                                .into_iter()
+                                .map(|[a, b]| {
+                                    let p = [a[0] + dx, a[1] + dy];
+                                    let q = [b[0] + dx, b[1] + dy];
+                                    lumapaint_renderer::FrameOverlay {
+                                        corners: [p, q, q, p],
+                                        handles: false,
+                                        baseline: None,
+                                    }
+                                })
+                                .collect()
+                        });
+                    }
+                    let _ = redraw();
+                }
+                return;
+            }
+        }
+        if phase == 0 && !raster_import::active() {
+            let page = DOCUMENT.with(|doc| {
+                doc.borrow().facing_neighbor().and_then(|(index, x, n)| {
+                    let (w, h) = n.dimensions();
+                    (point.x >= x && point.x < x + w as f32 && point.y >= 0. && point.y < h as f32)
+                        .then_some(index)
+                })
+            });
+            if let Some(index) = page {
+                if let Err(error) = edit_pages(lumapaint_core::document::PageEdit {
+                    action: "select".into(),
+                    index: Some(index),
+                    facing: None,
+                    binding: None,
+                }) {
+                    emit_error(error);
+                }
+                return;
+            }
+        }
         let tool = TOOL.with(|tool| tool.get());
+        if tool == CanvasTool::Gradient {
+            if let Err(e) = gradient_tool::pointer(point, phase, event.modifierFlags()) {
+                gradient_tool::cancel();
+                emit_error(e);
+            }
+            return;
+        }
         if tool == CanvasTool::Eyedropper {
             if phase == 0 {
                 if let Err(error) = sample_canvas_color(point) {
@@ -926,6 +1083,8 @@ impl PaintView {
                         | CanvasTool::VectorAnchorConvert
                         | CanvasTool::VectorRectangle
                         | CanvasTool::VectorEllipse
+                        | CanvasTool::ImageFrameRectangle
+                        | CanvasTool::ImageFrameEllipse
                 ) {
                     return vector_pointer(&mut doc, tool, point, phase, event.modifierFlags());
                 }
@@ -1097,6 +1256,7 @@ impl PenDraft {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: None,
@@ -1617,7 +1777,7 @@ fn vector_pointer(
                 points.iter().map(|point| [point.x, point.y]).collect(),
             )
         }
-        CanvasTool::VectorRectangle => {
+        CanvasTool::VectorRectangle | CanvasTool::ImageFrameRectangle => {
             let x = start.x.min(end.x);
             let y = start.y.min(end.y);
             let data = format!("M {x} {y} H {} V {} H {x} Z", x + width, y + height);
@@ -1634,7 +1794,7 @@ fn vector_pointer(
                 vec![[x, y], [x + width, y + height]],
             )
         }
-        CanvasTool::VectorEllipse => {
+        CanvasTool::VectorEllipse | CanvasTool::ImageFrameEllipse => {
             let cx = (start.x + end.x) * 0.5;
             let cy = (start.y + end.y) * 0.5;
             let rx = width * 0.5;
@@ -1660,47 +1820,65 @@ fn vector_pointer(
         }
         _ => return Ok(()),
     };
-    let layer_id = match document
-        .selected_vector_target()?
-        .or_else(|| document.editable_vector_layer_id())
-    {
-        Some(id) => id,
-        None => document.add_vector_layer()?,
-    };
     let serial = NEXT_VECTOR_OBJECT_ID.with(|next| {
         let value = next.get();
         next.set(value + 1);
         value
     });
-    document.upsert_vector_object(
-        &layer_id,
-        VectorObject {
-            fill_gradient: None,
-            stroke_gradient: None,
-            live_corners: None,
-            rectangle_radii: None,
-            text: None,
-            opacity: 1.0,
-            blend_mode: "normal".into(),
-            id: format!("vector-object-{serial}"),
-            name: format!("{name} {serial}"),
-            group_path: Vec::new(),
-            clipping_group: None,
-            bounds_reset: false,
-            path: VectorPath {
-                data: path,
-                fill_rule: FillRule::NonZero,
-            },
-            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-            fill,
-            stroke,
-            stroke_width,
-            stroke_style: Default::default(),
-            visible: true,
-            kind,
-            control_points,
+    let object = VectorObject {
+        image_frame: matches!(
+            tool,
+            CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse
+        )
+        .then(Default::default),
+        fill_gradient: None,
+        stroke_gradient: None,
+        live_corners: None,
+        rectangle_radii: None,
+        text: None,
+        opacity: 1.0,
+        blend_mode: "normal".into(),
+        id: format!("vector-object-{serial}"),
+        name: format!("{name} {serial}"),
+        group_path: Vec::new(),
+        clipping_group: None,
+        bounds_reset: false,
+        path: VectorPath {
+            data: path,
+            fill_rule: FillRule::NonZero,
         },
-    )
+        transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        fill: if matches!(
+            tool,
+            CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse
+        ) {
+            None
+        } else {
+            fill
+        },
+        stroke,
+        stroke_width,
+        stroke_style: Default::default(),
+        visible: true,
+        kind,
+        control_points,
+    };
+    if matches!(
+        tool,
+        CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse
+    ) {
+        document.insert_image_frame(object)?;
+    } else {
+        let layer = match document
+            .selected_vector_target()?
+            .or_else(|| document.editable_vector_layer_id())
+        {
+            Some(id) => id,
+            None => document.add_vector_layer()?,
+        };
+        document.upsert_vector_object(&layer, object)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -1985,6 +2163,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                     fill_rule: FillRule::NonZero,
                 },
                 transform: [1., 0., 0., 1., 0., 0.],
+                image_frame: None,
                 fill_gradient: None,
                 stroke_gradient: None,
                 fill: None,
@@ -2109,6 +2288,7 @@ struct BoxDraft {
     start: [f32; 2],
     matrix: [f32; 6],
     rotate: bool,
+    scale_content: bool,
 }
 fn box_tolerance() -> f32 {
     CANVAS.with(|slot| {
@@ -2171,6 +2351,7 @@ fn box_hit_corners(corners: [[f32; 2]; 4], p: [f32; 2]) -> Option<BoxDraft> {
                     start: p,
                     matrix: [1., 0., 0., 1., 0., 0.],
                     rotate,
+                    scale_content: false,
                 });
             }
         }
@@ -2267,7 +2448,7 @@ fn vector_select_pointer(
         });
         if phase == 2 {
             if let Some(d) = BOX_DRAFT.with(|draft| draft.borrow_mut().take()) {
-                document.affine_selected_vectors(d.matrix)?;
+                document.resize_selected_image_frames(d.matrix, d.rotate || d.scale_content)?;
             }
         }
         return Ok(());
@@ -2292,7 +2473,8 @@ fn vector_select_pointer(
             || (modifiers.contains(NSEventModifierFlags::Command)
                 && selected_text_resize_handle(document, [point.x, point.y]).is_some())
         {
-            if let Some(d) = box_hit(document, [point.x, point.y]) {
+            if let Some(mut d) = box_hit(document, [point.x, point.y]) {
+                d.scale_content = modifiers.contains(NSEventModifierFlags::Command);
                 BOX_DRAFT.with(|draft| *draft.borrow_mut() = Some(d));
                 return Ok(());
             }
@@ -2904,7 +3086,11 @@ fn paint_gesture_active() -> bool {
 }
 
 fn cancel_vector_drag() -> bool {
+    let guides = GUIDE_DRAFT.with(|g| g.borrow_mut().take().is_some())
+        | GUIDE_DRAG.with(|g| g.borrow_mut().take().is_some());
+    GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
     end_precise_paint_input();
+    let gradient = gradient_tool::cancel();
     let painting = PIXEL_PAINT.with(|d| d.borrow_mut().take().is_some());
     let pixels = PIXEL_DRAG.with(|d| d.borrow_mut().take().is_some());
     let bounding = BOX_DRAFT.with(|d| d.borrow_mut().take().is_some());
@@ -2921,6 +3107,8 @@ fn cancel_vector_drag() -> bool {
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     painting
+        || guides
+        || gradient
         || pixels
         || bounding
         || rotating
@@ -3078,7 +3266,9 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
             }
             DocumentAction::Copy | DocumentAction::Cut | DocumentAction::Paste => unreachable!(),
             DocumentAction::DeleteSelectedObjects => {
-                if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
+                if !doc.guides().selected.is_empty() {
+                    doc.delete_selected_vector_objects()?;
+                } else if TOOL.with(|tool| tool.get()) == CanvasTool::VectorDirectSelect {
                     let points = DIRECT_POINTS.with(|points| points.borrow().clone());
                     doc.delete_vector_anchors(&points)?;
                     DIRECT_POINTS.with(|points| points.borrow_mut().clear());
@@ -3476,8 +3666,58 @@ fn redraw() -> Result<(), String> {
     })
 }
 
+fn ruler_viewport(viewport: Viewport) -> super::RulerViewport {
+    let width = viewport.width as f32 / viewport.scale;
+    let height = viewport.height as f32 / viewport.scale;
+    let zoom = viewport.screen_zoom();
+    super::RulerViewport {
+        width,
+        height,
+        origin_x: width * 0.5 + viewport.pan_x - viewport.document_width * 0.5 * zoom,
+        origin_y: height * 0.5 + viewport.pan_y - viewport.document_height * 0.5 * zoom,
+        zoom,
+    }
+}
+thread_local! {
+    static RULER_VIEWPORTS: RefCell<std::collections::HashMap<String, super::RulerViewport>> = RefCell::new(std::collections::HashMap::new());
+}
+fn emit_ruler_viewport(viewport: Viewport) {
+    let value = ruler_viewport(viewport);
+    let label = current_label();
+    let changed = RULER_VIEWPORTS
+        .with(|values| values.borrow_mut().insert(label.clone(), value) != Some(value));
+    if changed {
+        if let Some(app) = APP.get() {
+            let _ = app.emit_to(label, "canvas-ruler-changed", value);
+        }
+    }
+}
+
 fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
     let started = Instant::now();
+    let draft = GUIDE_DRAFT
+        .with(|g| g.borrow().clone())
+        .map(|(axis, position)| {
+            let v = canvas.viewport;
+            let a = v.document_point(0., 0.);
+            let b = v.document_point(v.width as f32 / v.scale, v.height as f32 / v.scale);
+            let (p, q) = if axis == "horizontal" {
+                ([a.x, position], [b.x, position])
+            } else {
+                ([position, a.y], [position, b.y])
+            };
+            lumapaint_renderer::FrameOverlay {
+                corners: [p, q, q, p],
+                handles: false,
+                baseline: None,
+            }
+        });
+    canvas.renderer.set_guide_drafts(
+        draft
+            .into_iter()
+            .chain(GUIDE_OBJECT_DRAFT.with(|g| g.borrow().clone()))
+            .collect(),
+    );
     let mode = if text_editor::active() {
         "inline-text"
     } else if VECTOR_MOVE.with(|offset| offset.get()) != [0.0, 0.0] {
@@ -3485,7 +3725,9 @@ fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
     } else {
         "committed"
     };
+    update_page_preview(canvas)?;
     let result = render_canvas_inner(canvas);
+    emit_ruler_viewport(canvas.viewport);
     if render_metrics_enabled() && !canvas.view.isHidden() {
         eprintln!(
             "LumaPaint render mode={mode} main_ms={:.2}",
@@ -3503,8 +3745,28 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if canvas.view.isHidden() {
         return Ok(());
     }
+    canvas.renderer.set_image_frame_guides_visible(true);
     canvas.renderer.set_selection_overlay_visible(true);
     canvas.renderer.set_frame_overlay(None);
+    if let Some(result) = TOOL_WINDOW_PREVIEWS.with(|previews| {
+        let previews = previews.borrow();
+        let preview = previews.get(&current_label())?;
+        if preview.document_id != ACTIVE_DOCUMENT_ID.with(|id| id.get())
+            || preview.revision != DOCUMENT.with(|doc| doc.borrow().revision())
+        {
+            return None;
+        }
+        let viewport = preview.zoom.map_or(canvas.viewport, |zoom| {
+            canvas.viewport.with_screen_zoom(zoom)
+        });
+        Some(canvas.renderer.render(viewport, &preview.document))
+    }) {
+        return result;
+    }
+
+    if let Some(result) = gradient_tool::render(canvas) {
+        return result;
+    }
     if let Some(result) = raster_import::render(canvas) {
         return result;
     }
@@ -3523,7 +3785,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     }
     if let Some(d) = BOX_DRAFT.with(|draft| *draft.borrow()) {
         let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
-        preview.affine_selected_vectors(d.matrix)?;
+        preview.resize_selected_image_frames(d.matrix, d.rotate || d.scale_content)?;
         canvas
             .renderer
             .set_frame_overlay(preview.selected_vector_box().map(|corners| {
@@ -4129,6 +4391,7 @@ struct Canvas {
     tile_failure: Option<TileKey>,
     tile_cache: Option<TileCache>,
     active_tiled_key: Option<(u64, u64)>,
+    page_preview_key: Option<String>,
 }
 
 impl Drop for Canvas {
@@ -4138,7 +4401,7 @@ impl Drop for Canvas {
 }
 
 thread_local! {
-    static CANVAS_OVERLAY: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
+    static CANVAS_OVERLAY: RefCell<Vec<[f64;4]>> = const { RefCell::new(Vec::new()) };
     static BRUSH_CURSOR: RefCell<Option<Retained<NSCursor>>> = const { RefCell::new(None) };
     static BRUSH_CURSOR_KEY: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
@@ -4593,7 +4856,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     .with_document(document.width, document.height, document.canvas_color)?;
     let requested_zoom = if request.absolute_zoom {
         if request.zoom == 0.0 {
-            base.fit_zoom() as f64
+            spread_fit(base).0 as f64
         } else {
             request.zoom
         }
@@ -4617,7 +4880,8 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             })
     });
     let (pan_x, pan_y) = if explicit && request.absolute_zoom && request.zoom == 0.0 {
-        (0.0, 0.0)
+        let (_, x, y) = spread_fit(base);
+        (x, y)
     } else if explicit {
         let ratio = (zoom / previous_zoom) as f32;
         (
@@ -4687,6 +4951,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         tile_failure: None,
                         tile_cache: None,
                         active_tiled_key: None,
+                        page_preview_key: None,
                     })
                 }
                 Err(error) => {
@@ -4697,7 +4962,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         }
         let canvas = slot.as_mut().ok_or("Canvas initialization failed")?;
         canvas.view.setFrame(frame);
-        update_canvas_mask(&canvas.view, request.overlay);
+        let mut overlays = request.overlays.clone();
+        overlays.extend(request.overlay);
+        update_canvas_mask(&canvas.view, overlays);
         canvas.viewport = viewport;
         if request.zoom_revision > canvas.zoom_revision {
             canvas.zoom_revision = request.zoom_revision;
@@ -4716,6 +4983,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             physical_height: viewport.height,
             scale_factor: scale,
             zoom: Some(viewport.screen_zoom()),
+            ruler_viewport: Some(ruler_viewport(viewport)),
             document: DOCUMENT_OPEN.with(|open| open.get()).then(|| {
                 ACTIVE_TILED_DOCUMENT.with(|tiled| {
                     tiled.borrow().as_ref().map_or_else(
@@ -4730,37 +4998,56 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     result
 }
 
+// Subtract the union of floating panels; overlapping panels never expose the canvas.
+fn visible_canvas_regions(bounds: [f64; 4], holes: &[[f64; 4]]) -> Vec<[f64; 4]> {
+    let mut regions = vec![bounds];
+    for h in holes {
+        regions = regions
+            .into_iter()
+            .flat_map(|r| {
+                let l = r[0].max(h[0]);
+                let t = r[1].max(h[1]);
+                let right = r[2].min(h[2]);
+                let b = r[3].min(h[3]);
+                if l >= right || t >= b {
+                    return vec![r];
+                }
+                [
+                    [r[0], r[1], r[2], t],
+                    [r[0], b, r[2], r[3]],
+                    [r[0], t, l, b],
+                    [right, t, r[2], b],
+                ]
+                .into_iter()
+                .filter(|v| v[0] < v[2] && v[1] < v[3])
+                .collect()
+            })
+            .collect();
+    }
+    regions
+}
+
 // Punch a hole only in the native view's composition, leaving the GPU viewport fixed.
 // The WebView below receives pointer events in this same rectangle.
-fn update_canvas_mask(view: &PaintView, overlay: Option<[f64; 4]>) {
-    CANVAS_OVERLAY.with(|value| value.set(overlay));
+fn update_canvas_mask(view: &PaintView, overlays: Vec<[f64; 4]>) {
+    CANVAS_OVERLAY.with(|value| *value.borrow_mut() = overlays.clone());
     // SAFETY: all Core Animation objects are retained and accessed on the main thread.
     unsafe {
         let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
         let Some(layer) = layer else { return };
         let _: () = msg_send![class!(CATransaction), begin];
         let _: () = msg_send![class!(CATransaction), setDisableActions: true];
-        if let Some(r) = overlay {
+        if !overlays.is_empty() {
             let size = view.bounds().size;
-            let left = r[0].clamp(0.0, size.width);
-            let top = r[1].clamp(0.0, size.height);
-            let right = r[2].clamp(left, size.width);
-            let bottom = r[3].clamp(top, size.height);
             let mask: Retained<AnyObject> = msg_send![class!(CALayer), layer];
             let _: () = msg_send![&*mask, setFrame: view.bounds()];
             let white = NSColor::whiteColor();
             let color = white.CGColor();
-            for (x, y, width, height) in [
-                (0.0, 0.0, size.width, top),
-                (0.0, bottom, size.width, size.height - bottom),
-                (0.0, top, left, bottom - top),
-                (right, top, size.width - right, bottom - top),
-            ] {
-                if width <= 0.0 || height <= 0.0 {
-                    continue;
-                }
+            for [x, y, right, bottom] in
+                visible_canvas_regions([0., 0., size.width, size.height], &overlays)
+            {
                 let part: Retained<AnyObject> = msg_send![class!(CALayer), layer];
-                let _: () = msg_send![&*part, setFrame: NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))];
+                let _: () = msg_send![&*part, setFrame: NSRect::new(NSPoint::new(x, y), NSSize::new(right-x, bottom-y))];
                 let _: () = msg_send![&*part, setBackgroundColor: &*color];
                 let _: () = msg_send![&*mask, addSublayer: &*part];
             }
@@ -4803,6 +5090,55 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facing_preview_renders_neighbor_content_and_clips_to_its_page() {
+        use lumapaint_core::document::{PageBinding, PageEdit, Point};
+        let mut doc = Document::default();
+        let edit = |action: &str, index| PageEdit {
+            action: action.into(),
+            index,
+            facing: None,
+            binding: None,
+        };
+        doc.edit_pages(edit("add", None)).unwrap();
+        doc.edit_pages(edit("select", Some(1))).unwrap();
+        doc.import_svg("Neighbor".into(), r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect x="-10000" y="0" width="20000" height="100" fill="#ff0000"/></svg>"##.into()).unwrap();
+        doc.edit_pages(edit("add", Some(1))).unwrap();
+        doc.edit_pages(edit("select", Some(2))).unwrap();
+        doc.edit_pages(PageEdit {
+            action: "layout".into(),
+            index: None,
+            facing: Some(true),
+            binding: Some(PageBinding::LeftToRight),
+        })
+        .unwrap();
+        let before = doc.document_state();
+        let preview = facing_preview_document(&doc).unwrap().unwrap();
+        let (_, x, neighbor) = doc.facing_neighbor().unwrap();
+        let mut sampler = lumapaint_renderer::color_sampler::ColorSampler::default();
+        assert_eq!(
+            sampler
+                .sample(&preview, Point { x: x + 20., y: 20. })
+                .unwrap(),
+            Some([255, 0, 0])
+        );
+        assert_eq!(
+            sampler
+                .sample(&preview, Point { x: x - 20., y: 20. })
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            sampler.sample(&preview, Point { x: 20., y: 20. }).unwrap(),
+            Some([255, 255, 255])
+        );
+        assert_eq!(neighbor.pages_snapshot().pages.len(), 1);
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(doc.document_state()).unwrap()
+        );
+    }
 
     #[test]
     fn activating_a_different_document_size_updates_the_viewport_aspect_ratio() {
@@ -5204,6 +5540,7 @@ mod tests {
             handle: [1., 1.],
             start: corners[2],
             matrix: [1., 0., 0., 1., 0., 0.],
+            scale_content: false,
             rotate: false,
         };
         update_box(&mut d, [-90., 220.], NSEventModifierFlags::empty());
@@ -6166,6 +6503,7 @@ mod tests {
             right: 0.0,
         };
         let request = CanvasRequest {
+            overlays: Vec::new(),
             overlay: None,
             channel: 0,
             x: 79.0,
@@ -6197,6 +6535,7 @@ mod tests {
             right: 0.0,
         };
         let mut request = CanvasRequest {
+            overlays: Vec::new(),
             overlay: None,
             channel: 0,
             x: -10.0,
@@ -6536,6 +6875,7 @@ fn opened_raster_document(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\"><image width=\"{raw_width}\" height=\"{raw_height}\"{transform} href=\"data:{mime};base64,{data}\"/></svg>"
     );
     let mut document = Document::from_preset(NewDocumentSettings {
+        pages: None,
         document: DocumentSettings {
             name: name.clone(),
             width,
@@ -6941,6 +7281,7 @@ mod direct_command_tests {
                 fill_rule: FillRule::EvenOdd,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -7161,12 +7502,51 @@ pub fn render_pixel_gradient(
         ""
     };
     let svg=format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\"><defs>{definition}</defs><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"url(#pixel-gradient)\" {filter}/></svg>",bounds[0],bounds[1],bounds[2]-bounds[0],bounds[3]-bounds[1]);
-    let raster = lumapaint_renderer::vector::rasterize_svg(&svg, w, h)?;
+    let gradient_pixels = if gradient.pixel_style.is_some() {
+        let mut gradient = gradient.clone();
+        if gradient.geometry.is_none() {
+            let r = -gradient.angle.to_radians();
+            let length = (bounds[2] - bounds[0]).max(1.);
+            let (sin, cos) = r.sin_cos();
+            gradient.geometry = Some([
+                cos * length,
+                sin * length,
+                -sin * length * gradient.aspect,
+                cos * length * gradient.aspect,
+                (bounds[0] + bounds[2]) * 0.5,
+                (bounds[1] + bounds[3]) * 0.5,
+            ]);
+        }
+        let ramp: Vec<[u8; 4]> = (0..=4096)
+            .map(|i| gradient.sample(i as f32 / 4096.))
+            .collect();
+        let mut pixels = vec![0; (w * h * 4) as usize];
+        for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let mut t =
+                gradient.position_at((i as u32 % w) as f32 + 0.5, (i as u32 / w) as f32 + 0.5);
+            if gradient.dither {
+                t += (((i as u32).wrapping_mul(1664525).wrapping_add(1013904223) >> 24) as f32
+                    / 255.
+                    - 0.5)
+                    / 255.;
+            }
+            let c = ramp[(t.clamp(0., 1.) * 4096.).round() as usize];
+            *p = [
+                (c[0] as u16 * c[3] as u16 / 255) as u8,
+                (c[1] as u16 * c[3] as u16 / 255) as u8,
+                (c[2] as u16 * c[3] as u16 / 255) as u8,
+                c[3],
+            ];
+        }
+        pixels
+    } else {
+        lumapaint_renderer::vector::rasterize_svg(&svg, w, h)?.pixels
+    };
     for (i, (dest, source)) in pixels
         .as_chunks_mut::<4>()
         .0
         .iter_mut()
-        .zip(raster.pixels.as_chunks::<4>().0)
+        .zip(gradient_pixels.as_chunks::<4>().0)
         .enumerate()
     {
         if job.selection.as_ref().is_some_and(|s| {
@@ -7226,6 +7606,8 @@ mod pixel_gradient_tests {
         let selection = document.selection().cloned();
         let revision = document.revision();
         let gradient = lumapaint_core::gradient::Gradient {
+            geometry: None,
+            pixel_style: None,
             kind: lumapaint_core::gradient::GradientKind::Linear,
             angle: 0.,
             aspect: 1.,
@@ -7244,32 +7626,905 @@ mod pixel_gradient_tests {
                 },
             ],
         };
-        let mut result = render_pixel_gradient(
-            PixelGradientJob {
-                document,
-                id: 1,
-                revision,
-                layer: "layer-1".into(),
-                selection: selection.clone(),
-            },
-            gradient,
-        )
-        .unwrap();
-        let raster = lumapaint_renderer::vector::rasterize_svg(
-            result.document.paint_source().unwrap(),
-            32,
-            16,
-        )
-        .unwrap();
-        assert_eq!(raster.pixels[3], 0);
-        let left = (8 * 32 + 9) * 4;
-        let right = (8 * 32 + 22) * 4;
-        assert!(raster.pixels[left] > raster.pixels[left + 2]);
-        assert!(raster.pixels[right + 2] > raster.pixels[right]);
-        assert_eq!(result.document.selection(), selection.as_ref());
-        result.document.undo();
-        assert!(result.document.paint_source().is_none());
-        result.document.redo();
-        assert!(result.document.paint_source().is_some());
+        for style in [
+            None,
+            Some(lumapaint_core::gradient::PixelGradientStyle::Angular),
+            Some(lumapaint_core::gradient::PixelGradientStyle::Reflected),
+            Some(lumapaint_core::gradient::PixelGradientStyle::Diamond),
+        ] {
+            let mut gradient = gradient.clone();
+            gradient.pixel_style = style;
+            gradient.geometry = Some([16., 0., 0., 8., 8., 4.]);
+            let mut result = render_pixel_gradient(
+                PixelGradientJob {
+                    document: document.clone(),
+                    id: 1,
+                    revision,
+                    layer: "layer-1".into(),
+                    selection: selection.clone(),
+                },
+                gradient,
+            )
+            .unwrap();
+            let raster = lumapaint_renderer::vector::rasterize_svg(
+                result.document.paint_source().unwrap(),
+                32,
+                16,
+            )
+            .unwrap();
+            assert_eq!(raster.pixels[3], 0);
+            let left = (8 * 32 + 9) * 4;
+            let right = (8 * 32 + 22) * 4;
+            assert_eq!(raster.pixels[left + 3], 255);
+            if style.is_none() {
+                assert!(raster.pixels[left] > raster.pixels[left + 2]);
+                assert!(raster.pixels[right + 2] > raster.pixels[right]);
+            }
+            assert_eq!(result.document.selection(), selection.as_ref());
+            result.document.undo();
+            assert!(result.document.paint_source().is_none());
+            result.document.redo();
+            assert!(result.document.paint_source().is_some());
+        }
     }
 }
+
+pub fn configure_gradient_tool(
+    gradient: lumapaint_core::gradient::Gradient,
+    target: &str,
+) -> Result<(), String> {
+    ensure_document_open()?;
+    gradient_tool::configure(gradient, target);
+    Ok(())
+}
+
+pub fn tool_options() -> Result<super::ToolOptionsSnapshot, String> {
+    ensure_document_open()?;
+    let (gradient, gradient_target) = gradient_tool::options();
+    Ok(super::ToolOptionsSnapshot {
+        gradient,
+        gradient_target,
+        brush: BRUSH.with(|brush| *brush.borrow()),
+        zoom: CANVAS.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map_or(1., |canvas| canvas.viewport.screen_zoom())
+        }),
+    })
+}
+pub fn set_tool_brush(brush: Brush) -> Result<(), String> {
+    ensure_document_open()?;
+    brush.validate()?;
+    BRUSH.with(|slot| *slot.borrow_mut() = brush);
+    if let Some(app) = APP.get() {
+        let _ = app.emit_to(current_label(), "canvas-brush-changed", brush);
+    }
+    request_redraw()
+}
+pub fn set_tool_zoom(zoom: f32) -> Result<(), String> {
+    ensure_document_open()?;
+    CANVAS.with(|slot| -> Result<(), String> {
+        let mut slot = slot.borrow_mut();
+        let canvas = slot.as_mut().ok_or("Canvas is unavailable")?;
+        canvas.viewport = canvas.viewport.with_screen_zoom(zoom);
+        canvas.view.refresh_cursor();
+        Ok(())
+    })?;
+    if let Some(app) = APP.get() {
+        let _ = app.emit_to(current_label(), "canvas-zoom-changed", zoom);
+    }
+    request_redraw()
+}
+fn apply_numeric_tool(
+    document: &mut Document,
+    tool: CanvasTool,
+    bounds: [f32; 4],
+) -> Result<(), String> {
+    let mut next = document.clone();
+    let start = lumapaint_core::document::Point {
+        x: bounds[0],
+        y: bounds[1],
+    };
+    let end = lumapaint_core::document::Point {
+        x: bounds[0] + bounds[2],
+        y: bounds[1] + bounds[3],
+    };
+    if matches!(tool, CanvasTool::Rectangle | CanvasTool::Ellipse) {
+        let snapshot = next.snapshot();
+        if start.x < 0.
+            || start.y < 0.
+            || end.x > snapshot.width as f32
+            || end.y > snapshot.height as f32
+        {
+            return Err("Selection must fit the document / 選択範囲はドキュメント内に指定してください / 选区必须位于文档内".into());
+        }
+        next.deselect();
+        next.begin_selection_edit(
+            start,
+            if tool == CanvasTool::Rectangle {
+                SelectionShape::Rectangle
+            } else {
+                SelectionShape::Ellipse
+            },
+            SelectionMode::Replace,
+        )?;
+        next.extend_selection(end, true);
+    } else {
+        let serial = NEXT_VECTOR_OBJECT_ID.with(|next| next.get());
+        vector_pointer(&mut next, tool, start, 0, NSEventModifierFlags::empty())?;
+        vector_pointer(&mut next, tool, end, 2, NSEventModifierFlags::empty())?;
+        if NEXT_VECTOR_OBJECT_ID.with(|next| next.get()) == serial {
+            return Err("Shape is smaller than the current drawing precision / 図形が小さすぎます / 图形过小".into());
+        }
+        next.select_vector_objects(vec![format!("vector-object-{serial}")])?;
+    }
+    *document = next;
+    Ok(())
+}
+pub fn numeric_tool(tool: CanvasTool, bounds: [f32; 4]) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| apply_numeric_tool(&mut doc.borrow_mut(), tool, bounds))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+#[cfg(test)]
+mod numeric_tool_tests {
+    use super::*;
+    #[test]
+    fn numeric_shapes_share_native_geometry_and_failed_selection_preserves_document() {
+        let mut doc = Document::default();
+        apply_numeric_tool(&mut doc, CanvasTool::VectorRectangle, [12., 24., 100., 80.]).unwrap();
+        assert_eq!(
+            doc.selected_vector_bounds().unwrap(),
+            [12., 24., 112., 104.]
+        );
+        assert!(doc.snapshot().can_undo);
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        assert!(apply_numeric_tool(&mut doc, CanvasTool::Rectangle, [-2., 0., 10., 10.]).is_err());
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        apply_numeric_tool(&mut doc, CanvasTool::Ellipse, [20., 30., 60., 40.]).unwrap();
+        assert!(doc.selection().is_some());
+    }
+}
+pub fn sample_tool_point(x: f32, y: f32) -> Result<(), String> {
+    ensure_document_open()?;
+    sample_canvas_color(lumapaint_core::document::Point { x, y })
+}
+
+thread_local! {
+    // Static tool glyphs are cached once on the AppKit thread, independent of document render caches.
+    static TOOL_ICON_CURSORS: RefCell<Vec<(CanvasTool,Retained<NSCursor>)>> = const { RefCell::new(Vec::new()) };
+}
+#[allow(deprecated)]
+fn tool_icon_cursor(tool: CanvasTool) -> Retained<NSCursor> {
+    if let Some(cursor) = TOOL_ICON_CURSORS.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(kind, _)| *kind == tool)
+            .map(|(_, cursor)| cursor.clone())
+    }) {
+        return cursor;
+    }
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(28., 28.));
+    image.lockFocus();
+    let mut lines: Vec<Vec<[f64; 2]>> = vec![];
+    let mut oval = None;
+    let hotspot = if tool == CanvasTool::VectorDirectSelect {
+        [3., 25.]
+    } else {
+        [8., 20.]
+    };
+    match tool {
+        CanvasTool::VectorDirectSelect => lines.push(vec![
+            [3., 25.],
+            [3., 9.],
+            [7., 14.],
+            [11., 7.],
+            [14., 9.],
+            [10., 16.],
+            [17., 16.],
+            [3., 25.],
+        ]),
+        CanvasTool::Eyedropper => {
+            lines.push(vec![
+                [8., 20.],
+                [13., 20.],
+                [24., 9.],
+                [19., 4.],
+                [8., 15.],
+                [8., 20.],
+            ]);
+            lines.push(vec![[17., 11.], [22., 6.]]);
+        }
+        CanvasTool::VectorScale => {
+            lines.push(vec![[8., 20.], [23., 5.]]);
+            lines.push(vec![[8., 13.], [8., 20.], [15., 20.]]);
+            lines.push(vec![[16., 5.], [23., 5.], [23., 12.]]);
+        }
+        CanvasTool::VectorRotate => {
+            oval = Some([8., 5., 16., 16.]);
+            lines.push(vec![[16., 23.], [23., 20.], [21., 14.]]);
+        }
+        CanvasTool::Rectangle | CanvasTool::VectorRectangle | CanvasTool::ImageFrameRectangle => {
+            lines.push(vec![
+                [15., 13.],
+                [25., 13.],
+                [25., 3.],
+                [15., 3.],
+                [15., 13.],
+            ]);
+        }
+        CanvasTool::Ellipse | CanvasTool::VectorEllipse | CanvasTool::ImageFrameEllipse => {
+            oval = Some([14., 3., 12., 10.]);
+        }
+        _ => {
+            lines.push(vec![
+                [8., 20.],
+                [12., 12.],
+                [21., 3.],
+                [26., 8.],
+                [17., 17.],
+                [8., 20.],
+            ]);
+            lines.push(vec![[12., 12.], [17., 17.]]);
+        }
+    }
+    if tool != CanvasTool::VectorDirectSelect {
+        lines.push(vec![[3., 20.], [13., 20.]]);
+        lines.push(vec![[8., 15.], [8., 25.]]);
+    }
+    if matches!(
+        tool,
+        CanvasTool::VectorAnchorAdd | CanvasTool::VectorAnchorDelete
+    ) {
+        lines.push(vec![[19., 23.], [27., 23.]]);
+        if tool == CanvasTool::VectorAnchorAdd {
+            lines.push(vec![[23., 19.], [23., 27.]]);
+        }
+    }
+    if tool == CanvasTool::VectorAnchorConvert {
+        lines.push(vec![[17., 22.], [22., 27.], [27., 22.]]);
+    }
+    // SAFETY: main-thread AppKit context is current; geometry and line widths are bounded constants.
+    unsafe {
+        let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+        for points in lines {
+            let _: () = msg_send![&*path,moveToPoint:NSPoint::new(points[0][0],points[0][1])];
+            for point in points.iter().skip(1) {
+                let _: () = msg_send![&*path,lineToPoint:NSPoint::new(point[0],point[1])];
+            }
+        }
+        if let Some([x, y, w, h]) = oval {
+            let _: () = msg_send![&*path,appendBezierPathWithOvalInRect:NSRect::new(NSPoint::new(x,y),NSSize::new(w,h))];
+        }
+        NSColor::whiteColor().setStroke();
+        let _: () = msg_send![&*path,setLineWidth:3.0f64];
+        let _: () = msg_send![&*path, stroke];
+        NSColor::blackColor().setStroke();
+        let _: () = msg_send![&*path,setLineWidth:1.0f64];
+        let _: () = msg_send![&*path, stroke];
+    }
+    image.unlockFocus();
+    let cursor = NSCursor::initWithImage_hotSpot(
+        NSCursor::alloc(),
+        &image,
+        NSPoint::new(hotspot[0], 28. - hotspot[1]),
+    );
+    TOOL_ICON_CURSORS.with(|cache| cache.borrow_mut().push((tool, cursor.clone())));
+    cursor
+}
+
+struct ToolWindowPreview {
+    document_id: u64,
+    revision: u64,
+    document: Document,
+    zoom: Option<f32>,
+}
+thread_local! {
+    // The Rust host owns previews by editor session, never by a WebView's document state.
+    static TOOL_WINDOW_PREVIEWS:RefCell<std::collections::HashMap<String,ToolWindowPreview>>=RefCell::new(std::collections::HashMap::new());
+}
+fn build_tool_preview(
+    document: &Document,
+    request: super::ToolPreviewRequest,
+) -> Result<(Document, Option<f32>), String> {
+    use super::ToolPreviewRequest as Request;
+    let mut preview = document.clone();
+    let mut zoom = None;
+    match request {
+        Request::Numeric { tool, bounds } => apply_numeric_tool(&mut preview, tool, bounds)?,
+        Request::Text { mut settings } => {
+            text_editor::reflow(&mut settings)?;
+            preview.set_text_object(*settings)?;
+        }
+        Request::Transform { action, values } => {
+            preview.transform_selected_vectors(&action, values)?;
+        }
+        Request::Zoom { zoom: value } => zoom = Some(value),
+        Request::Sample { x, y } => {
+            preview.begin_selection(
+                lumapaint_core::document::Point {
+                    x: x - 3.,
+                    y: y - 3.,
+                },
+                SelectionShape::Ellipse,
+            );
+            preview.extend_selection(
+                lumapaint_core::document::Point {
+                    x: x + 3.,
+                    y: y + 3.,
+                },
+                true,
+            );
+        }
+        Request::Brush { tool, brush } => {
+            let snapshot = preview.snapshot();
+            let start = lumapaint_core::document::Point {
+                x: snapshot.width as f32 * 0.4,
+                y: snapshot.height as f32 * 0.5,
+            };
+            let end = lumapaint_core::document::Point {
+                x: snapshot.width as f32 * 0.6,
+                y: start.y,
+            };
+            if matches!(tool, CanvasTool::VectorPen | CanvasTool::VectorPencil) {
+                let layer = preview.add_vector_layer()?;
+                preview.select_layer(layer)?;
+                let original = BRUSH.with(|slot| slot.replace(brush));
+                let result = vector_pointer(
+                    &mut preview,
+                    CanvasTool::VectorPencil,
+                    start,
+                    0,
+                    NSEventModifierFlags::empty(),
+                )
+                .and_then(|_| {
+                    vector_pointer(
+                        &mut preview,
+                        CanvasTool::VectorPencil,
+                        end,
+                        2,
+                        NSEventModifierFlags::empty(),
+                    )
+                });
+                BRUSH.with(|slot| slot.replace(original));
+                result?;
+            } else {
+                // A temporary paint layer avoids altering or erasing existing content.
+                let layer = preview.add_paint_layer()?;
+                preview.select_layer(layer)?;
+                preview.begin(start, brush)?;
+                preview.extend(end)?;
+                preview.finish();
+            }
+        }
+    }
+    Ok((preview, zoom))
+}
+pub fn tool_preview(request: Option<super::ToolPreviewRequest>) -> Result<(), String> {
+    let label = current_label();
+    TOOL_WINDOW_PREVIEWS.with(|previews| previews.borrow_mut().remove(&label));
+    ensure_document_open()?;
+    if let Some(request) = request {
+        let result = request
+            .validate()
+            .and_then(|_| DOCUMENT.with(|doc| build_tool_preview(&doc.borrow(), request)));
+        match result {
+            Ok((document, zoom)) => {
+                let revision = DOCUMENT.with(|doc| doc.borrow().revision());
+                TOOL_WINDOW_PREVIEWS.with(|previews| {
+                    previews.borrow_mut().insert(
+                        label,
+                        ToolWindowPreview {
+                            document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                            revision,
+                            document,
+                            zoom,
+                        },
+                    )
+                });
+            }
+            Err(error) => {
+                request_redraw()?;
+                return Err(error);
+            }
+        }
+    }
+    request_redraw()
+}
+pub fn clear_window_preview(label: &str) {
+    TOOL_WINDOW_PREVIEWS.with(|previews| previews.borrow_mut().remove(label));
+    if let Ok(_session) = SessionGuard::enter(label) {
+        let _ = request_redraw();
+    }
+}
+#[cfg(test)]
+mod tool_window_preview_tests {
+    use super::*;
+    #[test]
+    fn preview_is_read_only_and_always_starts_from_the_committed_model() {
+        let doc = Document::default();
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let (a, _) = build_tool_preview(
+            &doc,
+            super::super::ToolPreviewRequest::Numeric {
+                tool: CanvasTool::VectorRectangle,
+                bounds: [10., 20., 100., 80.],
+            },
+        )
+        .unwrap();
+        let (b, _) = build_tool_preview(
+            &doc,
+            super::super::ToolPreviewRequest::Numeric {
+                tool: CanvasTool::VectorRectangle,
+                bounds: [10., 20., 200., 80.],
+            },
+        )
+        .unwrap();
+        assert_eq!(a.selected_vector_bounds().unwrap(), [10., 20., 110., 100.]);
+        assert_eq!(b.selected_vector_bounds().unwrap(), [10., 20., 210., 100.]);
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        assert!(!doc.snapshot().can_undo);
+    }
+}
+
+#[cfg(test)]
+mod panel_occlusion_tests {
+    use super::visible_canvas_regions;
+    #[test]
+    fn overlapping_floating_panels_subtract_the_union_and_keep_other_canvas_visible() {
+        let holes = [[10., 10., 60., 60.], [40., 40., 90., 90.]];
+        let regions = visible_canvas_regions([0., 0., 100., 100.], &holes);
+        let area: f64 = regions.iter().map(|r| (r[2] - r[0]) * (r[3] - r[1])).sum();
+        assert_eq!(area, 5400.);
+        for x in 0..100 {
+            for y in 0..100 {
+                let x = x as f64 + 0.5;
+                let y = y as f64 + 0.5;
+                let contains = |r: &[f64; 4]| x >= r[0] && x < r[2] && y >= r[1] && y < r[3];
+                assert_eq!(regions.iter().any(contains), !holes.iter().any(contains));
+            }
+        }
+        assert_eq!(
+            visible_canvas_regions([0., 0., 100., 100.], &[]),
+            vec![[0., 0., 100., 100.]]
+        );
+    }
+}
+
+// Linked graphics commands use the active Rust document; WebViews never own image data.
+pub fn frame_place_context(explicit: Option<String>) -> Result<(Option<String>, u64, u64), String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|d| {
+        let d = d.borrow();
+        let target = if explicit.is_some() {
+            explicit
+        } else {
+            let ids = d.selected_vector_ids();
+            if ids.len() == 1 && d.image_frame_object(&ids[0]).is_ok() {
+                Some(ids[0].clone())
+            } else {
+                None
+            }
+        };
+        if let Some(id) = &target {
+            let (l, o) = d.image_frame_object(id)?;
+            if l.locked || !l.visible || !o.visible || d.object_is_locked(id) {
+                return Err("Frame is locked or hidden".into());
+            }
+        }
+        Ok((target, ACTIVE_DOCUMENT_ID.with(|i| i.get()), d.revision()))
+    })
+}
+pub fn frame_image_context(
+    id: &str,
+) -> Result<(lumapaint_core::image_frame::FrameImage, u64, u64), String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        let d = d.borrow();
+        let image = d
+            .image_frame_object(id)?
+            .1
+            .image_frame
+            .as_ref()
+            .unwrap()
+            .image
+            .clone()
+            .ok_or("Empty frame")?;
+        Ok((image, ACTIVE_DOCUMENT_ID.with(|i| i.get()), d.revision()))
+    })
+}
+fn validate_frame_context(id: u64, revision: u64) -> Result<(), String> {
+    ensure_document_open()?;
+    if ACTIVE_DOCUMENT_ID.with(|i| i.get()) != id
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
+    {
+        Err("Document changed / ドキュメントが変更されました。もう一度配置してください / 文档已更改，请重新置入".into())
+    } else {
+        Ok(())
+    }
+}
+pub fn place_frame_image(
+    target: Option<String>,
+    image: lumapaint_core::image_frame::FrameImage,
+    id: u64,
+    revision: u64,
+) -> Result<DocumentSnapshot, String> {
+    validate_frame_context(id, revision)?;
+    let serial = NEXT_VECTOR_OBJECT_ID.with(|n| {
+        let v = n.get();
+        n.set(v + 1);
+        v
+    });
+    DOCUMENT.with(|d| {
+        let mut d = d.borrow_mut();
+        let id = d.place_frame_image(target.as_deref(), image, &format!("image-frame-{serial}"))?;
+        d.select_vector_objects(vec![id])
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+pub fn update_frame_image(
+    target: String,
+    image: lumapaint_core::image_frame::FrameImage,
+    id: u64,
+    revision: u64,
+) -> Result<DocumentSnapshot, String> {
+    validate_frame_context(id, revision)?;
+    DOCUMENT.with(|d| {
+        let mut d = d.borrow_mut();
+        let mut frame = d
+            .image_frame_object(&target)?
+            .1
+            .image_frame
+            .clone()
+            .unwrap();
+        if let (Some(old), Some(matrix)) = (&frame.image, frame.content_transform) {
+            frame.content_transform = Some(lumapaint_core::image_frame::multiply(
+                matrix,
+                [
+                    old.width as f32 / image.width as f32,
+                    0.,
+                    0.,
+                    old.height as f32 / image.height as f32,
+                    0.,
+                    0.,
+                ],
+            ));
+        }
+        frame.image = Some(image);
+        d.edit_image_frame(&target, frame)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+pub fn frame_links(
+) -> Result<Vec<(String, Option<lumapaint_core::image_frame::FrameImage>)>, String> {
+    ensure_document_open()?;
+    Ok(DOCUMENT.with(|d| {
+        d.borrow()
+            .svg_layers()
+            .flat_map(|l| l.vector_objects.iter())
+            .filter_map(|o| {
+                o.image_frame
+                    .as_ref()
+                    .map(|f| (o.id.clone(), f.image.clone()))
+            })
+            .collect()
+    }))
+}
+pub fn edit_image_frame(
+    id: &str,
+    action: &str,
+    values: Vec<f32>,
+) -> Result<DocumentSnapshot, String> {
+    if action == "go" {
+        return go_to_image_frame(id);
+    }
+    use lumapaint_core::image_frame::FrameFit;
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        let mut d = d.borrow_mut();
+        match action {
+            "contain" => d.fit_image_frame(id, FrameFit::Contain),
+            "cover" => d.fit_image_frame(id, FrameFit::Cover),
+            "stretch" => d.fit_image_frame(id, FrameFit::Stretch),
+            "offset" if values.len() == 2 => d.move_frame_content(id, [values[0], values[1]]),
+            "embed" => {
+                let mut frame = d.image_frame_object(id)?.1.image_frame.clone().unwrap();
+                if let Some(i) = &mut frame.image {
+                    i.source_path = None;
+                }
+                d.edit_image_frame(id, frame)
+            }
+            _ => Err("Unknown image frame action".into()),
+        }
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+pub fn manage_frame_images(
+    updates: Vec<(String, Option<lumapaint_core::image_frame::FrameImage>)>,
+    document_id: u64,
+    revision: u64,
+) -> Result<DocumentSnapshot, String> {
+    validate_frame_context(document_id, revision)?;
+    DOCUMENT.with(|d| d.borrow_mut().manage_frame_images(updates))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+fn go_to_image_frame(id: &str) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    let bounds = DOCUMENT.with(|d| {
+        let mut d = d.borrow_mut();
+        let layer = d.image_frame_object(id)?.0.id.clone();
+        d.select_layer(layer)?;
+        d.select_vector_objects(vec![id.into()])?;
+        d.selected_vector_bounds()
+            .ok_or_else(|| String::from("Frame has no bounds"))
+    })?;
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            let v = &mut canvas.viewport;
+            let zoom = v.screen_zoom();
+            v.pan_x = ((v.document_width - (bounds[0] + bounds[2])) * 0.5 * zoom).clamp(
+                -lumapaint_renderer::MAX_CANVAS_PAN,
+                lumapaint_renderer::MAX_CANVAS_PAN,
+            );
+            v.pan_y = ((v.document_height - (bounds[1] + bounds[3])) * 0.5 * zoom).clamp(
+                -lumapaint_renderer::MAX_CANVAS_PAN,
+                lumapaint_renderer::MAX_CANVAS_PAN,
+            );
+            PAN.with(|pan| pan.set((v.pan_x, v.pan_y)));
+        }
+    });
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+#[cfg(test)]
+mod ruler_tests {
+    use super::*;
+    #[test]
+    fn ruler_coordinates_match_native_document_mapping_at_retina_and_high_zoom() {
+        for backing in [1., 2.] {
+            for zoom in [0.0313, 1., 640.] {
+                let mut v = Viewport::new(1000., 700., backing, 1., false).unwrap();
+                v.document_width = 800.;
+                v.document_height = 600.;
+                v = v.with_screen_zoom(zoom).with_pan(-200., 120.).unwrap();
+                let ruler = ruler_viewport(v);
+                assert_eq!(ruler.width, 1000.);
+                assert_eq!(ruler.height, 700.);
+                let point = v.document_point(400., 300.);
+                assert!((ruler.origin_x + point.x * ruler.zoom - 400.).abs() < 0.1);
+                assert!((ruler.origin_y + point.y * ruler.zoom - 300.).abs() < 0.1);
+            }
+        }
+    }
+}
+
+fn spread_fit(viewport: Viewport) -> (f32, f32, f32) {
+    DOCUMENT.with(|doc| {
+        let doc = doc.borrow();
+        let (w, h) = doc.dimensions();
+        let bounds = doc
+            .facing_neighbor()
+            .map_or([0., 0., w as f32, h as f32], |(_, x, n)| {
+                let (nw, nh) = n.dimensions();
+                [
+                    x.min(0.),
+                    0.,
+                    (x + nw as f32).max(w as f32),
+                    nh.max(h) as f32,
+                ]
+            });
+        let zoom = ((viewport.width as f32 / viewport.scale - 48.) / (bounds[2] - bounds[0]))
+            .min((viewport.height as f32 / viewport.scale - 48.) / bounds[3])
+            .clamp(
+                lumapaint_renderer::MIN_SCREEN_ZOOM,
+                lumapaint_renderer::MAX_SCREEN_ZOOM,
+            );
+        (
+            zoom,
+            (w as f32 * 0.5 - (bounds[0] + bounds[2]) * 0.5) * zoom,
+            (h as f32 - bounds[3]) * 0.5 * zoom,
+        )
+    })
+}
+fn fit_pages() -> Result<(), String> {
+    let fit = CANVAS.with(|slot| slot.borrow().as_ref().map(|c| spread_fit(c.viewport)));
+    if let Some((zoom, x, y)) = fit {
+        CANVAS.with(|slot| {
+            if let Some(c) = slot.borrow_mut().as_mut() {
+                c.viewport = c.viewport.with_screen_zoom(zoom);
+                c.viewport.pan_x = x;
+                c.viewport.pan_y = y;
+            }
+        });
+        PAN.with(|p| p.set((x, y)));
+        if let Some(app) = APP.get() {
+            let _ = app.emit_to(current_label(), "canvas-zoom-changed", zoom);
+        }
+    }
+    redraw()
+}
+pub fn edit_pages(edit: lumapaint_core::document::PageEdit) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    cancel_vector_drag();
+    DOCUMENT.with(|doc| doc.borrow_mut().edit_pages(edit))?;
+    let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            canvas.viewport.document_width = snapshot.width as f32;
+            canvas.viewport.document_height = snapshot.height as f32;
+            canvas.viewport.canvas_color = snapshot.canvas_color;
+            canvas.page_preview_key = None;
+        }
+    });
+    fit_pages()?;
+    emit_document();
+    emit_workspace();
+    Ok(snapshot)
+}
+fn update_page_preview(canvas: &mut Canvas) -> Result<(), String> {
+    if ACTIVE_TILED_DOCUMENT.with(|doc| doc.borrow().is_some()) {
+        if canvas.page_preview_key.take().is_some() {
+            canvas.renderer.set_page_preview(None);
+        }
+        return Ok(());
+    }
+    DOCUMENT.with(|slot| {
+        let doc = slot.borrow();
+        canvas.viewport.document_width = doc.dimensions().0 as f32;
+        canvas.viewport.document_height = doc.dimensions().1 as f32;
+        canvas.viewport.canvas_color = doc.canvas_color();
+        let snapshot = doc.pages_snapshot();
+        let neighbor = doc.facing_neighbor();
+        let key = neighbor.map(|(index, x, n)| {
+            format!(
+                "{}:{}:{index}:{x}:{}:{:?}:{:?}",
+                ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                snapshot.pages[snapshot.active].id,
+                n.revision(),
+                n.dimensions(),
+                doc.dimensions()
+            )
+        });
+        if canvas.page_preview_key == key {
+            return Ok(());
+        }
+        let preview = facing_preview_document(&doc)?;
+        canvas.renderer.set_page_preview(preview);
+        canvas.page_preview_key = key;
+        Ok(())
+    })
+}
+
+fn facing_preview_document(doc: &Document) -> Result<Option<Document>, String> {
+    let neighbor = doc.facing_neighbor();
+    let preview = if let Some((_, x, n)) = neighbor {
+        let (nw, nh) = n.dimensions();
+        let (w, h) = doc.dimensions();
+        // Vector pages keep their original source; paint pages use a native cached composite.
+        let inner = if n.committed_paint_strokes().next().is_none() {
+            use lumapaint_formats::export::{export, ExportOptions, ExportSnapshot, FormatId};
+            export(
+                FormatId::Svg,
+                &ExportSnapshot::capture(n),
+                ExportOptions { allow_lossy: true },
+            )
+            .ok()
+            .and_then(|v| String::from_utf8(v.bytes).ok())
+        } else {
+            None
+        };
+        let inner = if let Some(inner) = inner {
+            inner
+        } else {
+            use base64::Engine;
+            let bytes = lumapaint_renderer::thumbnails::page_preview(n, 2048)?;
+            format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{nw}\" height=\"{nh}\"><image width=\"{nw}\" height=\"{nh}\" href=\"data:image/png;base64,{}\"/></svg>",base64::engine::general_purpose::STANDARD.encode(bytes))
+        };
+        let source=format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><defs><clipPath id=\"lpNeighborClip\"><rect x=\"{x}\" width=\"{nw}\" height=\"{nh}\"/></clipPath></defs><g clip-path=\"url(#lpNeighborClip)\"><rect x=\"{x}\" width=\"{nw}\" height=\"{nh}\" fill=\"white\" stroke=\"#777\"/><g transform=\"translate({x} 0)\">{inner}</g></g></svg>");
+        let mut preview = Document::default();
+        let mut state = preview.document_state();
+        state.width = w;
+        state.height = h;
+        preview = Document::from_document_state(state)?;
+        preview.import_svg("Facing page preview".into(), source)?;
+        Some(preview)
+    } else {
+        None
+    };
+    Ok(preview)
+}
+
+pub fn page_thumbnail_documents(indices: Vec<usize>) -> Result<Vec<(String, Document)>, String> {
+    if !DOCUMENT_OPEN.with(|open| open.get())
+        || ACTIVE_TILED_DOCUMENT.with(|doc| doc.borrow().is_some())
+    {
+        return Err("No editable document".into());
+    }
+    DOCUMENT.with(|doc| {
+        let doc = doc.borrow();
+        let snapshot = doc.pages_snapshot();
+        indices
+            .into_iter()
+            .map(|index| {
+                let page = snapshot.pages.get(index).ok_or("Page not found")?;
+                let mut copy = doc.page_document(index).ok_or("Page not found")?.clone();
+                copy.finish();
+                Ok((page.id.clone(), copy))
+            })
+            .collect()
+    })
+}
+
+thread_local! {static GUIDE_DRAFT:RefCell<Option<(String,f32)>>=const {RefCell::new(None)}; static GUIDE_DRAG:RefCell<Option<(String,[f32;2])>>=const {RefCell::new(None)};}
+pub fn edit_guides(edit: lumapaint_core::document::GuideEdit) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
+    GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+    GUIDE_DRAG.with(|g| g.borrow_mut().take());
+    DOCUMENT.with(|d| d.borrow_mut().edit_guides(edit))?;
+    let snapshot = DOCUMENT.with(|d| d.borrow().snapshot());
+    emit_document();
+    emit_workspace();
+    redraw()?;
+    Ok(snapshot)
+}
+pub fn ruler_guide(axis: String, position: f32, phase: u8) -> Result<(), String> {
+    if phase == 0 {
+        ensure_document_open()?;
+    }
+    if !DOCUMENT_OPEN.with(|d| d.get()) || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        return Err("No editable document".into());
+    }
+    if !matches!(axis.as_str(), "horizontal" | "vertical")
+        || !position.is_finite()
+        || position.abs() > 1_000_000.
+        || phase > 3
+    {
+        return Err("Invalid guide gesture".into());
+    }
+    if phase == 1 && GUIDE_DRAFT.with(|g| g.borrow().is_none()) {
+        return Ok(());
+    }
+    if phase == 2 {
+        if GUIDE_DRAFT.with(|g| g.borrow().is_none()) {
+            return Ok(());
+        }
+        GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+        DOCUMENT.with(|d| {
+            d.borrow_mut()
+                .edit_guides(lumapaint_core::document::GuideEdit {
+                    action: "add".into(),
+                    id: None,
+                    axis: Some(axis),
+                    position: Some(position),
+                    delta: None,
+                })
+        })?;
+        emit_document();
+        emit_workspace();
+    } else if phase == 3 {
+        GUIDE_DRAFT.with(|g| g.borrow_mut().take());
+    } else {
+        GUIDE_DRAFT.with(|g| *g.borrow_mut() = Some((axis, position)));
+    }
+    redraw()
+}
+
+thread_local! {static GUIDE_OBJECT_DRAFT:RefCell<Vec<lumapaint_renderer::FrameOverlay>>=const {RefCell::new(Vec::new())};}

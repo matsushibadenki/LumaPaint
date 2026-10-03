@@ -1281,6 +1281,8 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     frame_overlay_pipeline: wgpu::RenderPipeline,
     frame_overlay: Option<FrameOverlay>,
+    guide_draft: Vec<FrameOverlay>,
+    image_frame_guides_visible: bool,
     selection_overlay_visible: bool,
     outline_view: bool,
     selection_layout: wgpu::BindGroupLayout,
@@ -1295,6 +1297,9 @@ pub struct Renderer {
     object_cache: HashMap<String, ObjectLayerCache>,
     workspace_cache: workspace::WorkspaceCache,
     workspace_image: Option<Vec<CachedSvg>>,
+    page_preview: Option<Document>,
+    page_workspace_cache: workspace::WorkspaceCache,
+    page_workspace_image: Option<Vec<CachedSvg>>,
     tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
@@ -2443,6 +2448,8 @@ impl Renderer {
             selection_pipeline,
             frame_overlay_pipeline,
             frame_overlay: None,
+            guide_draft: Vec::new(),
+            image_frame_guides_visible: false,
             selection_overlay_visible: true,
             outline_view: false,
             selection_layout,
@@ -2457,6 +2464,9 @@ impl Renderer {
             object_cache: HashMap::new(),
             workspace_cache: workspace::WorkspaceCache::default(),
             workspace_image: None,
+            page_preview: None,
+            page_workspace_cache: Default::default(),
+            page_workspace_image: None,
             tile_pipeline,
             svg_bind_layout,
             svg_sampler,
@@ -2539,6 +2549,12 @@ impl Renderer {
         self.color_sampler.sample(document, point)
     }
 
+    /// A read-only adjacent page retained entirely by the native renderer.
+    pub fn set_page_preview(&mut self, document: Option<Document>) {
+        self.page_preview = document;
+        self.page_workspace_cache.clear();
+        self.page_workspace_image = None;
+    }
     pub fn render(&mut self, viewport: Viewport, document: &Document) -> Result<(), String> {
         self.render_vector_drag(viewport, document, [0.0, 0.0])
     }
@@ -2551,6 +2567,13 @@ impl Renderer {
         self.selection_overlay_visible = visible;
     }
 
+    pub fn set_image_frame_guides_visible(&mut self, visible: bool) {
+        self.image_frame_guides_visible = visible;
+    }
+
+    pub fn set_guide_drafts(&mut self, overlay: Vec<FrameOverlay>) {
+        self.guide_draft = overlay;
+    }
     pub fn set_frame_overlay(&mut self, overlay: Option<FrameOverlay>) {
         self.frame_overlay = overlay;
     }
@@ -2770,19 +2793,24 @@ impl Renderer {
             || frame.texture.create_view(&Default::default()),
             |(texture, _)| texture.create_view(&Default::default()),
         );
-        let frame_overlay = self
-            .selection_overlay_visible
-            .then(|| {
-                self.frame_overlay.or_else(|| {
-                    document.selected_vector_box().map(|corners| FrameOverlay {
-                        corners: corners.map(|p| [p[0] + offset[0], p[1] + offset[1]]),
-                        handles: false,
-                        baseline: None,
-                    })
+        let mut overlays = frame_overlay::document_guides(document, viewport);
+        overlays.extend(self.guide_draft.iter().copied());
+        if self.selection_overlay_visible {
+            if self.image_frame_guides_visible {
+                overlays.extend(frame_overlay::graphics_frames(document));
+            }
+            if let Some(overlay) = self.frame_overlay.or_else(|| {
+                document.selected_vector_box().map(|corners| FrameOverlay {
+                    corners: corners.map(|p| [p[0] + offset[0], p[1] + offset[1]]),
+                    handles: false,
+                    baseline: None,
                 })
-            })
-            .flatten()
-            .map(|overlay| frame_overlay::buffer(&self.device, overlay, viewport));
+            }) {
+                overlays.push(overlay);
+            }
+        }
+        let frame_overlay = (!overlays.is_empty())
+            .then(|| frame_overlay::buffer_many(&self.device, &overlays, viewport));
         self.svg_cache
             .retain(|id, _| document.svg_layers().any(|layer| &layer.id == id));
         let (width, height) = document.dimensions();
@@ -2978,6 +3006,23 @@ impl Renderer {
             self.workspace_cache.clear();
             self.workspace_image = None;
         }
+        if let Some(preview) = &self.page_preview {
+            if let Some(prepared) = self.page_workspace_cache.prepare_filtered(
+                preview,
+                viewport,
+                [0., 0.],
+                &Default::default(),
+            )? {
+                self.page_workspace_image = Some(
+                    prepared
+                        .into_iter()
+                        .map(|image| self.make_cached_svg(image))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+        } else {
+            self.page_workspace_image = None;
+        }
         let translated_uniforms = if offset == [0.0, 0.0]
             || (translated_layers.is_empty()
                 && partial_layers.is_empty()
@@ -3171,6 +3216,14 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            if let Some(images) = &self.page_workspace_image {
+                pass.set_pipeline(&self.workspace_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                for image in images {
+                    pass.set_bind_group(1, &image.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+            }
             for layer in document.visible_svg_layers() {
                 if object_layers.contains(layer.id.as_str()) {
                     if let Some(cache) = self.object_cache.get(&layer.id) {
@@ -3880,6 +3933,7 @@ mod tests {
                             fill_rule: FillRule::NonZero,
                         },
                         transform: [1.0, 0.0, 0.0, 1.0, x, 20.0],
+                        image_frame: None,
                         fill_gradient: None,
                         stroke_gradient: None,
                         fill: Some(VectorPaint { color }),

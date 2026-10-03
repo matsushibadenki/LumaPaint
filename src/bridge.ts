@@ -12,7 +12,7 @@ export async function newEditorWindow(): Promise<void> {
 }
 
 
-export type CanvasTool = 'brush' | 'eraser' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
+export type CanvasTool = 'brush' | 'eraser' | 'gradient' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'lockSelection' | 'lockArtworkAbove' | 'lockOtherLayers' | 'unlockAllObjects' | 'hideSelection' | 'hideArtworkAbove' | 'hideOtherLayers' | 'showAllObjects' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
@@ -24,7 +24,16 @@ export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSn
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
+export interface PagesSnapshot { facing:boolean; binding:'leftToRight'|'rightToLeft'; active:number; pages:{id:string;number:number;width:number;height:number;spread:number;side:'left'|'right'|'single'}[] }
+export interface PageEdit { action:'select'|'add'|'duplicate'|'delete'|'moveBefore'|'moveAfter'|'layout'; index?:number; facing?:boolean; binding?:PagesSnapshot['binding'] }
+export function editPages(edit:PageEdit):Promise<DocumentSnapshot>{return invoke('edit_pages',{edit});}
+export interface GuidesState {visible:boolean;locked:boolean;nextId:number;selected:string[];items:{id:string;axis:'horizontal'|'vertical'|null;position:number;layerId:string|null}[]}
+export interface GuideEdit {action:'visibility'|'lock'|'make'|'release'|'clear'|'delete'|'select'|'move';id?:string;position?:number;delta?:[number,number]}
+export function editGuides(edit:GuideEdit):Promise<DocumentSnapshot>{return invoke('edit_guides',{edit});}
+export function rulerGuide(axis:'horizontal'|'vertical',position:number,phase:number):Promise<void>{return invoke('ruler_guide',{axis,position,phase});}
 export interface DocumentSnapshot {
+  guides:GuidesState;
+  pages: PagesSnapshot;
   hasLockedObjects: boolean;
   hasHiddenObjects: boolean;
   transformPanel?: TransformPanelInfo | null;
@@ -52,8 +61,10 @@ export interface StrokeStyle {
 }
 export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform', widthCurve: [{ position: 0, width: 1, slope: 0 }, { position: 1, width: 1, slope: 0 }], startArrowScale: null, endArrowScale: null, contourAlignments: [] };
 export interface GradientStop { position: number; color: [number,number,number,number]; midpoint: number }
-export interface Gradient { kind: "linear" | "radial"; angle: number; aspect: number; dither?: boolean; method: "classic" | "linear" | "perceptual"; stops: GradientStop[] }
-export interface LayerObjectSnapshot { fillGradient?: Gradient | null; strokeGradient?: Gradient | null; locked: boolean; strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export interface Gradient { pixelStyle?: 'angular'|'reflected'|'diamond'; geometry?: [number,number,number,number,number,number]; kind: "linear" | "radial"; angle: number; aspect: number; dither?: boolean; method: "classic" | "linear" | "perceptual"; stops: GradientStop[] }
+export type FrameFit="contain"|"cover"|"stretch";
+export interface ImageFrameSummary {fitting:FrameFit;sourcePath:string|null;name:string|null;size:[number,number]|null;contentTransform:[number,number,number,number,number,number]|null}
+export interface LayerObjectSnapshot { imageFrame?:ImageFrameSummary|null; fillGradient?: Gradient | null; strokeGradient?: Gradient | null; locked: boolean; strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export interface LayerSnapshot {
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
@@ -114,11 +125,11 @@ export interface DocumentWorkspaceSnapshot { activeId: number | null; active: Do
 export type ColorMode = 'rgb' | 'cmyk';
 export type ColorProfile = 'srgb' | 'displayP3' | 'adobeRgb1998' | 'japanColor2001Coated';
 export type BitDepth = 8 | 16 | 32;
-export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters';
+export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters' | 'points';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
-export interface NewDocumentSettings { document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
-export const emptyDocument: DocumentSnapshot = { hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+export interface NewDocumentSettings { pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
+export const emptyDocument: DocumentSnapshot = { guides:{visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -128,6 +139,7 @@ export interface RuntimeInfo {
 
 export type DisplayChannel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export interface CanvasRequest {
+  overlays?: [number,number,number,number][];
   overlay?: [number, number, number, number] | null;
   channel?: DisplayChannel;
   x: number; y: number; width: number; height: number;
@@ -137,6 +149,8 @@ export interface CanvasRequest {
   tool?: CanvasTool;
 }
 
+export interface RulerViewport { width: number; height: number; originX: number; originY: number; zoom: number }
+
 export interface CanvasInfo {
   status: 'ready' | 'hidden' | 'unsupported';
   backend: string;
@@ -145,6 +159,7 @@ export interface CanvasInfo {
   physicalHeight: number;
   scaleFactor: number;
   zoom?: number | null;
+  rulerViewport?: RulerViewport | null;
   document: DocumentSnapshot | null;
 }
 
@@ -480,3 +495,52 @@ export function applyGradient(ids: string[], target: 'fill' | 'stroke' | 'pixels
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
+
+
+
+export type SwatchPaint = {kind:'color';color:Brush['color']} | {kind:'gradient';gradient:Gradient};
+export type SwatchDraft = {name:string;paint:SwatchPaint};
+export type Swatch = SwatchDraft & {id:number};
+export async function swatchLibrary(action:'get'|'add'|'addMany'|'update'|'remove'|'import'|'export', draft?:SwatchDraft, id?:number, seeds?:SwatchDraft[], batch?:SwatchDraft[]):Promise<Swatch[]> {
+  if (!isTauri()) { if(action==='get')return (seeds??[]).map((s,i)=>({...s,id:i+1}));throw new Error('LumaPaint app required / LumaPaintアプリで使用してください / 请在LumaPaint应用中使用'); }
+  return invoke<Swatch[]>('swatch_library',{action,draft:draft??null,id:id??null,seeds:seeds??null,batch:batch??null});
+}
+
+export async function watchSwatches(callback:()=>void):Promise<()=>void> {
+  return isTauri()?listen('swatches-changed',callback):()=>{};
+}
+
+
+// Adapter support and editor menu integration are deliberately separate.
+export interface FileFormatCapability {
+  format: 'native' | 'svg' | 'pdf' | 'psd' | 'ora' | 'exr' | 'kra' | 'png' | 'jpeg' | 'webp' | 'gif' | 'bmp' | 'tiff' | 'raw' | 'heif' | 'ico' | 'avif' | 'illustrator';
+  extensions: string[];
+  family: 'native' | 'vector' | 'raster' | 'layered' | 'hdr' | 'cameraRaw';
+  plannedOpen: boolean;
+  plannedImport: boolean;
+  plannedExport: boolean;
+  extension: string;
+  mediaType: string;
+  openAdapter: boolean;
+  importAdapter: boolean;
+  exportAdapter: boolean;
+  editorOpen: boolean;
+  editorImport: boolean;
+  editorExport: boolean;
+  partial: boolean;
+}
+export async function fileFormatCapabilities(): Promise<FileFormatCapability[]> {
+  return isTauri() ? invoke<FileFormatCapability[]>('file_format_capabilities') : [];
+}
+
+export function gradientToolOptions(): Promise<{gradient:Gradient;gradientTarget:"fill"|"stroke"}> { return textCommand("tool_options",{}); }
+
+export function setGradientTool(gradient: Gradient,target:"fill"|"stroke"):Promise<void> { return textCommand("set_gradient_tool",{gradient,target}); }
+
+export function placeImage(id?:string):Promise<DocumentSnapshot>{return textCommand('place_image',{id:id??null});}
+export interface ImageLink {id:string;name:string;path:string|null;status:'empty'|'normal'|'modified'|'missing'|'embedded';format:string;bytes:number;modifiedAt:number|null}
+export function imageLinks():Promise<ImageLink[]>{return textCommand('image_links',{});}
+export function imageFrameAction(id:string,action:'update'|'relink'|'embed'|'go'|FrameFit|'offset',values?:number[]):Promise<DocumentSnapshot>{return textCommand('image_frame_action',{id,action,values:values??null});}
+export function subscribePlaceImage(handler:()=>void):Promise<()=>void>{return listen('place-image-requested',handler);}
+
+export function manageImageLinks(ids:string[],action:"update"|"relink"|"embed"):Promise<DocumentSnapshot>{return textCommand("manage_image_links",{ids,action});}

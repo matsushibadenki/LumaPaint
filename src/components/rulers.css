@@ -1,0 +1,13 @@
+.canvas-stage{flex:1;min-height:0;display:grid;grid-template-columns:24px minmax(0,1fr);grid-template-rows:24px minmax(0,1fr);position:relative;overflow:clip}
+.canvas-stage[data-document='empty']{grid-template-columns:1fr;grid-template-rows:1fr}
+.canvas-stage>.native-slot{grid-column:2;grid-row:2;min-width:0}
+.canvas-stage[data-document='empty']>.native-slot{grid-column:1;grid-row:1}
+.ruler-corner,.ruler-horizontal,.ruler-vertical{background:var(--color-panel);color:var(--color-muted);overflow:hidden;border:0;border-bottom:1px solid var(--color-rule);border-right:1px solid var(--color-rule);user-select:none}
+.ruler-corner{grid-column:1;grid-row:1;padding:0;font-size:9px;min-width:0;border-radius:0}
+.ruler-horizontal{grid-column:2;grid-row:1}.ruler-vertical{grid-column:1;grid-row:2}
+.ruler-horizontal svg,.ruler-vertical svg{display:block;overflow:hidden}.ruler-horizontal path,.ruler-vertical path{stroke:currentColor;stroke-width:1;fill:none}.ruler-horizontal text,.ruler-vertical text{fill:currentColor;font:9px system-ui;font-variant-numeric:tabular-nums}
+.ruler-menu{position:fixed;z-index:1500;width:200px;padding:5px;border:1px solid var(--color-rule);border-radius:5px;background:var(--color-panel);box-shadow:0 8px 24px #0005}.ruler-menu button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:7px 8px}.ruler-menu button>span{width:14px}.ruler-menu small{margin-left:auto}.ruler-menu button:hover,.ruler-menu button:focus-visible{background:var(--color-focus);color:white}
+
+.ruler-horizontal{cursor:row-resize;touch-action:none}.ruler-vertical{cursor:col-resize;touch-action:none}
+
+.ruler-error{position:absolute;left:32px;top:32px;z-index:1600;max-width:calc(100% - 64px);padding:8px;background:var(--color-panel);border:1px solid var(--color-rule);color:var(--color-text)}

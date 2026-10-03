@@ -1,3 +1,4 @@
+import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useEffect, useState } from 'react';
 import type { Brush } from '../bridge';
 
@@ -11,15 +12,16 @@ export function PercentInput({ value, onChange, label }: { value: number; onChan
   }} /><span>%</span></span>;
 }
 
-export function SizeInput({ value, onChange, label, disabled = false }: { value: number; onChange: (value: number) => void; label: string; disabled?: boolean }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
+export function SizeInput({ value, onChange, label, disabled = false, resolution=72 }: { value: number; onChange: (value: number) => void; label: string; disabled?: boolean; resolution?: number }) {
+  const unit=useMeasurementUnit(), factor=pixelsPerMeasurement(unit,resolution);
+  const [draft, setDraft] = useState(String(value/factor));
+  useEffect(() => setDraft(String(Number((value/factor).toFixed(4)))), [value,factor]);
   const commit = () => {
     const number = Number(draft);
-    const next = Number.isFinite(number) ? Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(number))) : value;
-    setDraft(String(next)); onChange(next);
+    const next = Number.isFinite(number) ? Math.min(MAX_BRUSH_SIZE, Math.max(1, number*factor)) : value;
+    setDraft(String(Number((next/factor).toFixed(4)))); onChange(next);
   };
-  return <span className="number-field"><input aria-label={label} type="number" min="1" max={MAX_BRUSH_SIZE} value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { commit(); event.currentTarget.blur(); } }} /><span>px</span></span>;
+  return <span className="number-field"><input aria-label={label} type="number" min={1/factor} max={MAX_BRUSH_SIZE/factor} step="any" value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { commit(); event.currentTarget.blur(); } }} /><span>{unitSymbols[unit]}</span></span>;
 }
 
 export function toHex(color: Brush['color']): string { return '#' + color.map(value => value.toString(16).padStart(2, '0')).join(''); }

@@ -1,3 +1,4 @@
+import { useMeasurementUnit, setMeasurementUnit, pixelsPerMeasurement, unitSymbols, measurementUnits, unitName } from '../measurement-units';
 import './transform-panel.css';
 import { useEffect, useRef, useState } from 'react';
 import { editTransformPanel, type DocumentSnapshot, type TransformPanelEdit } from '../bridge';
@@ -11,7 +12,6 @@ export const transformLabels = {
 
 function LinkIcon({ linked }: { linked: boolean }) { return <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M9 15l6-6M8 13l-2 2a4 4 0 006 6l3-3M16 11l2-2a4 4 0 00-6-6l-3 3" />{!linked && <path d="M4 3l16 18" />}</svg>; }
 
-type Unit = 'mm'|'cm'|'in'|'px'|'pt';
 function Field({ label, symbol, value, unit, onCommit, min, max, invalid, presetsLabel, stepperLabels }: { label: string; symbol: string; value: number; unit: string; onCommit: (v: number) => void; min?: number; max?: number; invalid: string; presetsLabel?: string; stepperLabels?: [string, string] }) {
   const formatted = String(Number(value.toFixed(3)));
   const [draft, setDraft] = useState(formatted);
@@ -39,14 +39,15 @@ export function TransformPanel({ locale, document, enabled, onUpdate }: { locale
   const [linkedCorners, setLinkedCorners] = useState(true);
   const [scaleCorners, setScaleCorners] = useState(() => readPreference('transform-scale-corners') !== 'false');
   const [scaleStrokes, setScaleStrokes] = useState(() => readPreference('transform-scale-strokes') !== 'false');
-  const [unit, setUnit] = useState<Unit>(() => { const stored = readPreference('transform-unit'); return ['mm','cm','in','px','pt'].includes(stored ?? '') ? stored as Unit : 'mm'; });
+  const measurementUnit = useMeasurementUnit();
+  const unit = unitSymbols[measurementUnit];
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const info = document.transformPanel;
   const editable = enabled && !!info;
   const dpi = Math.max(1, document.resolution);
-  const factor = unit === 'mm' ? dpi / 25.4 : unit === 'cm' ? dpi / 2.54 : unit === 'in' ? dpi : unit === 'pt' ? dpi / 72 : 1;
+  const factor = pixelsPerMeasurement(measurementUnit, dpi);
   const box = info?.corners ?? [[0,0],[0,0],[0,0],[0,0]];
   const x = box[0][0] + (box[1][0]-box[0][0])*reference[0] + (box[3][0]-box[0][0])*reference[1];
   const y = box[0][1] + (box[1][1]-box[0][1])*reference[0] + (box[3][1]-box[0][1])*reference[1];
@@ -57,10 +58,10 @@ export function TransformPanel({ locale, document, enabled, onUpdate }: { locale
     catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   };
-  const field = (key: 'x'|'y'|'width'|'height'|'rotation'|'shear', value: number, label: string, symbol: string) => <Field key={`${document.selectedVectorObjects.join(',')}-${key}`} label={label} symbol={symbol} value={key === 'rotation' || key === 'shear' ? value : value/factor} unit={key === 'rotation' || key === 'shear' ? '°' : unit} min={key === 'width' || key === 'height' ? 0.001 : key === 'shear' ? -88.999 : undefined} max={key === 'shear' ? 88.999 : undefined} invalid={t.invalid} presetsLabel={key === 'rotation' || key === 'shear' ? `${label} ${t.presets}` : undefined} onCommit={v => void apply(key, key === 'rotation' || key === 'shear' ? v : v*factor)} />;
+  const field = (key: 'x'|'y'|'width'|'height'|'rotation'|'shear', value: number, label: string, symbol: string) => <Field key={`${document.selectedVectorObjects.join(',')}-${key}-${unit}`} label={label} symbol={symbol} value={key === 'rotation' || key === 'shear' ? value : value/factor} unit={key === 'rotation' || key === 'shear' ? '°' : unit} min={key === 'width' || key === 'height' ? 0.001 : key === 'shear' ? -88.999 : undefined} max={key === 'shear' ? 88.999 : undefined} invalid={t.invalid} presetsLabel={key === 'rotation' || key === 'shear' ? `${label} ${t.presets}` : undefined} onCommit={v => void apply(key, key === 'rotation' || key === 'shear' ? v : v*factor)} />;
   return <div className="transform-panel">
     <div className="transform-heading"><strong>{t.title}</strong><button className="transform-menu-button" aria-label={t.menu} aria-expanded={menu} onClick={() => setMenu(!menu)}>☰</button></div>
-    {menu && <label className="transform-unit-menu">{t.units}<select aria-label={t.units} value={unit} onChange={e => { const next = e.target.value as Unit; setUnit(next); savePreference('transform-unit', next); setMenu(false); }}>{['mm','cm','in','px','pt'].map(u => <option key={u} value={u}>{u}</option>)}</select></label>}
+    {menu && <label className="transform-unit-menu">{t.units}<select aria-label={t.units} value={measurementUnit} onChange={e => { void setMeasurementUnit(e.target.value as typeof measurementUnit).catch(e=>setError(String(e))); setMenu(false); }}>{measurementUnits.map(u => <option key={u} value={u}>{unitName(u,locale)}</option>)}</select></label>}
     <fieldset disabled={!editable || busy} className="transform-controls">
       <div className="transform-top">
         <div className="transform-reference" role="group" aria-label={t.reference}>{[0,.5,1].flatMap((v,row) => [0,.5,1].map((u,col) => <button key={`${row}-${col}`} type="button" aria-label={`${t.reference} ${row+1}, ${col+1}`} aria-pressed={reference[0] === u && reference[1] === v} onClick={() => setReference([u,v])} />))}</div>
@@ -72,7 +73,7 @@ export function TransformPanel({ locale, document, enabled, onUpdate }: { locale
         <fieldset disabled={!info?.rectangle} className="transform-rectangle-controls">
           <div className="transform-rectangle-size">{field('width',info?.width ?? 0,t.width,'↔')}<button className={`transform-link${proportional ? ' active' : ''}`} title={t.ratio} aria-label={t.ratio} aria-pressed={proportional} onClick={() => setProportional(!proportional)}><LinkIcon linked={proportional} /></button>{field('height',info?.height ?? 0,t.height,'↕')}</div>
           <div className="transform-rectangle-rotation">{field('rotation',info?.rotation ?? 0,t.rotation,'⟲')}</div>
-          <div className="transform-corner-grid">{[0,1,3,2].map(index => <Field key={`${document.selectedVectorObjects.join(',')}-corner-${index}`} label={t.corner[index]} symbol={['┌','┐','┘','└'][index]} value={(info?.radii[index] ?? 0)/factor} unit={unit} stepperLabels={[`${t.corner[index]} ${t.increase}`, `${t.corner[index]} ${t.decrease}`]} min={0} max={4096/factor} invalid={t.invalid} onCommit={v => { const radii = [...(info?.radii ?? [0,0,0,0])] as [number,number,number,number]; if (linkedCorners) radii.fill(v*factor); else radii[index] = v*factor; void apply('corners',radii); }} />)}<button className={`transform-link transform-corner-link${linkedCorners ? ' active' : ''}`} aria-label={t.cornersLink} title={t.cornersLink} aria-pressed={linkedCorners} onClick={() => setLinkedCorners(!linkedCorners)}><LinkIcon linked={linkedCorners} /></button></div>
+          <div className="transform-corner-grid">{[0,1,3,2].map(index => <Field key={`${document.selectedVectorObjects.join(',')}-corner-${index}-${unit}`} label={t.corner[index]} symbol={['┌','┐','┘','└'][index]} value={(info?.radii[index] ?? 0)/factor} unit={unit} stepperLabels={[`${t.corner[index]} ${t.increase}`, `${t.corner[index]} ${t.decrease}`]} min={0} max={4096/factor} invalid={t.invalid} onCommit={v => { const radii = [...(info?.radii ?? [0,0,0,0])] as [number,number,number,number]; if (linkedCorners) radii.fill(v*factor); else radii[index] = v*factor; void apply('corners',radii); }} />)}<button className={`transform-link transform-corner-link${linkedCorners ? ' active' : ''}`} aria-label={t.cornersLink} title={t.cornersLink} aria-pressed={linkedCorners} onClick={() => setLinkedCorners(!linkedCorners)}><LinkIcon linked={linkedCorners} /></button></div>
         </fieldset>
       </div>
       <div className="transform-options"><label><input type="checkbox" checked={scaleCorners} onChange={e => { setScaleCorners(e.target.checked); savePreference('transform-scale-corners',String(e.target.checked)); }} />{t.scaleCorners}</label><label><input type="checkbox" checked={scaleStrokes} onChange={e => { setScaleStrokes(e.target.checked); savePreference('transform-scale-strokes',String(e.target.checked)); }} />{t.scaleStrokes}</label></div>

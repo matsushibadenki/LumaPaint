@@ -1,6 +1,8 @@
 //! External-format adapters. The dependency points toward the native core, never toward UI.
 pub mod export;
+pub mod io;
 pub mod native;
+pub mod pdf;
 pub mod psd;
 pub mod svg;
 pub mod tile_container;

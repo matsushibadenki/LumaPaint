@@ -1,3 +1,4 @@
+import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useEffect, useRef, useState } from 'react';
 import { defaultVectorText, textFonts, type TextSettings, type TextStyle, type VectorText } from '../bridge';
 import type { Locale } from '../i18n';
@@ -80,7 +81,8 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   const characterKeys = ['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
   const color = draft?.stylePatch?.color ?? style?.color ?? draft?.color ?? [32, 32, 32];
   const disabled = !enabled || !draft;
-  const pt = 72 / Math.max(1, resolution);
+  const measurementUnit=useMeasurementUnit(); const lengthUnit=unitSymbols[measurementUnit];
+  const pt = 1 / pixelsPerMeasurement(measurementUnit,resolution);
   function apply(next: TextSettings) {
     setDraft(next); setError(''); pending.current += 1;
     const task = changeQueue.current.then(() => onChange(next));
@@ -101,7 +103,7 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   }
   function numeric(key: keyof VectorText, label: string, icon: string, unit: string, factor = 1, min = -4096, max = 4096, step = 0.1) {
     const isMixed = mixed.includes(key as keyof TextStyle) && !Object.prototype.hasOwnProperty.call(draft?.stylePatch ?? {}, key);
-    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><NumberField label={label} value={isMixed ? null : Number(text[key]) * factor} min={min} max={max} step={unit === 'pt' ? 'any' : step} unit={unit} placeholder={isMixed ? t.mixed : undefined} onValidChange={value => change({ [key]: value / factor })} /></label>;
+    return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><NumberField key={lengthUnit} label={label} value={isMixed ? null : Number(text[key]) * factor} min={min} max={max} step={unit === 'pt' ? 'any' : step} unit={unit} placeholder={isMixed ? t.mixed : undefined} onValidChange={value => change({ [key]: value / factor })} /></label>;
   }
   return <div className="text-panel">
     <div className="type-panel-status">
@@ -125,13 +127,13 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
             <option value="" disabled>{t.mixed}</option><option value="00">{t.regular}</option><option value="10">{t.bold}</option><option value="01">{t.italic}</option><option value="11">{t.boldItalic}</option>
           </select>
           <div className="type-grid">
-            {numeric('fontSize', t.size, 'T↕', 'pt', pt, pt, 512 * pt)}
-            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><NumberField label={t.leading} value={base.fontSize * base.lineHeight * pt} min={Number((0.1 * pt).toFixed(4))} max={Number((4096 * pt).toFixed(2))} step="any" unit="pt" onValidChange={value => change({ lineHeight: value / (base.fontSize * pt) })} /></label>
+            {numeric('fontSize', t.size, 'T↕', lengthUnit, pt, pt, 512 * pt)}
+            <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><NumberField key={lengthUnit} label={t.leading} value={base.fontSize * base.lineHeight * pt} min={Number((0.1 * pt).toFixed(4))} max={Number((4096 * pt).toFixed(2))} step="any" unit={lengthUnit} onValidChange={value => change({ lineHeight: value / (base.fontSize * pt) })} /></label>
             {numeric('scaleY', t.vertical, 'T↕', '%', 100, 10, 400, 1)}
             {numeric('scaleX', t.horizontal, 'T↔', '%', 100, 10, 400, 1)}
             {numeric('tracking', t.tracking, 'VA', '', 1, -100, 1000, 1)}
             <label className="type-field" title={t.color}><span className="type-symbol" aria-hidden="true">■</span><span className="type-color"><ColorPickerPopover locale={locale} color={color} disabled={disabled} label={t.color} onChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: value } }); }} /><HexColorField label={t.color} value={toHex(color)} onValidChange={value => { if (draft) apply({ ...draft, stylePatch: { ...draft.stylePatch, color: fromHex(value) } }); }} /></span></label>
-            {numeric('baselineShift', t.baseline, 'A↟', 'pt', pt, -512 * pt, 512 * pt)}
+            {numeric('baselineShift', t.baseline, 'A↟', lengthUnit, pt, -512 * pt, 512 * pt)}
             {numeric('rotation', t.rotation, 'T↻', '°', 1, -180, 180, 1)}
           </div>
           <div className="type-toggles">
@@ -148,13 +150,13 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
             <button type="button" aria-label={t.numbers} title={t.numbers} aria-pressed={text.listStyle === 'numbers'} onClick={() => change({ listStyle: text.listStyle === 'numbers' ? 'none' : 'numbers' })}><span aria-hidden="true">1.</span><span aria-hidden="true">☰</span></button>
           </div>
           <div className="type-grid">
-            {numeric('indentLeft', t.indentLeft, '↦', 'pt', pt, 0, 4096 * pt)}
-            {numeric('indentRight', t.indentRight, '↤', 'pt', pt, 0, 4096 * pt)}
-            {numeric('indentFirst', t.indentFirst, '↳', 'pt', pt, -4096 * pt, 4096 * pt)}
-            {!base.pointText && numeric('boxWidth', t.width, '↔', 'pt', pt, 16 * pt, 8192 * pt)}
-            {!base.pointText && <label className="type-field" title={t.height}><span className="type-symbol" aria-hidden="true">↕</span><NumberField label={t.height} value={base.boxHeight == null ? 0 : base.boxHeight * pt} min={0} max={8192 * pt} step="any" unit="pt" onValidChange={value => change({ boxHeight: value === 0 ? null : value / pt })} /></label>}
-            {numeric('spaceBefore', t.before, '↥', 'pt', pt, 0, 512 * pt)}
-            {numeric('spaceAfter', t.after, '↧', 'pt', pt, 0, 512 * pt)}
+            {numeric('indentLeft', t.indentLeft, '↦', lengthUnit, pt, 0, 4096 * pt)}
+            {numeric('indentRight', t.indentRight, '↤', lengthUnit, pt, 0, 4096 * pt)}
+            {numeric('indentFirst', t.indentFirst, '↳', lengthUnit, pt, -4096 * pt, 4096 * pt)}
+            {!base.pointText && numeric('boxWidth', t.width, '↔', lengthUnit, pt, 16 * pt, 8192 * pt)}
+            {!base.pointText && <label className="type-field" title={t.height}><span className="type-symbol" aria-hidden="true">↕</span><NumberField key={lengthUnit} label={t.height} value={base.boxHeight == null ? 0 : base.boxHeight * pt} min={0} max={8192 * pt} step="any" unit={lengthUnit} onValidChange={value => change({ boxHeight: value === 0 ? null : value / pt })} /></label>}
+            {numeric('spaceBefore', t.before, '↥', lengthUnit, pt, 0, 512 * pt)}
+            {numeric('spaceAfter', t.after, '↧', lengthUnit, pt, 0, 512 * pt)}
           </div>
           <label className="type-select-row"><span>{t.kinsoku}</span><select value={text.kinsoku} onChange={event => change({ kinsoku: event.target.value as VectorText['kinsoku'] })}><option value="none">{t.none}</option><option value="standard">{t.standard}</option><option value="strict">{t.strict}</option></select></label>
           <label className="type-select-row"><span>{t.mojikumi}</span><select value={text.mojikumi} onChange={event => change({ mojikumi: event.target.value as VectorText['mojikumi'] })}><option value="none">{t.none}</option><option value="japanese">{t.japanese}</option></select></label>

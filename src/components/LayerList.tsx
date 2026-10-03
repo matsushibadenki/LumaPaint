@@ -172,7 +172,7 @@ export function LayerList({ thumbnails = {}, thumbnailError, layers, textObjects
         </button>
         <button type="button" className="layer-object-select" disabled={!enabled || layer.locked || !layer.visible || !object.visible || object.locked}
           aria-pressed={selectedObjects.includes(object.id)} onClick={() => onSelectObject(layer.id, object.id)}>
-          <Icon name={object.kind === 'text' ? 'text' : object.kind === 'rectangle' ? 'vectorRectangle' : object.kind === 'ellipse' ? 'vectorEllipse' : 'vector'} />
+          <Icon name={object.imageFrame ? (object.kind === 'ellipse' ? 'imageFrameEllipse' : 'imageFrameRectangle') : object.kind === 'text' ? 'text' : object.kind === 'rectangle' ? 'vectorRectangle' : object.kind === 'ellipse' ? 'vectorEllipse' : 'vector'} />
           <span>{object.name}</span>
           {object.locked && <span className="object-lock-indicator" title={t.lockLayer}><Icon name="lock" /></span>}
           <span className="object-target" aria-hidden="true" />

@@ -1,5 +1,15 @@
-//! Session document: a stable layer identity and retained brush strokes.
-//! This is deliberately independent of pixels, AppKit, and the renderer.
+#[path = "document_guides.rs"]
+mod guides;
+pub use guides::{Guide, GuideEdit, GuidesSnapshot, GuidesState};
+#[path = "document_pages.rs"]
+mod pages;
+pub use pages::{
+    PageBinding, PageBookState, PageEdit, PageSetup, PageState, PageSummary, PagesSnapshot,
+};
+// Session document: a stable layer identity and retained brush strokes.
+// This is deliberately independent of pixels, AppKit, and the renderer.
+#[path = "document_image_frames.rs"]
+mod image_frames;
 #[path = "object_lock.rs"]
 mod object_lock;
 #[path = "object_visibility.rs"]
@@ -55,6 +65,7 @@ pub enum DocumentUnit {
     Inches,
     Centimeters,
     Millimeters,
+    Points,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -81,6 +92,8 @@ pub struct DocumentSettings {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NewDocumentSettings {
+    #[serde(default)]
+    pub pages: Option<PageSetup>,
     pub document: DocumentSettings,
     pub color_mode: ColorMode,
     pub color_profile: ColorProfile,
@@ -364,6 +377,7 @@ pub struct LayerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerObjectSnapshot {
+    pub image_frame: Option<crate::image_frame::ImageFrameSummary>,
     pub locked: bool,
     pub opacity: f32,
     pub blend_mode: String,
@@ -424,6 +438,8 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub guides: GuidesSnapshot,
+    pub pages: PagesSnapshot,
     pub has_hidden_objects: bool,
     pub has_locked_objects: bool,
     pub selected_bounds: Option<[f32; 4]>,
@@ -474,6 +490,7 @@ pub struct SavedPathSnapshot {
 
 #[derive(Clone, Copy)]
 enum HistoryKind {
+    Page,
     Stroke,
     Vector,
 }
@@ -488,6 +505,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    guides: GuidesState,
     background_visible: bool,
     locked_objects: std::collections::BTreeSet<String>,
     locked_artwork_layers: std::collections::BTreeSet<String>,
@@ -561,6 +579,7 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    guides: GuidesState,
     locked_objects: std::collections::BTreeSet<String>,
     locked_artwork_layers: std::collections::BTreeSet<String>,
     svg_geometry_backend: Option<std::sync::Arc<dyn crate::svg_backend::SvgGeometryBackend>>,
@@ -575,6 +594,9 @@ pub struct Document {
     unit: DocumentUnit,
     resolution: u32,
     artboards: bool,
+    pages: Option<pages::PageBook>,
+    page_undo: Vec<pages::PageHistory>,
+    page_redo: Vec<pages::PageHistory>,
     canvas_color: CanvasColor,
     pixel_aspect_ratio: f32,
     paint_source: Option<String>,
@@ -609,6 +631,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            guides: GuidesState::default(),
             locked_objects: Default::default(),
             locked_artwork_layers: Default::default(),
             svg_geometry_backend: None,
@@ -623,6 +646,9 @@ impl Default for Document {
             unit: DocumentUnit::Pixels,
             resolution: 72,
             artboards: false,
+            pages: None,
+            page_undo: Vec::new(),
+            page_redo: Vec::new(),
             canvas_color: CanvasColor::White,
             pixel_aspect_ratio: 1.0,
             paint_source: None,
@@ -731,6 +757,7 @@ impl Document {
                         .vector_objects
                         .iter()
                         .map(|object| LayerObjectSnapshot {
+                            image_frame: object.image_frame.as_ref().map(|f| f.summary()),
                             locked: self.object_is_locked(&object.id),
                             opacity: object.opacity,
                             blend_mode: object.blend_mode.clone(),
@@ -774,6 +801,7 @@ impl Document {
                 }),
         );
         DocumentSnapshot {
+            guides: self.guides.snapshot(),
             has_locked_objects: self.has_locked_objects(),
             has_hidden_objects: self.has_hidden_objects(),
             selected_bounds: self.selected_vector_bounds(),
@@ -797,6 +825,7 @@ impl Document {
             unit: self.unit,
             resolution: self.resolution,
             artboards: self.artboards,
+            pages: self.pages_snapshot(),
             canvas_color: self.canvas_color,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
             layer_id: self
@@ -845,6 +874,7 @@ impl Document {
     /// Callers that need an in-progress stroke should finish a clone before taking this state.
     pub fn document_state(&self) -> DocumentState {
         DocumentState {
+            guides: self.guides.clone(),
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
             saved_paths: self.saved_paths.clone(),
@@ -855,6 +885,7 @@ impl Document {
             unit: Some(self.unit),
             resolution: Some(self.resolution),
             artboards: Some(self.artboards),
+            pages: self.pages_state(),
             canvas_color: Some(self.canvas_color),
             pixel_aspect_ratio: Some(self.pixel_aspect_ratio),
             layer_visible: self.visible,
@@ -880,7 +911,7 @@ impl Document {
     }
 
     /// Validate and restore model state; file signatures and codecs belong to the I/O layer.
-    pub fn from_document_state(file: DocumentState) -> Result<Self, String> {
+    pub fn from_document_state(mut file: DocumentState) -> Result<Self, String> {
         if file.width == 0
             || file.height == 0
             || file.width > MAX_DOCUMENT_DIMENSION
@@ -955,6 +986,8 @@ impl Document {
         {
             return Err("Invalid paint image".into());
         }
+        file.guides.validate()?;
+        file.guides.selected.clear();
         validate_saved_paths(&file.saved_paths, file.clipping_path_id.as_deref())?;
         if file.locked_objects.len() > 65536
             || file.locked_artwork_layers.len() > 17
@@ -966,8 +999,14 @@ impl Document {
         {
             return Err("Invalid object locks".into());
         }
+        let pages = file
+            .pages
+            .clone()
+            .map(pages::PageBook::from_state)
+            .transpose()?;
         let stroke_count = file.strokes.len();
         Ok(Self {
+            guides: file.guides,
             locked_objects: file.locked_objects,
             locked_artwork_layers: file.locked_artwork_layers,
             path_editing: None,
@@ -979,6 +1018,9 @@ impl Document {
             unit: file.unit.unwrap_or_default(),
             resolution: file.resolution.unwrap_or(72),
             artboards: file.artboards.unwrap_or(false),
+            pages,
+            page_undo: Vec::new(),
+            page_redo: Vec::new(),
             canvas_color: file.canvas_color.unwrap_or_default(),
             pixel_aspect_ratio: file.pixel_aspect_ratio.unwrap_or(1.0),
             paint_source: file.paint_source,
@@ -1073,6 +1115,9 @@ impl Document {
         document.set_color_profile(settings.color_profile)?;
         document.set_bit_depth(settings.bit_depth)?;
         document.select_layer("layer-1".into())?;
+        if let Some(pages) = settings.pages {
+            document.setup_pages(pages)?;
+        }
         Ok(document)
     }
     pub fn replace_loaded(&mut self, mut document: Self, name: String) {
@@ -1184,6 +1229,7 @@ impl Document {
     pub fn undo(&mut self) {
         self.finish();
         match self.undo_order.pop() {
+            Some(HistoryKind::Page) => self.undo_page(),
             Some(HistoryKind::Stroke) => {
                 if let Some(stroke) = self.strokes.pop() {
                     self.point_count -= stroke.points.len();
@@ -1210,6 +1256,7 @@ impl Document {
     pub fn redo(&mut self) {
         self.finish();
         match self.redo_order.pop() {
+            Some(HistoryKind::Page) => self.redo_page(),
             Some(HistoryKind::Stroke) => {
                 if let Some(stroke) = self.redo.pop() {
                     self.point_count += stroke.points.len();
@@ -2043,6 +2090,7 @@ impl Document {
                 settings.position[0],
                 settings.position[1],
             ],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(crate::vector::VectorPaint {
@@ -2266,6 +2314,7 @@ impl Document {
     }
 
     pub fn select_vector_objects(&mut self, ids: Vec<String>) -> Result<(), String> {
+        self.guides.selected.clear();
         if ids.len() > 4096 {
             return Err("Too many selected vector objects".into());
         }
@@ -2561,7 +2610,30 @@ impl Document {
         target: &str,
         gradient: crate::gradient::Gradient,
     ) -> Result<(), String> {
+        self.set_vector_gradient(ids, target, gradient, false)
+    }
+
+    /// Canvas drag geometry arrives in document space, independent of object transforms.
+    pub fn set_dragged_vector_gradient(
+        &mut self,
+        ids: &[String],
+        target: &str,
+        gradient: crate::gradient::Gradient,
+    ) -> Result<(), String> {
+        self.set_vector_gradient(ids, target, gradient, true)
+    }
+
+    fn set_vector_gradient(
+        &mut self,
+        ids: &[String],
+        target: &str,
+        gradient: crate::gradient::Gradient,
+        document_space: bool,
+    ) -> Result<(), String> {
         gradient.validate()?;
+        if gradient.pixel_style.is_some() {
+            return Err("This gradient style is available for pixels only / この種類はピクセル専用です / 此类型仅用于像素".into());
+        }
         if target == "stroke" && gradient.dither {
             return Err(
                 "Dither applies only to fills / ディザは塗りにのみ適用できます / 仿色仅用于填色"
@@ -2601,6 +2673,25 @@ impl Document {
                     || object.text.is_some()
                 {
                     return Err("Select visible paths on unlocked layers / ロックされていない表示中のパスを選択してください / 请选择未锁定且可见的路径".into());
+                }
+                let mut gradient = gradient.clone();
+                if document_space {
+                    if let Some([ga, gb, gc, gd, ge, gf]) = gradient.geometry {
+                        let [a, b, c, d, e, f] = object.transform;
+                        let det = a * d - b * c;
+                        if det.abs() < 1e-10 {
+                            return Err("Cannot edit a singular transform".into());
+                        }
+                        gradient.geometry = Some([
+                            (d * ga - c * gb) / det,
+                            (-b * ga + a * gb) / det,
+                            (d * gc - c * gd) / det,
+                            (-b * gc + a * gd) / det,
+                            (d * (ge - e) - c * (gf - f)) / det,
+                            (-b * (ge - e) + a * (gf - f)) / det,
+                        ]);
+                        gradient.validate()?;
+                    }
                 }
                 if target == "fill" {
                     object.fill_gradient = Some(gradient.clone());
@@ -4578,6 +4669,20 @@ impl Document {
     }
 
     pub fn affine_selected_vectors(&mut self, matrix: [f32; 6]) -> Result<bool, String> {
+        self.affine_vectors(matrix, false)
+    }
+    pub fn resize_selected_image_frames(
+        &mut self,
+        matrix: [f32; 6],
+        scale_content: bool,
+    ) -> Result<bool, String> {
+        self.affine_vectors(matrix, !scale_content)
+    }
+    fn affine_vectors(
+        &mut self,
+        matrix: [f32; 6],
+        preserve_frame_content: bool,
+    ) -> Result<bool, String> {
         if matrix.iter().any(|v| !v.is_finite())
             || (matrix[0] * matrix[3] - matrix[1] * matrix[2]).abs() < 0.000001
         {
@@ -4607,6 +4712,19 @@ impl Document {
                     a * oe + c * of + e,
                     b * oe + d * of + f,
                 ];
+                if preserve_frame_content {
+                    if let Some(frame) = &mut o.image_frame {
+                        if let Some(content) = frame.content_transform {
+                            frame.content_transform = Some(crate::image_frame::multiply(
+                                crate::image_frame::multiply(
+                                    crate::image_frame::inverse(o.transform)?,
+                                    [oa, ob, oc, od, oe, of],
+                                ),
+                                content,
+                            ));
+                        }
+                    }
+                }
                 o.bounds_reset = false;
                 o.validate()?;
                 changed = true;
@@ -4929,6 +5047,16 @@ impl Document {
         Ok(changed)
     }
     pub fn delete_selected_vector_objects(&mut self) -> Result<bool, String> {
+        if !self.guides.selected.is_empty() {
+            self.edit_guides(GuideEdit {
+                action: "delete".into(),
+                id: None,
+                axis: None,
+                position: None,
+                delta: None,
+            })?;
+            return Ok(true);
+        }
         self.finish();
         if self.selected_vector_objects.is_empty() {
             return Ok(false);
@@ -5536,6 +5664,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            guides: self.guides.clone(),
             background_visible: self.visible,
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
@@ -5552,6 +5681,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.guides = state.guides;
         self.visible = state.background_visible;
         self.locked_objects = state.locked_objects;
         self.locked_artwork_layers = state.locked_artwork_layers;
@@ -5869,6 +5999,7 @@ impl Document {
         }
     }
     pub fn deselect(&mut self) {
+        self.guides.selected.clear();
         self.finish();
         self.selection = None;
         self.selection_anchor = None;
@@ -6161,6 +6292,7 @@ mod tests {
                 fill_rule: crate::vector::FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 10.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -6592,6 +6724,7 @@ mod tests {
     #[test]
     fn new_document_preset_validates_and_round_trips() {
         let preset = NewDocumentSettings {
+            pages: None,
             document: DocumentSettings {
                 name: "A4 print".into(),
                 width: 2480,
@@ -6753,6 +6886,8 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default)]
+    pub guides: GuidesState,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub locked_objects: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
@@ -6771,6 +6906,8 @@ pub struct DocumentState {
     pub resolution: Option<u32>,
     #[serde(default)]
     pub artboards: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<PageBookState>,
     #[serde(default)]
     pub canvas_color: Option<CanvasColor>,
     #[serde(default)]
@@ -6999,6 +7136,39 @@ fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 } else {
                     stroke = format!("url(#{id})");
                 }
+            }
+        }
+        if let Some(frame) = &object.image_frame {
+            if let Some(image) = &frame.image {
+                if fill != "none" {
+                    let data = escape_xml(&object.path.data);
+                    let rule = if object.path.fill_rule == crate::vector::FillRule::EvenOdd {
+                        "evenodd"
+                    } else {
+                        "nonzero"
+                    };
+                    let _ = write!(
+                        svg,
+                        r#"<path transform="matrix({a} {b} {c} {d} {e} {f})" d="{data}" fill="{fill}" fill-rule="{rule}"/>"#
+                    );
+                    fill = "none".into();
+                }
+                let matrix = crate::image_frame::multiply(
+                    frame.content_transform.unwrap_or([1., 0., 0., 1., 0., 0.]),
+                    image.orientation_transform,
+                );
+                let [ia, ib, ic, id, ie, iff] = matrix;
+                let data = escape_xml(&object.path.data);
+                let rule = if object.path.fill_rule == crate::vector::FillRule::EvenOdd {
+                    "evenodd"
+                } else {
+                    "nonzero"
+                };
+                let _ = write!(
+                    svg,
+                    r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><defs><clipPath id="lp-image-frame-{object_index}"><path d="{data}" clip-rule="{rule}"/></clipPath></defs><g clip-path="url(#lp-image-frame-{object_index})"><image width="{}" height="{}" transform="matrix({ia} {ib} {ic} {id} {ie} {iff})" href="{}"/></g></g>"#,
+                    image.encoded_width, image.encoded_height, image.data_uri
+                );
             }
         }
         if let Some(text) = &object.text {
@@ -7734,6 +7904,7 @@ mod persistence_tests {
                         fill_rule: FillRule::EvenOdd,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 5.0, 6.0],
+                    image_frame: None,
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
@@ -7788,6 +7959,7 @@ mod persistence_tests {
                             fill_rule: FillRule::NonZero,
                         },
                         transform: [1.0, 0.0, 0.0, 1.0, index as f32 * 10.0, 0.0],
+                        image_frame: None,
                         fill_gradient: None,
                         stroke_gradient: None,
                         fill: Some(VectorPaint {
@@ -7855,6 +8027,7 @@ mod persistence_tests {
                         fill_rule: FillRule::NonZero,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    image_frame: None,
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
@@ -7939,6 +8112,7 @@ mod persistence_tests {
                         fill_rule: FillRule::NonZero,
                     },
                     transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    image_frame: None,
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
@@ -8017,6 +8191,7 @@ mod persistence_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 10.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -9351,6 +9526,7 @@ mod stroke_width_tests {
                         fill_rule: crate::vector::FillRule::NonZero,
                     },
                     transform: [1., 0., 0., 1., 0., 0.],
+                    image_frame: None,
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: None,
@@ -9482,6 +9658,7 @@ mod stroke_width_tests {
                 fill_rule: crate::vector::FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: None,
@@ -9668,6 +9845,7 @@ mod independent_saved_path_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
@@ -10090,6 +10268,8 @@ mod gradient_document_tests {
         doc.select_vector_objects(vec!["gradient-path".into()])
             .unwrap();
         let g = Gradient {
+            geometry: None,
+            pixel_style: None,
             kind: GradientKind::Radial,
             angle: 45.,
             aspect: 0.5,
@@ -10109,6 +10289,54 @@ mod gradient_document_tests {
             ],
         };
         (doc, layer, g)
+    }
+    #[test]
+    fn dragged_geometry_uses_inverse_object_transform_and_round_trips() {
+        let (mut doc, layer, mut g) = fixture();
+        let mut object = doc
+            .svg_layers()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .vector_objects[0]
+            .clone();
+        object.transform = [2., 0., 0., 3., 40., 60.];
+        doc.upsert_vector_object(&layer, object).unwrap();
+        let ids = vec!["gradient-path".into()];
+        g.geometry = Some([100., 0., 0., 50., 80., 90.]);
+        doc.set_dragged_vector_gradient(&ids, "fill", g).unwrap();
+        let stored = doc
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .objects[0]
+            .fill_gradient
+            .clone()
+            .unwrap();
+        assert_eq!(stored.geometry, Some([50., 0., 0., 50. / 3., 20., 10.]));
+        let decoded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            decoded
+                .snapshot()
+                .layers
+                .into_iter()
+                .find(|l| l.id == layer)
+                .unwrap()
+                .objects[0]
+                .fill_gradient,
+            Some(stored)
+        );
+        doc.undo();
+        assert!(doc
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .objects[0]
+            .fill_gradient
+            .is_none());
     }
     #[test]
     fn gradients_persist_undo_and_replace_with_solid() {

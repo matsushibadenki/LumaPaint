@@ -19,6 +19,7 @@ pub(crate) enum Kind {
     Transform,
     DirectControls,
     ImportImage,
+    ToolSettings,
 }
 impl Kind {
     fn geometry(self) -> (f64, f64) {
@@ -29,6 +30,7 @@ impl Kind {
             Self::DirectControls => (440., 600.),
             Self::Transform => (400., 360.),
             Self::ImportImage => (480., 360.),
+            Self::ToolSettings => (440., 580.),
         }
     }
     fn title(self, locale: &str) -> &str {
@@ -43,6 +45,7 @@ impl Kind {
                 "节点与实时圆角",
             ],
             Self::ImportImage => ["Import", "読み込み", "导入"],
+            Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
         };
         titles[match locale {
             "ja" => 1,
@@ -70,6 +73,13 @@ impl Request {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             || !["en", "ja", "zh-CN"].contains(&self.locale.as_str())
             || !["system", "light", "dark"].contains(&self.theme.as_str())
+            || matches!(self.kind, Kind::ToolSettings)
+                && !self.action.as_deref().is_some_and(|tool| {
+                    serde_json::from_value::<crate::canvas::CanvasTool>(serde_json::Value::String(
+                        tool.into(),
+                    ))
+                    .is_ok()
+                })
             || matches!(self.kind, Kind::Transform)
                 && !self.action.as_deref().is_some_and(|action| {
                     [
@@ -129,14 +139,11 @@ pub(crate) fn owner(window: &WebviewWindow) -> Result<String, String> {
         .ok_or_else(|| "Unknown document window".into())
 }
 #[cfg(target_os = "macos")]
-pub(crate) fn blocked(app: &AppHandle, owner: &str) -> bool {
-    app.state::<Modals>()
-        .0
-        .lock()
-        .unwrap()
-        .values()
-        .any(|entry| entry.owner == owner)
+pub(crate) fn blocked(_app: &AppHandle, _owner: &str) -> bool {
+    // Settings windows are modeless; the editor remains visible and interactive.
+    false
 }
+
 pub(crate) fn focus(app: &AppHandle, owner: Option<&str>) -> bool {
     let label = app
         .state::<Modals>()
@@ -189,7 +196,7 @@ pub(crate) async fn open_modal_window(
             .minimizable(false)
             .maximizable(false)
             .skip_taskbar(true)
-            .decorations(false)
+            .decorations(true)
             .visible(false)
             .center();
         #[cfg(not(target_os = "macos"))]
@@ -244,12 +251,12 @@ pub(crate) async fn modal_ready(window: WebviewWindow) -> Result<(), String> {
             }
             entry.owner.clone()
         };
-        let parent = app.get_webview_window(&owner).ok_or("Parent is closed")?;
+        let _parent = app.get_webview_window(&owner).ok_or("Parent is closed")?;
         #[cfg(target_os = "macos")]
-        native::attach(&parent, &child)?;
+        child.show().map_err(|e| e.to_string())?;
         #[cfg(not(target_os = "macos"))]
         {
-            parent.set_enabled(false).map_err(|e| e.to_string())?;
+            let _ = _parent;
             child.show().map_err(|e| e.to_string())?;
         }
         if let Some(entry) = app
@@ -356,11 +363,7 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
     if let Some(entry) = entry {
         if let Some(parent) = app.get_webview_window(&entry.owner) {
             #[cfg(target_os = "macos")]
-            if entry.shown {
-                if let Some(child) = app.get_webview_window(label) {
-                    native::detach(&parent, &child);
-                }
-            }
+            crate::canvas::clear_window_preview(&entry.owner);
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = parent.set_enabled(true);
@@ -400,30 +403,6 @@ async fn main<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|error| error.to_string()))
         .await
         .map_err(|error| error.to_string())??
-}
-#[cfg(target_os = "macos")]
-mod native {
-    use objc2::{msg_send, runtime::AnyObject, MainThreadMarker};
-    use tauri::WebviewWindow;
-    pub(super) fn attach(parent: &WebviewWindow, child: &WebviewWindow) -> Result<(), String> {
-        let _main = MainThreadMarker::new().ok_or("Sheets require the main thread")?;
-        let parent = parent.ns_window().map_err(|error| error.to_string())?;
-        let child = child.ns_window().map_err(|error| error.to_string())?;
-        // Both NSWindows are retained by Tauri and accessed only on the UI thread.
-        unsafe {
-            let _: () = msg_send![&*parent.cast::<AnyObject>(), beginSheet: &*child.cast::<AnyObject>(), completionHandler: std::ptr::null::<AnyObject>()];
-        }
-        Ok(())
-    }
-    pub(super) fn detach(parent: &WebviewWindow, child: &WebviewWindow) {
-        if let (Ok(parent), Ok(child)) = (parent.ns_window(), child.ns_window()) {
-            // The sheet is detached before Tauri closes/releases its native window.
-            unsafe {
-                let _: () =
-                    msg_send![&*parent.cast::<AnyObject>(), endSheet: &*child.cast::<AnyObject>()];
-            }
-        }
-    }
 }
 #[cfg(test)]
 mod tests {

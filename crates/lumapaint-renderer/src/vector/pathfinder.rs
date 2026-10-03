@@ -222,6 +222,7 @@ mod tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., x, 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint { color }),

@@ -26,3 +26,5 @@ pub fn runtime_info() -> RuntimeInfo {
         architecture: std::env::consts::ARCH,
     }
 }
+
+pub mod image_frame;

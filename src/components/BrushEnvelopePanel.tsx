@@ -1,3 +1,4 @@
+import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useRef, useState } from 'react';
 import type { Brush, BrushEnvelope } from '../bridge';
 import type { Locale } from '../i18n';
@@ -9,7 +10,8 @@ const messages = {
   en: { title: 'Decay envelope', attack: 'Attack', decay: 'Decay', sustain: 'Sustain level', hold: 'Hold distance', release: 'Release', dryness: 'Dryness', reset: 'Reset', hint: 'X: distance (px) / Y: density. Drag the points to adjust. Drawing stops after the endpoint and restarts on the next stroke. Applies to paint brushes and ink pens.', length: 'Total' },
   'zh-CN': { title: '衰减包络', attack: '起音', decay: '衰减', sustain: '持续浓度', hold: '持续距离', release: '释音', dryness: '干涩程度', reset: '重置', hint: '横轴：绘制距离（px）／纵轴：浓度。拖动节点调整。终点后停止绘制，下一个笔画重新开始。适用于绘画画笔与墨水笔。', length: '总长' },
 };
-export function BrushEnvelopePanel({ locale, brush, enabled, onChange }: { locale: Locale; brush: Brush; enabled: boolean; onChange: (brush: Brush) => void }) {
+export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolution=72 }: { locale: Locale; resolution?:number; brush: Brush; enabled: boolean; onChange: (brush: Brush) => void }) {
+  const unit=useMeasurementUnit(),factor=pixelsPerMeasurement(unit,resolution),symbol=unitSymbols[unit];
   const t = messages[locale]; const envelope = brush.envelope ?? defaults;
   const [viewScale, setViewScale] = useState<number | null>(null);
   const total = envelope.attack + envelope.decay + envelope.hold + envelope.release;
@@ -49,13 +51,13 @@ export function BrushEnvelopePanel({ locale, brush, enabled, onChange }: { local
       <path className="envelope-fill" d={`M14 112 L14 ${y(envelope.attack === 0 ? 1 : 0)} ${breaks.map((v, i) => `L${x(v)} ${y(levels[i])}`).join(' ')} L270 112 Z`} />
       <path className="envelope-line" d={`M14 ${y(envelope.attack === 0 ? 1 : 0)} ${breaks.map((v, i) => `L${x(v)} ${y(levels[i])}`).join(' ')} L270 112`} />
       {breaks.map((v, i) => <circle key={i} cx={x(v)} cy={y(levels[i])} r="6" className="envelope-handle" onPointerDown={event => { if (!enabled || !envelope.enabled) return; event.preventDefault(); setViewScale(scale); drag.current = { index: i, envelope: { ...envelope }, scale }; event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); }} />)}
-      <text x="14" y="132">0</text><text x="268" y="132" textAnchor="end">{t.length}: {total} px</text>
+      <text x="14" y="132">0</text><text x="268" y="132" textAnchor="end">{t.length}: {Number((total/factor).toFixed(3))} {symbol}</text>
     </svg>
-    <p className="muted small">{t.hint}</p>
+    <p className="muted small">{t.hint.replace('px',symbol)}</p>
     {(['attack', 'decay', 'hold', 'release', 'sustain', 'dryness'] as const).map(key => {
       const percent = key === 'sustain' || key === 'dryness';
-      const value = percent ? Math.round(envelope[key] * 100) : envelope[key];
-      return <label className="envelope-control" key={key}><span>{t[key]}</span><CompactSlider aria-label={t[key]} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000} step={1} value={value} onChange={event => update({ [key]: Number(event.target.value) / (percent ? 100 : 1) })} /><input aria-label={`${t[key]} ${percent ? '%' : 'px'}`} disabled={!enabled || !envelope.enabled} type="number" min="0" max={percent ? 100 : 10000} value={value} onChange={event => { const n = Number(event.target.value); if (Number.isFinite(n)) update({ [key]: Math.max(0, Math.min(percent ? 100 : 10000, n)) / (percent ? 100 : 1) }); }} /><small>{percent ? '%' : 'px'}</small></label>;
+      const value = percent ? Math.round(envelope[key] * 100) : Number((envelope[key]/factor).toFixed(4));
+      return <label className="envelope-control" key={key}><span>{t[key]}</span><CompactSlider aria-label={t[key]} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000/factor} step={percent?1:1/factor} value={value} onChange={event => update({ [key]: Number(event.target.value) / (percent ? 100 : 1/factor) })} /><input aria-label={`${t[key]} ${percent ? '%' : symbol}`} disabled={!enabled || !envelope.enabled} type="number" step="any" min="0" max={percent ? 100 : 10000/factor} value={value} onChange={event => { const n = Number(event.target.value); if (Number.isFinite(n)) update({ [key]: Math.max(0, Math.min(percent ? 100 : 10000/factor, n)) / (percent ? 100 : 1/factor) }); }} /><small>{percent ? '%' : symbol}</small></label>;
     })}
     <button type="button" disabled={!enabled} onClick={() => update({ ...defaults, enabled: envelope.enabled })}>{t.reset}</button>
   </section>;

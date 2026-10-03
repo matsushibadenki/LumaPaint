@@ -1,0 +1,44 @@
+<!-- /mnt/user-data/outputs/Color_Tone_Studio.html -->
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color Tone Studio</title>
+<link rel="stylesheet" href="./studio.css">
+
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="brand"><div class="brand-mark"></div><div><h1>Color Tone Studio</h1><small>色相 × 配色ルール × PCCS風トーン設計</small></div></div>
+  <div class="header-actions"><button class="btn" id="randomBtn">ランダム</button><button class="btn" id="resetBtn">初期化</button><button class="btn primary" id="exportBtn">書き出す</button><button class="btn" id="appClose">閉じる</button></div>
+</header>
+<footer class="palette" id="palette"></footer>
+<main>
+  <aside class="panel controls">
+    <div class="section"><div class="eyebrow">Base color</div><div class="field"><label>基準色</label><div class="seed-row"><input id="seedColor" type="color" value="#3575B8"><input id="seedHex" type="text" value="#3575B8" maxlength="7"></div></div></div>
+    <div class="section"><div class="eyebrow">Harmony</div><div class="field"><label for="harmony">配色ルール</label><select id="harmony"><option value="analogous">類似色</option><option value="monochromatic">モノクローム</option><option value="triad">トライアド</option><option value="complementary">補色</option><option value="split">分裂補色</option><option value="tetradic">テトラード</option><option value="compound">コンパウンド</option></select></div><div id="harmonyNote" class="tone-name"></div></div>
+    <div class="section"><div class="eyebrow">Tone fine tune</div><div class="field"><div class="range-head"><span>彩度補正</span><span id="satVal">0</span></div><input id="satAdjust" type="range" min="-40" max="40" value="0"></div><div class="field"><div class="range-head"><span>明度補正</span><span id="lightVal">0</span></div><input id="lightAdjust" type="range" min="-35" max="35" value="0"></div><div class="field"><div class="range-head"><span>色相の広がり</span><span id="spreadVal">100%</span></div><input id="spread" type="range" min="40" max="160" value="100"></div></div>
+    <div class="section"><div class="eyebrow">Selected tone</div><div id="selectedTone" class="tone-name"></div></div>
+    <div class="section"><div class="eyebrow">Tip</div><p style="font-size:12px;line-height:1.7;color:var(--muted);margin:0">ホイール上をクリック／ドラッグして基準色を選び、右のトーンチャートで明度と彩度の性格を決めます。下の色は固定してから別のトーンへ移動できます。</p></div>
+  </aside>
+
+  <section class="panel workspace">
+    <div class="panel-title"><div><h2>カラーホイール</h2><p>角度＝色相、中心からの距離＝彩度</p></div></div>
+    <div class="wheel-wrap"><div class="wheel-box" id="wheelBox"><canvas id="wheel" width="700" height="700"></canvas><div id="handles"></div></div></div>
+    <div class="base-readout"><div class="metric"><b id="hueMetric">210°</b><span>HUE</span></div><div class="metric"><b id="satMetric">71%</b><span>SATURATION</span></div><div class="metric"><b id="toneMetric">ライト</b><span>TONE</span></div></div>
+  </section>
+
+  <section class="panel tone-panel">
+    <div class="panel-title"><div><h2>カラートーン・チャート</h2><p>上ほど明るく、右ほど鮮やか。クリックすると同じ色相構成のままトーンを変更します。</p></div></div>
+    <div class="tone-guide"><div class="brightness-axis"><span>高</span><div class="axis-line"></div><span>低</span></div><div id="toneChart" class="tone-chart"></div></div>
+    <div class="sat-axis"><span>低彩度</span><div class="line"></div><span>高彩度</span></div>
+  </section>
+</main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="./studio.js"></script>
+</body>
+</html>

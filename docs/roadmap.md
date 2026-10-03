@@ -5,11 +5,30 @@
 表記：`[Done]` 現在のコードに実装済み / `[Next]` 優先度の高い未完了作業 / `[Later]` 後続の計画 / `[Pending]` 保留中。
 macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再開指示があるまで着手しない。既存の共通コードやCIの`[Done]`は実装済みの事実を示す。
 
+## カラートーンクリエイター
+
+- [Done] 添付Color Tone Studioをアプリ内のオーバーレイに統合。右上のパネル開閉ボタンの左側から開き、最上部のメニューを残して作業領域を覆う。17トーン・7配色ルール、ホイール、彩度／明度／色相幅の調整、色固定、ランダム、初期化を保持。書き出しで表示中の5色を名前付き共通スウォッチへ一括追加し、Rust側で全件成功時のみ保存。閉じる／Escape／同じボタンで終了し、同一セッションの組み合わせを保持。表示中はネイティブキャンバスと背後の編集入力を停止。ローカル同梱・日本語／英語／简体中文対応。UIホイールはCSSグラデーションで描画し、起動時のCPUピクセル生成を除去。
+- [Later] 組み合わせ自体の保存・再読み込み、生成した配色からのグラデーション作成。
+
+## スウォッチ
+
+- [Done] カラー／グラデーションを共通スウォッチパネルに統合。サムネイル／リスト、検索、種類フィルター、名前付き追加、複製、変更、削除、選択オブジェクトからの登録、塗り／線／描画色／背景色への適用に対応。共通カラーピッカーとグラデーション編集を使用し、変更は保存時に確定。登録内容はRust側で512件まで永続保存し、安定したIDで更新・削除。カラーピッカー内とグラデーションパネルも共通ライブラリを使用し、ウインドウ間の更新を通知。旧カラー登録・旧グラデーション登録を初回に引き継ぎ、macOSでは共通JSONの読み込み・書き出しと旧グラデーションJSONの読み込みに対応。英語・日本語・简体中文対応。
+- [Next] ドキュメントに保存するスウォッチとグローバルカラーの参照・一括更新。現在はアプリ共通のサンプルで、適用済みオブジェクトは独立した配色を保持する。
+- [Later] カラーグループ、特色・濃淡、パターンスウォッチ、ASEの読み込み・書き出し。
+
 ## グラデーション
+
+- [Done] WebGradients（Itmeo）の配色を参考に名前付きサンプル12件を追加。パターンを名前付きで共通スウォッチ512件までRust側に永続保存し、登録・削除・再適用に対応。macOSではバージョン付きJSONの読み込み（追加）・書き出しに対応し、透明度・中間点・角度・円形の縦横比・補間方式・ディザを保持。不正な形式や上限超過は保存前に拒否し、既存ファイルを保護。
+- [Next] Windows／Linuxのグラデーションライブラリ読み込み・書き出しダイアログ。
+
+- [Done] グラデーションの色停止点を、描画色・塗り・文字色と共通のカラーピッカーへ統一。停止点の不透明度を保ち、ベクターはピッカーを閉じた時に反映、ピクセルは「適用」で確定。
 
 - [Done] 添付Illustratorパネルを参考にグラデーションパネルを追加。線形／円形、塗り／線、プリセット、反転、色停止点の追加・削除・移動、透明度・位置・中間点、角度・円形の縦横比、クラシック／知覚的（Oklab）／リニア補間と塗りのディザを実装。数値は確定時、ドラッグは終了時にキャンバスへ反映。ベクターはRust Document Modelに保持して保存・再編集・Undo/Redo、標準SVGへの書き出しに対応。ピクセルは選択範囲またはレイヤー全体へ適用し、単一のUndo/Redoに対応。ピクセル生成はワーカーで行い、ドキュメント／選択変更後の古い結果を拒否。Skia Metal／wgpu共有テクスチャで線形・円形を描画し、利用不可時はCPUへ自動フォールバック。ディザは現時点ではSVGフィルターを扱うCPU互換経路を使用。英語・日本語・简体中文対応。
 - [Next] フリーグラデーションのポイント／ライン編集、線に沿う／線を横断するモード。これらは今回の線形／円形パネルには未実装。
-- [Later] キャンバス上のグラデーション注釈、読み込みSVGのグラデーションの直接編集、ドキュメント共通のグラデーションスウォッチ。
+- [Done] 共通ツールにグラデーション（G）を追加。パネルと連動し、キャンバスのドラッグで方向・長さを指定、Shiftで45度刻みに固定。ベクターは線形／円形、塗り／線、複数選択の共通軸、開始／終了ハンドルと軸の移動、描画フレーム単位のプレビューに対応。軸をレンダラー非依存のアフィン座標として保存し、変形済みオブジェクトへの適用・保存／読み込み・SVG・Undo/Redoに対応（macOS）。
+- [Done] ピクセル用はPhotoshopの従来型ラスターツールを参考に線形／円形／円錐形／反射形／菱形を実装。ドラッグ終了で選択範囲またはレイヤーに合成し、1操作のUndo/Redo。Rustワーカーで処理し、別ドキュメント・選択・新しいドラッグへ変更済みの結果は適用しない。線形／円形は既存のGPU優先・CPUフォールバック経路、円錐形／反射形／菱形はCPU補間経路。色停止点・中間点・透明度・ディザ・反転・3補間方式は既存パネルと共通。英語・日本語・简体中文対応。
+- [Next] ピクセル用の非破壊グラデーションレイヤーとドラッグ中の塗りプレビュー。現在は軸を表示し、離した時にラスタライズする。
+- [Later] 読み込みSVGのグラデーションの直接編集、キャンバス上の色停止点・中間点編集、追加のピクセル種類のGPU化。
 
 ## 開発基盤
 
@@ -320,7 +339,8 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] レイヤーパネルのベクターオブジェクト階層表示、開閉、子項目の選択・表示切替・ドラッグによる描画順変更・Undo、種類別アイコンと選択ターゲット表示
 - [Later] グループ単位の拡大縮小・回転・描画順変更と、レイヤーパネル上でのグループ間ドラッグ
 - [Later] 禁則処理・縦書き・高度なOpenType機能・フォント埋め込み
-- [Later] レイアウトのページ管理と、アニメーションのタイムライン・キーフレーム・再生・書き出し（下部タブと表示領域は実装済み）
+- [Done] レイアウトの基本ページ管理：単ページ／見開き、左開き／右開き、ページパネルと追加・複製・削除・並べ替え、ネイティブ保存。
+- [Later] アニメーションのタイムライン・キーフレーム・再生・書き出し（下部タブと表示領域は実装済み）
 - [Later] 投げ縄・選択範囲の変形・境界ぼかし、非破壊フィルター・空間マスク
 - [Later] AIプロバイダー抽象化・資格情報ストア・生成履歴
 - [Later] ページ・コマ・吹き出し・キャラクター管理
@@ -450,3 +470,66 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] 既存ドキュメントを開いた状態から異なる縦横比のJPEG／PNGを「開く」場合も、GPUキャンバスの用紙寸法を新しい画像へ同期。前のタブの比率で画像が変形する問題を修正し、異なる寸法のドキュメント切り替えにも適用。
 
 - [Done] 前回作業の復旧バーで、個別削除・全削除の確認をWebView標準ダイアログからバー内の確認操作へ変更。定期取得中の古い一覧が削除後に戻る競合を防ぎ、削除結果を即時反映。
+
+- [Done] カラー・ブラシの色見本とグラデーションの基本／WebGradients／登録パターンをスウォッチパネルへ集約。各編集パネルから移動・編集中グラデーションの登録に対応し、既存ライブラリには基本サンプルを一度だけ補完。
+
+- [Done] SVG／PDFの「開く・読み込み・書き出し」準備：独立I/O契約、操作別のアダプター／メニュー対応状況、SVG共通読み込み、PDF予約モジュール、ページ・dpi指定、Rust対応状況APIを追加。詳細は [SVG / PDF I/O](svg-pdf-io.md)。
+- [Next] SVG開く／書き出しのホスト接続とPDF変換アダプター。PDF対応を有効にする前にページ選択・フォント・透明度・非可逆変換の扱いを実装。
+
+- [Done] ORA／PSD／EXR／KRA／PNG／JPEG／WebP／GIF／BMP／TIFF／RAW／HEIF／ICO／AVIF／AIのI/O準備。拡張子別名と操作別の現在／予定状態を共通化し、PSD読み込みをネイティブタイル保持で接続。詳細は [追加形式の対応準備](file-format-preparation.md)。
+- [Next] 汎用ラスタ形式の独立コーデック・書き出しとORAレイヤー読み込み。PSDは既存RGB8統合画像の範囲からホスト接続・レイヤー保持へ進める。
+- [Later] HDR／高精度モデルとEXR、RAW現像、HEIF／AVIF、KRA、PDF互換AI読み込み。カメラRAWとネイティブAIの書き出しは対応済みとして扱わない。
+
+- [Done] 左ツールの通常クリック選択、選択中アイコンの再クリック／ダブルクリック／F2で設定ダイアログ。長押し・右クリックのツール切替は維持。ブラシ／消しゴム／ペンの描画設定、図形／範囲選択の数値座標・寸法、表示倍率・手のひらの位置リセット、スポイトの座標サンプリング、文字の作成・修正をRust命令へ接続。移動／拡大縮小／回転と節点は既存数値ダイアログを利用。英語／日本語／简体中文に対応。
+- [Done] macOSでペン・節点・図形・ダイレクト選択・スポイト・変形のカーソルを識別可能にし、縦書きは縦組みIビーム、ブラシ／消しゴムは既存サイズリングを利用。固定カーソル画像をキャッシュし、カーソル移動による文書のラスタ化を行わない。分離した確認用アプリでブラシ設定同期、数値図形作成、文字作成を確認。
+- [Next] ペン／鉛筆の専用精度・平滑化設定、各図形のキャンバスクリックから寸法入力、スポイトの採取範囲などツール固有設定を拡張。
+
+### Modeless tool settings and live previews
+
+- [Done] Display settings in decorated, draggable WebviewWindows with native close buttons, no dimmed editor, and content-sized forms.
+- [Done] Preview numeric shapes/selections, text, transforms, zoom, brush samples, and eyedropper sample positions on the macOS canvas. Keep temporary documents in Rust; preview never changes saved content or Undo history, and closing restores the committed view. Coalesce form changes and discard queued requests after closing.
+- [Next] Extend native tool preview rendering to Windows and Linux alongside their canvas backends.
+
+- [Done] Avoid feedback between viewport-sized dialogs and content-based window sizing: New Document, preferences, and color settings use bounded sizes; compact forms retain intrinsic sizing. Center only on opening, preserve dragged positions, keep preset details scrollable and action buttons visible. Verified all seven native dialog kinds on macOS.
+
+### Docking and floating panels
+
+- [Done] Float any inspector panel inside the editor using its tab/header or detach button; move, resize, raise, and return panels to the right dock by dragging, double-clicking the header, or using dock/close buttons. Multiple floating panels share the existing Rust document commands.
+- [Done] Resize the right dock, reorder tabs, persist panel positions/sizes and dock width, clamp restored layouts to the screen, and reset the layout. Japanese, English, and Simplified Chinese controls.
+- [Done] Native GPU canvas masks the union of panel occlusions and forwards input to the WebView in those regions. Keep canvas visible between panels, including overlapping panels; isolate masks per editor session.
+- [Next] Group floating panels into tab stacks and add left-side docking.
+- [Later] Detach panel groups into native WebviewWindows for placement outside the app and across monitors.
+
+### Linked graphics frames
+
+- [Done] Layout rectangle/ellipse tools create empty graphics frames with GPU frame guides. File > Place (Cmd/Ctrl+D) places linked PNG/JPEG into the selected frame or creates a new image frame. Frames clip content independently; ordinary bounding-box resizing crops while Command-resizing scales frame and content.
+- [Done] Links panel supports status checks, update, relink, embedding, proportional fitting/filling, stretching, and content offsets. Persist links and cached images in the independent Rust document model; missing sources keep their cached appearance. WebViews receive metadata only. English, Japanese, and Simplified Chinese labels.
+- [Next] Loaded graphics cursor with click/drag placement and multiple-image placement; larger images stored as independent native assets beyond the current approximately 3 MiB per-image PNG/JPEG limit.
+- [Later] PDF page selection and additional image codecs through the independent I/O adapters; automatic link watching and portable packaging of linked assets.
+
+
+### Links list and management
+
+- [Done] Compact sortable links table with filename, status, layer, optional format/file-size columns, persistent panel options, search and status filters. Group identical source paths into expandable placement rows. Japanese, English, and Simplified Chinese.
+- [Done] Independent panel selection with Shift ranges and Cmd/Ctrl additive selection; select all visible placements. Batch update/relink/embed commit atomically in Rust with one Undo entry and preserve individual crop/placement. Read each replacement file once per batch. Relinking embedded images returns them to external links by choosing a source file.
+- [Done] Link information shows source path, cached dimensions/file size, image format, source modification time, and placement count. Go to Placement selects the frame and centers the native canvas at its existing zoom; stale async results cannot update another document's panel.
+- [Next] Per-link thumbnails, folder-based relinking and reveal/open-original commands; background filesystem watching for link status.
+- [Later] Shared native asset storage and packaging all external links into a portable project folder.
+
+### Rulers and application measurement units
+
+- [Done] Top and left canvas rulers show artboard-relative coordinates, including negative pasteboard positions. Visible ticks adapt to native pan/zoom and Retina scale, up to 64000%; viewport metadata is emitted only on change and UI updates are coalesced per animation frame.
+- [Done] Right-click/Control-click either ruler or the corner to choose pixels, millimeters, centimeters, inches or points. Rust owns and persists the application preference and broadcasts changes to editor, floating and tool windows. English, Japanese and Simplified Chinese labels and keyboard context menu navigation.
+- [Done] Common length conversion for Transform, Stroke/dashes, Text, selection coordinates, brush size, direct controls/live corners, tool/transform dialogs, image offsets and document/new-document dimensions. Internal geometry stays in pixels; percentages, angles and image pixel metadata retain their intrinsic units.
+- [Done] Ruler-drag horizontal/vertical guides with GPU preview, selection/moving/deletion when unlocked; View > Guides visibility/locking, Make/Release/Clear Guides. Portable per-page guide state, native persistence and Undo/Redo; guides excluded from artwork export.
+- [Next] Draggable ruler origin and configurable guide snapping.
+- [Later] Separate artboard/spread origins and configurable guide presets.
+
+### Pages and facing spreads
+
+- [Done] Independent Rust publication model with up to 512 stable page identities, separate vector/text/image/paint content and retained per-page edit histories. Page layout/content survives native save/load; existing single-page files remain compatible.
+- [Done] New-document page count, single/facing layout and left-to-right or right-to-left binding. A single first page followed by paired spreads; right binding mirrors page sides and panel order.
+- [Done] Dockable/floating Pages panel with lazy native content thumbnails, active-page highlighting, insertion, duplication, deletion, drag reordering and earlier/later controls. Page operations support Undo/Redo; layout Undo preserves changes on other pages. Japanese, English and Simplified Chinese.
+- [Done] Active spread fits and displays both pages on the native canvas; clicking the neighboring page makes it editable. Vector neighbors retain SVG fidelity; painted neighbors use a Rust-owned composite cache capped at 2048 pixels. Only small panel thumbnails cross IPC. Native file envelope limit raised to 64 MiB for multi-page documents.
+- [Next] Multi-page PDF/SVG export, parent pages, margins/bleed and spread-wide objects/text threading. Current standalone exporters still target the active page.
+- [Later] Section numbering, alternate layouts, page-size presets per section and booklet imposition.

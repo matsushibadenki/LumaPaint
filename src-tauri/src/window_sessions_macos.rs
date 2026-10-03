@@ -7,7 +7,7 @@ struct Runtime {
     window_title: String,
     outline_view: bool,
     frame_requested: bool,
-    canvas_overlay: Option<[f64; 4]>,
+    canvas_overlay: Vec<[f64; 4]>,
     brush_cursor: Option<Retained<NSCursor>>,
     brush_cursor_key: (u32, bool),
     canvas: Option<Canvas>,
@@ -36,6 +36,9 @@ struct Runtime {
     direct_gesture: Option<DirectGesture>,
     anchor_draft: Option<AnchorDraft>,
     pen_draft: Option<PenDraft>,
+    guide_draft: Option<(String, f32)>,
+    guide_drag: Option<(String, [f32; 2])>,
+    guide_object_draft: Vec<lumapaint_renderer::FrameOverlay>,
     vector_draft: Vec<lumapaint_core::document::Point>,
     text_frame_draft: Option<([f32; 2], [f32; 2])>,
     text_resize_draft: Option<TextResizeDraft>,
@@ -55,7 +58,7 @@ impl Default for Runtime {
             window_title: String::new(),
             outline_view: false,
             frame_requested: false,
-            canvas_overlay: None,
+            canvas_overlay: Vec::new(),
             brush_cursor: None,
             brush_cursor_key: (0, false),
             canvas: None,
@@ -89,6 +92,9 @@ impl Default for Runtime {
             direct_gesture: None,
             anchor_draft: None,
             pen_draft: None,
+            guide_draft: None,
+            guide_drag: None,
+            guide_object_draft: Vec::new(),
             vector_draft: Vec::new(),
             text_frame_draft: None,
             text_resize_draft: None,
@@ -109,7 +115,9 @@ impl Runtime {
         WINDOW_TITLE.with(|slot| std::mem::swap(&mut self.window_title, &mut *slot.borrow_mut()));
         OUTLINE_VIEW.with(|slot| self.outline_view = slot.replace(self.outline_view));
         FRAME_REQUESTED.with(|slot| self.frame_requested = slot.replace(self.frame_requested));
-        CANVAS_OVERLAY.with(|slot| self.canvas_overlay = slot.replace(self.canvas_overlay));
+        CANVAS_OVERLAY.with(|slot| {
+            self.canvas_overlay = slot.replace(std::mem::take(&mut self.canvas_overlay))
+        });
         BRUSH_CURSOR.with(|slot| std::mem::swap(&mut self.brush_cursor, &mut *slot.borrow_mut()));
         BRUSH_CURSOR_KEY.with(|slot| self.brush_cursor_key = slot.replace(self.brush_cursor_key));
         CANVAS.with(|slot| std::mem::swap(&mut self.canvas, &mut *slot.borrow_mut()));
@@ -144,6 +152,10 @@ impl Runtime {
         DIRECT_GESTURE
             .with(|slot| std::mem::swap(&mut self.direct_gesture, &mut *slot.borrow_mut()));
         ANCHOR_DRAFT.with(|slot| std::mem::swap(&mut self.anchor_draft, &mut *slot.borrow_mut()));
+        GUIDE_DRAFT.with(|slot| std::mem::swap(&mut self.guide_draft, &mut *slot.borrow_mut()));
+        GUIDE_DRAG.with(|slot| std::mem::swap(&mut self.guide_drag, &mut *slot.borrow_mut()));
+        GUIDE_OBJECT_DRAFT
+            .with(|slot| std::mem::swap(&mut self.guide_object_draft, &mut *slot.borrow_mut()));
         PEN_DRAFT.with(|slot| std::mem::swap(&mut self.pen_draft, &mut *slot.borrow_mut()));
         VECTOR_DRAFT.with(|slot| std::mem::swap(&mut self.vector_draft, &mut *slot.borrow_mut()));
         TEXT_FRAME_DRAFT
@@ -344,6 +356,7 @@ mod tests {
 
     fn preset(name: &str) -> NewDocumentSettings {
         NewDocumentSettings {
+            pages: None,
             document: DocumentSettings {
                 name: name.into(),
                 width: 320,

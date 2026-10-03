@@ -291,6 +291,7 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
                     },
                 },
                 transform,
+                image_frame: None,
                 fill_gradient: None,
                 stroke_gradient: None,
                 fill: path.fill().and(paint),

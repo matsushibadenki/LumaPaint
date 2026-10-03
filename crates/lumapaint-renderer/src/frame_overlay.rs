@@ -75,20 +75,90 @@ fn vertices(overlay: FrameOverlay, viewport: Viewport) -> Vec<Vertex> {
     vertices
 }
 
+#[cfg(test)]
 pub(crate) fn buffer(
     device: &wgpu::Device,
     overlay: FrameOverlay,
     viewport: Viewport,
 ) -> (wgpu::Buffer, u32) {
-    let vertices = vertices(overlay, viewport);
+    buffer_many(device, &[overlay], viewport)
+}
+pub(crate) fn buffer_many(
+    device: &wgpu::Device,
+    overlays: &[FrameOverlay],
+    viewport: Viewport,
+) -> (wgpu::Buffer, u32) {
+    let vertices: Vec<Vertex> = overlays
+        .iter()
+        .flat_map(|o| vertices(*o, viewport))
+        .collect();
     (
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Text frame guide vertices"),
+            label: Some("Frame guide vertices"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         }),
         vertices.len() as u32,
     )
+}
+pub(crate) fn graphics_frames(document: &lumapaint_core::document::Document) -> Vec<FrameOverlay> {
+    let mut overlays = Vec::new();
+    for object in document
+        .svg_layers()
+        .filter(|l| l.visible)
+        .flat_map(|l| l.vector_objects.iter())
+        .filter(|o| o.visible && o.image_frame.is_some())
+    {
+        let Some([x, y, r, b]) = lumapaint_core::stroke::path_bounds(&object.path.data) else {
+            continue;
+        };
+        let [a, bb, c, d, e, f] = object.transform;
+        let world = |p: [f32; 2]| [a * p[0] + c * p[1] + e, bb * p[0] + d * p[1] + f];
+        let ellipse = object.kind == lumapaint_core::vector::VectorObjectKind::Ellipse;
+        if ellipse {
+            for i in 0..32 {
+                let point = |j| {
+                    let t = j as f32 * std::f32::consts::TAU / 32.;
+                    world([
+                        (x + r) * 0.5 + (r - x) * 0.5 * t.cos(),
+                        (y + b) * 0.5 + (b - y) * 0.5 * t.sin(),
+                    ])
+                };
+                let p = point(i);
+                let q = point(i + 1);
+                overlays.push(FrameOverlay {
+                    corners: [p, q, q, p],
+                    handles: false,
+                    baseline: None,
+                });
+            }
+        } else {
+            overlays.push(FrameOverlay {
+                corners: [[x, y], [r, y], [r, b], [x, b]].map(world),
+                handles: false,
+                baseline: None,
+            });
+        }
+        if object.image_frame.as_ref().unwrap().image.is_none() {
+            let inset = if ellipse {
+                (1. - std::f32::consts::FRAC_1_SQRT_2) * 0.5
+            } else {
+                0.
+            };
+            let dx = (r - x) * inset;
+            let dy = (b - y) * inset;
+            let p = world([x + dx, y + dy]);
+            let q = world([r - dx, b - dy]);
+            let p2 = world([r - dx, y + dy]);
+            let q2 = world([x + dx, b - dy]);
+            overlays.push(FrameOverlay {
+                corners: [p, q, q, p],
+                handles: false,
+                baseline: Some([p2, q2]),
+            });
+        }
+    }
+    overlays
 }
 
 pub(crate) fn pipeline(
@@ -129,6 +199,41 @@ pub(crate) fn pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+pub(crate) fn document_guides(
+    document: &lumapaint_core::document::Document,
+    viewport: Viewport,
+) -> Vec<FrameOverlay> {
+    if !document.guides().visible {
+        return vec![];
+    }
+    let start = viewport.document_point(0., 0.);
+    let end = viewport.document_point(
+        viewport.width as f32 / viewport.scale,
+        viewport.height as f32 / viewport.scale,
+    );
+    document
+        .guides()
+        .items
+        .iter()
+        .flat_map(|g| {
+            let edges = match g.axis.as_deref() {
+                Some("horizontal") => vec![[[start.x, g.position], [end.x, g.position]]],
+                Some("vertical") => vec![[[g.position, start.y], [g.position, end.y]]],
+                _ => g
+                    .objects
+                    .iter()
+                    .flat_map(|o| lumapaint_core::stroke::path_edges(&o.path.data, o.transform))
+                    .collect(),
+            };
+            edges.into_iter().map(|[p, q]| FrameOverlay {
+                corners: [p, q, q, p],
+                handles: false,
+                baseline: None,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -190,5 +295,44 @@ mod tests {
         let zoomed_width = zoomed[7].position[0] - zoomed[6].position[0];
         assert_eq!(normal_width, 8.0);
         assert_eq!(normal_width, zoomed_width * 2.0);
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+    use lumapaint_core::document::{Document, GuideEdit};
+    #[test]
+    fn guides_cover_visible_pasteboard_and_hide_without_changing_artwork() {
+        let mut d = Document::default();
+        d.edit_guides(GuideEdit {
+            action: "add".into(),
+            id: None,
+            axis: Some("horizontal".into()),
+            position: Some(123.),
+            delta: None,
+        })
+        .unwrap();
+        let viewport = Viewport::new(1200., 800., 2., 1., true).unwrap();
+        let overlays = document_guides(&d, viewport);
+        assert_eq!(overlays.len(), 1);
+        let p = viewport.document_point(0., 0.);
+        let q = viewport.document_point(
+            viewport.width as f32 / viewport.scale,
+            viewport.height as f32 / viewport.scale,
+        );
+        assert_eq!(overlays[0].corners[0], [p.x, 123.]);
+        assert_eq!(overlays[0].corners[1], [q.x, 123.]);
+        assert_eq!(d.visible_svg_layers().count(), 0);
+        d.edit_guides(GuideEdit {
+            action: "visibility".into(),
+            id: None,
+            axis: None,
+            position: None,
+            delta: None,
+        })
+        .unwrap();
+        assert!(document_guides(&d, viewport).is_empty());
+        assert_eq!(d.guides().items.len(), 1);
     }
 }

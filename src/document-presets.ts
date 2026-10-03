@@ -1,3 +1,4 @@
+import { pixelsPerMeasurement } from './measurement-math';
 import type { DocumentUnit, NewDocumentSettings } from './bridge';
 
 export type PresetCategory = 'photo' | 'print' | 'art' | 'web' | 'mobile' | 'video';
@@ -17,7 +18,7 @@ export const paperPresets: PaperPreset[] = [
   ...presets('video', 'pixels', 72, [['HDTV 1080p', 1920, 1080], ['HDTV 720p', 1280, 720], ['DCI 2K', 2048, 1080], ['UHD 4K', 3840, 2160], ['DCI 4K', 4096, 2160], ['UHD 8K', 7680, 4320], ['DCI 8K', 8192, 4320], ['NTSC', 720, 480], ['PAL', 720, 576], ['Film 2K', 2048, 1556], ['Film 4K', 4096, 3112], ['Film 8K', 8192, 6224]]),
 ];
 export function unitFactor(unit: DocumentUnit, resolution: number) {
-  return unit === 'pixels' ? 1 : unit === 'inches' ? resolution : unit === 'centimeters' ? resolution / 2.54 : resolution / 25.4;
+  return pixelsPerMeasurement(unit,resolution);
 }
 export function presetSettings(preset: PaperPreset, name: string): NewDocumentSettings {
   const factor = unitFactor(preset.unit, preset.resolution);

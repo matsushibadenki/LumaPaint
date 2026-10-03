@@ -21,10 +21,12 @@ type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | Pre
 const colorModes: { value: ColorMode; label: string }[] = [{ value: 'rgb', label: 'RGB' }, { value: 'cmyk', label: 'CMYK' }];
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear')=>void;
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
   locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs') => void;
   onNewWindow: () => void; onNew: () => void; onCloseDocument: () => void;
+  onPlace:()=>void;
   onImportSvg: () => void;
   onImportImage: () => void;
   onArrange: (action: ArrangeAction) => void;
@@ -42,6 +44,7 @@ type Props = {
 
 export function WorkspaceMenu(props: Props) {
   const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const guides={ja:['ガイド','ガイドを隠す','ガイドを表示','ガイドのロックを解除','ガイドをロック','ガイドを作成','ガイドを解除','ガイドを消去'],en:['Guides','Hide Guides','Show Guides','Unlock Guides','Lock Guides','Make Guides','Release Guides','Clear Guides'],'zh-CN':['参考线','隐藏参考线','显示参考线','解锁参考线','锁定参考线','建立参考线','释放参考线','清除参考线']}[locale];
   const clip = { ja: ['クリッピングパス', '作成', '削除', 'マスクを編集'], en: ['Clipping Path', 'Make', 'Release', 'Edit Mask'], 'zh-CN': ['剪切路径', '建立', '释放', '编辑蒙版'] }[locale];
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
   const selectedObjects = doc.layers.flatMap(layer => layer.objects.filter(object => doc.selectedVectorObjects.includes(object.id)).map(object => ({ layer, object })));
@@ -62,6 +65,7 @@ export function WorkspaceMenu(props: Props) {
   const menus: Entry[][] = [
     [{ label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
       { label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
+      {label:{ja:'配置…',en:'Place…','zh-CN':'置入…'}[locale],enabled:canFile&&hasDocument&&canEdit,shortcut:'CmdOrCtrl+D',action:props.onPlace},
       { label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
       { label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
       { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, { label: { ja: '読み込み…', en: 'Import…', 'zh-CN': '导入…' }[locale], enabled: canFile && hasDocument && canEdit, action: props.onImportImage }, future(t.export)],
@@ -112,14 +116,21 @@ export function WorkspaceMenu(props: Props) {
       { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
     [{label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText}, null, { label: directionLabels[0], enabled: canEdit && selectedTexts.length > 0 && selectedTexts.every(text => text.editable), children: (['horizontal', 'vertical'] as const).map((mode, index) => ({ label: directionLabels[index + 1], checked: selectedTexts.length > 0 && selectedTexts.every(text => (text.text.writingMode ?? 'horizontal') === mode), action: () => props.onWritingMode(mode) })) }, null, future(t.font), future(t.fontSize), future(t.paragraph)],
     [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
-      { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+D', action: () => onEdit('deselect') },
+      { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+A', action: () => onEdit('deselect') },
       { label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
     [{ label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
       { label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
       { label: common.zoomIn, enabled: canEdit && zoom < MAX_ZOOM - 0.0001, action: () => onZoom(stepZoom(zoom, 1)) },
       { label: common.zoomOut, enabled: canEdit && zoom > MIN_ZOOM, action: () => onZoom(stepZoom(zoom, -1)) },
-      { label: common.fit, enabled: canEdit, action: () => onZoom(0) }],
+      { label: common.fit, enabled: canEdit, action: () => onZoom(0) }, null,
+      {label:guides[0],enabled:canEdit,children:[
+        {label:guides[doc.guides.visible?1:2],shortcut:'CmdOrCtrl+;',action:()=>props.onGuides('visibility')},
+        {label:guides[doc.guides.locked?3:4],shortcut:'CmdOrCtrl+Alt+;',action:()=>props.onGuides('lock')},null,
+        {label:guides[5],enabled:selectedObjects.some(({object,layer})=>layer.kind==='vector'&&!layer.locked&&object.kind!=='text'),shortcut:'CmdOrCtrl+5',action:()=>props.onGuides('make')},
+        {label:guides[6],enabled:!doc.guides.locked&&doc.guides.selected.length>0,shortcut:'CmdOrCtrl+Alt+5',action:()=>props.onGuides('release')},
+        {label:guides[7],enabled:doc.guides.items.length>0,action:()=>props.onGuides('clear')},
+      ]}],
     [future(t.managePlugins), future(t.browsePlugins)],
     [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
     [{ label: 'LumaPaint 0.1.0' }, null, { label: t.guide }, { label: t.drawHint }, { label: t.saveHint }, { label: t.recoveryHint }],

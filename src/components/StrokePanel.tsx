@@ -1,3 +1,4 @@
+import { useMeasurementUnit, setMeasurementUnit, pixelsPerMeasurement, unitSymbols, measurementUnits } from '../measurement-units';
 import { useEffect, useState } from 'react';
 import { defaultStrokeStyle, strokePreview, type DocumentSnapshot, type StrokeStyle } from '../bridge';
 import type { Locale } from '../i18n';
@@ -24,7 +25,7 @@ function NumericSetting({ label, value, mixed, min, max, step = .25, onCommit }:
 
 export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { locale: Locale; document: DocumentSnapshot; enabled: boolean; onChange: (width: number) => Promise<void>; onStyle: (patch: Partial<StrokeStyle>) => Promise<void> }) {
   const t = strokeLabels[locale];
-  const [unit, setUnit] = useState<'pt' | 'px'>('pt');
+  const measurementUnit=useMeasurementUnit(); const unit=unitSymbols[measurementUnit];
   const [draft, setDraft] = useState('');
   const [dashDraft, setDashDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,7 +39,7 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
   const isMixed = (key: keyof StrokeStyle) => styles.some(next => JSON.stringify(next[key]) !== JSON.stringify(style[key]));
   const widths = selected.map(({ object }) => object.strokeWidth);
   const mixed = widths.some(width => width !== widths[0]);
-  const pixelsPerUnit = unit === 'pt' ? document.resolution / 72 : 1;
+  const pixelsPerUnit = pixelsPerMeasurement(measurementUnit,document.resolution);
   const value = widths[0] ?? 0;
   const display = mixed || !selected.length ? '' : String(Number((value / pixelsPerUnit).toFixed(4)));
   const selectionKey = document.selectedVectorObjects.join(',');
@@ -86,7 +87,7 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
       <div className="stroke-width-row">
         <label htmlFor="vector-stroke-width">{t.width}</label>
         <input id="vector-stroke-width" type="number" min="0" max={4096 / pixelsPerUnit} step="0.25" value={draft} placeholder={mixed ? t.mixed : '—'} onChange={e => setDraft(e.target.value)} onBlur={() => commit()} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(display); setError(''); } }} />
-        <select aria-label={`${t.width} pt / px`} value={unit} onChange={e => setUnit(e.target.value as 'pt' | 'px')}><option>pt</option><option>px</option></select>
+        <select aria-label={t.width} value={measurementUnit} onChange={e => { void setMeasurementUnit(e.target.value as typeof measurementUnit).catch(e=>setError(String(e))); }}>{measurementUnits.map(u=><option key={u} value={u}>{unitSymbols[u]}</option>)}</select>
         <select className="stroke-presets" aria-label={t.preset} value="" onChange={e => { const next = e.target.value; setDraft(next); commit(next); }}><option value="">▾</option>{[0, .25, .5, .75, 1, 2, 3, 4, 6, 8, 12, 16, 24, 48].map(width => <option key={width} value={width}>{width} {unit}</option>)}</select>
       </div>
       <div className="stroke-settings">

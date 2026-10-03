@@ -20,9 +20,21 @@ pub struct GradientStop {
     pub color: [u8; 4],
     pub midpoint: f32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PixelGradientStyle {
+    Angular,
+    Reflected,
+    Diamond,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Gradient {
+    /// Unit-gradient to local path coordinates. Absent in legacy presets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<[f32; 6]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_style: Option<PixelGradientStyle>,
     pub kind: GradientKind,
     pub angle: f32,
     pub aspect: f32,
@@ -32,8 +44,29 @@ pub struct Gradient {
     pub stops: Vec<GradientStop>,
 }
 impl Gradient {
+    /// Position in an affine gradient, shared by pixel fallback and canvas controls.
+    pub fn position_at(&self, x: f32, y: f32) -> f32 {
+        let [a, b, c, d, e, f] = self.geometry.unwrap_or([1., 0., 0., 1., 0., 0.]);
+        let determinant = a * d - b * c;
+        let u = (d * (x - e) - c * (y - f)) / determinant;
+        let v = (-b * (x - e) + a * (y - f)) / determinant;
+        match self.pixel_style {
+            Some(PixelGradientStyle::Angular) => {
+                v.atan2(u).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU
+            }
+            Some(PixelGradientStyle::Reflected) => u.abs(),
+            Some(PixelGradientStyle::Diamond) => u.abs() + v.abs(),
+            None => match self.kind {
+                GradientKind::Linear => u,
+                GradientKind::Radial => u.hypot(v),
+            },
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
-        if !self.angle.is_finite()
+        if self.geometry.is_some_and(|m| {
+            m.iter().any(|v| !v.is_finite() || v.abs() > 1e9)
+                || (m[0] * m[3] - m[1] * m[2]).abs() < 1e-10
+        }) || !self.angle.is_finite()
             || self.angle.abs() > 36000.
             || !self.aspect.is_finite()
             || !(0.01..=10.).contains(&self.aspect)
@@ -125,6 +158,13 @@ impl Gradient {
             GradientKind::Linear=>format!("<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">",cx-cos*length,cy+sin*length,cx+cos*length,cy-sin*length),
             GradientKind::Radial=>format!("<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"0\" cy=\"0\" r=\"{}\" gradientTransform=\"translate({cx} {cy}) rotate({}) scale(1 {})\">",w*0.5,-self.angle,self.aspect),
         };
+        if let Some([a, b, c, d, e, f]) = self.geometry {
+            let transform = format!("matrix({a} {b} {c} {d} {e} {f})");
+            svg = match self.kind {
+                GradientKind::Linear => format!("<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\" gradientTransform=\"{transform}\">"),
+                GradientKind::Radial => format!("<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"0\" cy=\"0\" r=\"1\" gradientTransform=\"{transform}\">"),
+            };
+        }
         // Bake midpoint and interpolation into standard SVG stops for independent exporters.
         for (index, stop) in self.stops.iter().enumerate() {
             let next = self.stops.get(index + 1);
@@ -222,6 +262,8 @@ mod tests {
     use super::*;
     fn gradient() -> Gradient {
         Gradient {
+            geometry: None,
+            pixel_style: None,
             kind: GradientKind::Linear,
             angle: 0.,
             aspect: 1.,
@@ -255,6 +297,21 @@ mod tests {
             perceptual_mix([255, 0, 0, 255], [0, 0, 255, 255], 0.5),
             [140, 83, 162]
         );
+    }
+    #[test]
+    fn affine_positions_and_pixel_shapes() {
+        let mut g = gradient();
+        g.geometry = Some([10., 0., 0., 20., 30., 40.]);
+        assert_eq!(g.position_at(35., 40.), 0.5);
+        g.pixel_style = Some(PixelGradientStyle::Reflected);
+        assert_eq!(g.position_at(25., 40.), 0.5);
+        g.pixel_style = Some(PixelGradientStyle::Diamond);
+        assert_eq!(g.position_at(35., 50.), 1.);
+        g.pixel_style = Some(PixelGradientStyle::Angular);
+        assert!((g.position_at(30., 60.) - 0.25).abs() < 1e-6);
+        assert!(g.svg_definition("g").contains("matrix(10 0 0 20 30 40)"));
+        g.geometry = Some([0.; 6]);
+        assert!(g.validate().is_err());
     }
     #[test]
     fn reject_invalid() {

@@ -1769,6 +1769,7 @@ mod clipping_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint { color }),
@@ -1841,6 +1842,7 @@ mod clipping_tests {
                 fill_rule: FillRule::NonZero,
             },
             transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint { color }),
@@ -2644,6 +2646,8 @@ fn gradient_skia_cpu_matches_independent_svg_renderer() {
 fn gradient_dither_changes_rgb_without_changing_alpha() {
     use lumapaint_core::gradient::*;
     let mut gradient = Gradient {
+        geometry: None,
+        pixel_style: None,
         kind: GradientKind::Linear,
         angle: 0.,
         aspect: 1.,
@@ -2673,4 +2677,37 @@ fn gradient_dither_changes_rgb_without_changing_alpha() {
         noise.pixels.iter().skip(3).step_by(4).collect::<Vec<_>>()
     );
     assert!(plain.pixels != noise.pixels, "Dither did not add noise");
+}
+
+#[cfg(test)]
+mod image_frame_tests {
+    use super::*;
+    use lumapaint_core::{document::Document, image_frame::*};
+    #[test]
+    fn ellipse_clips_cached_graphic_and_frame_fill_stays_behind_image() {
+        let mut d = Document::default();
+        let image=FrameImage{source_path:Some("/missing/image.png".into()),fingerprint:"cached".into(),name:"Image".into(),width:2,height:2,encoded_width:2,encoded_height:2,orientation_transform:[1.,0.,0.,1.,0.,0.],data_uri:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=".into()};
+        d.place_frame_image(None, image, "frame").unwrap();
+        let (layer, o) = d.image_frame_object("frame").unwrap();
+        let layer = layer.id.clone();
+        let mut o = o.clone();
+        o.path.data = "M100 50 A50 50 0 1 1 0 50 A50 50 0 1 1 100 50Z".into();
+        o.kind = lumapaint_core::vector::VectorObjectKind::Ellipse;
+        o.control_points = vec![[0., 0.], [100., 100.]];
+        o.fill = Some(lumapaint_core::vector::VectorPaint {
+            color: [0, 0, 255, 255],
+        });
+        o.image_frame
+            .as_mut()
+            .unwrap()
+            .fit([0., 0., 100., 100.], FrameFit::Cover)
+            .unwrap();
+        d.upsert_vector_object(&layer, o).unwrap();
+        let raster = rasterize_svg(&d.svg_layers().next().unwrap().source, 960, 640).unwrap();
+        assert_eq!(
+            &raster.pixels[(50 * 960 + 50) * 4..(50 * 960 + 50) * 4 + 4],
+            &[255, 0, 0, 255]
+        );
+        assert_eq!(raster.pixels[3], 0);
+    }
 }

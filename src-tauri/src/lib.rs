@@ -1,3 +1,10 @@
+mod image_frames;
+mod measurement_units;
+#[tauri::command]
+fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
+    lumapaint_formats::io::FILE_FORMATS
+}
+
 use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::Manager;
 
@@ -44,6 +51,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(modal_windows::Modals::default());
+            app.manage(measurement_units::MeasurementUnits::load(app.handle()));
             canvas::initialize(app.handle());
             #[cfg(target_os = "macos")]
             {
@@ -101,7 +109,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            measurement_units::measurement_unit,
+            measurement_units::set_measurement_unit,
             runtime_info,
+            canvas::edit_pages,
+            canvas::edit_guides,
+            canvas::ruler_guide,
+            canvas::page_thumbnails,
             modal_windows::open_modal_window,
             modal_windows::modal_context,
             modal_windows::modal_ready,
@@ -155,6 +169,9 @@ pub fn run() {
             canvas::edit_transform_panel,
             canvas::set_vector_paint,
             canvas::apply_gradient,
+            canvas::set_gradient_tool,
+            gradient_presets::gradient_library,
+            swatches::swatch_library,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,
@@ -163,9 +180,20 @@ pub fn run() {
             canvas::set_bit_depth,
             canvas::set_color_profile,
             canvas::set_document_settings,
+            canvas::sample_tool_point,
+            canvas::tool_preview,
+            canvas::tool_options,
+            canvas::set_tool_brush,
+            canvas::set_tool_zoom,
+            canvas::numeric_tool,
             canvas::project_action,
+            file_format_capabilities,
             canvas::import_svg_layer,
             canvas::import_raster_layer,
+            canvas::place_image,
+            canvas::image_links,
+            canvas::manage_image_links,
+            canvas::image_frame_action,
             canvas::finish_raster_import,
             canvas::recovery_info,
             canvas::restore_recovery,
@@ -230,9 +258,11 @@ pub fn run() {
 }
 mod canvas;
 mod editor_windows;
+mod gradient_presets;
 mod modal_windows;
 #[cfg(any(target_os = "macos", test))]
 mod render_queue;
+mod swatches;
 mod tool_menu;
 
 #[cfg(any(target_os = "macos", test))]

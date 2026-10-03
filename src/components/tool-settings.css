@@ -1,0 +1,16 @@
+.tool-settings-dialog{width:min(380px,calc(100vw - 32px));max-height:calc(100vh - 32px);box-sizing:border-box;padding:20px;overflow:auto;color:var(--color-text);background:var(--color-panel);border:1px solid var(--color-rule);border-radius:6px}
+.tool-settings-dialog h3{font-size:14px;margin:0 0 18px;line-height:1.5}
+.tool-settings-dialog fieldset{border:0;padding:0;margin:0;min-width:0}
+.tool-settings-dialog label{display:grid;gap:6px;margin-bottom:12px;font-size:12px;min-width:0}
+.tool-settings-dialog input,.tool-settings-dialog textarea{width:100%;min-width:0;box-sizing:border-box;color:inherit;background:var(--color-field);border:1px solid var(--color-rule);padding:6px;font:inherit}
+.tool-settings-dialog textarea{min-height:70px;resize:vertical}
+.tool-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+.tool-settings-color,.tool-settings-dialog footer{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tool-settings-dialog footer{justify-content:flex-end;margin-top:18px}
+.tool-settings-hint{font-size:11px;line-height:1.6;color:var(--color-muted)}
+.tool-settings-dialog [role=alert]{white-space:pre-wrap;overflow-wrap:anywhere;color:#ff918b}
+
+.tool-settings-dialog{position:absolute;top:90px;left:90px;margin:0;box-shadow:0 8px 30px #0004}
+.tool-settings-dialog::backdrop{background:transparent}
+.tool-settings-dialog .tool-preview{display:flex;align-items:center;gap:8px;margin:14px 0}
+.tool-settings-dialog .tool-preview input{width:14px;height:14px;margin:0}

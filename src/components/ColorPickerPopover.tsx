@@ -14,7 +14,7 @@ const labels = {
 export const colorPickerVisibilityEvent = 'lumapaint-color-picker-visibility';
 export type ColorPickerOcclusion = { left: number; top: number; right: number; bottom: number };
 
-export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', onChange, onOpen, children }: {
+export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', onChange, onOpen, onClose, children }: {
   locale: Locale;
   color: Brush['color'];
   disabled?: boolean;
@@ -22,6 +22,7 @@ export function ColorPickerPopover({ locale, color, disabled = false, label, tar
   target?: ColorTarget;
   onChange: (color: Brush['color']) => void;
   onOpen?: () => void;
+  onClose?: () => void;
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -30,6 +31,8 @@ export function ColorPickerPopover({ locale, color, disabled = false, label, tar
   const popup = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointerId: number; offsetX: number; offsetY: number } | null>(null);
   const id = useId();
+  const closeCallback = useRef(onClose);
+  closeCallback.current = onClose;
 
   useLayoutEffect(() => {
     if (!open || !trigger.current) return;
@@ -72,7 +75,10 @@ export function ColorPickerPopover({ locale, color, disabled = false, label, tar
 
   useEffect(() => {
     if (!open) return;
-    return () => { window.dispatchEvent(new CustomEvent(colorPickerVisibilityEvent, { detail: { open: false } })); };
+    return () => {
+      window.dispatchEvent(new CustomEvent(colorPickerVisibilityEvent, { detail: { open: false } }));
+      closeCallback.current?.();
+    };
   }, [open]);
 
   const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {

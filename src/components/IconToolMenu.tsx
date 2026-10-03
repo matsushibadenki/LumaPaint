@@ -5,8 +5,9 @@ import { Icon } from './Icon';
 import { toolMenuImages } from './toolMenuImages';
 
 export interface IconToolChoice { id: string; label: string; icon: keyof typeof import('./Icon').iconPaths; shortcut?: string; enabled?: boolean }
-export function IconToolMenu({ label, choices, selected, active, enabled, selectionShortcuts = false, onSelect, onError }: {
+export function IconToolMenu({ label, choices, selected, active, enabled, selectionShortcuts = false, onSelect, onError, onSettings }: {
   label: string; choices: readonly [IconToolChoice, ...IconToolChoice[]]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
+  onSettings?: (tool: string) => void;
   onSelect: (tool: string) => void; onError: (message: string) => void;
 }) {
   const selectedIndex = Math.max(0, choices.findIndex(choice => choice.id === selected));
@@ -125,9 +126,10 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
         if (suppressClick.current) { suppressClick.current = false; event.preventDefault(); return; }
         if ((event.target as Element).closest('.tool-menu-corner')) { void show(); return; }
         close();
-        if (choice.enabled !== false) onSelect(choice.id);
-      }} onContextMenu={event => { event.preventDefault(); if (!open) void show(); }}
+        if (choice.enabled !== false) { onSelect(choice.id); if(active && event.detail===1) onSettings?.(choice.id); }
+      }} onDoubleClick={event=>{if(!(event.target as Element).closest(".tool-menu-corner")){cancelPress();close();onSettings?.(choice.id);}}} onContextMenu={event => { event.preventDefault(); if (!open) void show(); }}
       onKeyDown={event => {
+        if (event.key==='F2' && onSettings) { event.preventDefault();event.stopPropagation();close();onSettings(choice.id);return; }
         if (event.key === 'Enter' || event.key === ' ') suppressClick.current = false;
         if (event.key === 'ArrowDown' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); if (!open) void show(); }
         if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(true); }

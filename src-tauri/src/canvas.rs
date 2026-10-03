@@ -12,6 +12,8 @@ mod platform;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanvasRequest {
     #[serde(default)]
+    pub overlays: Vec<[f64; 4]>,
+    #[serde(default)]
     pub overlay: Option<[f64; 4]>,
     #[serde(default)]
     pub channel: u32,
@@ -41,6 +43,7 @@ pub enum CanvasTool {
     Brush,
     Eraser,
     Eyedropper,
+    Gradient,
     Rectangle,
     Ellipse,
     VectorSelect,
@@ -54,6 +57,8 @@ pub enum CanvasTool {
     VectorAnchorConvert,
     VectorRectangle,
     VectorEllipse,
+    ImageFrameRectangle,
+    ImageFrameEllipse,
     Text,
     TextVertical,
     TextFrame,
@@ -65,6 +70,15 @@ pub enum CanvasTool {
 
 impl CanvasRequest {
     fn validate(&self) -> Result<(), String> {
+        if self.overlays.len() > 10
+            || self
+                .overlays
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v.abs() > 65536.)
+        {
+            return Err("Invalid panel overlay bounds".into());
+        }
         if self.channel > 8 {
             return Err("Invalid display channel".into());
         }
@@ -94,6 +108,16 @@ impl CanvasRequest {
     }
 }
 
+#[derive(Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RulerViewport {
+    pub width: f32,
+    pub height: f32,
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub zoom: f32,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasInfo {
@@ -104,6 +128,7 @@ pub struct CanvasInfo {
     pub physical_height: u32,
     pub scale_factor: f64,
     pub zoom: Option<f32>,
+    pub ruler_viewport: Option<RulerViewport>,
     pub document: Option<DocumentSnapshot>,
 }
 
@@ -117,6 +142,7 @@ impl CanvasInfo {
             physical_height: 0,
             scale_factor: 1.0,
             zoom: None,
+            ruler_viewport: None,
             document: None,
         }
     }
@@ -867,6 +893,7 @@ mod tests {
     #[test]
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
+            overlays: Vec::new(),
             overlay: None,
             channel: 0,
             x: 0.0,
@@ -1001,6 +1028,179 @@ pub async fn import_raster_layer(
         Err("Image import is not supported on this platform yet".into())
     }
 }
+#[tauri::command]
+pub async fn place_image(
+    window: tauri::WebviewWindow,
+    id: Option<String>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (target, document_id, revision) =
+            on_main(window.clone(), move || platform::frame_place_context(id)).await?;
+        let path = on_main(window.clone(), move || {
+            platform::pick_raster_file("all".into())
+        })
+        .await?;
+        let Some(path) = path else {
+            return on_main(window, platform::raster_import_snapshot).await;
+        };
+        let image = tauri::async_runtime::spawn_blocking(move || crate::image_frames::load(&path))
+            .await
+            .map_err(|e| e.to_string())??;
+        on_main(window, move || {
+            platform::place_frame_image(target, image, document_id, revision)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Image frames are pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn image_links(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<crate::image_frames::ImageLink>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let images = on_main(window, platform::frame_links).await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            images
+                .into_iter()
+                .map(|(id, image)| crate::image_frames::status(id, image))
+                .collect()
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(Vec::new())
+    }
+}
+#[tauri::command]
+pub async fn image_frame_action(
+    window: tauri::WebviewWindow,
+    id: String,
+    action: String,
+    values: Option<Vec<f32>>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if action == "update" || action == "relink" {
+            let target = id.clone();
+            let (mut image, document_id, revision) = on_main(window.clone(), move || {
+                platform::frame_image_context(&target)
+            })
+            .await?;
+            let path = if action == "relink" {
+                on_main(window.clone(), move || {
+                    platform::pick_raster_file("all".into())
+                })
+                .await?
+            } else {
+                image.source_path.take().map(std::path::PathBuf::from)
+            };
+            let Some(path) = path else {
+                return on_main(window, platform::raster_import_snapshot).await;
+            };
+            let image =
+                tauri::async_runtime::spawn_blocking(move || crate::image_frames::load(&path))
+                    .await
+                    .map_err(|e| e.to_string())??;
+            on_main(window, move || {
+                platform::update_frame_image(id, image, document_id, revision)
+            })
+            .await
+        } else {
+            on_main(window, move || {
+                platform::edit_image_frame(&id, &action, values.unwrap_or_default())
+            })
+            .await
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, action, values);
+        Err("Image frames are pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn manage_image_links(
+    window: tauri::WebviewWindow,
+    ids: Vec<String>,
+    action: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if ids.is_empty()
+            || ids.len() > 10000
+            || !["update", "relink", "embed"].contains(&action.as_str())
+        {
+            return Err("Invalid link command".into());
+        }
+        let targets = ids.clone();
+        let contexts = on_main(window.clone(), move || {
+            targets
+                .iter()
+                .map(|id| platform::frame_image_context(id))
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await?;
+        let document_id = contexts[0].1;
+        let revision = contexts[0].2;
+        let replacement = if action == "relink" {
+            let path = on_main(window.clone(), move || {
+                platform::pick_raster_file("all".into())
+            })
+            .await?;
+            let Some(path) = path else {
+                return on_main(window, platform::raster_import_snapshot).await;
+            };
+            Some(path)
+        } else {
+            None
+        };
+        let updates = tauri::async_runtime::spawn_blocking(move || {
+            let mut cache = std::collections::HashMap::new();
+            let mut updates = Vec::new();
+            for (id, (image, _, _)) in ids.into_iter().zip(contexts) {
+                let image = if action == "embed" {
+                    None
+                } else {
+                    let path = replacement
+                        .clone()
+                        .or_else(|| image.source_path.map(std::path::PathBuf::from))
+                        .ok_or("Embedded image has no source")?;
+                    let loaded = if let Some(image) = cache.get(&path) {
+                        image
+                    } else {
+                        cache.insert(path.clone(), crate::image_frames::load(&path)?);
+                        cache.get(&path).unwrap()
+                    };
+                    Some(loaded.clone())
+                };
+                updates.push((id, image));
+            }
+            Ok::<_, String>(updates)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        on_main(window, move || {
+            platform::manage_frame_images(updates, document_id, revision)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, ids, action);
+        Err("Image links are pending on this platform".into())
+    }
+}
+
 #[tauri::command]
 pub async fn import_svg_layer(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
     if crate::modal_windows::owner(&window).is_err() {
@@ -1533,5 +1733,316 @@ pub async fn apply_gradient(
     {
         let _ = (window, ids, target, gradient);
         Err("Native canvas is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn set_gradient_tool(
+    window: tauri::WebviewWindow,
+    target: String,
+    gradient: lumapaint_core::gradient::Gradient,
+) -> Result<(), String> {
+    gradient.validate()?;
+    if !["fill", "stroke"].contains(&target.as_str()) {
+        return Err("Invalid gradient target".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::configure_gradient_tool(gradient, &target)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, target, gradient);
+        Err("Native gradient tool is pending on this platform".into())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolOptionsSnapshot {
+    gradient: lumapaint_core::gradient::Gradient,
+    gradient_target: String,
+    brush: Brush,
+    zoom: f32,
+}
+#[tauri::command]
+pub async fn tool_options(window: tauri::WebviewWindow) -> Result<ToolOptionsSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::tool_options).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Native tool settings are pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn set_tool_brush(window: tauri::WebviewWindow, brush: Brush) -> Result<(), String> {
+    brush.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_tool_brush(brush)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, brush);
+        Err("Native tool settings are pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn set_tool_zoom(window: tauri::WebviewWindow, zoom: f32) -> Result<(), String> {
+    if !zoom.is_finite() || !(0.0313..=640.).contains(&zoom) {
+        return Err("Invalid zoom".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_tool_zoom(zoom)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, zoom);
+        Err("Native tool settings are pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn numeric_tool(
+    window: tauri::WebviewWindow,
+    tool: CanvasTool,
+    bounds: [f32; 4],
+) -> Result<DocumentSnapshot, String> {
+    if !matches!(
+        tool,
+        CanvasTool::Rectangle
+            | CanvasTool::Ellipse
+            | CanvasTool::VectorRectangle
+            | CanvasTool::VectorEllipse
+            | CanvasTool::ImageFrameRectangle
+            | CanvasTool::ImageFrameEllipse
+    ) || bounds.iter().any(|v| !v.is_finite() || v.abs() > 65536.)
+        || bounds[2] <= 0.
+        || bounds[3] <= 0.
+    {
+        return Err("Invalid tool dimensions / ツールの寸法が不正です / 工具尺寸无效".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::numeric_tool(tool, bounds)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, tool, bounds);
+        Err("Native tool operations are pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn sample_tool_point(window: tauri::WebviewWindow, x: f32, y: f32) -> Result<(), String> {
+    if !x.is_finite() || !y.is_finite() || x.abs() > 65536. || y.abs() > 65536. {
+        return Err("Invalid sampling coordinates".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::sample_tool_point(x, y)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, x, y);
+        Err("Native sampling is pending on this platform".into())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ToolPreviewRequest {
+    Numeric { tool: CanvasTool, bounds: [f32; 4] },
+    Text { settings: Box<TextSettings> },
+    Transform { action: String, values: [f32; 4] },
+    Brush { tool: CanvasTool, brush: Brush },
+    Zoom { zoom: f32 },
+    Sample { x: f32, y: f32 },
+}
+impl ToolPreviewRequest {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Numeric { tool, bounds } => {
+                if !matches!(
+                    tool,
+                    CanvasTool::Rectangle
+                        | CanvasTool::Ellipse
+                        | CanvasTool::VectorRectangle
+                        | CanvasTool::VectorEllipse
+                        | CanvasTool::ImageFrameRectangle
+                        | CanvasTool::ImageFrameEllipse
+                ) || bounds.iter().any(|v| !v.is_finite() || v.abs() > 65536.)
+                    || bounds[2] <= 0.
+                    || bounds[3] <= 0.
+                {
+                    return Err("Invalid preview bounds".into());
+                }
+            }
+            Self::Brush { tool, brush } => {
+                if !matches!(
+                    tool,
+                    CanvasTool::Brush
+                        | CanvasTool::Eraser
+                        | CanvasTool::VectorPen
+                        | CanvasTool::VectorPencil
+                ) {
+                    return Err("Invalid preview tool".into());
+                }
+                brush.validate()?;
+            }
+            Self::Zoom { zoom } => {
+                if !zoom.is_finite() || !(0.0313..=640.).contains(zoom) {
+                    return Err("Invalid preview zoom".into());
+                }
+            }
+            Self::Transform { action, values } => {
+                if ![
+                    "move",
+                    "rotate",
+                    "scale",
+                    "reflect",
+                    "shear",
+                    "individual",
+                    "reset",
+                ]
+                .contains(&action.as_str())
+                    || values.iter().any(|v| !v.is_finite())
+                {
+                    return Err("Invalid preview transform".into());
+                }
+            }
+            Self::Sample { x, y } => {
+                if !x.is_finite() || !y.is_finite() || x.abs() > 65536. || y.abs() > 65536. {
+                    return Err("Invalid preview sample".into());
+                }
+            }
+            Self::Text { .. } => {}
+        }
+        Ok(())
+    }
+}
+#[tauri::command]
+pub async fn tool_preview(
+    window: tauri::WebviewWindow,
+    request: Option<ToolPreviewRequest>,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(request) = &request {
+        request.validate()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let caller = window.clone();
+        on_main(window, move || {
+            crate::modal_windows::owner(&caller)?;
+            platform::tool_preview(request)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        if request.is_none() {
+            Ok(())
+        } else {
+            Err("Native preview is pending on this platform".into())
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn clear_window_preview(label: &str) {
+    platform::clear_window_preview(label);
+}
+
+#[tauri::command]
+pub async fn edit_pages(
+    window: tauri::WebviewWindow,
+    edit: lumapaint_core::document::PageEdit,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_pages(edit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, edit);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn page_thumbnails(
+    window: tauri::WebviewWindow,
+    indices: Vec<usize>,
+) -> Result<Vec<(String, String)>, String> {
+    if indices.len() > 64 {
+        return Err("At most 64 page thumbnails per request".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let documents =
+            on_main(window, move || platform::page_thumbnail_documents(indices)).await?;
+        tauri::async_runtime::spawn_blocking(move || {
+            use base64::Engine;
+            documents
+                .into_iter()
+                .map(|(id, doc)| {
+                    let png = lumapaint_renderer::thumbnails::page_preview(&doc, 128)?;
+                    Ok((
+                        id,
+                        format!(
+                            "data:image/png;base64,{}",
+                            base64::engine::general_purpose::STANDARD.encode(png)
+                        ),
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, indices);
+        Err("Page thumbnails are unavailable on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn edit_guides(
+    window: tauri::WebviewWindow,
+    edit: lumapaint_core::document::GuideEdit,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_guides(edit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, edit);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn ruler_guide(
+    window: tauri::WebviewWindow,
+    axis: String,
+    position: f32,
+    phase: u8,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::ruler_guide(axis, position, phase)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, axis, position, phase);
+        Err("Native document editing is not supported on this platform yet".into())
     }
 }

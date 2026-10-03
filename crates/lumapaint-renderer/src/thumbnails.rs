@@ -30,8 +30,18 @@ fn over(dst: &mut [u8], src: &[u8], opacity: f32) {
     }
 }
 pub fn render(document: &Document) -> Result<Thumbnails, String> {
+    render_sized(document, 64., false)
+}
+pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, String> {
+    Ok(
+        render_sized(document, max_side.clamp(64, 2048) as f32, true)?
+            .channels
+            .remove(0),
+    )
+}
+fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<Thumbnails, String> {
     let snapshot = document.snapshot();
-    let scale = (64. / snapshot.width.max(snapshot.height) as f32).min(1.);
+    let scale = (max_side / snapshot.width.max(snapshot.height) as f32).min(1.);
     let width = (snapshot.width as f32 * scale).round().max(1.) as u32;
     let height = (snapshot.height as f32 * scale).round().max(1.) as u32;
     let mut tiles = TiledRasterDocument::new(width, height)?;
@@ -100,7 +110,11 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
     if document.background_visible() {
         over(&mut composite, &background, document.paint_layer_opacity());
     }
-    let mut layers = vec![("layer-1".into(), clipboard_png(width, height, background)?)];
+    let mut layers = if page_only {
+        Vec::new()
+    } else {
+        vec![("layer-1".into(), clipboard_png(width, height, background)?)]
+    };
     for layer in document
         .svg_layers()
         .filter(|layer| snapshot.layers.iter().any(|l| l.id == layer.id))
@@ -109,7 +123,9 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
         if layer.visible {
             over(&mut composite, &pixels, layer.effective_opacity());
         }
-        layers.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+        if !page_only {
+            layers.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+        }
     }
     if let Some(source) = document.clipping_mask_svg() {
         let mask = rasterize_svg(&source, width, height)?.pixels;
@@ -126,7 +142,11 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
     }
     Ok(Thumbnails {
         layers,
-        channels: channel_pngs(width, height, composite)?,
+        channels: if page_only {
+            vec![clipboard_png(width, height, composite)?]
+        } else {
+            channel_pngs(width, height, composite)?
+        },
     })
 }
 fn channel_pngs(width: u32, height: u32, composite: Vec<u8>) -> Result<Vec<Vec<u8>>, String> {

@@ -12,7 +12,7 @@ struct NativeFile {
     unknown_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn encode_state(state: &DocumentState) -> Result<Vec<u8>, String> {
     Document::from_document_state(state.clone())?;
@@ -24,14 +24,14 @@ pub fn encode_state(state: &DocumentState) -> Result<Vec<u8>, String> {
     })
     .map_err(|e| e.to_string())?;
     if bytes.len() > MAX_FILE_BYTES {
-        return Err("Project exceeds 8 MiB".into());
+        return Err("Project exceeds 64 MiB".into());
     }
     Ok(bytes)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Document, String> {
     if bytes.len() > MAX_FILE_BYTES {
-        return Err("Project exceeds 8 MiB".into());
+        return Err("Project exceeds 64 MiB".into());
     }
     let file: NativeFile = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if file.format != "LumaPaint" || file.version != 1 {
