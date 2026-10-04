@@ -1,12 +1,16 @@
 //! Filesystem and image decoding stay outside the independent document model.
+#[cfg(any(target_os = "macos", test))]
 use lumapaint_core::image_frame::FrameImage;
+#[cfg(any(target_os = "macos", test))]
 use std::path::Path;
+#[cfg(any(target_os = "macos", test))]
 pub fn fingerprint(bytes: &[u8]) -> String {
     let hash = bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
         (h ^ *b as u64).wrapping_mul(0x100000001b3)
     });
     format!("{}:{hash:016x}", bytes.len())
 }
+#[cfg(any(target_os = "macos", test))]
 pub fn load(path: &Path) -> Result<FrameImage, String> {
     use base64::Engine;
     if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 3 * 1024 * 1024 - 1024 {
@@ -58,6 +62,7 @@ pub struct ImageLink {
     pub bytes: usize,
     pub modified_at: Option<u64>,
 }
+#[cfg(any(target_os = "macos", test))]
 pub fn status(id: String, image: Option<FrameImage>) -> ImageLink {
     let Some(image) = image else {
         return ImageLink {

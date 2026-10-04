@@ -79,6 +79,7 @@ fn read(path: &std::path::Path) -> Result<Library, String> {
     validate(&library)?;
     Ok(library)
 }
+#[cfg(any(target_os = "macos", test))]
 fn import_library(path: &std::path::Path) -> Result<Library, String> {
     match read(path) {
         Ok(library) => Ok(library),

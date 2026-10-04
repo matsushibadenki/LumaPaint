@@ -960,6 +960,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn text_preview_rejects_invalid_style_and_position() {
+        let mut settings = TextSettings {
+            id: None,
+            text: lumapaint_core::vector::VectorText {
+                content: "Preview".into(),
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [0, 0, 0],
+        };
+        let valid = |settings: &TextSettings| {
+            ToolPreviewRequest::Text {
+                settings: Box::new(settings.clone()),
+            }
+            .validate()
+        };
+        assert!(valid(&settings).is_ok());
+        settings.position[0] = f32::NAN;
+        assert!(valid(&settings).is_err());
+        settings.position = [0., 100_000.];
+        assert!(valid(&settings).is_err());
+        settings.position = [0., 0.];
+        settings.text.font_size = -1.;
+        assert!(valid(&settings).is_err());
+    }
+
+    #[test]
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
             overlays: Vec::new(),
@@ -1997,7 +2024,16 @@ impl ToolPreviewRequest {
                     return Err("Invalid preview sample".into());
                 }
             }
-            Self::Text { .. } => {}
+            Self::Text { settings } => {
+                settings.text.validate()?;
+                if settings
+                    .position
+                    .iter()
+                    .any(|v| !v.is_finite() || v.abs() >= 100_000.)
+                {
+                    return Err("Invalid text position".into());
+                }
+            }
         }
         Ok(())
     }
