@@ -724,3 +724,62 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
         },
     })
 }
+
+#[cfg(test)]
+mod transparency_tests {
+    use super::*;
+    use lopdf::{dictionary, Stream};
+    fn interpret(isolated: bool, knockout: bool, alpha: f32) -> Result<String, ImportError> {
+        let mut doc = lopdf::Document::new();
+        let form = doc.add_object(Stream::new(
+            dictionary! {
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+                "Group" => dictionary! { "S" => "Transparency", "I" => isolated, "K" => knockout },
+            },
+            b"0 0 10 10 re f".to_vec(),
+        ));
+        let resources = dictionary! { "XObject" => dictionary! { "F" => form } };
+        let mut parser = Interpreter {
+            doc: &doc,
+            body: String::new(),
+            defs: String::new(),
+            issues: vec![],
+            remaining: LIMIT,
+            operations: 0,
+            serial: 0,
+            allow_lossy: false,
+            image_remaining: 64 * 1024 * 1024,
+            image_cache: Default::default(),
+        };
+        parser.content(
+            b"/F Do",
+            &resources,
+            State {
+                fill_alpha: alpha,
+                ..Default::default()
+            },
+            0,
+        )?;
+        Ok(parser.body)
+    }
+    #[test]
+    fn supported_groups_apply_outer_alpha_once() {
+        let body = interpret(true, false, 0.5).unwrap();
+        assert!(body.contains("opacity=\"0.5\""));
+        assert!(body.contains("fill-opacity=\"1\""));
+        assert!(body.contains("isolation:isolate"));
+        assert!(interpret(false, false, 1.)
+            .unwrap()
+            .contains("isolation:auto"));
+    }
+    #[test]
+    fn knockout_and_nonisolated_group_opacity_require_consent() {
+        for (isolated, knockout, alpha) in [(true, true, 1.), (false, false, 0.5)] {
+            assert!(matches!(
+                interpret(isolated, knockout, alpha),
+                Err(ImportError::LossyConversionRequiresConsent(_))
+            ));
+        }
+    }
+}

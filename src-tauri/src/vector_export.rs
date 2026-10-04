@@ -63,6 +63,7 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
         "ai.pdf_compatible_only" => "AI内のPDF互換部分を読み込みます。AI固有の編集情報は保持されません。\nThe PDF-compatible portion of AI is opened; AI-specific editing data is not retained.\n打开AI的PDF兼容部分，不保留AI专有编辑信息。",
         "pdf.text_conversion" => "PDF内の文字は読み込めません。\nPDF text cannot be imported.\n无法导入PDF文字。",
         "pdf.image_xobject" => "PDF内の画像は読み込めません。\nPDF images cannot be imported.\n无法导入PDF图像。",
+        "pdf.image_encoding" | "pdf.image_stencil" | "pdf.image_matte" | "pdf.image_mask_size" => "PDF内の一部の画像形式や画像マスクは読み込めず、省略されます。\nSome PDF image encodings or image masks are unsupported and will be omitted.\n部分PDF图像编码或图像蒙版不受支持，将被省略。",
         "pdf.pattern_conversion" | "pdf.shading_conversion" => "PDF内のパターンやグラデーションは読み込めません。\nPDF patterns or gradients cannot be imported.\n无法导入PDF图案或渐变。",
         "pdf.icc_profile_conversion" | "pdf.cmyk_profile_conversion" => "色は近似RGBへ変換されます。\nColors are converted to approximate RGB.\n颜色转换为近似RGB。",
         "pdf.annotations_omitted" => "PDFの注釈は省略されます。\nPDF annotations are omitted.\n省略PDF批注。",

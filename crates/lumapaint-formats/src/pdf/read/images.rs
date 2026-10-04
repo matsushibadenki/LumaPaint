@@ -136,11 +136,11 @@ impl Interpreter<'_> {
         for p in samples.chunks_exact(channels) {
             let mut color = [0; 3];
             for (c, n) in p.iter().enumerate() {
-                color[c] =
-                    ((decode[c * 2] + f32::from(*n) / 255. * (decode[c * 2 + 1] - decode[c * 2]))
-                        .clamp(0., 1.)
-                        * 255.)
-                        .round() as u8;
+                color[c] = ((decode[c * 2]
+                    + f32::from(*n) / 255. * (decode[c * 2 + 1] - decode[c * 2]))
+                    .clamp(0., 1.)
+                    * 255.)
+                    .round() as u8;
             }
             if channels == 1 {
                 rgba.extend_from_slice(&[color[0]; 3]);
@@ -163,7 +163,7 @@ impl Interpreter<'_> {
                     return Err(ImportError::Unsupported("pdf.image_mask_size"));
                 }
                 let range = self.decoded_range(&mask.dict, 1)?;
-                for (p, a) in rgba.chunks_exact_mut(4).zip(alpha) {
+                for (p, a) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(alpha) {
                     p[3] = ((range[0] + f32::from(a) / 255. * (range[1] - range[0])).clamp(0., 1.)
                         * 255.)
                         .round() as u8;
@@ -171,16 +171,23 @@ impl Interpreter<'_> {
             }
         }
         // PDF soft masks take precedence over explicit masks and color keys.
-        if let Ok(mask) = stream.dict.get(b"Mask").ok().filter(|_| !has_soft_mask).ok_or_else(malformed) {
+        if let Some(mask) = stream.dict.get(b"Mask").ok().filter(|_| !has_soft_mask) {
             let mask = resolve(self.doc, mask)?;
             let Ok(array) = mask.as_array() else {
                 return Err(ImportError::Unsupported("pdf.image_stencil"));
             };
             let ranges = nums(array, channels * 2)?;
-            if ranges.chunks_exact(2).any(|r| r[0] < 0. || r[1] > 255. || r[0] > r[1] || r.iter().any(|n| n.fract() != 0.)) {
+            if ranges.as_chunks::<2>().0.iter().any(|r| {
+                r[0] < 0. || r[1] > 255. || r[0] > r[1] || r.iter().any(|n| n.fract() != 0.)
+            }) {
                 return Err(malformed());
             }
-            for (p, s) in rgba.chunks_exact_mut(4).zip(samples.chunks_exact(channels)) {
+            for (p, s) in rgba
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(samples.chunks_exact(channels))
+            {
                 if s.iter().enumerate().all(|(c, n)| {
                     f32::from(*n) >= ranges[c * 2] && f32::from(*n) <= ranges[c * 2 + 1]
                 }) {
@@ -216,5 +223,179 @@ impl Interpreter<'_> {
             id.clone(),
         );
         Ok(Some(id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::{dictionary, Stream};
+
+    fn parser(doc: &lopdf::Document) -> Interpreter<'_> {
+        Interpreter {
+            doc,
+            body: String::new(),
+            defs: String::new(),
+            issues: vec![],
+            remaining: LIMIT,
+            operations: 0,
+            serial: 0,
+            allow_lossy: false,
+            image_remaining: 64 * 1024 * 1024,
+            image_cache: Default::default(),
+        }
+    }
+    fn rgb(data: Vec<u8>) -> Stream {
+        Stream::new(
+            dictionary! { "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8 },
+            data,
+        )
+    }
+    fn pixels(parser: &Interpreter<'_>) -> Vec<u8> {
+        let data = parser
+            .defs
+            .split("base64,")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        let mut reader = png::Decoder::new(Cursor::new(png)).read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let frame = reader.next_frame(&mut pixels).unwrap();
+        pixels.truncate(frame.buffer_size());
+        pixels
+    }
+    #[test]
+    fn decode_color_keys_use_original_samples_and_cached_assets_decode_once() {
+        let doc = lopdf::Document::new();
+        let resources = Dictionary::new();
+        let mut parser = parser(&doc);
+        let mut image = rgb(vec![10, 20, 30]);
+        image.dict.set(
+            "Decode",
+            vec![1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into()],
+        );
+        image.dict.set(
+            "Mask",
+            vec![
+                10.into(),
+                10.into(),
+                20.into(),
+                20.into(),
+                30.into(),
+                30.into(),
+            ],
+        );
+        let first = parser.image(&image, &resources).unwrap();
+        assert_eq!(pixels(&parser), [245, 235, 225, 0]);
+        let budget = parser.image_remaining;
+        assert_eq!(parser.image(&image, &resources).unwrap(), first);
+        assert_eq!(parser.image_remaining, budget);
+        assert_eq!(parser.defs.matches("<image").count(), 1);
+    }
+    #[test]
+    fn soft_mask_decode_overrides_explicit_mask() {
+        let mut doc = lopdf::Document::new();
+        let mut alpha = Stream::new(
+            dictionary! { "Width" => 1, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8 },
+            vec![64],
+        );
+        alpha.dict.set("Decode", vec![1.into(), 0.into()]);
+        let id = doc.add_object(alpha);
+        let mut image = rgb(vec![255, 0, 0]);
+        image.dict.set("SMask", id);
+        image.dict.set(
+            "Mask",
+            vec![
+                255.into(),
+                255.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+            ],
+        );
+        let mut parser = parser(&doc);
+        parser.image(&image, &Dictionary::new()).unwrap();
+        assert_eq!(pixels(&parser), [255, 0, 0, 191]);
+    }
+    #[test]
+    fn jpeg_is_decoded_with_declared_dimensions() {
+        let doc = lopdf::Document::new();
+        let mut data = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, 100)
+            .encode(&[180, 80, 40], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let mut image = rgb(data);
+        image.dict.set("Filter", "DCTDecode");
+        let mut parser = parser(&doc);
+        parser.image(&image, &Dictionary::new()).unwrap();
+        let decoded = pixels(&parser);
+        assert!(decoded
+            .iter()
+            .zip([180, 80, 40, 255])
+            .all(|(a, b)| a.abs_diff(b) <= 3));
+        image.dict.set("Width", 2);
+        parser.image_cache.clear();
+        assert!(parser.image(&image, &Dictionary::new()).is_err());
+    }
+    #[test]
+    fn malformed_filters_samples_and_masks_are_rejected() {
+        let doc = lopdf::Document::new();
+        let mut image = rgb(vec![0, 0, 0]);
+        image.dict.set("Filter", 42);
+        assert!(matches!(
+            parser(&doc).image(&image, &Dictionary::new()),
+            Err(ImportError::Malformed(_))
+        ));
+        image.dict.remove(b"Filter");
+        image.content.pop();
+        assert!(parser(&doc).image(&image, &Dictionary::new()).is_err());
+        image.content.push(0);
+        image.dict.set(
+            "Mask",
+            vec![
+                256.into(),
+                257.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+            ],
+        );
+        assert!(parser(&doc).image(&image, &Dictionary::new()).is_err());
+    }
+    #[test]
+    fn capacity_limits_and_unsupported_encodings_never_silently_drop_images() {
+        let doc = lopdf::Document::new();
+        let resources = Dictionary::new();
+        let mut image = rgb(vec![0, 0, 0]);
+        let mut limited = parser(&doc);
+        limited.image_remaining = 3;
+        assert!(matches!(
+            limited.image(&image, &resources),
+            Err(ImportError::LimitExceeded("pdf.image_budget"))
+        ));
+        image.dict.set("Width", 8193);
+        assert!(matches!(
+            parser(&doc).image(&image, &resources),
+            Err(ImportError::LimitExceeded("pdf.image_dimensions"))
+        ));
+        image.dict.set("Width", 1);
+        image.dict.set("BitsPerComponent", 16);
+        assert!(matches!(
+            parser(&doc).image(&image, &resources),
+            Err(ImportError::LossyConversionRequiresConsent(_))
+        ));
+        let mut lossy = parser(&doc);
+        lossy.allow_lossy = true;
+        assert!(lossy.image(&image, &resources).unwrap().is_none());
+        assert_eq!(lossy.issues[0].code, "pdf.image_encoding");
     }
 }
