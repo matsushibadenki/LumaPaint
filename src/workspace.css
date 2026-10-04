@@ -665,3 +665,17 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 
 /* Color labels stay beside visibility controls, independent of folder depth. */
 .layer-row > .path-color-stripe, .layer-row > .layer-color-spacer { flex: 0 0 3px; width: 3px; margin-left: -4px; margin-right: 4px; }
+
+.pathfinder-live { display:flex; gap:6px; align-items:center; margin:8px 0; font-size:12px; }
+.pathfinder-operands { margin-top:12px; font-size:12px; }
+.pathfinder-operands > div { display:flex; align-items:center; gap:6px; margin:5px 0; }
+.pathfinder-operands > div > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pathfinder-operands label { display:flex; align-items:center; gap:3px; }
+.pathfinder-operands input { width:58px; min-width:0; padding:3px; }
+.pathfinder-operands > button { margin-top:8px; width:100%; }
+.pathfinder-modes button[aria-pressed="true"] { background:var(--color-field); outline:1px solid var(--color-accent); }
+
+.document-tab-menu { position:fixed; z-index:10000; width:300px; max-height:300px; overflow:auto; padding:8px; display:flex; flex-direction:column; gap:4px; border:1px solid var(--color-rule); border-radius:6px; background:var(--color-panel); box-shadow:0 8px 24px #0005; }
+.document-tab-menu strong,.document-tab-menu span { padding:6px; font-size:12px; }
+.document-tab-menu button { padding:8px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.document-tab-menu [role="alert"] { color:var(--color-error); overflow-wrap:anywhere; }

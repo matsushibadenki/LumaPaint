@@ -1,3 +1,6 @@
+#[path = "document_compound_shapes.rs"]
+mod compound_shapes;
+pub use compound_shapes::{CompoundShape, CompoundShapeEdit, CompoundShapeSnapshot};
 #[path = "document_layer_groups.rs"]
 mod layer_groups;
 pub use layer_groups::{GroupMaskSettings, LayerGroupEdit, LayerGroupsSnapshot, LayerGroupsState};
@@ -441,6 +444,7 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub compound_shapes: Vec<CompoundShapeSnapshot>,
     pub layer_groups: LayerGroupsSnapshot,
     pub guides: GuidesSnapshot,
     pub pages: PagesSnapshot,
@@ -509,6 +513,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    compound_shapes: Vec<CompoundShape>,
     layer_groups: LayerGroupsState,
     guides: GuidesState,
     background_visible: bool,
@@ -584,6 +589,9 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    compound_shapes: Vec<CompoundShape>,
+    scene_journal: crate::scene::Journal,
+    scene_picking: crate::scene::picking::PickingState,
     layer_groups: LayerGroupsState,
     guides: GuidesState,
     locked_objects: std::collections::BTreeSet<String>,
@@ -637,6 +645,9 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            compound_shapes: Vec::new(),
+            scene_journal: crate::scene::Journal::default(),
+            scene_picking: crate::scene::picking::PickingState::default(),
             layer_groups: LayerGroupsState::default(),
             guides: GuidesState::default(),
             locked_objects: Default::default(),
@@ -714,6 +725,10 @@ impl Document {
     }
     pub fn canvas_color(&self) -> CanvasColor {
         self.canvas_color
+    }
+
+    pub fn scene_journal(&self) -> &crate::scene::Journal {
+        &self.scene_journal
     }
 
     pub fn revision(&self) -> u64 {
@@ -824,6 +839,7 @@ impl Document {
                 }),
         );
         DocumentSnapshot {
+            compound_shapes: self.compound_shape_snapshot(),
             layer_groups: self.layer_groups_snapshot(),
             guides: self.guides.snapshot(),
             has_locked_objects: self.has_locked_objects(),
@@ -911,6 +927,7 @@ impl Document {
             layer_groups.roots.retain(|id| id != &edit.layer_id);
         }
         DocumentState {
+            compound_shapes: self.compound_shapes.clone(),
             layer_groups,
             guides: self.guides.clone(),
             locked_objects: self.locked_objects.clone(),
@@ -1043,8 +1060,10 @@ impl Document {
             .clone()
             .map(pages::PageBook::from_state)
             .transpose()?;
+        compound_shapes::validate_compound_shapes(&file.compound_shapes, &file.svg_layers)?;
         let stroke_count = file.strokes.len();
         Ok(Self {
+            compound_shapes: file.compound_shapes,
             layer_groups: file.layer_groups,
             guides: file.guides,
             locked_objects: file.locked_objects,
@@ -1284,6 +1303,8 @@ impl Document {
                     if previous.strokes.is_some() {
                         current.strokes = Some(self.strokes.clone());
                     }
+                    self.scene_journal
+                        .layers_changed(&current.layers, &previous.layers);
                     self.vector_redo.push(current);
                     self.restore_vector_history(previous);
                     self.redo_order.push(HistoryKind::Vector);
@@ -1311,6 +1332,8 @@ impl Document {
                     if next.strokes.is_some() {
                         current.strokes = Some(self.strokes.clone());
                     }
+                    self.scene_journal
+                        .layers_changed(&current.layers, &next.layers);
                     self.vector_undo.push(current);
                     self.restore_vector_history(next);
                     self.undo_order.push(HistoryKind::Vector);
@@ -1327,9 +1350,11 @@ impl Document {
     }
     pub fn toggle_layer(&mut self, id: &str) -> Result<(), String> {
         self.finish();
+        let before = self.svg_layers.clone();
         if let Some(member) = self.layer_groups.members.iter_mut().find(|m| m.id == id) {
             member.visible = !member.visible;
             self.sync_layer_group_flags();
+            self.scene_journal.layers_changed(&before, &self.svg_layers);
             self.revision += 1;
             return Ok(());
         }
@@ -1340,11 +1365,13 @@ impl Document {
         } else {
             return Err("Layer not found".into());
         }
+        self.scene_journal.layers_changed(&before, &self.svg_layers);
         self.revision += 1;
         Ok(())
     }
     pub fn set_layer_settings(&mut self, settings: LayerSettings) -> Result<(), String> {
         self.finish();
+        let before = self.svg_layers.clone();
         let name = settings.name.trim();
         if name.is_empty()
             || name.chars().count() > 120
@@ -1400,6 +1427,7 @@ impl Document {
             member.opacity = Some(settings.opacity);
             self.sync_layer_group_flags();
         }
+        self.scene_journal.layers_changed(&before, &self.svg_layers);
         self.revision += 1;
         Ok(())
     }
@@ -1853,6 +1881,7 @@ impl Document {
         }
         self.finish();
         self.sync_layer_group_order(ids_top_to_bottom)?;
+        let previous = self.svg_layers.clone();
         let mut reordered = Vec::with_capacity(self.svg_layers.len());
         for id in ids_top_to_bottom.iter().rev() {
             let index = self
@@ -1863,6 +1892,8 @@ impl Document {
             reordered.push(self.svg_layers[index].clone());
         }
         self.svg_layers = reordered;
+        self.scene_journal
+            .layers_changed(&previous, &self.svg_layers);
         self.revision += 1;
         Ok(())
     }
@@ -1882,6 +1913,16 @@ impl Document {
         self.selected_layer = Some(id);
         self.selected_vector_objects.clear();
         Ok(())
+    }
+
+    /// Initialize a freshly loaded view without clearing an existing selection.
+    pub fn initialize_layer_selection(&mut self) {
+        if self.selected_layer.is_none() {
+            self.selected_layer = Some("layer-1".into());
+            if self.layer_groups.selected.is_empty() {
+                self.layer_groups.selected.push("layer-1".into());
+            }
+        }
     }
 
     pub fn selected_vector_target(&self) -> Result<Option<String>, String> {
@@ -1976,7 +2017,9 @@ impl Document {
         {
             return Err("A project can contain up to 16 SVG layers and 6 MiB of SVG data".into());
         }
+        let before = self.svg_layers.clone();
         self.svg_layers.push(layer);
+        self.scene_journal.layers_changed(&before, &self.svg_layers);
         self.revision += 1;
         Ok(())
     }
@@ -2127,7 +2170,10 @@ impl Document {
                     .vector_objects
                     .iter()
                     .any(|object| object.id == format!("text-{serial}"))
-        }) {
+        }) || self
+            .reserved_compound_ids()
+            .contains(&format!("text-{serial}"))
+        {
             serial += 1;
         }
         let id = format!("text-{serial}");
@@ -2216,6 +2262,13 @@ impl Document {
     ) -> Result<(), String> {
         self.finish();
         object.validate()?;
+        if self
+            .compound_shapes
+            .iter()
+            .any(|s| s.operands.iter().any(|o| o.id == object.id))
+        {
+            return Err("Object identity is reserved by a compound shape".into());
+        }
         self.ensure_object_unlocked(&object.id)?;
         if self
             .path_editing
@@ -3489,7 +3542,10 @@ impl Document {
     fn end_path_editing(&mut self) {
         self.sync_saved_path();
         if let Some(edit) = self.path_editing.take() {
+            let previous = self.svg_layers.clone();
             self.svg_layers.retain(|layer| layer.id != edit.layer_id);
+            self.scene_journal
+                .layers_changed(&previous, &self.svg_layers);
             self.selected_layer = edit.previous_layer;
             self.selected_vector_objects.clear();
         }
@@ -3536,6 +3592,7 @@ impl Document {
         });
         self.selected_layer = Some(layer_id.clone());
         self.selected_vector_objects.clear();
+        let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
             id: layer_id,
             name: path.name,
@@ -3551,6 +3608,8 @@ impl Document {
             vector_layer: true,
             vector_objects: path.objects,
         });
+        self.scene_journal
+            .layers_changed(&previous, &self.svg_layers);
         Ok(())
     }
     pub fn append_vector_guide(
@@ -3567,6 +3626,7 @@ impl Document {
             return self.upsert_vector_object(layer_id, object);
         }
         object.validate()?;
+        let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
             id: format!("guide-{}", self.svg_layers.len()),
             name: "Path guide".into(),
@@ -3582,6 +3642,8 @@ impl Document {
             vector_layer: true,
             vector_objects: vec![object],
         });
+        self.scene_journal
+            .layers_changed(&previous, &self.svg_layers);
         Ok(())
     }
     pub fn has_active_saved_path(&self) -> bool {
@@ -3951,6 +4013,7 @@ impl Document {
                     .flat_map(|o| std::iter::once(o.id.clone()).chain(o.group_path.iter().cloned()))
             })
             .collect();
+        occupied.extend(self.reserved_compound_ids());
         let mut serial = 0;
         let mut fresh = || loop {
             serial += 1;
@@ -4442,16 +4505,23 @@ impl Document {
             || !layer.visible
             || objects.iter().any(|object| {
                 !object.visible
-                    || object.kind == VectorObjectKind::Text
-                    || object.fill.is_none()
-                    || !object.group_path.is_empty()
-                    || object.clipping_group.is_some()
+                    || self.object_is_locked(&object.id)
+                    || (object.fill.is_none()
+                        && object.text.is_none()
+                        && object.clipping_group.is_none())
             })
         {
-            return Err(
-                "Select visible, ungrouped filled paths on an unlocked layer; outline text first"
-                    .into(),
-            );
+            return Err("Select visible filled shapes on an unlocked layer".into());
+        }
+        for object in &objects {
+            if let Some(group) = object.group_path.first().or(object.clipping_group.as_ref()) {
+                if layer.vector_objects.iter().any(|o| {
+                    (o.group_path.contains(group) || o.clipping_group.as_ref() == Some(group))
+                        && !selected.contains(&o.id)
+                }) {
+                    return Err("Select the entire group or clipping group".into());
+                }
+            }
         }
         let mut results = compute(&objects, operation)?;
         if results.len() > 4096 {
@@ -4463,6 +4533,7 @@ impl Document {
             .flat_map(|layer| &layer.vector_objects)
             .map(|object| object.id.clone())
             .collect();
+        ids.extend(self.reserved_compound_ids());
         for (index, object) in results.iter_mut().enumerate() {
             let base = format!("pf-{}-{}", self.revision, index);
             let mut id = base.clone();
@@ -4949,20 +5020,36 @@ impl Document {
         if !point.valid() || !tolerance.is_finite() || !(0.0..=256.0).contains(&tolerance) {
             return None;
         }
-        self.svg_layers
-            .iter()
-            .rev()
-            .filter(|layer| {
-                self.can_edit_path_layer(layer)
-                    && layer.vector_layer
-                    && layer.visible
-                    && !layer.locked
-            })
-            .flat_map(|layer| layer.vector_objects.iter().rev())
-            .find(|object| {
-                !self.object_is_locked(&object.id) && object.hit_test([point.x, point.y], tolerance)
-            })
-            .map(|object| object.id.clone())
+        let x = f64::from(point.x);
+        let y = f64::from(point.y);
+        // Cover the rounding allowance used by the f32 narrow-phase test.
+        let tolerance64 =
+            f64::from(tolerance) + x.abs().max(y.abs()).max(1.) * f64::from(f32::EPSILON) * 4.;
+        let bounds = [
+            x - tolerance64,
+            y - tolerance64,
+            x + tolerance64,
+            y + tolerance64,
+        ];
+        let mut index = self.scene_picking.lock();
+        index.retain(&self.svg_layers);
+        for layer in self.svg_layers.iter().rev().filter(|layer| {
+            self.can_edit_path_layer(layer) && layer.vector_layer && layer.visible && !layer.locked
+        }) {
+            for position in index
+                .candidates(layer, &self.scene_journal, self.revision, bounds)
+                .into_iter()
+                .rev()
+            {
+                let object = &layer.vector_objects[position];
+                if !self.object_is_locked(&object.id)
+                    && object.hit_test([point.x, point.y], tolerance)
+                {
+                    return Some(object.id.clone());
+                }
+            }
+        }
+        None
     }
 
     pub fn select_vector_at(
@@ -5000,6 +5087,7 @@ impl Document {
         let mut layers = self.svg_layers.clone();
         let mut ids = Vec::new();
         let mut serial = 0u64;
+        let mut compound_mapping = std::collections::HashMap::new();
         let mut groups = std::collections::HashMap::new();
         let mut occupied: std::collections::HashSet<String> = self
             .svg_layers
@@ -5007,6 +5095,7 @@ impl Document {
             .flat_map(|l| l.vector_objects.iter())
             .flat_map(|o| std::iter::once(o.id.clone()).chain(o.group_path.iter().cloned()))
             .collect();
+        occupied.extend(self.reserved_compound_ids());
         let mut fresh = || loop {
             serial += 1;
             let id = format!("duplicate-{}-{serial}", self.revision + 1);
@@ -5038,7 +5127,9 @@ impl Document {
                 + 1;
             let mut copies = Vec::new();
             for mut object in originals {
+                let original_id = object.id.clone();
                 object.id = fresh();
+                compound_mapping.insert(original_id, object.id.clone());
                 for group in &mut object.group_path {
                     *group = groups
                         .entry((layer.id.clone(), group.clone()))
@@ -5064,9 +5155,14 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
+        let recipes = self.duplicate_compound_recipes(&compound_mapping, &mut fresh);
+        let mut candidate_recipes = self.compound_shapes.clone();
+        candidate_recipes.extend(recipes);
+        compound_shapes::validate_compound_shapes(&candidate_recipes, &layers)?;
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers = layers;
+        self.compound_shapes = candidate_recipes;
         self.selected_vector_objects = ids;
         self.record_vector_edit(before);
         self.revision += 1;
@@ -5727,6 +5823,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            compound_shapes: self.compound_shapes.clone(),
             layer_groups: self.layer_groups.clone(),
             guides: self.guides.clone(),
             background_visible: self.visible,
@@ -5745,6 +5842,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.compound_shapes = state.compound_shapes;
         self.layer_groups = state.layer_groups;
         self.guides = state.guides;
         self.visible = state.background_visible;
@@ -5817,6 +5915,31 @@ impl Document {
             }
         }
         self.sync_saved_path();
+        self.compound_shapes.retain(|recipe| {
+            let unchanged_recipe = previous.compound_shapes.iter().any(|old| old == recipe);
+            if !unchanged_recipe {
+                return true;
+            }
+            let old = previous
+                .layers
+                .iter()
+                .flat_map(|l| &l.vector_objects)
+                .find(|o| o.id == recipe.id);
+            let now = self
+                .svg_layers
+                .iter()
+                .flat_map(|l| &l.vector_objects)
+                .find(|o| o.id == recipe.id);
+            match (old, now) {
+                (Some(old), Some(now)) => {
+                    old.path == now.path && old.control_points == now.control_points
+                }
+                _ => true,
+            }
+        });
+        self.prune_compound_shapes();
+        self.scene_journal
+            .layers_changed(&previous.layers, &self.svg_layers);
         self.vector_undo.push(previous);
         self.vector_redo.clear();
         self.redo.clear();
@@ -6951,6 +7074,8 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compound_shapes: Vec<CompoundShape>,
     #[serde(default)]
     pub guides: GuidesState,
     #[serde(default)]
@@ -7117,7 +7242,7 @@ fn empty_vector_svg(width: u32, height: u32) -> String {
     )
 }
 
-fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
+pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     use std::fmt::Write;
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#

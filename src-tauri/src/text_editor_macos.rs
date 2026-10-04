@@ -1695,6 +1695,9 @@ pub(super) struct WindowContext {
     text_frame_pending: bool,
 }
 impl WindowContext {
+    pub(super) fn active(&self) -> bool {
+        self.session.is_some()
+    }
     pub(super) fn exchange(&mut self) {
         SESSION.with(|slot| std::mem::swap(&mut self.session, &mut *slot.borrow_mut()));
         TEXT_FRAME_PENDING

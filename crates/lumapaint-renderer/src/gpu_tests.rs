@@ -8,6 +8,218 @@ use lumapaint_formats::native::NativeDocumentCodec;
 const W: u32 = 1024;
 const H: u32 = 768;
 
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
+    let gpu = Gpu::new();
+    let (layout, composite) = create_brush_composite(&gpu.device, wgpu::TextureFormat::Rgba16Float);
+    let descriptor = |format, usage| wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    };
+    // Linear red with an optical-density increment of exactly 1/256.
+    let density = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &descriptor(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        ),
+        wgpu::util::TextureDataOrder::LayerMajor,
+        bytemuck::cast_slice(&[0x3c00u16, 0, 0, 0x1c00]),
+    );
+    let accumulation = gpu.device.create_texture(&descriptor(
+        wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    ));
+    let (baseline_layout, baseline_pipeline) =
+        create_brush_composite(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+    let baseline = gpu.device.create_texture(&descriptor(
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    ));
+    let baseline_view = baseline.create_view(&Default::default());
+    let baseline_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &baseline_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &density.create_view(&Default::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(
+                    &gpu.device.create_sampler(&Default::default()),
+                ),
+            },
+        ],
+    });
+    let output = gpu.device.create_texture(&descriptor(
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    ));
+    let sampler = gpu.device.create_sampler(&Default::default());
+    let density_view = density.create_view(&Default::default());
+    let accumulation_view = accumulation.create_view(&Default::default());
+    let output_view = output.create_view(&Default::default());
+    let bind = |view: &wgpu::TextureView| {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        })
+    };
+    let density_group = bind(&density_view);
+    let present_group = bind(&accumulation_view);
+    let presentation = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        include_str!("channel.wgsl"),
+        "Float presentation regression",
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &accumulation_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&composite);
+        pass.set_bind_group(0, &density_group, &[]);
+        for _ in 0..512 {
+            pass.draw(0..6, 0..1);
+        }
+    }
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &output_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&presentation);
+        pass.set_bind_group(0, &gpu.uniforms, &[]);
+        pass.set_bind_group(1, &present_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &baseline_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&baseline_pipeline);
+        pass.set_bind_group(0, &baseline_group, &[]);
+        for _ in 0..512 {
+            pass.draw(0..6, 0..1);
+        }
+    }
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 512,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        output.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        output.size(),
+    );
+    encoder.copy_texture_to_buffer(
+        baseline.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 256,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        baseline.size(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = buffer.slice(..).get_mapped_range();
+    let expected = 1. - (-2.0f32).exp();
+    let float_error = (f32::from(bytes[3]) / 255. - expected).abs();
+    let byte_error = (f32::from(bytes[259]) / 255. - expected).abs();
+    assert!(
+        float_error < byte_error * 0.5,
+        "float {:?}, byte {:?}",
+        &bytes[..4],
+        &bytes[256..260]
+    );
+    assert!(bytes[3] > 190, "float {:?}", &bytes[..4]);
+    assert_eq!((bytes[1], bytes[2]), (0, 0));
+    let alpha = f32::from(bytes[3]) / 255.;
+    let encoded_red = ((1.055 * alpha.powf(1. / 2.4) - 0.055) * 255.).round() as u8;
+    assert!(
+        bytes[0].abs_diff(encoded_red) <= 2,
+        "presentation {:?}",
+        &bytes[..4]
+    );
+}
+
 struct Gpu {
     device: wgpu::Device,
     uniform_layout: wgpu::BindGroupLayout,
@@ -2086,7 +2298,8 @@ fn verify_object_texture_moves(shared: bool) {
     #[cfg(all(feature = "skia", target_os = "macos"))]
     let texture = if shared {
         let (shared_texture, bounds) =
-            vector::rasterize_svg_object_shared(&gpu.device, source, (960, 640), 1.0).unwrap();
+            vector::rasterize_svg_object_shared(&gpu.device, &gpu.queue, source, (960, 640), 1.0)
+                .unwrap();
         assert_eq!(bounds, rectangle);
         shared_texture
     } else {

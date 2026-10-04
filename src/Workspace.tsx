@@ -1,3 +1,5 @@
+import { DocumentTabMenu } from './components/DocumentTabMenu';
+import { moveDocumentToWindow, openDocumentView } from './bridge';
 import {layerGroupLabels} from './components/layer-group-labels';
 import { GuideOptions } from './components/GuideOptions';
 import { editGuides,editLayerGroups } from './bridge';
@@ -136,6 +138,7 @@ export function Workspace() {
   const [fileBusy, setFileBusy] = useState(false);
   const filePending = useRef(false);
   const [error, setError] = useState('');
+  const [tabMenu,setTabMenu]=useState<{id:number;x:number;y:number}|null>(null);
   const [zoom, setZoom] = useState(1);
   const [zoomCommand, setZoomCommand] = useState({ zoom: 0, revision: 0 });
   const changeZoom = useCallback((next: number) => {
@@ -427,7 +430,7 @@ export function Workspace() {
   }, [updateWorkspace]);
 
   const createFromPreset = useCallback(async (settings: NewDocumentSettings) => {
-    if (filePending.current) throw new Error('Another file operation is in progress');
+    if (filePending.current) throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
     filePending.current = true; setFileBusy(true);
     try { updateWorkspace(await createDocument(settings)); changeZoom(0); }
     finally { filePending.current = false; setFileBusy(false); }
@@ -644,7 +647,7 @@ export function Workspace() {
         <div className="document-tabs">
           <div className="document-tab-list" role="tablist" aria-label={t.openDocuments}>
             {documents.map((document, index) => <div key={document.id} className="document-tab-shell" aria-current={document.id === activeDocumentId}>
-              <button type="button" role="tab" aria-selected={document.id === activeDocumentId} className="document-tab" title={document.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} onClick={() => void documentAction('switch', document.id)}>
+              <button type="button" role="tab" aria-selected={document.id === activeDocumentId} className="document-tab" onContextMenu={event=>{if(isTauri()&&!fileBusy){event.preventDefault();setTabMenu({id:document.id,x:event.clientX,y:event.clientY});}}} title={document.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} onClick={() => void documentAction('switch', document.id)}>
                 <span>{document.fileName ?? `${t.untitledBase}-${index + 1}`}</span>{document.format === 'tiled' && <span className="document-format" aria-label={t.recoveryTiled}>T</span>}{document.dirty && <span className="unsaved-dot" aria-label={t.sessionOnly} />}
               </button>
               <button type="button" className="document-close" aria-label={`${document.fileName ?? `${t.untitledBase}-${index + 1}`} · ${t.closeDocument}`} onClick={() => void documentAction('close', document.id)}>×</button>
@@ -653,6 +656,15 @@ export function Workspace() {
           </div>
           {documentAvailable && <span className="document-dimensions">{Number((documentState.width/pixelsPerMeasurement(measurementUnit,documentState.resolution)).toFixed(3))} × {Number((documentState.height/pixelsPerMeasurement(measurementUnit,documentState.resolution)).toFixed(3))} {unitSymbols[measurementUnit]} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
+        {tabMenu&&<DocumentTabMenu key={tabMenu.id} locale={locale} x={tabMenu.x} y={tabMenu.y} onClose={()=>setTabMenu(null)} onMove={async target=>{
+          if(filePending.current)throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
+          filePending.current=true;setFileBusy(true);
+          try{updateWorkspace(await moveDocumentToWindow(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
+        }} onView={async target=>{
+          if(filePending.current)throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
+          filePending.current=true;setFileBusy(true);
+          try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
+        }}/>}
         <DocumentDock locale={locale}><CanvasPreview resolution={documentState.resolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
@@ -669,7 +681,7 @@ export function Workspace() {
     {toneStudioLoaded&&<ToneStudio locale={locale} open={toneStudioOpen} onClose={()=>setToneStudioOpen(false)}/>}
     {settingsOpen && <NativeModal kind="settings" locale={locale} theme={theme} onClose={closeSettings} onError={setError}><SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} /></NativeModal>}
     {importImageOpen && <NativeModal kind="importImage" locale={locale} theme={theme} onClose={()=>setImportImageOpen(false)} onError={setError}><ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {
-      if (filePending.current) throw new Error('Another file operation is in progress');
+      if (filePending.current) throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
       filePending.current = true; setFileBusy(true);
       try { updateDocument(await importRasterLayer(format)); }
       finally { filePending.current = false; setFileBusy(false); }

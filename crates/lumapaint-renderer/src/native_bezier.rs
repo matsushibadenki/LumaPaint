@@ -1,0 +1,652 @@
+//! Bounded native cubic fill renderer. Unsupported appearance stays with Skia.
+use crate::{create_layer_pipeline, Viewport};
+use lumapaint_core::{
+    document::SvgLayer,
+    vector::{FillRule, VectorObject, VectorPath},
+};
+use skia_safe::{Path, PathVerb};
+use std::collections::{HashMap, HashSet};
+use wgpu::util::DeviceExt;
+
+pub(crate) struct Geometry {
+    path: VectorPath,
+    center: [f64; 2],
+    bounds: [f64; 4],
+    count: usize,
+    cost: usize,
+    _curves: wgpu::Buffer,
+    uniform: wgpu::Buffer,
+    indirect: wgpu::Buffer,
+    binding: wgpu::BindGroup,
+}
+pub(crate) struct Cache {
+    pub pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    pub shapes: HashMap<String, Geometry>,
+    ready: HashMap<String, String>,
+    verified: HashMap<String, (String, bool)>,
+}
+impl Cache {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Native cubic geometry"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline = create_layer_pipeline(
+            device,
+            &[&layout],
+            format,
+            include_str!("native_bezier.wgsl"),
+            "Native cubic analytic coverage",
+        );
+        Self {
+            pipeline,
+            layout,
+            shapes: HashMap::new(),
+            ready: HashMap::new(),
+            verified: HashMap::new(),
+        }
+    }
+    pub fn begin_frame(&mut self) {
+        self.ready.clear();
+    }
+    pub fn ready(&self, layer: &SvgLayer) -> bool {
+        layer.effective_opacity() == 1.
+            && self
+                .ready
+                .get(&layer.id)
+                .is_some_and(|source| source == &layer.source)
+    }
+    pub fn retain(&mut self, live: &HashSet<String>, layers: &HashSet<String>) {
+        self.shapes.retain(|id, _| live.contains(id));
+        self.verified.retain(|id, _| layers.contains(id));
+    }
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: &SvgLayer,
+        viewport: Viewport,
+        selected: &[String],
+        offset: [f32; 2],
+    ) -> bool {
+        if !layer.vector_layer
+            || layer.effective_opacity() != 1.
+            || layer.vector_objects.is_empty()
+            || layer.vector_objects.iter().any(|o| !supported(o))
+        {
+            return false;
+        }
+        if self
+            .verified
+            .get(&layer.id)
+            .is_none_or(|(source, _)| source != &layer.source)
+        {
+            let expected = lumapaint_core::document::vector_svg(
+                viewport.document_width as u32,
+                viewport.document_height as u32,
+                &layer.vector_objects,
+            );
+            self.verified.insert(
+                layer.id.clone(),
+                (layer.source.clone(), expected == layer.source),
+            );
+        }
+        if !self.verified[&layer.id].1 {
+            return false;
+        }
+        let mut work = 0usize;
+        for o in layer.vector_objects.iter().filter(|o| o.visible) {
+            let valid = self.shapes.get(&o.id).is_some_and(|g| g.path == o.path);
+            if !valid {
+                if self.shapes.len() >= 8192 {
+                    return false;
+                }
+                let Some(g) = Geometry::new(device, &self.layout, o) else {
+                    return false;
+                };
+                self.shapes.insert(o.id.clone(), g);
+            }
+            let g = &self.shapes[&o.id];
+            // Choose the native representation by its projected precision, not
+            // zoom alone. Very large curves fall back to viewport rasterization.
+            let extent = (g.bounds[2] - g.bounds[0]).max(g.bounds[3] - g.bounds[1]);
+            let matrix_scale = o.transform[..4]
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let precision = extent
+                * f64::from(f32::EPSILON)
+                * 8.
+                * matrix_scale
+                * f64::from(viewport.screen_zoom() * viewport.scale);
+            if !precision.is_finite() || precision > 0.25 {
+                return false;
+            }
+            work = work.saturating_add(g.update(
+                queue,
+                o,
+                viewport,
+                if selected.contains(&o.id) {
+                    offset
+                } else {
+                    [0., 0.]
+                },
+            ));
+            if work > 32_000_000 {
+                return false;
+            }
+        }
+        self.ready.insert(layer.id.clone(), layer.source.clone());
+        true
+    }
+    pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, layer: &SvgLayer) {
+        pass.set_pipeline(&self.pipeline);
+        for o in layer.vector_objects.iter().filter(|o| o.visible) {
+            if let Some(g) = self.shapes.get(&o.id) {
+                pass.set_bind_group(0, &g.binding, &[]);
+                pass.draw_indirect(&g.indirect, 0);
+            }
+        }
+    }
+}
+fn supported(o: &VectorObject) -> bool {
+    o.text.is_none()
+        && o.image_frame.is_none()
+        && o.group_path.is_empty()
+        && o.clipping_group.is_none()
+        && o.fill.is_some()
+        && o.stroke.is_none()
+        && o.fill_gradient.is_none()
+        && o.stroke_gradient.is_none()
+        && o.live_corners.is_none()
+        && o.rectangle_radii.is_none()
+        && o.blend_mode == "normal"
+        && (f64::from(o.transform[0]) * f64::from(o.transform[3])
+            - f64::from(o.transform[1]) * f64::from(o.transform[2]))
+        .abs()
+            > 1e-12
+}
+type CurveGeometry = (Vec<[f32; 8]>, [f64; 2], [f64; 4]);
+fn segments(o: &VectorObject) -> Option<CurveGeometry> {
+    let path = Path::from_svg(&o.path.data)?;
+    let points = path.points();
+    if points.is_empty() {
+        return None;
+    }
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for p in points {
+        bounds[0] = bounds[0].min(f64::from(p.x));
+        bounds[1] = bounds[1].min(f64::from(p.y));
+        bounds[2] = bounds[2].max(f64::from(p.x));
+        bounds[3] = bounds[3].max(f64::from(p.y));
+    }
+    let center = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
+    let local = |p: skia_safe::Point| {
+        [
+            (f64::from(p.x) - center[0]) as f32,
+            (f64::from(p.y) - center[1]) as f32,
+        ]
+    };
+    let mut result = Vec::new();
+    let mut first = None;
+    let mut last = None;
+    let line = |a: [f32; 2], b: [f32; 2]| {
+        [
+            a[0],
+            a[1],
+            a[0] + (b[0] - a[0]) / 3.,
+            a[1] + (b[1] - a[1]) / 3.,
+            a[0] + (b[0] - a[0]) * 2. / 3.,
+            a[1] + (b[1] - a[1]) * 2. / 3.,
+            b[0],
+            b[1],
+        ]
+    };
+    for item in path.iter() {
+        let p = item.points();
+        match item.verb() {
+            PathVerb::Move => {
+                if let (Some(a), Some(b)) = (last, first) {
+                    if a != b {
+                        result.push(line(a, b));
+                    }
+                }
+                first = Some(local(p[0]));
+                last = first;
+            }
+            PathVerb::Line => {
+                result.push(line(local(p[0]), local(p[1])));
+                last = Some(local(p[1]));
+            }
+            PathVerb::Quad => {
+                let a = local(p[0]);
+                let b = local(p[1]);
+                let c = local(p[2]);
+                result.push([
+                    a[0],
+                    a[1],
+                    a[0] + (b[0] - a[0]) * 2. / 3.,
+                    a[1] + (b[1] - a[1]) * 2. / 3.,
+                    c[0] + (b[0] - c[0]) * 2. / 3.,
+                    c[1] + (b[1] - c[1]) * 2. / 3.,
+                    c[0],
+                    c[1],
+                ]);
+                last = Some(c);
+            }
+            PathVerb::Cubic => {
+                let a = local(p[0]);
+                let b = local(p[1]);
+                let c = local(p[2]);
+                let d = local(p[3]);
+                result.push([a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]]);
+                last = Some(d);
+            }
+            PathVerb::Close => {
+                if let (Some(a), Some(b)) = (last, first) {
+                    if a != b {
+                        result.push(line(a, b));
+                    }
+                }
+                last = None;
+                first = None;
+            }
+            _ => return None,
+        }
+        if result.len() > 32 {
+            return None;
+        }
+    }
+    if let (Some(a), Some(b)) = (last, first) {
+        if a != b {
+            result.push(line(a, b));
+        }
+    }
+    if result.is_empty() || result.len() > 32 {
+        return None;
+    }
+    Some((result, center, bounds))
+}
+impl Geometry {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        o: &VectorObject,
+    ) -> Option<Self> {
+        let (data, center, bounds) = segments(o)?;
+        let curves = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Resident cubic control points"),
+            contents: bytemuck::cast_slice(&data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Rebased shape display"),
+            size: 80,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let indirect = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Native shape indirect drawing"),
+            contents: bytemuck::cast_slice(&[6u32, 1, 0, 0]),
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        });
+        let binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Native curve binding"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: curves.as_entire_binding(),
+                },
+            ],
+        });
+        Some(Self {
+            path: o.path.clone(),
+            center,
+            bounds,
+            count: data.len(),
+            cost: data
+                .iter()
+                .map(|p| {
+                    let line = [
+                        p[0] + (p[6] - p[0]) / 3.,
+                        p[1] + (p[7] - p[1]) / 3.,
+                        p[0] + (p[6] - p[0]) * 2. / 3.,
+                        p[1] + (p[7] - p[1]) * 2. / 3.,
+                    ];
+                    if line.iter().zip(&p[2..6]).all(|(a, b)| (a - b).abs() < 1e-4) {
+                        1
+                    } else {
+                        35
+                    }
+                })
+                .sum(),
+            _curves: curves,
+            uniform,
+            indirect,
+            binding,
+        })
+    }
+    fn update(
+        &self,
+        queue: &wgpu::Queue,
+        o: &VectorObject,
+        v: Viewport,
+        offset: [f32; 2],
+    ) -> usize {
+        let [a, b, c, d, e, f] = o.transform.map(f64::from);
+        let scale = f64::from(v.screen_zoom()) * f64::from(v.scale);
+        let screen = |x: f64, y: f64| {
+            [
+                (a * x + c * y + e + f64::from(offset[0]) - f64::from(v.document_width) * 0.5)
+                    * scale
+                    + f64::from(v.width) * 0.5
+                    + f64::from(v.pan_x) * f64::from(v.scale),
+                (b * x + d * y + f + f64::from(offset[1]) - f64::from(v.document_height) * 0.5)
+                    * scale
+                    + f64::from(v.height) * 0.5
+                    + f64::from(v.pan_y) * f64::from(v.scale),
+            ]
+        };
+        let origin = screen(self.center[0], self.center[1]);
+        let mut bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for [x, y] in [
+            [self.bounds[0], self.bounds[1]],
+            [self.bounds[2], self.bounds[1]],
+            [self.bounds[0], self.bounds[3]],
+            [self.bounds[2], self.bounds[3]],
+        ] {
+            let p = screen(x, y);
+            bounds[0] = bounds[0].min(p[0]);
+            bounds[1] = bounds[1].min(p[1]);
+            bounds[2] = bounds[2].max(p[0]);
+            bounds[3] = bounds[3].max(p[1]);
+        }
+        bounds[0] = (bounds[0] - 1.).max(0.);
+        bounds[1] = (bounds[1] - 1.).max(0.);
+        bounds[2] = (bounds[2] + 1.).min(f64::from(v.width));
+        bounds[3] = (bounds[3] + 1.).min(f64::from(v.height));
+        let det = (a * d - b * c) * scale;
+        let fill = o.fill.unwrap().color;
+        let linear = |value: u8| {
+            let x = f32::from(value) / 255.;
+            if x <= 0.04045 {
+                x / 12.92
+            } else {
+                ((x + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let uniform = [
+            origin[0] as f32,
+            origin[1] as f32,
+            v.width as f32,
+            v.height as f32,
+            (d / det) as f32,
+            (-c / det) as f32,
+            (-b / det) as f32,
+            (a / det) as f32,
+            bounds[0] as f32,
+            bounds[1] as f32,
+            (bounds[2] - bounds[0]).max(0.) as f32,
+            (bounds[3] - bounds[1]).max(0.) as f32,
+            linear(fill[0]),
+            linear(fill[1]),
+            linear(fill[2]),
+            f32::from(fill[3]) / 255. * o.opacity,
+            self.count as f32,
+            if o.path.fill_rule == FillRule::EvenOdd {
+                1.
+            } else {
+                0.
+            },
+            0.,
+            0.,
+        ];
+        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&uniform));
+        let visible = bounds[2] > bounds[0] && bounds[3] > bounds[1];
+        queue.write_buffer(
+            &self.indirect,
+            0,
+            bytemuck::cast_slice(&[6u32, u32::from(visible), 0, 0]),
+        );
+        ((bounds[2] - bounds[0]).max(0.) * (bounds[3] - bounds[1]).max(0.)).ceil() as usize
+            * self.cost
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn object(path: &str) -> VectorObject {
+        VectorObject {
+            id: "curve".into(),
+            name: "Curve".into(),
+            opacity: 1.,
+            blend_mode: "normal".into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            path: VectorPath {
+                data: path.into(),
+                fill_rule: FillRule::EvenOdd,
+            },
+            transform: [1., 0., 0., 1., 0., 0.],
+            image_frame: None,
+            fill_gradient: None,
+            stroke_gradient: None,
+            fill: Some(lumapaint_core::vector::VectorPaint {
+                color: [30, 80, 255, 255],
+            }),
+            stroke: None,
+            stroke_width: 0.,
+            stroke_style: Default::default(),
+            live_corners: None,
+            rectangle_radii: None,
+            visible: true,
+            kind: lumapaint_core::vector::VectorObjectKind::Path,
+            control_points: vec![],
+            text: None,
+        }
+    }
+    #[test]
+    fn portable_curves_and_unsupported_fallback() {
+        let o = object("M0 0Q20 40 40 0C50 -20 60 20 70 0L70 50H0Z");
+        let (data, center, bounds) = segments(&o).unwrap();
+        assert_eq!(data.len(), 5);
+        assert!(center.iter().all(|v| v.is_finite()));
+        assert_eq!(bounds, [0., -20., 70., 50.]);
+        assert!(segments(&object("M0 0A10 10 0 0 1 20 0Z")).is_none());
+        let mut stroked = o;
+        stroked.stroke = stroked.fill;
+        assert!(!supported(&stroked));
+    }
+    #[test]
+    #[ignore = "requires a real GPU"]
+    fn gpu_native_cubic_matches_fill_and_reuses_resident_geometry() {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut cache = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let v = Viewport {
+            width: 128,
+            height: 128,
+            scale: 1.,
+            zoom: 1.6,
+            dark: false,
+            pan_x: 0.,
+            pan_y: 0.,
+            document_width: 128.,
+            document_height: 128.,
+            canvas_color: lumapaint_core::document::CanvasColor::White,
+        }
+        .with_screen_zoom(1.);
+        let o = object("M20 20C0 60 40 110 64 108C100 110 128 40 108 20Z M48 48H80V80H48Z");
+        let mut layer = SvgLayer {
+            id: "layer".into(),
+            name: "layer".into(),
+            visible: true,
+            opacity: 1.,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+            source: String::new(),
+            paint_layer: false,
+            vector_layer: true,
+            vector_objects: vec![o.clone()],
+        };
+        layer.source = lumapaint_core::document::vector_svg(128, 128, &layer.vector_objects);
+        let render = |cache: &Cache| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 128,
+                    height: 128,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 128 * 512,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let view = texture.create_view(&Default::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                cache.draw(&mut pass, &layer);
+            }
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(512),
+                        rows_per_image: Some(128),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 128,
+                    height: 128,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let pixels = buffer.slice(..).get_mapped_range().to_vec();
+            buffer.unmap();
+            pixels
+        };
+        assert!(cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        let geometry = &cache.shapes["curve"]._curves as *const _ as usize;
+        let pixels = render(&cache);
+        let path = Path::from_svg(&o.path.data)
+            .unwrap()
+            .with_fill_type(skia_safe::PathFillType::EvenOdd);
+        let mut mismatches = 0;
+        for y in 0..128 {
+            for x in 0..128 {
+                let inside = path.contains((x as f32 + 0.5, y as f32 + 0.5));
+                let alpha = pixels[(y * 128 + x) * 4 + 3];
+                if (alpha > 127) != inside {
+                    mismatches += 1;
+                }
+            }
+        }
+        assert!(
+            mismatches <= 8,
+            "Native cubic fill mismatches: {mismatches}"
+        );
+        let compatibility = crate::vector::with_compatibility_renderer(|| {
+            crate::vector::rasterize_svg(&layer.source, 128, 128)
+        })
+        .unwrap();
+        let error: usize = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(compatibility.pixels.as_chunks::<4>().0.iter())
+            .map(|(a, b)| usize::from(a[3].abs_diff(b[3])))
+            .sum();
+        assert!(error < 128 * 128 * 2, "Cubic AA alpha error: {error}");
+        // Pan and extremely high zoom alter display uniforms, never curve allocation.
+        let mut high = v.with_screen_zoom(640.);
+        high.pan_x = 100.;
+        assert!(cache.prepare(&device, &queue, &layer, high, &[], [0., 0.]));
+        assert_eq!(
+            &cache.shapes["curve"]._curves as *const _ as usize,
+            geometry
+        );
+        let canonical = layer.source.clone();
+        layer.source = layer
+            .source
+            .replace("</svg>", "<style>path { display:none }</style></svg>");
+        cache.begin_frame();
+        assert!(!cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert!(!cache.ready(&layer));
+        layer.source = canonical;
+        layer.vector_objects[0].stroke = layer.vector_objects[0].fill;
+        assert!(!cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+    }
+}

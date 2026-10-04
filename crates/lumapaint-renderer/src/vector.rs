@@ -519,6 +519,7 @@ pub(crate) fn rasterize_svg_workspace(
 #[cfg(all(feature = "skia", target_os = "macos"))]
 pub(crate) fn rasterize_svg_object_shared(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     source: &str,
     document: (u32, u32),
     opacity: f32,
@@ -567,7 +568,7 @@ pub(crate) fn rasterize_svg_object_shared(
         skia_safe::AlphaType::Premul,
         None,
     );
-    let texture = gpu_cache::rasterize_shared(device, &info, |surface| {
+    let texture = gpu_cache::rasterize_shared(device, queue, &info, |surface| {
         let canvas = surface.canvas();
         canvas.clear(skia_safe::Color::TRANSPARENT);
         canvas.translate((x - left, y - top)).scale((scale, scale));

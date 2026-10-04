@@ -357,7 +357,7 @@ define_class!(
 impl PaintView {
         #[unsafe(method(frameTick:))]
         fn frame_tick(&self, _link: &AnyObject) {
-            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
+            let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
                 if let Err(error) = redraw() { emit_error(error); }
             }
@@ -371,7 +371,7 @@ impl PaintView {
         fn wants_update_layer(&self) -> bool { true }
         #[unsafe(method(updateLayer))]
         fn update_layer(&self) {
-            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
+            let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
             if self.ivars().display_link.borrow().is_some() { return; }
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
                 text_editor::prepare_frame();
@@ -3229,6 +3229,7 @@ fn emit_document() {
         }
     }
     emit_workspace();
+    window_sessions::shared_changed();
 }
 fn report_edit(action: DocumentAction) {
     if let Err(error) = edit(action) {
@@ -3549,6 +3550,30 @@ pub fn pathfinder_vectors(
     DOCUMENT.with(|doc| {
         doc.borrow_mut()
             .pathfinder_selected_vectors(operation, lumapaint_renderer::vector::pathfinder::compute)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn make_compound_shape(
+    operation: lumapaint_core::vector::PathfinderOperation,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .make_compound_shape(operation, lumapaint_renderer::vector::pathfinder::compute)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+pub fn edit_compound_shape(
+    edit: lumapaint_core::document::CompoundShapeEdit,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    DOCUMENT.with(|doc| {
+        doc.borrow_mut()
+            .edit_compound_shape(edit, lumapaint_renderer::vector::pathfinder::compute)
     })?;
     redraw()?;
     emit_document();
@@ -4352,7 +4377,20 @@ fn finish_raster_job(
         }
         match result {
             Ok(layers) => {
+                // Shared Metal textures may have completed on the UI thread while
+                // this compatibility job was running. Do not upload duplicate pixels.
+                let missing: std::collections::HashSet<_> = DOCUMENT.with(|document| {
+                    canvas
+                        .renderer
+                        .missing_svg_layers(&document.borrow())
+                        .into_iter()
+                        .map(|layer| layer.id)
+                        .collect()
+                });
                 for layer in layers {
+                    if !missing.contains(&layer.id) {
+                        continue;
+                    }
                     upload_bytes += layer.pixels.len();
                     if let Err(error) = canvas.renderer.install_prepared_svg(layer) {
                         failure = Some(error);
@@ -4550,6 +4588,7 @@ struct OpenDocument {
 }
 
 enum OpenDocumentContent {
+    Shared(u64),
     Legacy(Box<Document>),
     Tiled(TiledSession),
 }
@@ -4609,6 +4648,10 @@ impl TiledSession {
 impl OpenDocumentContent {
     fn dirty(&self) -> bool {
         match self {
+            Self::Shared(id) => {
+                window_sessions::shared_tab(*id).is_some_and(|tab| tab.dirty)
+                    && !window_sessions::shared_has_other_views(*id)
+            }
             Self::Legacy(document) => document.snapshot().dirty,
             Self::Tiled(document) => document.dirty(),
         }
@@ -4626,6 +4669,18 @@ fn next_document_id() -> u64 {
 fn park_active_document() {
     raster_import::cancel();
     if !DOCUMENT_OPEN.with(|open| open.get()) {
+        return;
+    }
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    if window_sessions::park_shared_active(id) {
+        INACTIVE_DOCUMENTS.with(|documents| {
+            documents.borrow_mut().push(OpenDocument {
+                id,
+                content: OpenDocumentContent::Shared(id),
+                path: None,
+                fingerprint: None,
+            })
+        });
         return;
     }
     let content = ACTIVE_TILED_DOCUMENT
@@ -4663,8 +4718,14 @@ fn sync_viewport_document(
 }
 
 fn activate_document(entry: OpenDocument) {
+    let entry = if matches!(entry.content, OpenDocumentContent::Shared(_)) {
+        window_sessions::take_shared(entry.id)
+    } else {
+        entry
+    };
     cancel_vector_drag();
     let (width, height, canvas_color) = match &entry.content {
+        OpenDocumentContent::Shared(_) => unreachable!("shared content was resolved"),
         OpenDocumentContent::Legacy(document) => {
             let snapshot = document.snapshot();
             (snapshot.width, snapshot.height, snapshot.canvas_color)
@@ -4675,10 +4736,10 @@ fn activate_document(entry: OpenDocument) {
         }
     };
     match entry.content {
+        OpenDocumentContent::Shared(_) => unreachable!("shared content was resolved"),
         OpenDocumentContent::Legacy(mut document) => {
             lumapaint_svg::attach(&mut document);
-            let id = document.snapshot().layer_id;
-            let _ = document.select_layer(id);
+            document.initialize_layer_selection();
             ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow_mut().take());
             DOCUMENT.with(|slot| *slot.borrow_mut() = *document);
         }
@@ -4701,6 +4762,9 @@ fn activate_document(entry: OpenDocument) {
 
 fn document_tab(id: u64, content: &OpenDocumentContent) -> DocumentTabSnapshot {
     match content {
+        OpenDocumentContent::Shared(shared_id) => {
+            window_sessions::shared_tab(*shared_id).expect("shared tab exists")
+        }
         OpenDocumentContent::Legacy(document) => {
             let snapshot = document.snapshot();
             DocumentTabSnapshot {
@@ -6699,6 +6763,7 @@ pub fn confirm_discard() -> bool {
         return false;
     }
     let active_dirty = DOCUMENT_OPEN.with(|open| open.get())
+        && !window_sessions::shared_has_other_views(ACTIVE_DOCUMENT_ID.with(|active| active.get()))
         && ACTIVE_TILED_DOCUMENT.with(|document| {
             document.borrow().as_ref().map_or_else(
                 || DOCUMENT.with(|doc| doc.borrow().snapshot().dirty),
@@ -6742,6 +6807,14 @@ fn ensure_document_open() -> Result<(), String> {
     .ok_or_else(|| "This document is read-only in the current workspace".into())
 }
 
+pub fn open_document_view(id: u64, target: &str) -> Result<DocumentWorkspaceSnapshot, String> {
+    window_sessions::open_document_view(id, target)
+}
+
+pub fn move_document_to_window(id: u64, target: &str) -> Result<DocumentWorkspaceSnapshot, String> {
+    window_sessions::transfer_document(id, target)
+}
+
 pub fn new_document(
     settings: lumapaint_core::document::NewDocumentSettings,
 ) -> Result<DocumentWorkspaceSnapshot, String> {
@@ -6760,6 +6833,7 @@ pub fn new_document(
 }
 
 pub fn switch_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
+    window_sessions::ensure_shared_editable(id)?;
     text_editor::finish(true)?;
     if DOCUMENT_OPEN.with(|open| open.get()) && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id
     {
@@ -6793,9 +6867,10 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
                 TiledSession::dirty,
             )
         });
-        if dirty && !confirm_unsaved_changes() {
+        if dirty && !window_sessions::shared_has_other_views(id) && !confirm_unsaved_changes() {
             return Ok(workspace_snapshot());
         }
+        window_sessions::detach_shared_view(id, &current_label(), true);
         DOCUMENT.with(|doc| *doc.borrow_mut() = Document::default());
         ACTIVE_TILED_DOCUMENT.with(|document| document.borrow_mut().take());
         PROJECT_PATH.with(|path| *path.borrow_mut() = None);
@@ -6821,6 +6896,7 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
                 return Ok(());
             }
             documents.remove(index);
+            window_sessions::detach_shared_view(id, &current_label(), true);
             Ok(())
         })?;
         emit_workspace();
@@ -7048,6 +7124,30 @@ fn checkpoint() {
     if RECOVERY_DISCARDED.with(|flag| flag.get()) {
         return;
     }
+    if window_sessions::shared_checkpoint() {
+        return;
+    }
+    if ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow().is_some()) {
+        ACTIVE_TILED_DOCUMENT.with(|slot| {
+            let slot = slot.borrow();
+            let document = slot.as_ref().unwrap();
+            let key = (document.document.revision(), document.dirty());
+            if CHECKPOINT_REVISION.with(|last| last.get() == Some(key)) {
+                return;
+            }
+            RECOVERY.with(|recovery| {
+                if let Some(recovery) = recovery.borrow().as_ref() {
+                    recovery.checkpoint_project(
+                        crate::project_file::ProjectData::Tiled(document.document.state()),
+                        key.0,
+                        key.1,
+                    );
+                    CHECKPOINT_REVISION.with(|last| last.set(Some(key)));
+                }
+            });
+        });
+        return;
+    }
     let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
     let key = (snapshot.revision, snapshot.dirty);
     if CHECKPOINT_REVISION.with(|last| last.get() == Some(key)) {
@@ -7069,6 +7169,9 @@ pub fn discard_recovery() {
     });
 }
 pub fn recovery_info() -> Result<crate::recovery::Info, String> {
+    if let Some(info) = window_sessions::shared_recovery_info() {
+        return info;
+    }
     RECOVERY.with(|slot| match slot.borrow().as_ref() {
         Some(recovery) => recovery.info(),
         None => Ok(crate::recovery::Info {
@@ -7081,6 +7184,7 @@ pub fn recovery_info() -> Result<crate::recovery::Info, String> {
     })
 }
 pub fn retry_recovery() -> Result<(), String> {
+    window_sessions::retry_shared_recovery();
     if RECOVERY.with(|slot| slot.borrow().is_none()) {
         start_recovery();
     }

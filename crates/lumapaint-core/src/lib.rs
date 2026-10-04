@@ -5,6 +5,7 @@ pub mod bezier;
 pub mod document;
 pub mod gradient;
 pub mod graph;
+pub mod scene;
 pub mod selection;
 pub mod stroke;
 pub mod svg_backend;

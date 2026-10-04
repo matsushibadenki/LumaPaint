@@ -21,6 +21,10 @@ fn output(path: Path, source: &VectorObject, strip_stroke: bool) -> Result<Vecto
     object.control_points = path.points().iter().map(|p| [p.x, p.y]).collect();
     object.transform = [1., 0., 0., 1., 0., 0.];
     object.kind = VectorObjectKind::Compound;
+    object.text = None;
+    object.group_path.clear();
+    object.clipping_group = None;
+    object.image_frame = None;
     object.live_corners = None;
     object.rectangle_radii = None;
     object.bounds_reset = false;
@@ -31,9 +35,77 @@ fn output(path: Path, source: &VectorObject, strip_stroke: bool) -> Result<Vecto
     object.validate()?;
     Ok(object)
 }
+// Groups are logical operands; clipping masks contribute only their clipped contents.
+fn normalize_operands(objects: &[VectorObject]) -> Result<Vec<VectorObject>, String> {
+    let mut groups: Vec<(String, Path, VectorObject)> = Vec::new();
+    for object in objects.iter().filter(|o| o.clipping_group.is_none()) {
+        if object
+            .image_frame
+            .as_ref()
+            .is_some_and(|f| f.image.is_some())
+        {
+            return Err(
+                "Raster image contents cannot participate in filled path operations".into(),
+            );
+        }
+        let mut path = if object.text.is_some() {
+            let mut source = object.clone();
+            source.group_path.clear();
+            let svg = lumapaint_core::document::vector_svg(1024, 1024, &[source]);
+            let outlines = crate::text_outlines::outline(&svg, object)?;
+            let mut result = Path::default();
+            for glyph in outlines {
+                result = boolean(
+                    &result,
+                    &SkiaPathEngine::transformed(&glyph)?,
+                    PathOp::Union,
+                )?;
+            }
+            result
+        } else {
+            SkiaPathEngine::transformed(object)?
+        };
+        for mask in objects.iter().filter(|m| {
+            m.clipping_group
+                .as_ref()
+                .is_some_and(|g| object.group_path.contains(g))
+        }) {
+            path = boolean(
+                &path,
+                &SkiaPathEngine::transformed(mask)?,
+                PathOp::Intersect,
+            )?;
+        }
+        let key = object.group_path.first().unwrap_or(&object.id).clone();
+        if let Some((_, accumulated, style)) = groups.iter_mut().find(|(id, _, _)| id == &key) {
+            *accumulated = boolean(accumulated, &path, PathOp::Union)?;
+            *style = object.clone();
+        } else {
+            groups.push((key, path, object.clone()));
+        }
+    }
+    // Reject incomplete clip selections instead of silently changing their meaning.
+    for mask in objects.iter().filter(|m| m.clipping_group.is_some()) {
+        if !objects.iter().any(|o| {
+            o.group_path.contains(mask.clipping_group.as_ref().unwrap())
+                && o.clipping_group.is_none()
+        }) {
+            return Err("Select the clipping group's contents together with its mask".into());
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, path, style)| output(path, &style, false))
+        .collect()
+}
 pub fn compute(objects: &[VectorObject], operation: Op) -> Result<Vec<VectorObject>, String> {
     if !(2..=64).contains(&objects.len()) {
         return Err("Select 2 to 64 shapes".into());
+    }
+    let normalized = normalize_operands(objects)?;
+    let objects = normalized.as_slice();
+    if objects.len() < 2 {
+        return Err("Select at least two independent shapes or groups".into());
     }
     let paths = objects
         .iter()
@@ -240,7 +312,7 @@ mod tests {
     fn covers(objects: &[VectorObject], point: (f32, f32)) -> bool {
         objects
             .iter()
-            .any(|object| Path::from_svg(&object.path.data).unwrap().contains(point))
+            .any(|object| SkiaPathEngine::transformed(object).unwrap().contains(point))
     }
     #[test]
     fn shape_modes_respect_stacking_transforms_and_different_colors() {
@@ -337,5 +409,182 @@ mod tests {
         );
         doc.redo();
         assert_eq!(doc.snapshot().selected_vector_objects.len(), 3);
+    }
+    #[test]
+    fn live_shapes_restore_operands_history_native_and_duplicates() {
+        use lumapaint_core::document::CompoundShapeEdit;
+        use lumapaint_formats::native::NativeDocumentCodec;
+        let edit = |action: &str, operation, operand, translation| CompoundShapeEdit {
+            action: action.into(),
+            operation,
+            operand,
+            translation,
+        };
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        for o in [
+            shape("a", 0., [255, 0, 0, 255]),
+            shape("b", 10., [0, 0, 255, 255]),
+        ] {
+            doc.upsert_vector_object(&layer, o).unwrap();
+        }
+        doc.select_vector_objects(vec!["a".into(), "b".into()])
+            .unwrap();
+        doc.make_compound_shape(Op::Unite, compute).unwrap();
+        let root = doc.snapshot().selected_vector_objects[0].clone();
+        assert_eq!(doc.snapshot().compound_shapes.len(), 1);
+        assert!(covers(
+            &doc.svg_layers().last().unwrap().vector_objects,
+            (25., 10.)
+        ));
+        let bytes = doc.encode().unwrap();
+        let revision = doc.snapshot().revision;
+        assert!(doc
+            .edit_compound_shape(
+                edit("update", None, Some("a".into()), Some([f32::NAN, 0.])),
+                compute
+            )
+            .is_err());
+        assert_eq!(doc.snapshot().revision, revision);
+        doc.edit_compound_shape(edit("update", Some(Op::Intersect), None, None), compute)
+            .unwrap();
+        assert!(!covers(
+            &doc.svg_layers().last().unwrap().vector_objects,
+            (25., 10.)
+        ));
+        doc.undo();
+        assert!(covers(
+            &doc.svg_layers().last().unwrap().vector_objects,
+            (25., 10.)
+        ));
+        doc.redo();
+        assert_eq!(doc.snapshot().compound_shapes[0].operation, Op::Intersect);
+        let mut loaded = Document::decode(&bytes).unwrap();
+        loaded.select_vector_objects(vec![root.clone()]).unwrap();
+        loaded.duplicate_selected_vectors(40., 0.).unwrap();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 2);
+        loaded
+            .edit_compound_shape(edit("release", None, None, None), compute)
+            .unwrap();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 1);
+        assert_eq!(loaded.snapshot().selected_vector_objects.len(), 2);
+        let restored = loaded.svg_layers().last().unwrap().vector_objects.clone();
+        assert!(covers(&restored, (65., 10.)));
+        loaded.undo();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 2);
+        loaded.select_vector_objects(vec![root]).unwrap();
+        loaded
+            .edit_compound_shape(edit("expand", None, None, None), compute)
+            .unwrap();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 1);
+        loaded.undo();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 2);
+        Document::decode(&loaded.encode().unwrap()).unwrap();
+    }
+    #[test]
+    fn groups_clips_and_text_are_logical_filled_operands() {
+        use lumapaint_core::document::TextSettings;
+        use lumapaint_core::vector::VectorText;
+        let mut a = shape("a", 0., [255, 0, 0, 255]);
+        a.group_path = vec!["g".into()];
+        let mut b = shape("b", 10., [255, 0, 0, 255]);
+        b.group_path = vec!["g".into()];
+        let c = shape("c", 20., [0, 0, 255, 255]);
+        let result = compute(&[a.clone(), b.clone(), c.clone()], Op::Intersect).unwrap();
+        assert!(covers(&result, (25., 10.)));
+        assert!(!covers(&result, (15., 10.)));
+        let mut mask = shape("mask", 5., [255, 0, 0, 255]);
+        mask.clipping_group = Some("g".into());
+        let result = compute(&[a, b, mask, c], Op::Unite).unwrap();
+        assert!(!covers(&result, (2., 10.)));
+        assert!(covers(&result, (8., 10.)));
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "O".into(),
+                font_size: 40.,
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let text = doc
+            .svg_layers()
+            .flat_map(|l| &l.vector_objects)
+            .find(|o| o.text.is_some())
+            .unwrap()
+            .clone();
+        let outline = normalize_operands(std::slice::from_ref(&text)).unwrap();
+        assert!(outline[0].text.is_none());
+        assert!(!outline[0].path.data.is_empty());
+        let mut frame = shape("frame", -10., [0, 0, 0, 255]);
+        frame.path.data = "M-10 -100H100V100H-10Z".into();
+        frame.control_points = vec![[-10., -100.], [100., 100.]];
+        let result = compute(&[text, frame], Op::Intersect).unwrap();
+        assert!(boolean(
+            &SkiaPathEngine::transformed(&result[0]).unwrap(),
+            &SkiaPathEngine::transformed(&outline[0]).unwrap(),
+            PathOp::XOR
+        )
+        .unwrap()
+        .is_empty());
+    }
+    #[test]
+    fn nested_live_shapes_can_be_released_and_empty_intersections_remain_editable() {
+        use lumapaint_core::document::CompoundShapeEdit;
+        use lumapaint_formats::native::NativeDocumentCodec;
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        for o in [
+            shape("a", 0., [255, 0, 0, 255]),
+            shape("b", 10., [0, 0, 255, 255]),
+            shape("c", 100., [0, 255, 0, 255]),
+        ] {
+            doc.upsert_vector_object(&layer, o).unwrap();
+        }
+        doc.select_vector_objects(vec!["a".into(), "b".into()])
+            .unwrap();
+        doc.make_compound_shape(Op::Unite, compute).unwrap();
+        let child = doc.snapshot().selected_vector_objects[0].clone();
+        doc.select_vector_objects(vec![child.clone(), "c".into()])
+            .unwrap();
+        doc.make_compound_shape(Op::Intersect, compute).unwrap();
+        assert_eq!(doc.snapshot().compound_shapes.len(), 2);
+        assert!(!covers(
+            &doc.svg_layers().last().unwrap().vector_objects,
+            (15., 10.)
+        ));
+        let parent = doc.snapshot().selected_vector_objects.clone();
+        let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        loaded.select_vector_objects(parent).unwrap();
+        loaded
+            .edit_compound_shape(
+                CompoundShapeEdit {
+                    action: "release".into(),
+                    operation: None,
+                    operand: None,
+                    translation: None,
+                },
+                compute,
+            )
+            .unwrap();
+        assert_eq!(loaded.snapshot().compound_shapes.len(), 1);
+        loaded.select_vector_objects(vec![child]).unwrap();
+        loaded
+            .edit_compound_shape(
+                CompoundShapeEdit {
+                    action: "release".into(),
+                    operation: None,
+                    operand: None,
+                    translation: None,
+                },
+                compute,
+            )
+            .unwrap();
+        assert!(loaded.snapshot().compound_shapes.is_empty());
+        assert_eq!(loaded.svg_layers().last().unwrap().vector_objects.len(), 3);
+        Document::decode(&loaded.encode().unwrap()).unwrap();
     }
 }

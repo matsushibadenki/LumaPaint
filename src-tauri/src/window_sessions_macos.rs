@@ -209,9 +209,454 @@ fn activate(label: &str) {
             sessions.borrow_mut().insert(previous, runtime);
         });
     }
+    load_shared_active();
     if fresh {
         start_recovery();
     }
+}
+
+// A shared document is owned by exactly one Rust runtime, or parked here.
+// Other windows hold its ID and their own viewport, never a document clone.
+struct SharedDocument {
+    owner: Option<String>,
+    parked: Option<OpenDocument>,
+    views: HashSet<String>,
+    snapshot: DocumentSnapshot,
+    tiled: bool,
+    recovery: Option<crate::recovery::Recovery>,
+    checkpoint: Option<(u64, bool)>,
+}
+thread_local! {
+    static SHARED: RefCell<HashMap<u64, SharedDocument>> = RefCell::new(HashMap::new());
+}
+pub(super) fn shared_snapshot(id: u64) -> Option<DocumentSnapshot> {
+    SHARED.with(|shared| {
+        shared
+            .borrow()
+            .get(&id)
+            .map(|record| record.snapshot.clone())
+    })
+}
+pub(super) fn shared_checkpoint() -> bool {
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    SHARED.with(|shared| {
+        let mut shared = shared.borrow_mut();
+        let Some(record) = shared.get_mut(&id) else {
+            return false;
+        };
+        let Some(recovery) = &record.recovery else {
+            return true;
+        };
+        let snapshot = ACTIVE_TILED_DOCUMENT.with(|slot| {
+            slot.borrow().as_ref().map_or_else(
+                || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+                TiledSession::snapshot,
+            )
+        });
+        let key = (snapshot.revision, snapshot.dirty);
+        if record.checkpoint == Some(key) {
+            return true;
+        }
+        ACTIVE_TILED_DOCUMENT.with(|slot| {
+            if let Some(document) = slot.borrow().as_ref() {
+                recovery.checkpoint_project(
+                    crate::project_file::ProjectData::Tiled(document.document.state()),
+                    key.0,
+                    key.1,
+                );
+            } else {
+                recovery.checkpoint(DOCUMENT.with(|doc| doc.borrow().clone()));
+            }
+        });
+        record.checkpoint = Some(key);
+        true
+    })
+}
+pub(super) fn shared_recovery_info() -> Option<Result<crate::recovery::Info, String>> {
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    SHARED.with(|shared| {
+        shared.borrow().get(&id).and_then(|record| {
+            record
+                .recovery
+                .as_ref()
+                .map(crate::recovery::Recovery::info)
+        })
+    })
+}
+pub(super) fn retry_shared_recovery() {
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    SHARED.with(|shared| {
+        if let Some(record) = shared.borrow_mut().get_mut(&id) {
+            record.checkpoint = None;
+        }
+    });
+}
+pub(super) fn shared_tab(id: u64) -> Option<DocumentTabSnapshot> {
+    SHARED.with(|shared| {
+        shared.borrow().get(&id).map(|entry| DocumentTabSnapshot {
+            id,
+            file_name: entry
+                .snapshot
+                .file_name
+                .clone()
+                .or(Some(entry.snapshot.name.clone())),
+            dirty: entry.snapshot.dirty,
+            format: if entry.tiled { "tiled" } else { "legacy" },
+        })
+    })
+}
+pub(super) fn shared_has_other_views(id: u64) -> bool {
+    SHARED.with(|shared| {
+        shared
+            .borrow()
+            .get(&id)
+            .is_some_and(|entry| entry.views.len() > 1)
+    })
+}
+fn take_live_document(id: u64) -> OpenDocument {
+    let content = ACTIVE_TILED_DOCUMENT
+        .with(|slot| slot.borrow_mut().take())
+        .map_or_else(
+            || {
+                OpenDocumentContent::Legacy(Box::new(
+                    DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
+                ))
+            },
+            OpenDocumentContent::Tiled,
+        );
+    OpenDocument {
+        id,
+        content,
+        path: PROJECT_PATH.with(|slot| slot.borrow_mut().take()),
+        fingerprint: PROJECT_FINGERPRINT.with(|slot| slot.borrow_mut().take()),
+    }
+}
+pub(super) fn park_shared_active(id: u64) -> bool {
+    let is_shared = SHARED.with(|shared| shared.borrow().contains_key(&id));
+    if !is_shared {
+        return false;
+    }
+    refresh_shared_snapshot();
+    let entry = take_live_document(id);
+    SHARED.with(|shared| {
+        let mut shared = shared.borrow_mut();
+        let record = shared.get_mut(&id).unwrap();
+        record.owner = None;
+        record.parked = Some(entry);
+    });
+    true
+}
+pub(super) fn take_shared(id: u64) -> OpenDocument {
+    let (parked, owner) = SHARED.with(|shared| {
+        let mut shared = shared.borrow_mut();
+        let record = shared.get_mut(&id).expect("shared document exists");
+        (record.parked.take(), record.owner.take())
+    });
+    let entry = if let Some(entry) = parked {
+        entry
+    } else {
+        let owner = owner.expect("shared document has an owner");
+        if owner == current_label() {
+            take_live_document(id)
+        } else {
+            PARKED.with(|sessions| {
+                let mut sessions = sessions.borrow_mut();
+                let runtime = sessions
+                    .get_mut(&owner)
+                    .expect("shared owner runtime exists");
+                let content = runtime.active_tiled_document.take().map_or_else(
+                    || OpenDocumentContent::Legacy(Box::new(std::mem::take(&mut runtime.document))),
+                    OpenDocumentContent::Tiled,
+                );
+                OpenDocument {
+                    id,
+                    content,
+                    path: runtime.project_path.take(),
+                    fingerprint: runtime.project_fingerprint.take(),
+                }
+            })
+        }
+    };
+    SHARED.with(|shared| shared.borrow_mut().get_mut(&id).unwrap().owner = Some(current_label()));
+    entry
+}
+fn load_shared_active() {
+    if !DOCUMENT_OPEN.with(|open| open.get()) {
+        return;
+    }
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    let needs_load = SHARED.with(|shared| {
+        shared
+            .borrow()
+            .get(&id)
+            .is_some_and(|record| record.owner.as_deref() != Some(current_label().as_str()))
+    });
+    if needs_load {
+        let entry = take_shared(id);
+        match entry.content {
+            OpenDocumentContent::Legacy(document) => {
+                DOCUMENT.with(|slot| *slot.borrow_mut() = *document);
+                ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow_mut().take());
+            }
+            OpenDocumentContent::Tiled(document) => {
+                DOCUMENT.with(|slot| *slot.borrow_mut() = Document::default());
+                ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(document));
+            }
+            OpenDocumentContent::Shared(_) => unreachable!("canonical content cannot be a view"),
+        }
+        PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
+        PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
+    }
+}
+pub(super) fn refresh_shared_snapshot() {
+    if !DOCUMENT_OPEN.with(|open| open.get()) {
+        return;
+    }
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    if !SHARED.with(|shared| shared.borrow().contains_key(&id)) {
+        return;
+    }
+    let snapshot = ACTIVE_TILED_DOCUMENT.with(|slot| {
+        slot.borrow().as_ref().map_or_else(
+            || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+            TiledSession::snapshot,
+        )
+    });
+    SHARED.with(|shared| shared.borrow_mut().get_mut(&id).unwrap().snapshot = snapshot);
+}
+pub(super) fn shared_changed() {
+    refresh_shared_snapshot();
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    let current = current_label();
+    let Some((snapshot, labels)) = SHARED.with(|shared| {
+        shared
+            .borrow()
+            .get(&id)
+            .map(|record| (record.snapshot.clone(), record.views.clone()))
+    }) else {
+        return;
+    };
+    if let Some(app) = APP.get() {
+        PARKED.with(|sessions| {
+            for label in labels.iter().filter(|label| **label != current) {
+                if let Some(runtime) = sessions.borrow_mut().get_mut(label) {
+                    let is_active = runtime.document_open && runtime.active_document_id == id;
+                    let mut tabs: Vec<_> = runtime
+                        .inactive_documents
+                        .iter()
+                        .map(|entry| document_tab(entry.id, &entry.content))
+                        .collect();
+                    let active = if is_active {
+                        Some(snapshot.clone())
+                    } else if runtime.document_open {
+                        Some(
+                            shared_snapshot(runtime.active_document_id).unwrap_or_else(|| {
+                                runtime.active_tiled_document.as_ref().map_or_else(
+                                    || runtime.document.snapshot(),
+                                    TiledSession::snapshot,
+                                )
+                            }),
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(active) = &active {
+                        tabs.push(DocumentTabSnapshot {
+                            id: runtime.active_document_id,
+                            file_name: active.file_name.clone().or(Some(active.name.clone())),
+                            dirty: active.dirty,
+                            format: if shared_tab(runtime.active_document_id)
+                                .is_some_and(|tab| tab.format == "tiled")
+                                || runtime.active_tiled_document.is_some()
+                            {
+                                "tiled"
+                            } else {
+                                "legacy"
+                            },
+                        });
+                    }
+                    tabs.sort_by_key(|tab| tab.id);
+                    let _ = app.emit_to(
+                        label,
+                        "documents-changed",
+                        DocumentWorkspaceSnapshot {
+                            active_id: runtime.document_open.then_some(runtime.active_document_id),
+                            active,
+                            documents: tabs,
+                        },
+                    );
+                    if is_active {
+                        runtime.frame_requested = true;
+                        let title = format!(
+                            "{}{} — LumaPaint",
+                            snapshot.name,
+                            if snapshot.dirty { " *" } else { "" }
+                        );
+                        if runtime.window_title != title {
+                            if let Some(window) = app.get_webview_window(label) {
+                                let _ = window.set_title(&title);
+                            }
+                            runtime.window_title = title;
+                        }
+                        let _ = app.emit_to(label, "document-changed", &snapshot);
+                        if let Some(canvas) = &runtime.canvas {
+                            canvas.view.request_frame();
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+pub(super) fn detach_shared_view(id: u64, label: &str, discard: bool) {
+    if SHARED.with(|shared| {
+        shared
+            .borrow()
+            .get(&id)
+            .is_some_and(|record| record.owner.as_deref() == Some(label))
+    }) {
+        // Close/transfer first parks the authoritative content if it is live here.
+        if label == current_label()
+            && DOCUMENT_OPEN.with(|open| open.get())
+            && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id
+        {
+            park_shared_active(id);
+        }
+    }
+    SHARED.with(|shared| {
+        let mut shared = shared.borrow_mut();
+        if let Some(record) = shared.get_mut(&id) {
+            record.views.remove(label);
+        }
+        if shared
+            .get(&id)
+            .is_some_and(|record| record.views.is_empty())
+        {
+            if discard {
+                if let Some(recovery) = shared.get(&id).and_then(|record| record.recovery.as_ref())
+                {
+                    recovery.clear();
+                }
+            }
+            shared.remove(&id);
+        }
+    });
+}
+pub(in crate::canvas) fn open_document_view(
+    id: u64,
+    target: &str,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    if target == current_label()
+        || !crate::editor_windows::is_editor(target)
+        || CLOSED.with(|c| c.borrow().contains(target))
+    {
+        return Err("Choose another editor window / 別の編集ウインドウを選択してください / 请选择其他编辑窗口".into());
+    }
+    if APP
+        .get()
+        .is_some_and(|app| app.get_webview_window(target).is_none())
+    {
+        return Err("Editor window not found".into());
+    }
+    if !workspace_snapshot()
+        .documents
+        .iter()
+        .any(|tab| tab.id == id)
+    {
+        return Err("Document not found".into());
+    }
+    text_editor::finish(true)?;
+    finish_open_pen()?;
+    let source = current_label();
+    // Activate the requested source tab before converting it to a shared identity.
+    if ACTIVE_DOCUMENT_ID.with(|active| active.get()) != id {
+        switch_document(id)?;
+    }
+    if !SHARED.with(|shared| shared.borrow().contains_key(&id)) {
+        let recovery = RECOVERY.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(crate::recovery::Recovery::fork)
+                .transpose()
+        })?;
+        let snapshot = workspace_snapshot().active.unwrap();
+        let tiled = ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow().is_some());
+        SHARED.with(|shared| {
+            shared.borrow_mut().insert(
+                id,
+                SharedDocument {
+                    owner: Some(source.clone()),
+                    parked: None,
+                    views: HashSet::from([source.clone()]),
+                    snapshot,
+                    tiled,
+                    recovery,
+                    checkpoint: None,
+                },
+            );
+        });
+        shared_checkpoint();
+        RECOVERY.with(|slot| {
+            if let Some(recovery) = slot.borrow().as_ref() {
+                recovery.clear();
+            }
+        });
+    }
+    {
+        let _destination = SessionGuard::enter(target)?;
+        if workspace_snapshot()
+            .documents
+            .iter()
+            .any(|tab| tab.id == id)
+        {
+            return Err("This document already has a view in this window / このウインドウには既に同じ文書のビューがあります / 此窗口中已存在该文档的视图".into());
+        }
+        text_editor::finish(true)?;
+        finish_open_pen()?;
+        park_active_document();
+        SHARED.with(|shared| {
+            shared
+                .borrow_mut()
+                .get_mut(&id)
+                .unwrap()
+                .views
+                .insert(target.into());
+        });
+        activate_document(OpenDocument {
+            id,
+            content: OpenDocumentContent::Shared(id),
+            path: None,
+            fingerprint: None,
+        });
+        emit_document();
+        redraw()?;
+    }
+    if let Some(app) = APP.get() {
+        if let Some(window) = app.get_webview_window(target) {
+            let _ = window.set_focus();
+        }
+    }
+    Ok(workspace_snapshot())
+}
+
+pub(super) fn ensure_shared_editable(id: u64) -> Result<(), String> {
+    let current = current_label();
+    let views = SHARED.with(|shared| shared.borrow().get(&id).map(|record| record.views.clone()));
+    if let Some(views) = views {
+        let other_editor = PARKED.with(|sessions| {
+            sessions.borrow().iter().any(|(label, runtime)| {
+                views.contains(label)
+                    && label != &current
+                    && runtime.document_open
+                    && runtime.active_document_id == id
+                    && runtime.text.active()
+            })
+        });
+        if other_editor {
+            return Err("Finish text editing in the other view / 他のビューの文字編集を確定してください / 请先完成其他视图中的文本编辑".into());
+        }
+    }
+    Ok(())
 }
 
 /// Restores the caller even across AppKit nested event loops (dialogs/text drag).
@@ -220,7 +665,7 @@ pub(in crate::canvas) struct SessionGuard {
     previous: String,
 }
 impl SessionGuard {
-    pub(in crate::canvas) fn enter(label: &str) -> Result<Self, String> {
+    pub(super) fn enter_render(label: &str) -> Result<Self, String> {
         if SHUTTING_DOWN.with(|flag| flag.get())
             || CLOSED.with(|closed| closed.borrow().contains(label))
         {
@@ -228,6 +673,36 @@ impl SessionGuard {
         }
         let previous = current_label();
         activate(label);
+        Ok(Self { previous })
+    }
+    pub(in crate::canvas) fn enter(label: &str) -> Result<Self, String> {
+        if SHUTTING_DOWN.with(|flag| flag.get())
+            || CLOSED.with(|closed| closed.borrow().contains(label))
+        {
+            return Err("Editor window is closed".into());
+        }
+        let previous = current_label();
+        if label != previous {
+            let target_id = PARKED.with(|sessions| {
+                sessions
+                    .borrow()
+                    .get(label)
+                    .filter(|runtime| runtime.document_open)
+                    .map(|runtime| runtime.active_document_id)
+            });
+            if let Some(id) = target_id {
+                let source_editing =
+                    ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id && text_editor::active();
+                if source_editing && shared_has_other_views(id) {
+                    return Err("Finish text editing in the other view / 他のビューの文字編集を確定してください / 请先完成其他视图中的文本编辑".into());
+                }
+            }
+        }
+        activate(label);
+        if let Err(error) = ensure_shared_editable(ACTIVE_DOCUMENT_ID.with(|active| active.get())) {
+            activate(&previous);
+            return Err(error);
+        }
         Ok(Self { previous })
     }
 }
@@ -260,7 +735,151 @@ pub(in crate::canvas) fn for_canvas(token: u64) -> Option<SessionGuard> {
             })
         })
     }?;
-    SessionGuard::enter(&label).ok()
+    if CLOSED.with(|closed| closed.borrow().contains(&label))
+        || SHUTTING_DOWN.with(|flag| flag.get())
+    {
+        return None;
+    }
+    let previous = current_label();
+    activate(&label);
+    Some(SessionGuard { previous })
+}
+
+/// Move the authoritative document value; no serialization or pixel cloning.
+pub(in crate::canvas) fn transfer_document(
+    id: u64,
+    target: &str,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    let source = current_label();
+    if source == target
+        || !crate::editor_windows::is_editor(target)
+        || CLOSED.with(|c| c.borrow().contains(target))
+    {
+        return Err("Choose another editor window / 別の編集ウインドウを選択してください / 请选择其他编辑窗口".into());
+    }
+    if let Some(app) = APP.get() {
+        if app.get_webview_window(target).is_none() {
+            return Err(
+                "Editor window not found / 編集ウインドウが見つかりません / 找不到编辑窗口".into(),
+            );
+        }
+    }
+    text_editor::finish(true)?;
+    DOCUMENT.with(|doc| {
+        let mut doc = doc.borrow_mut();
+        finish_pen(&mut doc, false)?;
+        doc.finish();
+        Ok::<(), String>(())
+    })?;
+    if !workspace_snapshot()
+        .documents
+        .iter()
+        .any(|tab| tab.id == id)
+    {
+        return Err("Document not found".into());
+    }
+    // Complete the destination's transient edits before taking ownership away.
+    {
+        let _destination = SessionGuard::enter(target)?;
+        if workspace_snapshot()
+            .documents
+            .iter()
+            .any(|tab| tab.id == id)
+        {
+            return Err("This document already has a view in this window / このウインドウには既に同じ文書のビューがあります / 此窗口中已存在该文档的视图".into());
+        }
+        text_editor::finish(true)?;
+        DOCUMENT.with(|doc| {
+            let mut doc = doc.borrow_mut();
+            finish_pen(&mut doc, false)?;
+            doc.finish();
+            Ok::<(), String>(())
+        })?;
+    }
+    cancel_vector_drag();
+    let was_active = DOCUMENT_OPEN.with(|open| open.get())
+        && ACTIVE_DOCUMENT_ID.with(|active| active.get()) == id;
+    if was_active {
+        park_active_document();
+        DOCUMENT_OPEN.with(|open| open.set(false));
+        PROJECT_PATH.with(|slot| slot.borrow_mut().take());
+        PROJECT_FINGERPRINT.with(|slot| slot.borrow_mut().take());
+    }
+    let entry = INACTIVE_DOCUMENTS.with(|items| {
+        let mut items = items.borrow_mut();
+        let index = items.iter().position(|entry| entry.id == id).unwrap();
+        items.remove(index)
+    });
+    if !DOCUMENT_OPEN.with(|open| open.get()) {
+        let next = INACTIVE_DOCUMENTS.with(|items| items.borrow_mut().pop());
+        if let Some(next) = next {
+            activate_document(next);
+        } else {
+            ACTIVE_DOCUMENT_ID.with(|active| active.set(next_document_id()));
+        }
+    }
+    CHECKPOINT_REVISION.with(|slot| slot.set(None));
+    {
+        let _destination = match SessionGuard::enter(target) {
+            Ok(session) => session,
+            Err(error) => {
+                if was_active {
+                    park_active_document();
+                    activate_document(entry);
+                } else {
+                    INACTIVE_DOCUMENTS.with(|items| items.borrow_mut().push(entry));
+                }
+                emit_workspace();
+                return Err(error);
+            }
+        };
+        park_active_document();
+        SHARED.with(|shared| {
+            if let Some(record) = shared.borrow_mut().get_mut(&id) {
+                record.views.insert(target.into());
+            }
+        });
+        activate_document(entry);
+        PAN.with(|pan| pan.set((0., 0.)));
+        let zoom = CANVAS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            slot.as_mut().map(|canvas| {
+                canvas.viewport.pan_x = 0.;
+                canvas.viewport.pan_y = 0.;
+                canvas.viewport.zoom = 1.;
+                canvas.viewport.screen_zoom()
+            })
+        });
+        if let (Some(app), Some(zoom)) = (APP.get(), zoom) {
+            let _ = app.emit_to(current_label(), "canvas-zoom-changed", zoom);
+        }
+        emit_document();
+        if let Err(error) = redraw() {
+            emit_error(error);
+        }
+    }
+    // The moved tab has already left the source; its canonical content belongs
+    // to the destination, so unregister without parking the source's next tab.
+    SHARED.with(|shared| {
+        if let Some(record) = shared.borrow_mut().get_mut(&id) {
+            record.views.remove(&source);
+        }
+    });
+    if DOCUMENT_OPEN.with(|open| open.get()) {
+        emit_document();
+    } else {
+        checkpoint();
+        emit_workspace();
+    }
+    if let Some(app) = APP.get() {
+        if let Some(window) = app.get_webview_window(target) {
+            let _ = window.set_focus();
+        }
+    }
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+    Ok(workspace_snapshot())
 }
 
 pub(in crate::canvas) fn confirm_window(label: &str) -> bool {
@@ -273,10 +892,28 @@ pub(in crate::canvas) fn confirm_all() -> bool {
     let Some(app) = APP.get() else {
         return confirm_discard();
     };
-    app.webview_windows()
+    if !app
+        .webview_windows()
         .keys()
         .filter(|label| crate::editor_windows::is_editor(label))
         .all(|label| confirm_window(label))
+    {
+        return false;
+    }
+    let shared: Vec<_> = SHARED.with(|shared| {
+        shared
+            .borrow()
+            .iter()
+            .filter(|(_, record)| record.views.len() > 1 && record.snapshot.dirty)
+            .filter_map(|(_, record)| record.views.iter().next().cloned())
+            .collect()
+    });
+    shared.into_iter().all(|label| {
+        let Ok(_session) = SessionGuard::enter(&label) else {
+            return false;
+        };
+        confirm_unsaved_changes()
+    })
 }
 pub(in crate::canvas) fn close_window(label: &str) {
     close(label, true);
@@ -293,6 +930,17 @@ fn close(label: &str, discard: bool) {
             discard_recovery();
         }
         destroy();
+        let ids: Vec<_> = SHARED.with(|shared| {
+            shared
+                .borrow()
+                .iter()
+                .filter(|(_, record)| record.views.contains(label))
+                .map(|(id, _)| *id)
+                .collect()
+        });
+        for id in ids {
+            detach_shared_view(id, label, discard);
+        }
         RECOVERY.with(|slot| {
             if let Some(mut recovery) = slot.borrow_mut().take() {
                 recovery.stop();
@@ -325,6 +973,13 @@ pub(in crate::canvas) fn shutdown_all() {
 }
 
 pub(in crate::canvas) fn discard_all() {
+    SHARED.with(|shared| {
+        for record in shared.borrow().values() {
+            if let Some(recovery) = &record.recovery {
+                recovery.clear();
+            }
+        }
+    });
     if let Some(app) = APP.get() {
         for label in app
             .webview_windows()
@@ -371,6 +1026,237 @@ mod tests {
             color_profile: ColorProfile::Srgb,
             bit_depth: 8,
         }
+    }
+
+    #[test]
+    fn shared_tiled_views_keep_layers_and_history_when_the_owner_closes() {
+        let _source = SessionGuard::enter("editor-90111").unwrap();
+        let id = next_document_id();
+        let mut document = TiledRasterDocument::new(1024, 768).unwrap();
+        document.add_layer("tiles-a".into(), "A".into()).unwrap();
+        activate_document(OpenDocument {
+            id,
+            content: OpenDocumentContent::Tiled(TiledSession {
+                document,
+                file_name: Some("Shared tiles".into()),
+                saved_revision: 0,
+            }),
+            path: None,
+            fingerprint: None,
+        });
+        open_document_view(id, "editor-90112").unwrap();
+        {
+            let _view = SessionGuard::enter("editor-90112").unwrap();
+            assert_eq!(workspace_snapshot().documents[0].format, "tiled");
+            ACTIVE_TILED_DOCUMENT.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .document
+                    .add_layer("tiles-b".into(), "B".into())
+                    .unwrap()
+            });
+            ACTIVE_TILED_DOCUMENT.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .document
+                    .set_layer_locks("tiles-b", true, false)
+                    .unwrap()
+            });
+            emit_document();
+        }
+        assert_eq!(
+            ACTIVE_TILED_DOCUMENT.with(|slot| slot
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .document
+                .layers()
+                .len()),
+            2
+        );
+        close_window("editor-90111");
+        {
+            let _view = SessionGuard::enter("editor-90112").unwrap();
+            ACTIVE_TILED_DOCUMENT.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let session = slot.as_mut().unwrap();
+                assert_eq!(session.document.layers().len(), 2);
+                assert!(session.document.layers()[1].locked);
+                session.document.undo().unwrap();
+                assert!(!session.document.layers()[1].locked);
+                session.saved_revision = session.document.revision();
+            });
+            emit_document();
+            close_document(id).unwrap();
+            assert!(shared_tab(id).is_none());
+        }
+        close_window("editor-90112");
+    }
+
+    #[test]
+    fn shared_views_keep_one_document_history_and_independent_viewports() {
+        let _source = SessionGuard::enter("editor-90101").unwrap();
+        let id = new_document(preset("Shared")).unwrap().active_id.unwrap();
+        DOCUMENT.with(|doc| {
+            let layer = doc.borrow_mut().add_vector_layer().unwrap();
+            doc.borrow_mut().select_layer(layer).unwrap();
+            doc.borrow_mut()
+                .set_text_object(TextSettings {
+                    id: None,
+                    text: lumapaint_core::vector::VectorText {
+                        content: "Shared text".into(),
+                        ..Default::default()
+                    },
+                    position: [10., 20.],
+                    color: [0, 0, 0],
+                })
+                .unwrap();
+        });
+        let storage =
+            DOCUMENT.with(|doc| doc.borrow().svg_layers().last().unwrap().source.as_ptr());
+        PROJECT_PATH.with(|path| {
+            *path.borrow_mut() = Some("/private/tmp/shared-document.lumapaint".into())
+        });
+        PAN.with(|pan| pan.set((11., 12.)));
+        open_document_view(id, "editor-90102").unwrap();
+        assert_eq!(workspace_snapshot().active_id, Some(id));
+        assert_eq!(
+            DOCUMENT.with(|doc| doc.borrow().svg_layers().last().unwrap().source.as_ptr()),
+            storage
+        );
+        {
+            let _view = SessionGuard::enter("editor-90102").unwrap();
+            assert_eq!(workspace_snapshot().active_id, Some(id));
+            assert_eq!(
+                DOCUMENT.with(|doc| doc.borrow().svg_layers().last().unwrap().source.as_ptr()),
+                storage
+            );
+            assert_eq!(
+                PROJECT_PATH
+                    .with(|path| path.borrow().clone())
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "/private/tmp/shared-document.lumapaint"
+            );
+            PAN.with(|pan| pan.set((21., 22.)));
+            DOCUMENT.with(|doc| doc.borrow_mut().delete_selected_vector_objects().unwrap());
+            emit_document();
+            assert!(DOCUMENT.with(|doc| doc
+                .borrow()
+                .svg_layers()
+                .last()
+                .unwrap()
+                .vector_objects
+                .is_empty()));
+        }
+        assert_eq!(PAN.with(|pan| pan.get()), (11., 12.));
+        assert!(DOCUMENT.with(|doc| doc
+            .borrow()
+            .svg_layers()
+            .last()
+            .unwrap()
+            .vector_objects
+            .is_empty()));
+        DOCUMENT.with(|doc| doc.borrow_mut().undo());
+        emit_document();
+        {
+            let _view = SessionGuard::enter("editor-90102").unwrap();
+            assert_eq!(PAN.with(|pan| pan.get()), (21., 22.));
+            assert_eq!(
+                DOCUMENT.with(|doc| doc
+                    .borrow()
+                    .svg_layers()
+                    .last()
+                    .unwrap()
+                    .vector_objects
+                    .len()),
+                1
+            );
+            let unrelated = new_document(preset("Other tab"))
+                .unwrap()
+                .active_id
+                .unwrap();
+            assert_eq!(workspace_snapshot().documents.len(), 2);
+            switch_document(id).unwrap();
+            assert_eq!(workspace_snapshot().active_id, Some(id));
+            switch_document(unrelated).unwrap();
+        }
+        close_window("editor-90101");
+        {
+            let _view = SessionGuard::enter("editor-90102").unwrap();
+            switch_document(id).unwrap();
+            assert_eq!(
+                DOCUMENT.with(|doc| doc
+                    .borrow()
+                    .svg_layers()
+                    .last()
+                    .unwrap()
+                    .vector_objects
+                    .len()),
+                1
+            );
+            assert!(DOCUMENT.with(|doc| doc.borrow().snapshot().can_redo));
+            DOCUMENT.with(|doc| doc.borrow_mut().mark_saved("Shared.lumapaint".into()));
+            emit_document();
+            close_document(id).unwrap();
+            assert!(shared_tab(id).is_none());
+        }
+        close_window("editor-90102");
+    }
+
+    #[test]
+    fn transfer_preserves_identity_history_and_document_storage() {
+        let _source = SessionGuard::enter("editor-90011").unwrap();
+        let id = new_document(preset("Transfer")).unwrap().active_id.unwrap();
+        DOCUMENT.with(|doc| {
+            let layer = doc.borrow_mut().add_vector_layer().unwrap();
+            doc.borrow_mut().select_layer(layer).unwrap();
+            doc.borrow_mut()
+                .set_text_object(TextSettings {
+                    id: None,
+                    text: lumapaint_core::vector::VectorText {
+                        content: "Retained".into(),
+                        ..Default::default()
+                    },
+                    position: [10., 20.],
+                    color: [0, 0, 0],
+                })
+                .unwrap();
+        });
+        let address =
+            DOCUMENT.with(|doc| doc.borrow().svg_layers().last().unwrap().source.as_ptr());
+        let selection = DOCUMENT.with(|doc| doc.borrow().snapshot().selected_vector_objects);
+        let other = new_document(preset("Remaining"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        let source = transfer_document(id, "editor-90012").unwrap();
+        assert_eq!(source.active_id, Some(other));
+        assert_eq!(source.documents.len(), 1);
+        {
+            let _destination = SessionGuard::enter("editor-90012").unwrap();
+            assert_eq!(workspace_snapshot().active_id, Some(id));
+            assert_eq!(
+                DOCUMENT.with(|doc| doc.borrow().snapshot().selected_vector_objects),
+                selection
+            );
+            DOCUMENT.with(|doc| {
+                assert_eq!(
+                    doc.borrow().svg_layers().last().unwrap().source.as_ptr(),
+                    address
+                );
+                assert!(doc.borrow().snapshot().can_undo);
+            });
+            let source = transfer_document(id, "editor-90011").unwrap();
+            assert!(source.documents.is_empty());
+        }
+        assert_eq!(workspace_snapshot().active_id, Some(id));
+        assert_eq!(workspace_snapshot().documents.len(), 2);
+        assert!(transfer_document(id, "settings").is_err());
+        close_window("editor-90012");
     }
 
     #[test]

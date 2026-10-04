@@ -5,10 +5,11 @@ import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewW
 // Native session events must only reach this editor, including text and zoom.
 const listen: ReturnType<typeof getCurrentWebviewWindow>['listen'] = (event, handler) => getCurrentWebviewWindow().listen(event, handler);
 
-export async function newEditorWindow(): Promise<void> {
+export async function newEditorWindow(): Promise<string> {
   const label = await invoke<string>('new_editor_window');
   const editor = await WebviewWindow.getByLabel(label);
   if (editor) await editor.setFocus();
+  return label;
 }
 
 
@@ -35,7 +36,9 @@ export interface LayerGroup {id:string;name:string;visible:boolean;locked:boolea
 export interface LayerGroupsState {groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
 export interface LayerGroupEdit {action:'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
 export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
+export interface CompoundShapeSnapshot { id: string; operation: PathfinderOperation; operands: {id:string;name:string;transform:[number,number,number,number,number,number]}[] }
 export interface DocumentSnapshot {
+  compoundShapes?: CompoundShapeSnapshot[];
   layerGroups:LayerGroupsState;
   guides:GuidesState;
   pages: PagesSnapshot;
@@ -315,6 +318,16 @@ export const closeDocument = (id: number) => documentCommand('close_document', i
 
 // Serialize view updates and teardown, including React StrictMode's setup/cleanup replay.
 let canvasQueue: Promise<void> = Promise.resolve();
+export function editorWindowTargets():Promise<[string,string][]> { return invoke('editor_window_targets'); }
+export function openDocumentView(id:number,target:string):Promise<DocumentWorkspaceSnapshot> {
+  const result=canvasQueue.then(()=>invoke<DocumentWorkspaceSnapshot>('open_document_view',{id,target}));
+  canvasQueue=result.then(()=>undefined,()=>undefined);return result;
+}
+export function moveDocumentToWindow(id:number,target:string):Promise<DocumentWorkspaceSnapshot> {
+  const result=canvasQueue.then(()=>invoke<DocumentWorkspaceSnapshot>('move_document_to_window',{id,target}));
+  canvasQueue=result.then(()=>undefined,()=>undefined);return result;
+}
+
 export function syncCanvas(request: CanvasRequest): Promise<CanvasInfo | null> {
   if (!isTauri()) return Promise.resolve(null);
   const result = canvasQueue.then(() => invoke<CanvasInfo>('sync_canvas', { request }));
@@ -492,6 +505,18 @@ export function editDirectControls(mode:'position'|'move'|'corner',values:number
 export type PathfinderOperation = 'unite' | 'minusFront' | 'intersect' | 'exclude' | 'divide' | 'trim' | 'merge' | 'crop' | 'outline' | 'minusBack';
 export function pathfinderVectors(operation: PathfinderOperation): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('pathfinder_vectors', { operation }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function makeCompoundShape(operation: PathfinderOperation): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('make_compound_shape', { operation }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+export interface CompoundShapeEdit { action:'update'|'expand'|'release'; operation?:PathfinderOperation; operand?:string; translation?:[number,number] }
+export function editCompoundShape(edit:CompoundShapeEdit):Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('edit_compound_shape', { edit }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }

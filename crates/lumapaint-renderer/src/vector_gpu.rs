@@ -13,13 +13,14 @@ enum State {
 thread_local! {
     // Ganesh contexts may not be shared concurrently across rendering workers.
     static CONTEXT: RefCell<State> = const { RefCell::new(State::Uninitialized) };
-    static SHARED_CONTEXTS: RefCell<HashMap<usize, State>> = RefCell::new(HashMap::new());
+    static SHARED_CONTEXTS: RefCell<HashMap<(usize, usize), State>> = RefCell::new(HashMap::new());
 }
 
 /// The texture is allocated on wgpu's exact Metal device. Skia finishes writing
-/// before ownership is handed to wgpu; no pixel buffer or upload is involved.
+/// on wgpu's queue before its sampling commands; no CPU wait or upload is involved.
 pub(super) fn rasterize_shared(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     info: &ImageInfo,
     draw: impl FnOnce(&mut Surface),
 ) -> Option<wgpu::Texture> {
@@ -28,7 +29,16 @@ pub(super) fn rasterize_shared(
         .raw_device()
         .lock()
         .clone();
-    let key = raw_device.as_ptr() as usize;
+    // SAFETY: callers pass the queue belonging to this device. Keep an owned
+    // Metal reference after releasing the HAL guard. Both engines commit to
+    // the same serial queue, so GPU ordering replaces a CPU completion wait.
+    let raw_queue = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }?
+        .as_raw()
+        .lock()
+        .clone();
+    // Windows can use the same physical device with different serial queues.
+    // Reusing a context across queues would lose producer/consumer ordering.
+    let key = (raw_device.as_ptr() as usize, raw_queue.as_ptr() as usize);
     SHARED_CONTEXTS.with(|slot| {
         let mut contexts = slot.try_borrow_mut().ok()?;
         // Bound thread-local contexts even when many windows/devices are opened.
@@ -36,10 +46,9 @@ pub(super) fn rasterize_shared(
             contexts.clear();
         }
         let state = contexts.entry(key).or_insert_with(|| {
-            let queue = raw_device.new_command_queue();
-            // BackendContext and Ganesh retain the exact device and queue.
+            // BackendContext and Ganesh retain wgpu's exact device and queue.
             let backend = unsafe {
-                gpu::mtl::BackendContext::new(raw_device.as_ptr().cast(), queue.as_ptr().cast())
+                gpu::mtl::BackendContext::new(raw_device.as_ptr().cast(), raw_queue.as_ptr().cast())
             };
             gpu::direct_contexts::make_metal(&backend, None).map_or(
                 State::Unavailable,
@@ -89,7 +98,7 @@ pub(super) fn rasterize_shared(
         )?;
         draw(&mut surface);
         context.flush(None);
-        if !context.submit(gpu::SyncCpu::Yes) || context.abandoned() {
+        if !context.submit(gpu::SyncCpu::No) || context.abandoned() {
             *state = State::Unavailable;
             return None;
         }
@@ -253,11 +262,17 @@ mod tests {
                 let start = std::time::Instant::now();
                 let (texture, _) = super::super::rasterize_svg_object_shared(
                     &device,
+                    &queue,
                     &source,
                     (dimension, dimension),
                     1.0,
                 )
                 .unwrap();
+                // Measure completed GPU work for both paths. Production keeps
+                // these operations asynchronous; submission latency alone would
+                // make the comparison with legacy readback misleading.
+                queue.submit([]);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                 let direct_elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 drop(texture);
                 if sample > 0 {
@@ -269,6 +284,137 @@ mod tests {
             shared.sort_by(f64::total_cmp);
             eprintln!("shared cache benchmark {dimension}: legacy median={:.3} ms shared median={:.3} ms legacy readback+upload bytes={} shared=0", (legacy[3]+legacy[4])*0.5, (shared[3]+shared[4])*0.5, transferred*2);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a real Metal device"]
+    fn shared_queue_orders_interleaved_skia_and_wgpu_without_cpu_waits() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared queue ordering regression"),
+            size: 64 * 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let info = ImageInfo::new(
+            (16, 16),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        for i in 0..64u8 {
+            let texture = rasterize_shared(&device, &queue, &info, |surface| {
+                surface
+                    .canvas()
+                    .clear(skia_safe::Color::from_rgb(i, 255 - i, i * 3));
+            })
+            .unwrap();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: u64::from(i) * 256,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(1),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            // No poll or CPU wait between Skia writes and wgpu reads. Resources
+            // may be released by the caller while their commands remain queued.
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let bytes = buffer.slice(..).get_mapped_range();
+        for i in 0..64u8 {
+            assert_eq!(
+                &bytes[usize::from(i) * 256..usize::from(i) * 256 + 4],
+                &[i, 255 - i, i * 3, 255]
+            );
+        }
+        drop(bytes);
+        buffer.unmap();
+        SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
+    }
+
+    #[test]
+    #[ignore = "requires a real Metal device"]
+    fn different_window_queues_keep_separate_contexts() {
+        SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let first = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let second = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let info = ImageInfo::new(
+            (16, 16),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let mut reads = Vec::new();
+        for (device, queue) in [&first, &second, &first, &second] {
+            let texture = rasterize_shared(device, queue, &info, |surface| {
+                surface.canvas().clear(skia_safe::Color::RED);
+            })
+            .unwrap();
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Multi-window queue readback"),
+                size: 256,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(1),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            reads.push((device, buffer));
+        }
+        SHARED_CONTEXTS.with(|slot| assert_eq!(slot.borrow().len(), 2));
+        for (device, buffer) in reads {
+            let (tx, rx) = std::sync::mpsc::channel();
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            rx.recv().unwrap().unwrap();
+            assert_eq!(&buffer.slice(..).get_mapped_range()[..4], &[255, 0, 0, 255]);
+            buffer.unmap();
+        }
+        SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
     }
 
     #[test]
@@ -302,9 +448,14 @@ mod tests {
             let source = format!(
                 r#"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="80">{body}</svg>"#
             );
-            let (texture, rectangle) =
-                super::super::rasterize_svg_object_shared(&device, &source, (180, 80), opacity)
-                    .unwrap();
+            let (texture, rectangle) = super::super::rasterize_svg_object_shared(
+                &device,
+                &queue,
+                &source,
+                (180, 80),
+                opacity,
+            )
+            .unwrap();
             // The imported texture owns its resources, independent of Ganesh's
             // thread-local context and backend wrappers.
             SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
@@ -373,23 +524,34 @@ mod tests {
             buffer.unmap();
         }
         let unsupported = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><pattern id="g" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="red"/></pattern></defs><rect width="16" height="16" fill="url(#g)"/></svg>"#;
-        assert!(
-            super::super::rasterize_svg_object_shared(&device, unsupported, (16, 16), 1.0)
-                .is_none()
-        );
+        assert!(super::super::rasterize_svg_object_shared(
+            &device,
+            &queue,
+            unsupported,
+            (16, 16),
+            1.0
+        )
+        .is_none());
         // Force an unavailable shared context: the caller can use the established
         // CPU raster/upload path without losing the document edit.
-        let key = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
+        let device_key = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
             .unwrap()
             .raw_device()
             .lock()
             .as_ptr() as usize;
+        let queue_key = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }
+            .unwrap()
+            .as_raw()
+            .lock()
+            .as_ptr() as usize;
+        let key = (device_key, queue_key);
         SHARED_CONTEXTS.with(|slot| {
             slot.borrow_mut().insert(key, State::Unavailable);
         });
         let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="red"/></svg>"#;
         assert!(
-            super::super::rasterize_svg_object_shared(&device, source, (16, 16), 1.0).is_none()
+            super::super::rasterize_svg_object_shared(&device, &queue, source, (16, 16), 1.0)
+                .is_none()
         );
         assert!(super::super::rasterize_svg_object(source, (16, 16)).is_ok());
         CONTEXT.with(|slot| *slot.borrow_mut() = State::Uninitialized);

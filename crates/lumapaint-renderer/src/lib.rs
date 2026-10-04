@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub mod frame_cache;
 mod frame_overlay;
 #[cfg(feature = "skia")]
+mod native_bezier;
+#[cfg(feature = "skia")]
 pub mod text_outlines;
 mod workspace;
 pub use frame_overlay::FrameOverlay;
@@ -1273,6 +1275,7 @@ pub struct Renderer {
     pub channel: u32,
     channel_pipeline: wgpu::RenderPipeline,
     channel_target: Option<(wgpu::Texture, wgpu::BindGroup)>,
+    composite_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1295,6 +1298,8 @@ pub struct Renderer {
     object_pipeline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
     object_cache: HashMap<String, ObjectLayerCache>,
+    #[cfg(feature = "skia")]
+    native_geometry: native_bezier::Cache,
     workspace_cache: workspace::WorkspaceCache,
     workspace_image: Option<Vec<CachedSvg>>,
     page_preview: Option<Document>,
@@ -1912,6 +1917,10 @@ impl Renderer {
         document
             .visible_svg_layers()
             .filter(|layer| {
+                #[cfg(feature = "skia")]
+                if self.native_geometry.ready(layer) {
+                    return false;
+                }
                 !self
                     .object_cache
                     .get(&layer.id)
@@ -2025,6 +2034,42 @@ impl Renderer {
         Ok(())
     }
 
+    fn update_workspace_images(
+        &self,
+        previous: Vec<CachedSvg>,
+        prepared: Vec<PreparedSvgLayer>,
+    ) -> Result<Vec<CachedSvg>, String> {
+        let mut previous: std::collections::HashMap<_, _> = previous
+            .into_iter()
+            .map(|image| (image.source.clone(), image))
+            .collect();
+        prepared
+            .into_iter()
+            .map(|mut image| {
+                if let Some(mut cached) = previous
+                    .remove(&image.source)
+                    .filter(|old| old.size == image.size && !old.comparison_pixels.is_empty())
+                {
+                    if image.pixels.is_empty() {
+                        return Ok(cached);
+                    }
+                    let stride = image.size.0 as usize * 4;
+                    let dirty = changed_svg_rect(&cached.comparison_pixels, &image.pixels, stride);
+                    upload_svg_rect(&self.queue, &cached._texture, &image.pixels, stride, dirty);
+                    cached.comparison_pixels = image.pixels;
+                    cached.opacity = image.opacity;
+                    Ok(cached)
+                } else {
+                    let pixels = std::mem::take(&mut image.pixels);
+                    image.pixels = pixels.clone();
+                    let mut cached = self.make_cached_svg(image)?;
+                    cached.comparison_pixels = pixels;
+                    Ok(cached)
+                }
+            })
+            .collect()
+    }
+
     fn make_cached_svg(&self, prepared: PreparedSvgLayer) -> Result<CachedSvg, String> {
         let (width, height) = prepared.size;
         let expected = usize::try_from(width)
@@ -2096,6 +2141,7 @@ impl Renderer {
         &self,
         document: &Document,
         layer: &SvgLayer,
+        shared_only: bool,
     ) -> Result<ObjectLayerCache, String> {
         let size = document.dimensions();
         let selected_ids = layer_selected_ids(document, layer);
@@ -2120,8 +2166,13 @@ impl Renderer {
         for (selected, run) in runs {
             let opacity = run.effective_opacity();
             #[cfg(all(feature = "skia", target_os = "macos"))]
-            let shared =
-                vector::rasterize_svg_object_shared(&self.device, &run.source, size, opacity);
+            let shared = vector::rasterize_svg_object_shared(
+                &self.device,
+                &self.queue,
+                &run.source,
+                size,
+                opacity,
+            );
             #[cfg(not(all(feature = "skia", target_os = "macos")))]
             let shared: Option<(wgpu::Texture, [f32; 4])> = None;
             let (cached, rect, allocation, uploaded) = if let Some((texture, rect)) = shared {
@@ -2139,6 +2190,9 @@ impl Renderer {
                 );
                 (cached, rect, allocation, 0)
             } else {
+                if shared_only {
+                    return Err("SVG requires the compatibility raster worker".into());
+                }
                 let (mut pixels, rect) = vector::rasterize_svg_object(&run.source, size)?;
                 let allocation = pixels.len();
                 if opacity != 1.0 {
@@ -2301,6 +2355,19 @@ impl Renderer {
             .ok_or("No compatible surface configuration")?;
         config.format = format;
         config.present_mode = wgpu::PresentMode::Fifo;
+        let surface_format = format;
+        let float_support = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba16Float);
+        let format = if float_support
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+            && float_support.flags.contains(
+                wgpu::TextureFormatFeatureFlags::BLENDABLE
+                    | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+            ) {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            surface_format
+        };
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shared viewport layout"),
@@ -2320,7 +2387,7 @@ impl Renderer {
             bind_group_layouts: &[&bind_layout],
             push_constant_ranges: &[],
         });
-        let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, format);
+        let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, surface_format);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GPU preview pattern"),
             source: wgpu::ShaderSource::Wgsl(include_str!("preview.wgsl").into()),
@@ -2357,7 +2424,7 @@ impl Renderer {
             push_constant_ranges: &[],
         });
         let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
-        let selection_pipeline = create_selection_pipeline(&device, &paint_layout, format);
+        let selection_pipeline = create_selection_pipeline(&device, &paint_layout, surface_format);
         let (brush_bind_layout, brush_composite_pipeline) = create_brush_composite(&device, format);
         let brush_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
@@ -2405,7 +2472,7 @@ impl Renderer {
             &device,
             &bind_layout,
             &svg_bind_layout,
-            format,
+            surface_format,
             include_str!("channel.wgsl"),
             "Channel inspection",
         );
@@ -2436,10 +2503,13 @@ impl Renderer {
             }],
         });
         surface.configure(&device, &config);
+        #[cfg(feature = "skia")]
+        let native_geometry = native_bezier::Cache::new(&device, format);
         Ok(Self {
             channel: 0,
             channel_pipeline,
             channel_target: None,
+            composite_format: format,
             surface,
             device,
             queue,
@@ -2462,6 +2532,8 @@ impl Renderer {
             object_pipeline,
             object_layout,
             object_cache: HashMap::new(),
+            #[cfg(feature = "skia")]
+            native_geometry,
             workspace_cache: workspace::WorkspaceCache::default(),
             workspace_image: None,
             page_preview: None,
@@ -2749,13 +2821,13 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let surface_view = frame.texture.create_view(&Default::default());
-        if self.channel != 0
+        if (self.channel != 0 || self.composite_format != self.config.format)
             && self.channel_target.as_ref().is_none_or(|(texture, _)| {
                 texture.width() != viewport.width || texture.height() != viewport.height
             })
         {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Channel composite"),
+                label: Some("Linear high precision composite"),
                 size: wgpu::Extent3d {
                     width: viewport.width,
                     height: viewport.height,
@@ -2764,14 +2836,14 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.config.format,
+                format: self.composite_format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let texture_view = texture.create_view(&Default::default());
             let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Channel composite"),
+                label: Some("Linear high precision composite"),
                 layout: &self.svg_bind_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -2786,7 +2858,7 @@ impl Renderer {
             });
             self.channel_target = Some((texture, group));
         }
-        if self.channel == 0 {
+        if self.channel == 0 && self.composite_format == self.config.format {
             self.channel_target = None;
         }
         let view = self.channel_target.as_ref().map_or_else(
@@ -2826,9 +2898,44 @@ impl Renderer {
         self.object_cache
             .retain(|id, _| document.visible_svg_layers().any(|layer| &layer.id == id));
         let mut object_layers = std::collections::HashSet::new();
+        #[cfg(feature = "skia")]
+        let mut native_layers = std::collections::HashSet::<String>::new();
+        #[cfg(not(feature = "skia"))]
+        let native_layers = std::collections::HashSet::<String>::new();
+        #[cfg(feature = "skia")]
+        {
+            let live = document
+                .svg_layers()
+                .flat_map(|l| &l.vector_objects)
+                .map(|o| o.id.clone())
+                .collect();
+            self.native_geometry.begin_frame();
+            let layers = document.svg_layers().map(|l| l.id.clone()).collect();
+            self.native_geometry.retain(&live, &layers);
+            if !self.outline_view && viewport.screen_zoom() > 1.5 {
+                for layer in document.visible_svg_layers() {
+                    if self.native_geometry.prepare(
+                        &self.device,
+                        &self.queue,
+                        layer,
+                        viewport,
+                        document.selected_vector_ids(),
+                        offset,
+                    ) {
+                        native_layers.insert(layer.id.clone());
+                        object_layers.insert(layer.id.as_str());
+                    }
+                }
+            }
+        }
         let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
-            if original.vector_layer && !high_zoom {
+            if native_layers.contains(&original.id) {
+                continue;
+            }
+            if (original.vector_layer || cfg!(all(feature = "skia", target_os = "macos")))
+                && !high_zoom
+            {
                 let local_selection = layer_selected_ids(document, original);
                 // Selecting/deselecting a complete layer only retags its retained
                 // image. Unrelated layers keep their caches when selection changes.
@@ -2875,7 +2982,7 @@ impl Renderer {
                     let started = std::time::Instant::now();
                     self.object_cache.remove(&original.id);
                     let cache = self
-                        .prepare_object_cache(document, original)
+                        .prepare_object_cache(document, original, !original.vector_layer)
                         .unwrap_or_else(|_| ObjectLayerCache {
                             objects: original.vector_objects.clone(),
                             source: original.source.clone(),
@@ -2991,11 +3098,8 @@ impl Renderer {
                 self.workspace_cache
                     .prepare_filtered(document, viewport, offset, &object_layers)?
             {
-                match prepared
-                    .into_iter()
-                    .map(|image| self.make_cached_svg(image))
-                    .collect::<Result<Vec<_>, _>>()
-                {
+                let previous = self.workspace_image.take().unwrap_or_default();
+                match self.update_workspace_images(previous, prepared) {
                     Ok(images) => self.workspace_image = Some(images),
                     Err(error) => {
                         self.workspace_cache.clear();
@@ -3015,12 +3119,8 @@ impl Renderer {
                 [0., 0.],
                 &Default::default(),
             )? {
-                self.page_workspace_image = Some(
-                    prepared
-                        .into_iter()
-                        .map(|image| self.make_cached_svg(image))
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
+                let previous = self.page_workspace_image.take().unwrap_or_default();
+                self.page_workspace_image = Some(self.update_workspace_images(previous, prepared)?);
             }
         } else {
             self.page_workspace_image = None;
@@ -3227,6 +3327,11 @@ impl Renderer {
                 }
             }
             for layer in document.visible_svg_layers() {
+                #[cfg(feature = "skia")]
+                if native_layers.contains(&layer.id) {
+                    self.native_geometry.draw(&mut pass, layer);
+                    continue;
+                }
                 if object_layers.contains(layer.id.as_str()) {
                     if let Some(cache) = self.object_cache.get(&layer.id) {
                         pass.set_pipeline(&self.object_pipeline);

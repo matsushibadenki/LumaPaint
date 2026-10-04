@@ -1,0 +1,125 @@
+use super::{spatial::SpatialIndex, Journal, JournalRead};
+use crate::document::SvgLayer;
+use std::collections::{BTreeMap, HashMap};
+
+#[derive(Default)]
+pub(crate) struct PickingState(std::sync::Mutex<PickingCache>);
+impl Clone for PickingState {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PickingState {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, PickingCache> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct PickingCache {
+    layers: BTreeMap<String, LayerIndex>,
+}
+#[derive(Clone)]
+struct LayerIndex {
+    tree: SpatialIndex,
+    positions: HashMap<String, usize>,
+    cursor: u64,
+    revision: u64,
+    source_pointer: usize,
+}
+impl LayerIndex {
+    fn build(layer: &SvgLayer, journal: &Journal, revision: u64) -> Self {
+        Self {
+            tree: SpatialIndex::build(
+                layer
+                    .vector_objects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| (i, o.conservative_drawing_bounds())),
+            ),
+            positions: layer
+                .vector_objects
+                .iter()
+                .enumerate()
+                .map(|(i, o)| (o.id.clone(), i))
+                .collect(),
+            cursor: journal.cursor(),
+            revision,
+            source_pointer: layer.source.as_ptr() as usize,
+        }
+    }
+    fn refresh(&mut self, layer: &SvgLayer, journal: &Journal, revision: u64) {
+        let pointer = layer.source.as_ptr() as usize;
+        if self.revision == revision
+            && self.source_pointer == pointer
+            && self.cursor == journal.cursor()
+        {
+            return;
+        }
+        let JournalRead::Incremental { changes, .. } = journal.read(self.cursor) else {
+            *self = Self::build(layer, journal, revision);
+            return;
+        };
+        let changes: Vec<_> = changes
+            .iter()
+            .filter(|c| c.target.layer == layer.id)
+            .collect();
+        let object_changes: Vec<_> = changes
+            .iter()
+            .filter(|c| c.target.object.is_some())
+            .collect();
+        // Legacy/preview changes without a notification remain correct. Unknown
+        // source edits use the complete rebuild instead of trusting stale bounds.
+        if self.positions.len() != layer.vector_objects.len()
+            || (pointer != self.source_pointer && object_changes.is_empty())
+            || object_changes
+                .iter()
+                .any(|c| c.removed || c.changes.structure)
+        {
+            *self = Self::build(layer, journal, revision);
+            return;
+        }
+        for change in object_changes {
+            if !(change.changes.geometry || change.changes.transform || change.changes.style) {
+                continue;
+            }
+            let id = change.target.object.as_ref().unwrap();
+            let Some(&position) = self.positions.get(id) else {
+                *self = Self::build(layer, journal, revision);
+                return;
+            };
+            if layer.vector_objects[position].id != *id
+                || !self.tree.refit(
+                    position,
+                    layer.vector_objects[position].conservative_drawing_bounds(),
+                )
+            {
+                *self = Self::build(layer, journal, revision);
+                return;
+            }
+        }
+        self.cursor = journal.cursor();
+        self.revision = revision;
+        self.source_pointer = pointer;
+    }
+}
+impl PickingCache {
+    pub(crate) fn candidates(
+        &mut self,
+        layer: &SvgLayer,
+        journal: &Journal,
+        revision: u64,
+        bounds: [f64; 4],
+    ) -> Vec<usize> {
+        let index = self
+            .layers
+            .entry(layer.id.clone())
+            .or_insert_with(|| LayerIndex::build(layer, journal, revision));
+        index.refresh(layer, journal, revision);
+        index.tree.query(bounds).items
+    }
+    pub(crate) fn retain(&mut self, layers: &[SvgLayer]) {
+        self.layers
+            .retain(|id, _| layers.iter().any(|l| &l.id == id));
+    }
+}

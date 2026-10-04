@@ -955,6 +955,19 @@ impl VectorObject {
         Ok(())
     }
 
+    /// Conservative world bounds for candidate rejection. Text remains unbounded
+    /// until the renderer supplies shaped glyph metrics.
+    pub fn conservative_drawing_bounds(&self) -> Option<[f64; 4]> {
+        if self.text.is_some() || self.control_points.is_empty() {
+            return None;
+        }
+        let bounds = self.pick_bounds();
+        bounds
+            .iter()
+            .all(|v| v.is_finite())
+            .then(|| bounds.map(f64::from))
+    }
+
     /// Conservative rejection before generating a stroke outline for picking.
     fn pick_bounds(&self) -> [f32; 4] {
         let [a, b, c, d, e, f] = self.transform;

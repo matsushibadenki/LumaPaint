@@ -13,6 +13,7 @@ struct Uniforms { viewport: vec4<f32>, appearance: vec4<f32>, document: vec4<f32
     let point = (p.xy/u.viewport.z-size*0.5-u.appearance.yz)/(fit*u.viewport.w)+u.document.xy*0.5;
     if any(point < vec2(0.0)) || any(point >= u.document.xy) { return color; }
     let mode = u32(floor(u.appearance.x / 2.0));
+    if mode == 0u { return color; }
     let rgb = select(12.92*color.rgb, 1.055*pow(max(color.rgb,vec3(0.0)),vec3(1.0/2.4))-0.055, color.rgb>vec3(0.0031308));
     var value = 0.0;
     if mode == 1u { value = rgb.r; }

@@ -705,6 +705,74 @@ pub async fn pathfinder_vectors(
 }
 
 #[tauri::command]
+pub async fn make_compound_shape(
+    window: tauri::WebviewWindow,
+    operation: lumapaint_core::vector::PathfinderOperation,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::make_compound_shape(operation)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, operation);
+        Err("Vector operations are unavailable on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn edit_compound_shape(
+    window: tauri::WebviewWindow,
+    edit: lumapaint_core::document::CompoundShapeEdit,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_compound_shape(edit)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, edit);
+        Err("Vector operations are unavailable on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn open_document_view(
+    window: tauri::WebviewWindow,
+    id: u64,
+    target: String,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::open_document_view(id, &target)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, target);
+        Err("Document views are unavailable on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn move_document_to_window(
+    window: tauri::WebviewWindow,
+    id: u64,
+    target: String,
+) -> Result<DocumentWorkspaceSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::move_document_to_window(id, &target)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, target);
+        Err("Document transfer is unavailable on this platform".into())
+    }
+}
+
+#[tauri::command]
 pub async fn group_selected_vectors(
     window: tauri::WebviewWindow,
 ) -> Result<DocumentSnapshot, String> {

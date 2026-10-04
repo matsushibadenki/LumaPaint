@@ -44,6 +44,20 @@ pub async fn new_editor_window(window: WebviewWindow) -> Result<String, String> 
         .map_err(|error| error.to_string())??
 }
 
+#[tauri::command]
+pub async fn editor_window_targets(window: WebviewWindow) -> Vec<(String, String)> {
+    window
+        .app_handle()
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, _)| is_editor(label) && label != window.label())
+        .map(|(label, view)| {
+            let title = view.title().unwrap_or_else(|_| label.clone());
+            (label, title)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
