@@ -2154,3 +2154,26 @@ pub async fn edit_layer_groups(
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn apply_pdf_import(
+    window: tauri::WebviewWindow,
+    token: u64,
+    decoded: lumapaint_formats::io::ReadDocument,
+    target: Option<u64>,
+    name: String,
+) -> Result<bool, String> {
+    let owner = crate::modal_windows::owner(&window)?;
+    let app = tauri::Manager::app_handle(&window).clone();
+    on_main(window, move || {
+        if !crate::pdf_import::is_pending(&app, &owner, token) {
+            return Err("PDF import was cancelled".into());
+        }
+        let applied = platform::apply_pdf_import(decoded, target, name)?;
+        if applied {
+            crate::pdf_import::discard(&app, &owner);
+        }
+        Ok(applied)
+    })
+    .await
+}

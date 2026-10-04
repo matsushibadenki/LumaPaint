@@ -3805,11 +3805,29 @@ pub fn raster_import_snapshot() -> Result<DocumentSnapshot, String> {
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     let Some(path) = rfd::FileDialog::new()
-        .add_filter("Images", &["svg", "png", "jpg", "jpeg", "webp"])
+        .add_filter(
+            "SVG / PDF / AI / Images",
+            &["svg", "pdf", "ai", "png", "jpg", "jpeg", "webp"],
+        )
         .pick_file()
     else {
         return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
     };
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf") || e.eq_ignore_ascii_case("ai"))
+    {
+        if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+            return Err("PDF layer import is not available for tiled documents".into());
+        }
+        crate::pdf_import::prepare(
+            APP.get().ok_or("Application unavailable")?.clone(),
+            current_label(),
+            path,
+            Some(ACTIVE_DOCUMENT_ID.with(|id| id.get())),
+        );
+        return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+    }
     let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
     if metadata.len() > 4 * 1024 * 1024 {
         return Err("SVG must be no larger than 4 MiB".into());
@@ -7132,53 +7150,12 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if matches!(extension.as_str(), "pdf" | "ai") {
-                let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                file.take(32 * 1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                let app = APP.get().ok_or("Application unavailable")?.clone();
-                let label = current_label();
-                let format = if extension == "ai" {
-                    lumapaint_formats::export::FormatId::Illustrator
-                } else {
-                    lumapaint_formats::export::FormatId::Pdf
-                };
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let result = lumapaint_formats::io::read_document(
-                        format,
-                        name,
-                        &bytes,
-                        lumapaint_formats::io::ReadOptions {
-                            allow_lossy: true,
-                            ..Default::default()
-                        },
-                    );
-                    let _=app.run_on_main_thread(move||{
-                        let Ok(_session)=SessionGuard::enter(&label) else{return;};
-                        match result {
-                            Err(error)=>emit_error(error.to_string()),
-                            Ok(decoded)=>{
-                                if !decoded.report.issues.is_empty() {
-                                    let codes = crate::vector_export::report_text(&decoded.report);
-                                    let description=format!("PDF/AIの対応範囲外の内容が省略される場合があります。複数ページは1ページ目を読み込みます。\nUnsupported PDF/AI content may be omitted. Multi-page files open the first page.\n不支持的PDF/AI内容可能被省略，多页文件将打开第一页。\n\n{codes}");
-                                    if rfd::MessageDialog::new().set_title("互換性 / Compatibility / 兼容性").set_description(description).set_buttons(rfd::MessageButtons::OkCancel).show()!=rfd::MessageDialogResult::Ok {return;}
-                                }
-                                let lumapaint_formats::io::ReadContent::Vector(mut document)=decoded.content else{return;};
-                                lumapaint_svg::attach(&mut document);
-                                if let Err(error)=document.svg_layers().try_for_each(|l|validate_svg(&l.source)){emit_error(error);return;}
-                                park_active_document();activate_document(OpenDocument{id:next_document_id(),content:OpenDocumentContent::Legacy(document),path:None,fingerprint:None});
-                                if let Err(error)=redraw(){emit_error(error);}emit_document();
-                            }
-                        }
-                    });
-                });
+                crate::pdf_import::prepare(
+                    APP.get().ok_or("Application unavailable")?.clone(),
+                    current_label(),
+                    path,
+                    None,
+                );
                 return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
             }
             if extension == "svg" {
@@ -9128,4 +9105,59 @@ pub fn edit_layer_groups(
     emit_document();
     emit_workspace();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn apply_pdf_import(
+    mut decoded: lumapaint_formats::io::ReadDocument,
+    target: Option<u64>,
+    name: String,
+) -> Result<bool, String> {
+    if let Some(target) = target {
+        ensure_document_open()?;
+        if ACTIVE_DOCUMENT_ID.with(|id| id.get()) != target
+            || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        {
+            return Err("読み込み先のドキュメントを選択してください。\nSelect the original destination document.\n请选择原始目标文档。".into());
+        }
+    }
+    decoded
+        .report
+        .issues
+        .retain(|i| i.code != "pdf.selected_page_only");
+    if !decoded.report.issues.is_empty()
+        && rfd::MessageDialog::new()
+            .set_title("互換性 / Compatibility / 兼容性")
+            .set_description(crate::vector_export::report_text(&decoded.report))
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show()
+            != rfd::MessageDialogResult::Ok
+    {
+        return Ok(false);
+    }
+    let lumapaint_formats::io::ReadContent::Vector(mut document) = decoded.content else {
+        return Err("Expected PDF vector document".into());
+    };
+    lumapaint_svg::attach(&mut document);
+    for layer in document.svg_layers() {
+        validate_svg(&layer.source)?;
+    }
+    if target.is_some() {
+        let destination = DOCUMENT.with(|doc| doc.borrow().snapshot());
+        let source = crate::pdf_import::layer_source(&document, &destination)?;
+        validate_svg(&source)?;
+        DOCUMENT.with(|doc| doc.borrow_mut().import_raster_layer(name, source))?;
+    } else {
+        park_active_document();
+        activate_document(OpenDocument {
+            id: next_document_id(),
+            content: OpenDocumentContent::Legacy(document),
+            path: None,
+            fingerprint: None,
+        });
+    }
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+    emit_document();
+    Ok(true)
 }

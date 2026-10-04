@@ -241,6 +241,9 @@ mod tests {
             operations: 0,
             serial: 0,
             allow_lossy: false,
+            page_bounds: [0., 0., 10., 10.],
+            font_cache: Default::default(),
+            text_glyphs: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
         }

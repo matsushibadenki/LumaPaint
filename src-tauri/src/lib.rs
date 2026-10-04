@@ -1,5 +1,6 @@
 mod image_frames;
 mod measurement_units;
+mod pdf_import;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
     lumapaint_formats::io::FILE_FORMATS
@@ -51,6 +52,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(modal_windows::Modals::default());
+            app.manage(pdf_import::Imports::default());
             app.manage(measurement_units::MeasurementUnits::load(app.handle()));
             canvas::initialize(app.handle());
             #[cfg(target_os = "macos")]
@@ -118,6 +120,9 @@ pub fn run() {
             canvas::ruler_guide,
             canvas::ruler_origin,
             canvas::page_thumbnails,
+            pdf_import::pdf_import_context,
+            pdf_import::pdf_import_apply,
+            pdf_import::pdf_import_cancel,
             modal_windows::open_modal_window,
             modal_windows::modal_context,
             modal_windows::modal_ready,

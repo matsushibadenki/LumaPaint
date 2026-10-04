@@ -104,6 +104,7 @@ pub const FILE_FORMATS: &[FileFormat] = &[
         export_adapter: true,
         partial: true,
         editor_open: cfg!(target_os = "macos"),
+        editor_import: cfg!(target_os = "macos"),
         editor_export: cfg!(target_os = "macos"),
         ..entry(
             FormatId::Pdf,
@@ -204,6 +205,7 @@ pub const FILE_FORMATS: &[FileFormat] = &[
         import_adapter: true,
         partial: true,
         editor_open: cfg!(target_os = "macos"),
+        editor_import: cfg!(target_os = "macos"),
         planned_export: false,
         ..entry(
             FormatId::Illustrator,

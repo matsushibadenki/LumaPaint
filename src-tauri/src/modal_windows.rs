@@ -19,6 +19,7 @@ pub(crate) enum Kind {
     Transform,
     DirectControls,
     ImportImage,
+    PdfImport,
     ToolSettings,
 }
 impl Kind {
@@ -30,6 +31,7 @@ impl Kind {
             Self::DirectControls => (440., 600.),
             Self::Transform => (400., 360.),
             Self::ImportImage => (480., 360.),
+            Self::PdfImport => (480., 400.),
             Self::ToolSettings => (440., 580.),
         }
     }
@@ -45,6 +47,7 @@ impl Kind {
                 "节点与实时圆角",
             ],
             Self::ImportImage => ["Import", "読み込み", "导入"],
+            Self::PdfImport => ["PDF Page", "PDFページ", "PDF页面"],
             Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
         };
         titles[match locale {
@@ -211,7 +214,11 @@ pub(crate) async fn open_modal_window(
                     locale: request.locale,
                     theme: request.theme,
                     action: request.action,
-                    document: workspace.active,
+                    document: if matches!(request.kind, Kind::PdfImport) {
+                        None
+                    } else {
+                        workspace.active
+                    },
                 },
                 shown: false,
                 busy: false,
@@ -361,6 +368,9 @@ pub(crate) fn can_close(app: &AppHandle, label: &str) -> bool {
 pub(crate) fn detach(app: &AppHandle, label: &str) {
     let entry = app.state::<Modals>().0.lock().unwrap().remove(label);
     if let Some(entry) = entry {
+        if matches!(entry.context.kind, Kind::PdfImport) {
+            crate::pdf_import::discard(app, &entry.owner);
+        }
         if let Some(parent) = app.get_webview_window(&entry.owner) {
             #[cfg(target_os = "macos")]
             crate::canvas::clear_window_preview(&entry.owner);
@@ -374,6 +384,7 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
     }
 }
 pub(crate) fn parent_destroyed(app: &AppHandle, owner: &str) {
+    crate::pdf_import::discard(app, owner);
     let labels = app
         .state::<Modals>()
         .0

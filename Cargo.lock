@@ -2476,6 +2476,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "svg2pdf",
+ "ttf-parser",
  "usvg",
 ]
 
@@ -2496,6 +2497,7 @@ dependencies = [
  "bytemuck",
  "i_overlay",
  "image",
+ "lopdf",
  "lumapaint-core",
  "lumapaint-formats",
  "lumapaint-svg",

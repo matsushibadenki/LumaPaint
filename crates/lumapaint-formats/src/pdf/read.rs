@@ -3,7 +3,11 @@ use super::*;
 use crate::io::ReadContent;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::fmt::Write;
+mod fonts;
+mod gradients;
 mod images;
+mod masks;
+mod text;
 const LIMIT: usize = 16 * 1024 * 1024;
 fn malformed() -> ImportError {
     ImportError::Malformed("pdf.graphics")
@@ -76,6 +80,9 @@ fn resource<'a>(
 #[derive(Clone)]
 struct State {
     ctm: [f32; 6],
+    pattern_base: [f32; 6],
+    fill_pattern: Option<gradients::GradientPaint>,
+    stroke_pattern: Option<gradients::GradientPaint>,
     fill: String,
     stroke: String,
     fill_space: usize,
@@ -90,11 +97,17 @@ struct State {
     stroke_alpha: f32,
     blend: String,
     clips: Vec<String>,
+    soft_mask: Option<String>,
+    empty_clip: bool,
+    text: text::TextStyle,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             ctm: [1., 0., 0., 1., 0., 0.],
+            pattern_base: [1., 0., 0., 1., 0., 0.],
+            fill_pattern: None,
+            stroke_pattern: None,
             fill: "#000000".into(),
             stroke: "#000000".into(),
             fill_space: 3,
@@ -109,6 +122,9 @@ impl Default for State {
             stroke_alpha: 1.,
             blend: "normal".into(),
             clips: vec![],
+            soft_mask: None,
+            empty_clip: false,
+            text: Default::default(),
         }
     }
 }
@@ -121,16 +137,23 @@ struct Interpreter<'a> {
     operations: usize,
     serial: usize,
     allow_lossy: bool,
+    page_bounds: [f32; 4],
+    font_cache: std::collections::HashMap<usize, Option<std::sync::Arc<fonts::Font>>>,
+    text_glyphs: usize,
     image_remaining: usize,
     image_cache: std::collections::HashMap<(usize, usize), String>,
 }
 impl Interpreter<'_> {
     fn unsupported(&mut self, code: &'static str) -> Result<(), ImportError> {
+        self.conversion(code, CompatibilityTier::D)
+    }
+    fn conversion(
+        &mut self,
+        code: &'static str,
+        tier: CompatibilityTier,
+    ) -> Result<(), ImportError> {
         if !self.issues.iter().any(|i| i.code == code) {
-            self.issues.push(ConversionIssue {
-                code,
-                tier: CompatibilityTier::D,
-            });
+            self.issues.push(ConversionIssue { code, tier });
         }
         if !self.allow_lossy {
             return Err(ImportError::LossyConversionRequiresConsent(
@@ -200,10 +223,19 @@ impl Interpreter<'_> {
         Ok(format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
     }
     fn draw(&mut self, element: String, state: &State) {
+        if state.empty_clip {
+            return;
+        }
         for id in &state.clips {
             let _ = write!(self.body, "<g clip-path=\"url(#{id})\">");
         }
+        if let Some(id) = &state.soft_mask {
+            let _ = write!(self.body, "<g mask=\"url(#{id})\">");
+        }
         self.body.push_str(&element);
+        if state.soft_mask.is_some() {
+            self.body.push_str("</g>");
+        }
         for _ in &state.clips {
             self.body.push_str("</g>");
         }
@@ -224,6 +256,7 @@ impl Interpreter<'_> {
         if self.operations > 200_000 {
             return Err(ImportError::LimitExceeded("pdf.operations"));
         }
+        let mut text_position = text::TextPosition::default();
         let mut stack = vec![];
         let mut path = String::new();
         let mut path_matrix = state.ctm;
@@ -231,6 +264,11 @@ impl Interpreter<'_> {
         let mut pending_clip = None;
         for op in content.operations {
             let args = &op.operands;
+            match op.operator.as_str() {
+                "g" | "rg" | "k" | "cs" => state.fill_pattern = None,
+                "G" | "RG" | "K" | "CS" => state.stroke_pattern = None,
+                _ => {}
+            }
             match op.operator.as_str() {
                 "q" => {
                     if stack.len() >= 64 {
@@ -307,15 +345,19 @@ impl Interpreter<'_> {
                     }
                     let [a, b, c, d, e, f] = path_matrix;
                     if op.operator != "n" && !path.is_empty() {
+                        let fill_paint =
+                            self.gradient_paint(&state.fill_pattern, &state.fill, path_matrix)?;
+                        let stroke_paint =
+                            self.gradient_paint(&state.stroke_pattern, &state.stroke, path_matrix)?;
                         let fill = if matches!(op.operator.as_str(), "S" | "s") {
                             "none"
                         } else {
-                            &state.fill
+                            &fill_paint
                         };
                         let stroke = if matches!(op.operator.as_str(), "f" | "F" | "f*") {
                             "none"
                         } else {
-                            &state.stroke
+                            &stroke_paint
                         };
                         let rule = if op.operator.ends_with('*') {
                             "evenodd"
@@ -427,7 +469,19 @@ impl Interpreter<'_> {
                         state.fill_space
                     };
                     if channels == 0 {
-                        self.unsupported("pdf.pattern_conversion")?;
+                        if args.len() != 1 {
+                            self.unsupported("pdf.pattern_conversion")?;
+                            continue;
+                        }
+                        let name = args[0].as_name().map_err(|_| malformed())?;
+                        let paint = self.pattern(name, resources, state.pattern_base)?;
+                        if stroke {
+                            state.stroke_pattern = paint;
+                            state.stroke = "none".into();
+                        } else {
+                            state.fill_pattern = paint;
+                            state.fill = "none".into();
+                        }
                         continue;
                     }
                     let color = self.color(args, channels)?;
@@ -453,9 +507,7 @@ impl Interpreter<'_> {
                         state.stroke_alpha = num(resolve(self.doc, v)?)?.clamp(0., 1.);
                     }
                     if let Ok(v) = gs.get(b"SMask") {
-                        if resolve(self.doc, v)?.as_name().ok() != Some(b"None") {
-                            self.unsupported("pdf.soft_mask")?;
-                        }
+                        state.soft_mask = self.soft_mask(v, resources, &state, depth)?;
                     }
                     if let Ok(v) = gs.get(b"BM") {
                         let name = resolve(self.doc, v)?.as_name().map_err(|_| malformed())?;
@@ -473,6 +525,10 @@ impl Interpreter<'_> {
                             }
                         }
                         .into();
+                    }
+                    if gs.get(b"Font").is_ok() {
+                        self.unsupported("pdf.font_state")?;
+                        state.text = Default::default();
                     }
                     for key in [b"TR".as_slice(), b"TR2", b"HT", b"BG", b"UCR", b"OP", b"op"] {
                         if gs.get(key).is_ok() {
@@ -511,7 +567,10 @@ impl Interpreter<'_> {
                         let knockout = group.get(b"K").and_then(Object::as_bool).unwrap_or(false);
                         if group.get(b"S").and_then(Object::as_name).ok() != Some(b"Transparency")
                             || knockout
-                            || (!isolated && (state.fill_alpha != 1. || state.blend != "normal"))
+                            || (!isolated
+                                && (state.fill_alpha != 1.
+                                    || state.blend != "normal"
+                                    || state.soft_mask.is_some()))
                         {
                             self.unsupported("pdf.transparency_group")?;
                             None
@@ -536,6 +595,7 @@ impl Interpreter<'_> {
                             .unwrap(),
                         );
                     }
+                    nested.pattern_base = nested.ctm;
                     if let Ok(bbox) = obj.dict.get(b"BBox") {
                         let p = nums(
                             resolve(self.doc, bbox)?
@@ -562,6 +622,9 @@ impl Interpreter<'_> {
                         for id in &nested.clips {
                             let _ = write!(self.body, "<g clip-path=\"url(#{id})\">");
                         }
+                        if let Some(id) = &state.soft_mask {
+                            let _ = write!(self.body, "<g mask=\"url(#{id})\">");
+                        }
                         let _ = write!(
                             self.body,
                             "<g opacity=\"{}\" style=\"mix-blend-mode:{};isolation:{}\">",
@@ -570,11 +633,15 @@ impl Interpreter<'_> {
                             if isolated { "isolate" } else { "auto" }
                         );
                         nested.clips.clear();
+                        nested.soft_mask = None;
                         nested.fill_alpha = 1.;
                         nested.stroke_alpha = 1.;
                         nested.blend = "normal".into();
                         self.content(&data, res, nested, depth + 1)?;
                         self.body.push_str("</g>");
+                        if state.soft_mask.is_some() {
+                            self.body.push_str("</g>");
+                        }
                         for _ in 0..clips {
                             self.body.push_str("</g>");
                         }
@@ -582,10 +649,22 @@ impl Interpreter<'_> {
                         self.content(&data, res, nested, depth + 1)?;
                     }
                 }
-                "Tj" | "TJ" | "'" | "\"" => self.unsupported("pdf.text_conversion")?,
-                "sh" => self.unsupported("pdf.shading_conversion")?,
                 "BT" | "ET" | "Tf" | "Tm" | "Td" | "TD" | "T*" | "Tc" | "Tw" | "Tz" | "TL"
-                | "Tr" | "Ts" | "ri" | "i" | "MP" | "DP" | "BMC" | "EMC" => {}
+                | "Tr" | "Ts" | "Tj" | "TJ" | "'" | "\"" => self.text_operator(
+                    &op.operator,
+                    args,
+                    resources,
+                    &mut state,
+                    &mut text_position,
+                )?,
+                "sh" => {
+                    if args.len() != 1 {
+                        return Err(malformed());
+                    }
+                    let name = args[0].as_name().map_err(|_| malformed())?;
+                    self.shading_draw(name, resources, &state)?;
+                }
+                "ri" | "i" | "MP" | "DP" | "BMC" | "EMC" => {}
                 "BDC" => {
                     if args.first().and_then(|v| v.as_name().ok()) == Some(b"OC") {
                         self.unsupported("pdf.optional_content")?;
@@ -600,14 +679,11 @@ impl Interpreter<'_> {
         if !stack.is_empty() {
             return Err(malformed());
         }
+        text_position.finish()?;
         Ok(())
     }
 }
-pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
-    options.validate(FormatId::Pdf)?;
-    if options.raster_dpi > 1200 {
-        return Err(ImportError::Unsupported("pdf.document_resolution"));
-    }
+fn load(bytes: &[u8]) -> Result<lopdf::Document, ImportError> {
     if bytes.len() > 32 * 1024 * 1024 {
         return Err(ImportError::LimitExceeded("pdf.file"));
     }
@@ -629,6 +705,76 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
     if doc.objects.len() > 100_000 {
         return Err(ImportError::LimitExceeded("pdf.objects"));
     }
+    Ok(doc)
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageInfo {
+    pub index: u32,
+    pub width_points: f32,
+    pub height_points: f32,
+}
+/// Inspect page geometry without decoding artwork or mutating a document.
+pub fn inspect(bytes: &[u8]) -> Result<Vec<PageInfo>, ImportError> {
+    let doc = load(bytes)?;
+    let pages = doc.get_pages();
+    if pages.is_empty() {
+        return Err(ImportError::Malformed("pdf.page_index"));
+    }
+    if pages.len() > 4096 {
+        return Err(ImportError::LimitExceeded("pdf.pages"));
+    }
+    pages
+        .values()
+        .enumerate()
+        .map(|(index, id)| {
+            let bbox = inherited(&doc, *id, b"CropBox")?
+                .or(inherited(&doc, *id, b"MediaBox")?)
+                .ok_or_else(malformed)?;
+            let p = nums(bbox.as_array().map_err(|_| malformed())?, 4)?;
+            let unit = doc
+                .get_dictionary(*id)
+                .map_err(|_| malformed())?
+                .get(b"UserUnit")
+                .ok()
+                .map(|v| resolve(&doc, v).and_then(num))
+                .transpose()?
+                .unwrap_or(1.);
+            let rotate = inherited(&doc, *id, b"Rotate")?
+                .map(num)
+                .transpose()?
+                .unwrap_or(0.);
+            if unit <= 0. || unit > 75000. || rotate.fract() != 0. {
+                return Err(malformed());
+            }
+            let rotate = (rotate as i32).rem_euclid(360);
+            if ![0, 90, 180, 270].contains(&rotate) {
+                return Err(ImportError::Unsupported("pdf.page_rotation"));
+            }
+            let (w, h) = ((p[2] - p[0]) * unit, (p[3] - p[1]) * unit);
+            if w <= 0. || h <= 0. || !w.is_finite() || !h.is_finite() {
+                return Err(malformed());
+            }
+            let (width_points, height_points) = if rotate == 90 || rotate == 270 {
+                (h, w)
+            } else {
+                (w, h)
+            };
+            Ok(PageInfo {
+                index: index as u32,
+                width_points,
+                height_points,
+            })
+        })
+        .collect()
+}
+pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
+    options.validate(FormatId::Pdf)?;
+    if options.raster_dpi > 1200 {
+        return Err(ImportError::Unsupported("pdf.document_resolution"));
+    }
+    let doc = load(bytes)?;
     let pages = doc.get_pages();
     let id = *pages
         .values()
@@ -691,6 +837,9 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
         operations: 0,
         serial: 0,
         allow_lossy: options.allow_lossy,
+        page_bounds: p.clone().try_into().unwrap(),
+        font_cache: Default::default(),
+        text_glyphs: 0,
         image_remaining: 64 * 1024 * 1024,
         image_cache: Default::default(),
     };
@@ -749,6 +898,9 @@ mod transparency_tests {
             operations: 0,
             serial: 0,
             allow_lossy: false,
+            page_bounds: [0., 0., 10., 10.],
+            font_cache: Default::default(),
+            text_glyphs: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
         };

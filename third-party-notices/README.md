@@ -41,3 +41,5 @@ Additional fixed source notices:
 - iOverlay 9.0.0: https://github.com/iShape-Rust/iOverlay/tree/26782e3b93f9b7d2516e7653f3d56eebc31af798
 - iKeySort 0.11.0: https://github.com/iShape-Rust/iKeySort/tree/d8c914dc29afd4d4824dacd2c134dbc16168e78c
 - simplecss 0.2.2: locked crates.io source, local changes documented in vendor/simplecss/LUMAPAINT-PATCHES.md
+
+- ttf-parser 0.25.1: the embedded PDF glyph-outline reader uses this parser directly; MIT and Apache-2.0 source notices are bundled.

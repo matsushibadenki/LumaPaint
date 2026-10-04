@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { DocumentTabMenu } from './components/DocumentTabMenu';
 import { moveDocumentToWindow, openDocumentView } from './bridge';
 import {layerGroupLabels} from './components/layer-group-labels';
@@ -157,6 +158,7 @@ export function Workspace() {
   const [placingImage, setPlacingImage] = useState(false);
   const [placementBusy, setPlacementBusy] = useState(false);
   const [importImageOpen, setImportImageOpen] = useState(false);
+  const [pdfImportToken, setPdfImportToken] = useState<number | null>(null);
   const [newDocumentOpen, setNewDocumentOpen] = useState(false);
   const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
@@ -568,6 +570,12 @@ export function Workspace() {
     return () => { void listener.then(unlisten => unlisten()); };
   }, [changeZoom]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    const listener = getCurrentWebviewWindow().listen<number>('pdf-import-request', event => setPdfImportToken(event.payload));
+    return () => { void listener.then(unlisten => unlisten()); };
+  }, []);
+
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
@@ -686,6 +694,7 @@ export function Workspace() {
       try { updateDocument(await importRasterLayer(format)); }
       finally { filePending.current = false; setFileBusy(false); }
     }} /></NativeModal>}
+    {pdfImportToken !== null && <NativeModal kind="pdfImport" locale={locale} theme={theme} onClose={() => { const token = pdfImportToken; setPdfImportToken(null); void invoke('pdf_import_cancel', { token }).catch(cause => setError(String(cause))); }} onError={setError}>{null}</NativeModal>}
     {newDocumentOpen && <NativeModal kind="newDocument" locale={locale} theme={theme} onClose={()=>setNewDocumentOpen(false)} onError={setError}><NewDocumentDialog locale={locale} onCreate={createFromPreset} onClose={() => setNewDocumentOpen(false)} /></NativeModal>}
     {colorSettingsOpen && <NativeModal kind="colorSettings" locale={locale} theme={theme} onClose={closeColorSettings} onError={setError}><ColorSettingsDialog locale={locale} document={documentState} enabled={ready && !busy} onProfile={profile => void setColorProfile(profile)} onClose={closeColorSettings} /></NativeModal>}
   </div>;
