@@ -1,5 +1,6 @@
 //! PSD v1 RGB8 merged-image adapter, based on Adobe's published specification.
-//! Layer editing, profiles, and higher depths are deliberately not retained yet.
+//! Normal RGB8 raster layers can be retained; effects, masks, profiles and higher depths remain partial.
+mod layers;
 use crate::*;
 use lumapaint_core::tiles::{
     RasterLayerState, RasterTileState, TileCoord, TiledRasterState, TILE_SIZE,
@@ -228,12 +229,6 @@ impl DocumentImporter for PsdImporter {
                 tier: CompatibilityTier::D,
             });
         }
-        if !layer_data.is_empty() {
-            report.issues.push(ConversionIssue {
-                code: "psd.layersFlattened",
-                tier: CompatibilityTier::C,
-            });
-        }
         let compression = r.u16()?;
         if compression > 1 {
             return Err(ImportError::Unsupported("ZIP compression"));
@@ -268,8 +263,29 @@ impl DocumentImporter for PsdImporter {
                 packbits(check.take(size)?, h.width as usize)?;
             }
         }
+        let retained = match layers::decode(layer_data, h) {
+            Ok(layers) => layers,
+            Err(ImportError::Unsupported(_)) => None,
+            Err(error) => return Err(error),
+        };
+        if retained.is_none() && !layer_data.is_empty() {
+            report.issues.push(ConversionIssue {
+                code: "psd.layersFlattened",
+                tier: CompatibilityTier::C,
+            });
+        }
         if !options.allow_lossy && !report.issues.is_empty() {
             return Err(ImportError::LossyConversionRequiresConsent(report));
+        }
+        if let Some(layers) = retained {
+            return Ok(ImportedDocument {
+                raster: TiledRasterState {
+                    width: h.width,
+                    height: h.height,
+                    layers,
+                },
+                report,
+            });
         }
         let columns = h.width.div_ceil(TILE_SIZE);
         let tile_rows = h.height.div_ceil(TILE_SIZE);

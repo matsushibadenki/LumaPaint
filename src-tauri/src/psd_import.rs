@@ -70,7 +70,7 @@ fn decode(path: &Path) -> Result<Prepared, String> {
     let lumapaint_formats::io::ReadContent::Raster(mut state) = decoded.content else {
         return Err("Expected native PSD tiles".into());
     };
-    if let Some(layer) = state.layers.first_mut() {
+    if let Some(layer) = state.layers.first_mut().filter(|l| l.id == "psd-composite") {
         layer.name = name.clone();
     }
     Ok(Prepared {
@@ -208,6 +208,30 @@ mod tests {
                 .unwrap()[..16],
             &[128, 0, 0, 128, 0, 0, 64, 64, 0, 255, 0, 255, 0, 0, 0, 0]
         );
+    }
+    #[test]
+    fn layer_worker_keeps_original_layer_names_and_native_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Layers.psd");
+        std::fs::write(
+            &path,
+            include_bytes!("../../crates/lumapaint-formats/tests/fixtures/lp-psd-layers.psd"),
+        )
+        .unwrap();
+        let prepared = decode(&path).unwrap();
+        assert_eq!(prepared.document.layers().len(), 3);
+        assert_eq!(prepared.document.layers()[0].name, "Base");
+        assert_eq!(prepared.document.layers()[1].name, "日本語");
+        assert!(prepared.report.issues.is_empty());
+        let native = directory.path().join("Layers.lumapaint");
+        let state = prepared.document.state();
+        crate::project_file::write_tiled(&native, &state).unwrap();
+        let (crate::project_file::ProjectData::Tiled(saved), _) =
+            crate::project_file::read_any_with_fingerprint(&native).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(saved, state);
     }
     #[test]
     fn failed_and_cancelled_imports_release_the_gate() {
