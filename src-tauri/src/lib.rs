@@ -1,6 +1,8 @@
 mod image_frames;
 mod measurement_units;
 mod pdf_import;
+#[cfg(any(target_os = "macos", test))]
+mod psd_import;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
     lumapaint_formats::io::FILE_FORMATS
@@ -53,6 +55,8 @@ pub fn run() {
         .setup(|app| {
             app.manage(modal_windows::Modals::default());
             app.manage(pdf_import::Imports::default());
+            #[cfg(target_os = "macos")]
+            app.manage(psd_import::Gate::default());
             app.manage(measurement_units::MeasurementUnits::load(app.handle()));
             canvas::initialize(app.handle());
             #[cfg(target_os = "macos")]

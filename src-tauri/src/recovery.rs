@@ -242,6 +242,7 @@ impl Recovery {
             candidates,
         })
     }
+    #[cfg(test)]
     pub fn read_candidate(&self, id: &str) -> Result<Document, String> {
         match self.read_candidate_project(id)? {
             project_file::ProjectData::Legacy(document) => Ok(*document),

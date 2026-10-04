@@ -6,3 +6,5 @@ It is not copied from a third-party font and is not intended for artwork.
 The 1000-unit em, 600/800-unit font metrics and separate PDF widths exercise
 embedded font decoding, CID mappings and PDF-controlled advances independently
 of system fonts. No third-party font data is included in the fixture.
+
+`lp-psd-alpha.psd` is an artificial PSD v1 RGB8 with one RGBA layer and a white-matted merged preview. Its four pixels are half-transparent red, quarter-transparent blue, opaque green, and transparent. It contains no third-party artwork.

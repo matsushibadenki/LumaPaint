@@ -117,6 +117,7 @@ pub const FILE_FORMATS: &[FileFormat] = &[
         open_adapter: true,
         import_adapter: true,
         partial: true,
+        editor_open: cfg!(target_os = "macos"),
         ..entry(
             FormatId::Psd,
             &["psd"],
@@ -429,8 +430,8 @@ mod tests {
         bytes.extend(8u16.to_be_bytes());
         bytes.extend(3u16.to_be_bytes());
         bytes.extend([0; 8]); // Color data and resources.
-        bytes.extend(1u32.to_be_bytes()); // Nonempty layer data cannot be silently discarded.
-        bytes.push(0);
+        bytes.extend(8u32.to_be_bytes()); // Nonempty layer metadata cannot be silently discarded.
+        bytes.extend([0; 8]);
         bytes.extend(0u16.to_be_bytes());
         bytes.extend([20, 21, 22]);
         assert!(matches!(

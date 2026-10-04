@@ -2213,3 +2213,9 @@ pub(crate) async fn apply_pdf_import(
     })
     .await
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) fn open_psd(owner: &str, prepared: crate::psd_import::Prepared) -> Result<(), String> {
+    let _session = platform::SessionGuard::enter(owner)?;
+    platform::open_psd(prepared)
+}

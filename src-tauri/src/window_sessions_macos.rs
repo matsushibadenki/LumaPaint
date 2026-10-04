@@ -1029,6 +1029,73 @@ mod tests {
     }
 
     #[test]
+    fn tiled_recovery_restores_unsaved_tab_and_returns_its_snapshot() {
+        let _source = SessionGuard::enter("editor-90122").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut first = crate::recovery::Recovery::start(directory.path().into()).unwrap();
+        let mut document = TiledRasterDocument::new(17, 13).unwrap();
+        document
+            .add_layer("recovered".into(), "Recovered".into())
+            .unwrap();
+        first.checkpoint_project(
+            crate::project_file::ProjectData::Tiled(document.state()),
+            document.revision(),
+            true,
+        );
+        first.stop();
+        drop(first);
+        let recovery = crate::recovery::Recovery::start(directory.path().into()).unwrap();
+        let id = recovery.info().unwrap().candidates[0].id.clone();
+        RECOVERY.with(|slot| *slot.borrow_mut() = Some(recovery));
+        let snapshot = restore_recovery(id).unwrap();
+        assert_eq!((snapshot.width, snapshot.height), (17, 13));
+        assert_eq!(snapshot.layers[0].name, "Recovered");
+        assert!(snapshot.dirty);
+        assert!(snapshot.file_name.is_none());
+        assert_eq!(workspace_snapshot().documents[0].format, "tiled");
+        assert!(PROJECT_PATH.with(|p| p.borrow().is_none()));
+        RECOVERY.with(|slot| slot.borrow_mut().take());
+        close_window("editor-90122");
+    }
+
+    #[test]
+    fn opened_psd_is_a_new_unsaved_tiled_tab_and_keeps_previous_document() {
+        let _source = SessionGuard::enter("editor-90121").unwrap();
+        let original = new_document(preset("Previous")).unwrap().active_id.unwrap();
+        open_psd(crate::psd_import::Prepared {
+            document: TiledRasterDocument::new(2, 1).unwrap(),
+            report: Default::default(),
+            name: "Imported.psd".into(),
+        })
+        .unwrap();
+        let workspace = workspace_snapshot();
+        assert_eq!(workspace.documents.len(), 2);
+        let imported = workspace.active_id.unwrap();
+        assert_ne!(imported, original);
+        let snapshot = workspace.active.unwrap();
+        assert_eq!(snapshot.name, "Imported.psd");
+        assert!(snapshot.file_name.is_none());
+        assert!(snapshot.dirty);
+        assert!(!snapshot.can_undo);
+        assert_eq!((snapshot.width, snapshot.height), (2, 1));
+        assert!(PROJECT_PATH.with(|p| p.borrow().is_none()));
+        switch_document(original).unwrap();
+        assert_eq!(
+            workspace_snapshot()
+                .documents
+                .iter()
+                .find(|t| t.id == imported)
+                .unwrap()
+                .file_name
+                .as_deref(),
+            Some("Imported.psd")
+        );
+        switch_document(imported).unwrap();
+        assert!(workspace_snapshot().active.unwrap().dirty);
+        close_window("editor-90121");
+    }
+
+    #[test]
     fn shared_tiled_views_keep_layers_and_history_when_the_owner_closes() {
         let _source = SessionGuard::enter("editor-90111").unwrap();
         let id = next_document_id();
@@ -1039,7 +1106,8 @@ mod tests {
             content: OpenDocumentContent::Tiled(TiledSession {
                 document,
                 file_name: Some("Shared tiles".into()),
-                saved_revision: 0,
+                saved_revision: Some(0),
+                name: "Shared tiles".into(),
             }),
             path: None,
             fingerprint: None,
@@ -1086,7 +1154,7 @@ mod tests {
                 assert!(session.document.layers()[1].locked);
                 session.document.undo().unwrap();
                 assert!(!session.document.layers()[1].locked);
-                session.saved_revision = session.document.revision();
+                session.saved_revision = Some(session.document.revision());
             });
             emit_document();
             close_document(id).unwrap();

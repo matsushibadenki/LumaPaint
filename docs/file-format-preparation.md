@@ -14,7 +14,7 @@
 | TIFF / TIF | 準備 | ページ選択、ICC、16bit／浮動小数点、圧縮方式 |
 | ICO | 準備 | 内部サイズ／画像の選択、複数サイズ生成、透過 |
 | ORA | 準備 | ZIP内のmimetype・stack.xml・PNGレイヤー、階層・順序・座標・不透明度・合成モード |
-| PSD | 部分アダプターを共通読み込みへ接続 | 現在はPSD v1、3チャンネル不透明RGB8、統合画像、非圧縮／PackBitsのみ。レイヤー等の情報を捨てる場合は許可とConversionReportが必要 |
+| PSD | macOSの「開く」からRustワーカーで新規タイルタブへ読み込み | 現在はPSD v1、RGB8統合画像、非圧縮／PackBits。負のレイヤー数で指定される統合透明度に対応し、保存用の追加チャンネルは欠落を報告。レイヤー等の情報を捨てる場合は許可とConversionReportが必要 |
 | KRA | 準備 | まず検証したmergedimageのプレビュー読み込みを検討。Krita独自レイヤーや機能の完全保持とは区別する |
 | EXR | 準備 | half／float・HDR、チャンネル、data/display window、multipart。現在のRGBA8タイルへ無断で8bit化しない |
 | RAW | 読み込みのみ計画 | カメラRAWの現像アダプター、機種・CFA・WB・色空間。任意の生バッファは幅・高さ・配列・エンディアンの明示が別途必要 |
@@ -39,7 +39,8 @@
 
 - [Done] 全指定形式のID・拡張子別名・分類・操作別の現在／予定状態を共通化。PSD共通読み込み、タイル保持、未対応形式の拒否をテスト。
 - [Next] PNG／JPEG／WebPの独立コーデックと書き出し。次にBMP／TIFF／GIF／ICOとORAのレイヤー読み込み。
-- [Next] PSDのホスト接続とレイヤー保持、PDF読み込みの外観互換とページ選択。SVG／PDFの開く・書き出しはmacOSで接続済み。
+- [Done] PSDのmacOSホスト接続。三言語の損失確認を行い、未保存のタイルタブへ追加。既存文書を保持し、保存再読込・復旧を合成ファイルで検証。
+- [Next] PSDのレイヤー保持とPhotoshop実ファイルの画面検証、PDF読み込みの追加互換。SVG／PDFの開く・書き出し・ページ選択はmacOSで接続済み。
 - [Later] EXRと高精度モデル、RAW現像、HEIF／AVIF、KRAの段階的読み込み。AIのPDF互換部分は部分対応済み。
 
 ## 一次資料
@@ -49,3 +50,12 @@
 - [Krita HEIF / AVIF](https://docs.krita.org/en/general_concepts/file_formats/file_heif.html)
 - [Adobe Illustrator保存とPDF互換](https://helpx.adobe.com/illustrator/using/saving-artwork.html)
 - [KDEの形式とカメラRAW拡張子](https://github.com/KDE/kimageformats/blob/master/README.md)
+
+## PSDの統合透明度
+
+- [Done] RGB8統合画像の透明度をタイルへ保持。レイヤー数が負の場合だけ最初の追加チャンネルを透明度として適用する。その他のアルファ／スポットチャンネルは保持できないことを三言語で確認し、不透明な画像を誤って透明にしない。
+- [Done] 統合プレビューの白背景を除去して直線アルファへ変換。完全透明画素はRGBも0にし、タイル合成で二重にアルファを掛けない。半透明色は8bitプレビューの量子化精度に制限される。
+- [Done] 入力512MiB・寸法8192pxに加えて、全チャンネルの展開総量を512MiBに制限。レイヤー記録・チャンネル長・統合データ長・RLE行を検証してからタイルを生成。
+- [Next] 元のラスターレイヤー・マスク・レイヤー名と透明度を独立して保持。ZIP、16bit以上、CMYK、ICC変換は未対応。Photoshop実ファイルの画面操作は未検証。
+
+根拠：[Adobe PSD仕様](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/)のLayer count／Image data、白背景の除去の挙動は[psd-toolsの統合画像処理](https://github.com/psd-tools/psd-tools/blob/main/src/psd_tools/api/pil_io.py)も参照。実装はRustで行い、Pythonへの実行時依存を追加しない。

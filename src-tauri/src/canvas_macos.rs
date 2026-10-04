@@ -4696,21 +4696,19 @@ enum OpenDocumentContent {
 struct TiledSession {
     document: TiledRasterDocument,
     file_name: Option<String>,
-    saved_revision: u64,
+    saved_revision: Option<u64>,
+    name: String,
 }
 
 impl TiledSession {
     fn dirty(&self) -> bool {
-        self.document.revision() != self.saved_revision
+        Some(self.document.revision()) != self.saved_revision
     }
 
     fn snapshot(&self) -> DocumentSnapshot {
         let mut snapshot = Document::default().snapshot();
         let (width, height) = self.document.dimensions();
-        snapshot.name = self
-            .file_name
-            .clone()
-            .unwrap_or_else(|| "Untitled tiled document".into());
+        snapshot.name = self.file_name.clone().unwrap_or_else(|| self.name.clone());
         snapshot.file_name = self.file_name.clone();
         snapshot.width = width;
         snapshot.height = height;
@@ -4876,7 +4874,10 @@ fn document_tab(id: u64, content: &OpenDocumentContent) -> DocumentTabSnapshot {
         }
         OpenDocumentContent::Tiled(document) => DocumentTabSnapshot {
             id,
-            file_name: document.file_name.clone(),
+            file_name: document
+                .file_name
+                .clone()
+                .or_else(|| Some(document.name.clone())),
             dirty: document.dirty(),
             format: "tiled",
         },
@@ -7078,6 +7079,27 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
     Ok(workspace_snapshot())
 }
 
+pub fn open_psd(prepared: crate::psd_import::Prepared) -> Result<(), String> {
+    text_editor::finish(true)?;
+    park_active_document();
+    activate_document(OpenDocument {
+        id: next_document_id(),
+        content: OpenDocumentContent::Tiled(TiledSession {
+            document: prepared.document,
+            name: prepared.name,
+            file_name: None,
+            saved_revision: None,
+        }),
+        path: None,
+        fingerprint: None,
+    });
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+    emit_document();
+    Ok(())
+}
+
 pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String> {
     text_editor::finish(true)?;
     use super::FileAction;
@@ -7137,8 +7159,8 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "LumaPaint / SVG / PDF / AI / JPEG / PNG",
-                    &["lumapaint", "svg", "pdf", "ai", "jpg", "jpeg", "png"],
+                    "LumaPaint / SVG / PDF / AI / PSD / JPEG / PNG",
+                    &["lumapaint", "svg", "pdf", "ai", "psd", "jpg", "jpeg", "png"],
                 )
                 .pick_file()
             else {
@@ -7149,6 +7171,14 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            if extension == "psd" {
+                crate::psd_import::open(
+                    APP.get().ok_or("Application unavailable")?.clone(),
+                    current_label(),
+                    path,
+                )?;
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
             if matches!(extension.as_str(), "pdf" | "ai") {
                 crate::pdf_import::prepare(
                     APP.get().ok_or("Application unavailable")?.clone(),
@@ -7240,8 +7270,9 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 crate::project_file::ProjectData::Tiled(state) => {
                     OpenDocumentContent::Tiled(TiledSession {
                         document: TiledRasterDocument::from_state(state)?,
-                        file_name: Some(name),
-                        saved_revision: 0,
+                        file_name: Some(name.clone()),
+                        saved_revision: Some(0),
+                        name: name.clone(),
                     })
                 }
             };
@@ -7309,7 +7340,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     ACTIVE_TILED_DOCUMENT.with(|document| {
                         if let Some(document) = document.borrow_mut().as_mut() {
                             document.file_name = Some(name);
-                            document.saved_revision = document.document.revision();
+                            document.saved_revision = Some(document.document.revision());
                         }
                     });
                 } else {
@@ -7481,21 +7512,34 @@ pub fn delete_all_recoveries() -> Result<crate::recovery::Info, String> {
 }
 pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     text_editor::finish(true)?;
-    let document = RECOVERY.with(|slot| {
+    let project = RECOVERY.with(|slot| {
         slot.borrow()
             .as_ref()
             .ok_or("Recovery is unavailable")?
-            .read_candidate(&id)
+            .read_candidate_project(&id)
     })?;
-    for layer in document.svg_layers() {
-        validate_svg(&layer.source)?;
-    }
-    let mut recovered = Document::default();
-    recovered.replace_recovered(document);
+    let content = match project {
+        crate::project_file::ProjectData::Legacy(document) => {
+            for layer in document.svg_layers() {
+                validate_svg(&layer.source)?;
+            }
+            let mut recovered = Document::default();
+            recovered.replace_recovered(*document);
+            OpenDocumentContent::Legacy(Box::new(recovered))
+        }
+        crate::project_file::ProjectData::Tiled(state) => {
+            OpenDocumentContent::Tiled(TiledSession {
+                document: TiledRasterDocument::from_state(state)?,
+                name: "Recovered tiled document / 復旧したタイル文書 / 恢复的瓦片文档".into(),
+                file_name: None,
+                saved_revision: None,
+            })
+        }
+    };
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
-        content: OpenDocumentContent::Legacy(Box::new(recovered)),
+        content,
         path: None,
         fingerprint: None,
     });
@@ -7508,7 +7552,12 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
     if let Err(error) = redraw() {
         emit_error(error);
     }
-    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+    Ok(ACTIVE_TILED_DOCUMENT.with(|slot| {
+        slot.borrow().as_ref().map_or_else(
+            || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+            TiledSession::snapshot,
+        )
+    }))
 }
 
 pub fn text_fonts() -> Result<Vec<String>, String> {

@@ -1,5 +1,5 @@
-//! PSD v1 opaque RGB8 merged-image adapter, based on Adobe's published specification.
-//! Layer records, alpha channels, profiles, and higher depths are deliberately not decoded yet.
+//! PSD v1 RGB8 merged-image adapter, based on Adobe's published specification.
+//! Layer editing, profiles, and higher depths are deliberately not retained yet.
 use crate::*;
 use lumapaint_core::tiles::{
     RasterLayerState, RasterTileState, TileCoord, TiledRasterState, TILE_SIZE,
@@ -139,6 +139,55 @@ fn resources(data: &[u8], report: &mut ConversionReport) -> Result<(), ImportErr
     }
     Ok(())
 }
+// Negative layer count identifies the first extra channel as merged transparency.
+// Validate the container and record lengths before trusting that marker.
+fn merged_transparency(data: &[u8]) -> Result<bool, ImportError> {
+    if data.is_empty() {
+        return Ok(false);
+    }
+    let mut outer = Reader { bytes: data, at: 0 };
+    let info = outer.section()?;
+    let mut transparency = false;
+    if !info.is_empty() {
+        let mut r = Reader { bytes: info, at: 0 };
+        let count = r.u16()? as i16;
+        transparency = count < 0;
+        let mut payload = 0usize;
+        for _ in 0..count.unsigned_abs() {
+            r.take(16)?; // Rectangle; merged decoding does not interpret individual layers.
+            let channels = r.u16()?;
+            if channels > 56 {
+                return Err(ImportError::Malformed("layer channel count"));
+            }
+            for _ in 0..channels {
+                r.u16()?;
+                let length = r.u32()? as usize;
+                payload = payload
+                    .checked_add(length)
+                    .ok_or(ImportError::Malformed("layer payload overflow"))?;
+            }
+            if r.take(4)? != b"8BIM" {
+                return Err(ImportError::Malformed("layer blend signature"));
+            }
+            r.take(8)?; // Blend key, opacity, clipping, flags, filler.
+            r.section()?; // Bounded layer extra data, discarded with the layer report.
+        }
+        r.take(payload)?;
+        if r.at != info.len() && !(r.at + 1 == info.len() && info[r.at] == 0) {
+            return Err(ImportError::Malformed("layer info payload length"));
+        }
+    }
+    outer.section()?; // Global mask, discarded along with the layer metadata.
+                      // Additional layer metadata is intentionally discarded; the outer section bounds it.
+    Ok(transparency)
+}
+fn remove_white_matte(color: u8, alpha: u8) -> u8 {
+    if alpha == 0 {
+        return 0;
+    }
+    let numerator = (i32::from(color) + i32::from(alpha) - 255).max(0) * 255;
+    ((numerator + i32::from(alpha) / 2) / i32::from(alpha)).min(255) as u8
+}
 impl DocumentImporter for PsdImporter {
     fn probe(&self, bytes: &[u8]) -> bool {
         bytes.starts_with(b"8BPS")
@@ -155,10 +204,8 @@ impl DocumentImporter for PsdImporter {
         if h.width > MAX_DIMENSION || h.height > MAX_DIMENSION {
             return Err(ImportError::LimitExceeded("native dimensions"));
         }
-        if h.color_mode != 3 || h.depth != 8 || h.channels != 3 {
-            return Err(ImportError::Unsupported(
-                "only opaque RGB8 with three channels",
-            ));
+        if h.color_mode != 3 || h.depth != 8 || h.channels < 3 {
+            return Err(ImportError::Unsupported("only RGB8 composite images"));
         }
         let mut r = Reader { bytes, at: 26 };
         if !r.section()?.is_empty() {
@@ -168,7 +215,20 @@ impl DocumentImporter for PsdImporter {
         }
         let mut report = ConversionReport::default();
         resources(r.section()?, &mut report)?;
-        if !r.section()?.is_empty() {
+        let layer_data = r.section()?;
+        let transparency = merged_transparency(layer_data)?;
+        if transparency && h.channels < 4 {
+            return Err(ImportError::Malformed(
+                "missing merged transparency channel",
+            ));
+        }
+        if h.channels > if transparency { 4 } else { 3 } {
+            report.issues.push(ConversionIssue {
+                code: "psd.extraChannelsNotPreserved",
+                tier: CompatibilityTier::D,
+            });
+        }
+        if !layer_data.is_empty() {
             report.issues.push(ConversionIssue {
                 code: "psd.layersFlattened",
                 tier: CompatibilityTier::C,
@@ -178,7 +238,10 @@ impl DocumentImporter for PsdImporter {
         if compression > 1 {
             return Err(ImportError::Unsupported("ZIP compression"));
         }
-        let rows = h.height as usize * 3;
+        let rows = h.height as usize * usize::from(h.channels);
+        if h.width as usize * rows > MAX_INPUT_BYTES {
+            return Err(ImportError::LimitExceeded("PSD decoded channels"));
+        }
         let counts = if compression == 1 {
             (0..rows)
                 .map(|_| r.u16().map(usize::from))
@@ -219,7 +282,7 @@ impl DocumentImporter for PsdImporter {
             })
             .collect();
         // Decode one planar scanline at a time into native tiles, avoiding a second full image buffer.
-        for channel in 0..3usize {
+        for channel in 0..usize::from(h.channels) {
             for y in 0..h.height {
                 let decoded;
                 let row = if compression == 0 {
@@ -231,12 +294,22 @@ impl DocumentImporter for PsdImporter {
                     )?;
                     &decoded
                 };
+                if channel > 2 && !(channel == 3 && transparency) {
+                    continue;
+                }
                 for (x, &value) in row.iter().enumerate() {
                     let tile =
                         &mut tiles[(y / TILE_SIZE * columns + x as u32 / TILE_SIZE) as usize];
                     let at = ((y % TILE_SIZE) * TILE_SIZE + x as u32 % TILE_SIZE) as usize * 4;
-                    tile.pixels[at + channel] = value;
-                    tile.pixels[at + 3] = 255;
+                    if channel == 3 {
+                        for color in &mut tile.pixels[at..at + 3] {
+                            *color = remove_white_matte(*color, value);
+                        }
+                        tile.pixels[at + 3] = value;
+                    } else {
+                        tile.pixels[at + channel] = value;
+                        tile.pixels[at + 3] = 255;
+                    }
                 }
             }
         }
@@ -344,7 +417,7 @@ mod tests {
     }
     #[test]
     fn incompatible_headers_are_not_coerced_into_rgb8() {
-        for (offset, value) in [(4, 2u16), (12, 4), (22, 16), (24, 4)] {
+        for (offset, value) in [(4, 2u16), (12, 2), (22, 16), (24, 4)] {
             let mut bytes = fixture(3, 2, false);
             bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
             assert!(matches!(
@@ -377,8 +450,8 @@ mod tests {
         bytes[30..34].copy_from_slice(&(resource.len() as u32).to_be_bytes());
         bytes.splice(34..34, resource);
         let at = bytes.len() - 20; // Layer section is the four bytes before compression and 18 pixel bytes.
-        bytes[at - 4..at].copy_from_slice(&4u32.to_be_bytes());
-        bytes.splice(at..at, [0; 4]);
+        bytes[at - 4..at].copy_from_slice(&8u32.to_be_bytes());
+        bytes.splice(at..at, [0; 8]);
         let Err(ImportError::LossyConversionRequiresConsent(report)) =
             PsdImporter.import(&bytes, ImportOptions::default())
         else {
@@ -396,6 +469,144 @@ mod tests {
             .import(&bytes, ImportOptions { allow_lossy: true })
             .unwrap();
         assert_eq!(result.report, report);
+    }
+    fn alpha_fixture(rle: bool, saved_channel: bool) -> Vec<u8> {
+        let mut bytes = include_bytes!("../tests/fixtures/lp-psd-alpha.psd").to_vec();
+        if saved_channel {
+            bytes[42..44].copy_from_slice(&1i16.to_be_bytes());
+        }
+        if rle {
+            let at = bytes.len() - 18;
+            let pixels = bytes[at + 2..].to_vec();
+            bytes.truncate(at);
+            bytes.extend(1u16.to_be_bytes());
+            for _ in 0..4 {
+                bytes.extend(5u16.to_be_bytes());
+            }
+            for row in pixels.as_chunks::<4>().0 {
+                bytes.push(3);
+                bytes.extend(row);
+            }
+        }
+        bytes
+    }
+    #[test]
+    fn merged_transparency_unmattes_rgb_and_round_trips_native_tiles() {
+        let mut previous = None;
+        for rle in [false, true] {
+            let bytes = alpha_fixture(rle, false);
+            assert!(matches!(
+                PsdImporter.import(&bytes, ImportOptions::default()),
+                Err(ImportError::LossyConversionRequiresConsent(_))
+            ));
+            let result = PsdImporter
+                .import(&bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(
+                &result.raster.layers[0].tiles[0].pixels[..16],
+                &[255, 0, 0, 128, 0, 0, 255, 64, 0, 255, 0, 255, 0, 0, 0, 0]
+            );
+            if let Some(ref old) = previous {
+                assert_eq!(&result.raster, old);
+            }
+            previous = Some(result.raster.clone());
+            let encoded = crate::tile_container::encode(&result.raster).unwrap();
+            assert_eq!(
+                crate::tile_container::decode(&encoded).unwrap(),
+                result.raster
+            );
+            let doc =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(result.raster).unwrap();
+            assert_eq!(
+                &doc.composite_tile(TileCoord { x: 0, y: 0 }).unwrap()[..16],
+                &[128, 0, 0, 128, 0, 0, 64, 64, 0, 255, 0, 255, 0, 0, 0, 0]
+            );
+        }
+    }
+    #[test]
+    fn saved_alpha_channels_do_not_become_image_transparency() {
+        for rle in [false, true] {
+            let result = PsdImporter
+                .import(
+                    &alpha_fixture(rle, true),
+                    ImportOptions { allow_lossy: true },
+                )
+                .unwrap();
+            assert_eq!(
+                &result.raster.layers[0].tiles[0].pixels[..4],
+                &[255, 127, 127, 255]
+            );
+            assert!(result.report.issues.iter().any(
+                |i| i.code == "psd.extraChannelsNotPreserved" && i.tier == CompatibilityTier::D
+            ));
+        }
+    }
+    #[test]
+    fn additional_saved_channel_keeps_the_first_merged_alpha_channel() {
+        for rle in [false, true] {
+            let mut bytes = alpha_fixture(rle, false);
+            bytes[12..14].copy_from_slice(&5u16.to_be_bytes());
+            if rle {
+                let layer_size = u32::from_be_bytes(bytes[34..38].try_into().unwrap()) as usize;
+                let at = 38 + layer_size + 2 + 8;
+                bytes.splice(at..at, 5u16.to_be_bytes());
+                bytes.extend([3, 77, 77, 77, 77]);
+            } else {
+                bytes.extend([77; 4]);
+            }
+            let result = PsdImporter
+                .import(&bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(
+                &result.raster.layers[0].tiles[0].pixels[..8],
+                &[255, 0, 0, 128, 0, 0, 255, 64]
+            );
+            assert!(result
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.extraChannelsNotPreserved"));
+        }
+    }
+    #[test]
+    fn transparency_rejects_truncation_bad_layer_lengths_and_missing_alpha() {
+        for rle in [false, true] {
+            let bytes = alpha_fixture(rle, false);
+            for end in 0..bytes.len() {
+                assert!(
+                    PsdImporter
+                        .import(&bytes[..end], ImportOptions { allow_lossy: true })
+                        .is_err(),
+                    "{rle} {end}"
+                );
+            }
+            let mut bad = bytes.clone();
+            bad[12..14].copy_from_slice(&3u16.to_be_bytes());
+            assert!(matches!(
+                PsdImporter.import(&bad, ImportOptions { allow_lossy: true }),
+                Err(ImportError::Malformed(
+                    "missing merged transparency channel"
+                ))
+            ));
+            let mut bad = bytes.clone();
+            bad[38..42].copy_from_slice(&u32::MAX.to_be_bytes());
+            assert!(PsdImporter
+                .import(&bad, ImportOptions { allow_lossy: true })
+                .is_err());
+            let mut bad = bytes;
+            bad.push(0);
+            assert!(PsdImporter
+                .import(&bad, ImportOptions { allow_lossy: true })
+                .is_err());
+        }
+        let mut budget = alpha_fixture(false, false);
+        budget[12..14].copy_from_slice(&56u16.to_be_bytes());
+        budget[14..18].copy_from_slice(&8192u32.to_be_bytes());
+        budget[18..22].copy_from_slice(&8192u32.to_be_bytes());
+        assert!(matches!(
+            PsdImporter.import(&budget, ImportOptions { allow_lossy: true }),
+            Err(ImportError::LimitExceeded("PSD decoded channels"))
+        ));
     }
     #[test]
     fn packbits_enforces_exact_row_expansion() {
