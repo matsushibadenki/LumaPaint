@@ -193,3 +193,74 @@ fn hide_css_shapes_and_use_instances_preserves_style_identity_and_survives_reloa
     doc.redo();
     assert_eq!(doc.direct_objects().len(), 1);
 }
+
+#[test]
+fn imported_gradient_edit_is_independent_atomic_and_survives_history_and_reload() {
+    let mut doc = document(160, 100);
+    doc.import_svg("Gradients".into(), r##"<svg width="160" height="100"><style>rect {fill:url(#g)}</style><defs><linearGradient id="g"><stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient><rect id="shape" width="25" height="30"/></defs><use id="one" href="#shape" x="10"/><use id="two" href="#shape" x="80"/></svg>"##.into()).unwrap();
+    let before = doc.direct_objects();
+    assert_eq!(before.len(), 2);
+    let id = before[0].1.id.clone();
+    let second = before[1].1.fill_gradient.clone();
+    doc.select_direct_objects(vec![id.clone()]).unwrap();
+    let original = doc.encode().unwrap();
+    let mut gradient = before[0].1.fill_gradient.clone().unwrap();
+    gradient.stops[0].color = [0, 255, 0, 128];
+    gradient.stops[0].midpoint = 0.3;
+    gradient.method = lumapaint_core::gradient::GradientMethod::Perceptual;
+    doc.set_selected_vector_gradient(std::slice::from_ref(&id), "fill", gradient.clone())
+        .unwrap();
+    let edited = doc.encode().unwrap();
+    let after = doc.direct_objects();
+    assert_eq!(after[0].1.id, id);
+    let snapshot = doc.snapshot();
+    assert_eq!(
+        snapshot
+            .layers
+            .iter()
+            .flat_map(|l| &l.objects)
+            .find(|o| o.id == id)
+            .unwrap()
+            .fill_gradient,
+        after[0].1.fill_gradient
+    );
+    assert_eq!(
+        after[0].1.fill_gradient.as_ref().unwrap().stops,
+        gradient.stops
+    );
+    assert_eq!(after[1].1.fill_gradient, second);
+    assert_eq!(
+        reload(&edited).direct_objects()[0].1.fill_gradient,
+        after[0].1.fill_gradient
+    );
+    doc.undo();
+    assert_eq!(doc.encode().unwrap(), original);
+    doc.redo();
+    assert_eq!(doc.encode().unwrap(), edited);
+    let unchanged = doc.encode().unwrap();
+    assert!(doc
+        .set_selected_vector_gradient(&["missing".into()], "fill", gradient)
+        .is_err());
+    assert_eq!(doc.encode().unwrap(), unchanged);
+}
+
+#[test]
+fn repeated_svg_stop_edits_replace_private_definitions_without_growing_source() {
+    let mut doc = document(100, 100);
+    doc.import_svg("Gradient".into(), r##"<s:svg xmlns:s="http://www.w3.org/2000/svg" width="100" height="100"><s:defs><s:linearGradient id="g"><s:stop offset="0" stop-color="red"/><s:stop offset="1" stop-color="blue"/></s:linearGradient></s:defs><s:path id="p" d="M0 0H100V100H0Z" fill="url(#g)"/></s:svg>"##.into()).unwrap();
+    let object = doc.direct_objects()[0].1.clone();
+    let id = object.id;
+    let mut gradient = object.fill_gradient.unwrap();
+    doc.select_direct_objects(vec![id.clone()]).unwrap();
+    let mut first = 0;
+    for i in 0..20 {
+        gradient.stops[0].midpoint = 0.3 + i as f32 * 0.01;
+        doc.set_selected_vector_gradient(std::slice::from_ref(&id), "fill", gradient.clone())
+            .unwrap();
+        if i == 0 {
+            first = source(&doc).len();
+        }
+        assert!(source(&doc).len() < first + 1024);
+        assert!(doc.direct_objects()[0].1.fill_gradient.is_some());
+    }
+}

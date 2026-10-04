@@ -7642,6 +7642,20 @@ fn modal_input_blocked(label: &str) -> bool {
         .is_some_and(|app| crate::modal_windows::blocked(app, label))
 }
 
+pub fn create_gradient_fill_layer(
+    gradient: lumapaint_core::gradient::Gradient,
+) -> Result<DocumentSnapshot, String> {
+    let _ = prepare_pixel_gradient(&[])?;
+    DOCUMENT.with(|document| {
+        document.borrow_mut().add_gradient_fill_layer(
+            gradient,
+            &lumapaint_renderer::vector::skia_paths::SkiaPathEngine,
+        )
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
 pub fn apply_gradient(
     ids: &[String],
     target: &str,
@@ -7750,28 +7764,7 @@ pub fn render_pixel_gradient(
                 (bounds[1] + bounds[3]) * 0.5,
             ]);
         }
-        let ramp: Vec<[u8; 4]> = (0..=4096)
-            .map(|i| gradient.sample(i as f32 / 4096.))
-            .collect();
-        let mut pixels = vec![0; (w * h * 4) as usize];
-        for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let mut t =
-                gradient.position_at((i as u32 % w) as f32 + 0.5, (i as u32 / w) as f32 + 0.5);
-            if gradient.dither {
-                t += (((i as u32).wrapping_mul(1664525).wrapping_add(1013904223) >> 24) as f32
-                    / 255.
-                    - 0.5)
-                    / 255.;
-            }
-            let c = ramp[(t.clamp(0., 1.) * 4096.).round() as usize];
-            *p = [
-                (c[0] as u16 * c[3] as u16 / 255) as u8,
-                (c[1] as u16 * c[3] as u16 / 255) as u8,
-                (c[2] as u16 * c[3] as u16 / 255) as u8,
-                c[3],
-            ];
-        }
-        pixels
+        lumapaint_renderer::gradient_raster::rasterize(&gradient, w, h)?
     } else {
         lumapaint_renderer::vector::rasterize_svg(&svg, w, h)?.pixels
     };

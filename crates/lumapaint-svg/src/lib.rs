@@ -32,6 +32,15 @@ impl SvgGeometryBackend for UsvgGeometryBackend {
     fn stabilize_ids(&self, source: &str) -> Result<String, String> {
         edit::stabilize_ids(source)
     }
+    fn set_gradients(
+        &self,
+        source: &str,
+        layer: &str,
+        size: [f32; 2],
+        changes: &[(String, String, lumapaint_core::gradient::Gradient)],
+    ) -> Result<String, String> {
+        edit::set_gradients(source, layer, size, changes)
+    }
     fn apply(
         &self,
         source: &str,

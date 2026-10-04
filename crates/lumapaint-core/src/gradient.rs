@@ -44,6 +44,38 @@ pub struct Gradient {
     pub stops: Vec<GradientStop>,
 }
 impl Gradient {
+    /// Resolve the legacy bounds-relative appearance to an editable local axis.
+    pub fn geometry_in_bounds(&self, bounds: [f32; 4]) -> [f32; 6] {
+        if let Some(matrix) = self.geometry {
+            return matrix;
+        }
+        let [x, y, right, bottom] = bounds;
+        let w = (right - x).max(0.001);
+        let h = (bottom - y).max(0.001);
+        let (sin, cos) = self.angle.to_radians().sin_cos();
+        let center = [x + w * 0.5, y + h * 0.5];
+        match self.kind {
+            GradientKind::Linear => {
+                let length = w * cos.abs() + h * sin.abs();
+                [
+                    cos * length,
+                    -sin * length,
+                    sin * length,
+                    cos * length,
+                    center[0] - cos * length * 0.5,
+                    center[1] + sin * length * 0.5,
+                ]
+            }
+            GradientKind::Radial => [
+                cos * w * 0.5,
+                -sin * w * 0.5,
+                sin * w * 0.5 * self.aspect,
+                cos * w * 0.5 * self.aspect,
+                center[0],
+                center[1],
+            ],
+        }
+    }
     /// Position in an affine gradient, shared by pixel fallback and canvas controls.
     pub fn position_at(&self, x: f32, y: f32) -> f32 {
         let [a, b, c, d, e, f] = self.geometry.unwrap_or([1., 0., 0., 1., 0., 0.]);

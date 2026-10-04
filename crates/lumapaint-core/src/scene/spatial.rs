@@ -1,5 +1,5 @@
 //! Conservative BVH; unknown bounds always remain candidates.
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 pub type Bounds = [f64; 4];
 fn intersects(a: Bounds, b: Bounds) -> bool {
@@ -25,9 +25,9 @@ struct Node {
 }
 #[derive(Clone, Debug, Default)]
 pub struct SpatialIndex {
-    nodes: Vec<Node>,
-    leaves: HashMap<usize, usize>,
-    unknown: Vec<usize>,
+    nodes: super::pages::Pages<Node>,
+    leaves: Arc<HashMap<usize, usize>>,
+    unknown: Arc<Vec<usize>>,
 }
 #[derive(Debug, Default)]
 pub struct Candidates {
@@ -43,7 +43,7 @@ impl SpatialIndex {
             if let Some(bounds) = bounds.filter(|b| valid(*b)) {
                 known.push((id, bounds));
             } else {
-                index.unknown.push(id);
+                Arc::make_mut(&mut index.unknown).push(id);
             }
         }
         if !known.is_empty() {
@@ -61,7 +61,7 @@ impl SpatialIndex {
             item: items[0].0,
         });
         if items.len() == 1 {
-            self.leaves.insert(items[0].0, position);
+            Arc::make_mut(&mut self.leaves).insert(items[0].0, position);
         } else {
             let axis = usize::from(bounds[3] - bounds[1] > bounds[2] - bounds[0]);
             let middle = items.len() / 2;
@@ -99,7 +99,7 @@ impl SpatialIndex {
     pub fn query(&self, bounds: Bounds) -> Candidates {
         // Invalid queries cannot safely reject anything.
         let mut candidates = Candidates {
-            items: self.unknown.clone(),
+            items: self.unknown.as_ref().clone(),
             visited_nodes: 0,
         };
         let mut stack = if self.nodes.is_empty() {
@@ -127,6 +127,25 @@ impl SpatialIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn published_index_retains_old_bounds_after_refit() {
+        let mut tree = SpatialIndex::build((0..100_000).map(|i| {
+            let x = i as f64 * 10.;
+            (i, Some([x, 0., x + 5., 5.]))
+        }));
+        let published = tree.clone();
+        assert!(Arc::ptr_eq(&tree.leaves, &published.leaves));
+        assert!(tree.refit(10, Some([2_000_000., 0., 2_000_005., 5.])));
+        assert_eq!(published.query([100., 0., 105., 5.]).items, vec![10]);
+        assert!(tree.query([100., 0., 105., 5.]).items.is_empty());
+        let moved = tree.query([2_000_000., 0., 2_000_005., 5.]);
+        assert_eq!(moved.items, vec![10]);
+        assert!(moved.visited_nodes < 100);
+        assert!(published
+            .query([2_000_000., 0., 2_000_005., 5.])
+            .items
+            .is_empty());
+    }
     #[test]
     fn refit_matches_linear_scan_and_preserves_order() {
         let mut boxes: Vec<_> = (0..10000)

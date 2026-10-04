@@ -8,6 +8,7 @@ default = []
 skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]
+pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 lumapaint-core = { path = "../lumapaint-core" }
 wgpu = "27"
@@ -23,6 +24,7 @@ skia-safe = { version = "=0.153.3", features = ["svg", "webp", "metal", "ganesh"
 metal = { version = "0.32", optional = true }
 
 [dev-dependencies]
+serde_json = "1"
 lumapaint-formats = { path = "../lumapaint-formats" }
 lumapaint-svg = { path = "../lumapaint-svg" }
 pollster = "0.4"

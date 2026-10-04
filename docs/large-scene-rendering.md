@@ -15,15 +15,15 @@
 - `svg-raster`・`tile-project`ワーカーが重い処理を行い、待機要求を最新のものへまとめる。文書・表示キーで採用結果を確認する。
 - `LUMAPAINT_RENDER_METRICS=1`で描画、待機、ラスタ化、転送量を記録する。文字キャッシュの件数・計上ペイロード・予算・追い出し数も記録する。
 
-現状のSVG描画はレイヤー単位で、レイヤーのソース比較、オブジェクト探索・SVG生成、ペイント履歴の比較などに全走査が残る。オブジェクト単位の空間インデックス、変更Journal、Scene Compiler、共有ページによるRenderSnapshotは未実装。処理グラフは効果・合成の依存DAGであり、空間的なScene Graphの代用ではない。
+現状のSVG描画はレイヤー単位で、レイヤーのソース比較、オブジェクト探索・SVG生成、ペイント履歴の比較などに全走査が残る。変更Journalと個別世代は編集・Undo/Redo・削除・読込に接続済み。選択用BVHと対応する単色ベジェの描画用BVHも実装済み。BVHノードは256要素の共有ページに保持し、複製した旧版と新しい版を独立して参照できる。ただしScene Compilerによる文書全体のimmutable RenderSnapshot公開と変更対象だけの文書更新は未完成。処理グラフは効果・合成の依存DAGであり、空間的なScene Graphの代用ではない。
 
-また現在は編集可能ベクターレイヤーごとに4096オブジェクト、SVGレイヤー16、SVGソース合計6MiB、v1ファイル8MiBという制約がある。上限を先に外して100万対応と称さない。Sceneと保存・読込・履歴・選択・メモリの検証後に、新しい文書容量契約として拡張する。
+また現在は編集可能ベクターレイヤーごとに4096オブジェクト、SVGレイヤー16、SVGソース合計6MiB、v1ファイル64MiBという制約がある。上限を先に外して100万対応と称さない。Sceneと保存・読込・履歴・選択・メモリの検証後に、新しい文書容量契約として拡張する。
 
 ## 依存とデータの流れ
 
 ### GPU描画の段階的な拡張
 
-- [Done] Zero-copy GPUの第一段階：macOSのオブジェクトキャッシュ。wgpuの実Metal Deviceからテクスチャを確保し、Skiaは同じDeviceで描画する。透明領域を含め初期化し、Ganeshの完了を同期してからwgpuへ所有権を渡す。保存・CPU差分比較・外部SVG互換・workspace画像のRGBA経路は維持する。現段階はCPU同期を伴うため、完全な非同期GPUパイプラインとは扱わない。
+- [Done] Zero-copy GPUの第一段階：macOSのオブジェクトキャッシュ。wgpuの実Metal Deviceからテクスチャを確保し、Skiaは同じDeviceで描画する。透明領域を含め初期化し、Skiaとwgpuが同じ実Metal queueを使用することで提出順序を維持する。保存・CPU差分比較・外部SVG互換・workspace画像のRGBA経路は維持する。共有経路ではCPUの完了待ちを行わない。Deviceとqueueの組でコンテキストを分け、複数ウインドウ間で誤ったqueueを使わない。
 - [Next] 変更Journalとgeometry／style／transform世代、BVHによる可視範囲検索を追加し、変更対象だけSceneを更新する。次いでVector／Group／Effectの局所タイルキャッシュ、互換SVGの共有GPU出力と非同期queue同期へ拡張する。
 - [Later] GPU resident vector scene：Geometry／Style／Transform／BoundsをGPUへ保持し、表示用precisionとzoom bucketを管理する。Documentの精度や保存データは変えない。
 - [Later] GPU-driven renderer：GPU可視判定とindirect drawingを段階導入する。GPU-native Bézier／analytic AAは複雑なfill・stroke・互換性を検証してから追加し、Skia／resvgを併用する。RGBA16F・linear-light合成とICC変換は別の品質検証工程で扱う。
@@ -55,6 +55,13 @@ coreはLP固有の編集結果・変更IDを提供し、rendererは派生Scene�
 編集・Undo・Redo・削除・読込・文書切替を同じ変更通知契約へ接続する。トランザクションの成功時だけJournalへ追加し、失敗時は状態とJournalの双方を変更しない。Journalを購読する描画・サムネイル等には消費位置を持たせ、通知欠落や世代の不連続時だけ全再構築する。
 
 変更件数はその編集に比例させる。ただしグループ変更や共有スタイル変更が多数の子へ影響する場合は、その実際の依存範囲を処理する。毎フレームの全SVG文字列比較・全履歴比較を世代キーへ置き換え、SVG文字列の再生成はI/Oや互換描画が必要なタイミングへ限定する。
+
+## 共有ページと可視判定の実装状況
+
+- [Done] coreの`scene::pages::Pages`は256要素の葉と32分岐・4階層の共有radix treeを使用する。複製はrootのArc共有、変更は経路と対象ページのみのcopy-on-write。選択BVHのノード格納へ接続し、葉の参照表とunknown一覧も旧版と共有する。
+- [Done] 100万要素の単体テストで旧版の値を維持し、1要素変更の要素clone数が256であることを確認。10万葉のBVHでは旧版を保持したrefitと新旧それぞれの検索結果を検証する。これはデータ構造の検証であり、アプリの100万オブジェクト対応やfps測定ではない。
+- [Done] 対応する単色ベジェのGPU描画はBVHで画面内の候補を抽出し、その描画順でgeometry更新・indirect drawを行う。2画面ピクセルの余裕と、移動中の選択オブジェクトを含める。変更のないuniformとindirect bufferの再転送も省く。
+- [Next] 描画BVHの構築は現在ソース変更時のレイヤー全量構築。Journalからのrefit、文書編集のSVG全量生成・履歴複製の除去、未対応描画を含むSnapshot公開は残る。
 
 ## 2. 空間インデックスとコンパクトなScene
 

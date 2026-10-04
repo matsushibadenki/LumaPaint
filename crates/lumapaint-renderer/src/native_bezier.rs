@@ -18,13 +18,21 @@ pub(crate) struct Geometry {
     uniform: wgpu::Buffer,
     indirect: wgpu::Buffer,
     binding: wgpu::BindGroup,
+    last_uniform: Option<[f32; 20]>,
+    last_indirect: Option<[u32; 4]>,
 }
 pub(crate) struct Cache {
     pub pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     pub shapes: HashMap<String, Geometry>,
     ready: HashMap<String, String>,
-    verified: HashMap<String, (String, bool)>,
+    verified: HashMap<String, VerifiedLayer>,
+    draw_lists: HashMap<String, Vec<usize>>,
+}
+struct VerifiedLayer {
+    source: String,
+    compatible: bool,
+    spatial: lumapaint_core::scene::spatial::SpatialIndex,
 }
 impl Cache {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -66,10 +74,12 @@ impl Cache {
             shapes: HashMap::new(),
             ready: HashMap::new(),
             verified: HashMap::new(),
+            draw_lists: HashMap::new(),
         }
     }
     pub fn begin_frame(&mut self) {
         self.ready.clear();
+        self.draw_lists.clear();
     }
     pub fn ready(&self, layer: &SvgLayer) -> bool {
         layer.effective_opacity() == 1.
@@ -91,17 +101,14 @@ impl Cache {
         selected: &[String],
         offset: [f32; 2],
     ) -> bool {
-        if !layer.vector_layer
-            || layer.effective_opacity() != 1.
-            || layer.vector_objects.is_empty()
-            || layer.vector_objects.iter().any(|o| !supported(o))
+        if !layer.vector_layer || layer.effective_opacity() != 1. || layer.vector_objects.is_empty()
         {
             return false;
         }
         if self
             .verified
             .get(&layer.id)
-            .is_none_or(|(source, _)| source != &layer.source)
+            .is_none_or(|entry| entry.source != layer.source)
         {
             let expected = lumapaint_core::document::vector_svg(
                 viewport.document_width as u32,
@@ -110,14 +117,41 @@ impl Cache {
             );
             self.verified.insert(
                 layer.id.clone(),
-                (layer.source.clone(), expected == layer.source),
+                VerifiedLayer {
+                    source: layer.source.clone(),
+                    compatible: expected == layer.source
+                        && layer.vector_objects.iter().all(supported),
+                    spatial: lumapaint_core::scene::spatial::SpatialIndex::build(
+                        layer
+                            .vector_objects
+                            .iter()
+                            .enumerate()
+                            .map(|(i, object)| (i, native_drawing_bounds(object))),
+                    ),
+                },
             );
         }
-        if !self.verified[&layer.id].1 {
+        if !self.verified[&layer.id].compatible {
             return false;
         }
+        let mut candidates = viewport_candidates(&self.verified[&layer.id].spatial, viewport);
+        // A drag can bring a selected object into view from outside its stored bounds.
+        if offset != [0., 0.] {
+            candidates.extend(
+                layer
+                    .vector_objects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, object)| selected.contains(&object.id))
+                    .map(|(i, _)| i),
+            );
+            candidates.sort_unstable();
+            candidates.dedup();
+        }
+        candidates.retain(|&i| layer.vector_objects[i].visible);
         let mut work = 0usize;
-        for o in layer.vector_objects.iter().filter(|o| o.visible) {
+        for &i in &candidates {
+            let o = &layer.vector_objects[i];
             let valid = self.shapes.get(&o.id).is_some_and(|g| g.path == o.path);
             if !valid {
                 if self.shapes.len() >= 8192 {
@@ -128,7 +162,7 @@ impl Cache {
                 };
                 self.shapes.insert(o.id.clone(), g);
             }
-            let g = &self.shapes[&o.id];
+            let g = self.shapes.get_mut(&o.id).unwrap();
             // Choose the native representation by its projected precision, not
             // zoom alone. Very large curves fall back to viewport rasterization.
             let extent = (g.bounds[2] - g.bounds[0]).max(g.bounds[3] - g.bounds[1]);
@@ -159,18 +193,63 @@ impl Cache {
                 return false;
             }
         }
+        self.draw_lists.insert(layer.id.clone(), candidates);
         self.ready.insert(layer.id.clone(), layer.source.clone());
         true
     }
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, layer: &SvgLayer) {
         pass.set_pipeline(&self.pipeline);
-        for o in layer.vector_objects.iter().filter(|o| o.visible) {
-            if let Some(g) = self.shapes.get(&o.id) {
+        for &i in self.draw_lists.get(&layer.id).into_iter().flatten() {
+            if let Some(g) = self.shapes.get(&layer.vector_objects[i].id) {
                 pass.set_bind_group(0, &g.binding, &[]);
                 pass.draw_indirect(&g.indirect, 0);
             }
         }
     }
+}
+// Derive bounds from the actual rendered path, rather than editable control
+// points, which can be absent for imported paths.
+fn native_drawing_bounds(object: &VectorObject) -> Option<[f64; 4]> {
+    let (_, _, local) = segments(object)?;
+    let [a, b, c, d, e, f] = object.transform.map(f64::from);
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for x in [local[0], local[2]] {
+        for y in [local[1], local[3]] {
+            let point = [a * x + c * y + e, b * x + d * y + f];
+            if !point.iter().all(|v| v.is_finite()) {
+                return None;
+            }
+            bounds[0] = bounds[0].min(point[0]);
+            bounds[1] = bounds[1].min(point[1]);
+            bounds[2] = bounds[2].max(point[0]);
+            bounds[3] = bounds[3].max(point[1]);
+        }
+    }
+    Some(bounds)
+}
+fn viewport_candidates(
+    index: &lumapaint_core::scene::spatial::SpatialIndex,
+    viewport: Viewport,
+) -> Vec<usize> {
+    // The shader's analytic AA reaches beyond the exact path by a screen pixel.
+    let first = viewport.document_point(-2. / viewport.scale, -2. / viewport.scale);
+    let last = viewport.document_point(
+        (viewport.width as f32 + 2.) / viewport.scale,
+        (viewport.height as f32 + 2.) / viewport.scale,
+    );
+    index
+        .query([
+            f64::from(first.x),
+            f64::from(first.y),
+            f64::from(last.x),
+            f64::from(last.y),
+        ])
+        .items
 }
 fn supported(o: &VectorObject) -> bool {
     o.text.is_none()
@@ -357,10 +436,12 @@ impl Geometry {
             uniform,
             indirect,
             binding,
+            last_uniform: None,
+            last_indirect: None,
         })
     }
     fn update(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         o: &VectorObject,
         v: Viewport,
@@ -439,13 +520,16 @@ impl Geometry {
             0.,
             0.,
         ];
-        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&uniform));
+        if self.last_uniform != Some(uniform) {
+            queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&uniform));
+            self.last_uniform = Some(uniform);
+        }
         let visible = bounds[2] > bounds[0] && bounds[3] > bounds[1];
-        queue.write_buffer(
-            &self.indirect,
-            0,
-            bytemuck::cast_slice(&[6u32, u32::from(visible), 0, 0]),
-        );
+        let indirect = [6u32, u32::from(visible), 0, 0];
+        if self.last_indirect != Some(indirect) {
+            queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&indirect));
+            self.last_indirect = Some(indirect);
+        }
         ((bounds[2] - bounds[0]).max(0.) * (bounds[3] - bounds[1]).max(0.)).ceil() as usize
             * self.cost
     }
@@ -454,6 +538,20 @@ impl Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewport_query_preserves_order_unknown_bounds_and_edge_coverage() {
+        let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
+        let index = lumapaint_core::scene::spatial::SpatialIndex::build([
+            (3, Some([2000., 0., 2005., 5.])),
+            (2, Some([-1., 20., -0.5, 30.])),
+            (1, Some([100., 100., 150., 150.])),
+            (0, None),
+        ]);
+        assert_eq!(viewport_candidates(&index, viewport), vec![0, 1, 2]);
+        let mut panned = viewport;
+        panned.pan_x = -1500.;
+        assert_eq!(viewport_candidates(&index, panned), vec![0, 3]);
+    }
     fn object(path: &str) -> VectorObject {
         VectorObject {
             id: "curve".into(),
@@ -535,7 +633,7 @@ mod tests {
             vector_objects: vec![o.clone()],
         };
         layer.source = lumapaint_core::document::vector_svg(128, 128, &layer.vector_objects);
-        let render = |cache: &Cache| {
+        let render = |cache: &Cache, layer: &SvgLayer| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
@@ -571,7 +669,7 @@ mod tests {
                     })],
                     ..Default::default()
                 });
-                cache.draw(&mut pass, &layer);
+                cache.draw(&mut pass, layer);
             }
             encoder.copy_texture_to_buffer(
                 texture.as_image_copy(),
@@ -600,7 +698,7 @@ mod tests {
         };
         assert!(cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
         let geometry = &cache.shapes["curve"]._curves as *const _ as usize;
-        let pixels = render(&cache);
+        let pixels = render(&cache, &layer);
         let path = Path::from_svg(&o.path.data)
             .unwrap()
             .with_fill_type(skia_safe::PathFillType::EvenOdd);
@@ -630,6 +728,29 @@ mod tests {
             .map(|(a, b)| usize::from(a[3].abs_diff(b[3])))
             .sum();
         assert!(error < 128 * 128 * 2, "Cubic AA alpha error: {error}");
+        let mut outside = o.clone();
+        outside.id = "outside".into();
+        outside.transform[4] = 10_000.;
+        layer.vector_objects.push(outside);
+        layer.source = lumapaint_core::document::vector_svg(128, 128, &layer.vector_objects);
+        cache.begin_frame();
+        assert!(cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert_eq!(cache.draw_lists[&layer.id], vec![0]);
+        assert!(!cache.shapes.contains_key("outside"));
+        assert_eq!(render(&cache, &layer), pixels);
+        cache.begin_frame();
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            v,
+            &["outside".into()],
+            [-10_000., 0.]
+        ));
+        assert_eq!(cache.draw_lists[&layer.id], vec![0, 1]);
+        assert!(cache.shapes.contains_key("outside"));
+        layer.vector_objects.pop();
+        layer.source = lumapaint_core::document::vector_svg(128, 128, &layer.vector_objects);
         // Pan and extremely high zoom alter display uniforms, never curve allocation.
         let mut high = v.with_screen_zoom(640.);
         high.pan_x = 100.;

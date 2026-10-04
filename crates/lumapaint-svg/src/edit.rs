@@ -225,6 +225,64 @@ fn visit<'a>(
         }
     }
 }
+fn gradient(paint: &usvg::Paint, opacity: f32) -> Option<lumapaint_core::gradient::Gradient> {
+    use lumapaint_core::gradient::*;
+    let (base, kind, axis): (&usvg::BaseGradient, _, _) = match paint {
+        usvg::Paint::LinearGradient(g) => {
+            let dx = g.x2() - g.x1();
+            let dy = g.y2() - g.y1();
+            (g, GradientKind::Linear, [dx, dy, -dy, dx, g.x1(), g.y1()])
+        }
+        usvg::Paint::RadialGradient(g) if g.cx() == g.fx() && g.cy() == g.fy() => (
+            g,
+            GradientKind::Radial,
+            [g.r().get(), 0., 0., g.r().get(), g.cx(), g.cy()],
+        ),
+        _ => return None,
+    };
+    if base.spread_method() != usvg::SpreadMethod::Pad {
+        return None;
+    }
+    let t = base.transform();
+    let g = Gradient {
+        geometry: Some(mul([t.sx, t.ky, t.kx, t.sy, t.tx, t.ty], axis)),
+        pixel_style: None,
+        kind,
+        angle: -axis[1].atan2(axis[0]).to_degrees(),
+        aspect: 1.,
+        dither: false,
+        method: GradientMethod::Classic,
+        stops: base
+            .stops()
+            .iter()
+            .map(|stop| {
+                let c = stop.color();
+                GradientStop {
+                    position: stop.offset().get(),
+                    midpoint: 0.5,
+                    color: [
+                        c.red,
+                        c.green,
+                        c.blue,
+                        (255. * stop.opacity().get() * opacity).round() as u8,
+                    ],
+                }
+            })
+            .collect(),
+    };
+    g.validate().ok()?;
+    Some(g)
+}
+fn stored_gradient(
+    node: roxmltree::Node<'_, '_>,
+    target: &str,
+) -> Option<lumapaint_core::gradient::Gradient> {
+    let name = format!("data-lumapaint-{target}-gradient");
+    let g: lumapaint_core::gradient::Gradient =
+        serde_json::from_str(node.attribute(name.as_str())?).ok()?;
+    g.validate().ok()?;
+    Some(g)
+}
 pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
     if source.len() > 4 * 1024 * 1024 || size.iter().any(|v| !v.is_finite() || *v <= 0.) {
         return vec![];
@@ -292,8 +350,14 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
                 },
                 transform,
                 image_frame: None,
-                fill_gradient: None,
-                stroke_gradient: None,
+                fill_gradient: stored_gradient(node, "fill").or_else(|| {
+                    path.fill()
+                        .and_then(|f| gradient(f.paint(), f.opacity().get()))
+                }),
+                stroke_gradient: stored_gradient(node, "stroke").or_else(|| {
+                    path.stroke()
+                        .and_then(|f| gradient(f.paint(), f.opacity().get()))
+                }),
                 fill: path.fill().and(paint),
                 stroke: path.stroke().and(paint),
                 stroke_width: path.stroke().map_or(0., |s| s.width().get()),
@@ -599,6 +663,19 @@ fn freeze_fragment(
                     .to_owned()
             };
             values.push(("d", format!("path('{}')", path)));
+            if let Some(original_node) = xml
+                .descendants()
+                .find(|n| n.is_element() && n.range().start == original.element.start)
+            {
+                for key in [
+                    "data-lumapaint-fill-gradient",
+                    "data-lumapaint-stroke-gradient",
+                ] {
+                    if let Some(value) = original_node.attribute(key) {
+                        attrs.push((key, value.to_owned()));
+                    }
+                }
+            }
             attrs.extend([
                 ("d", path),
                 ("data-lumapaint-edit-id", suffix),
@@ -1121,6 +1198,159 @@ pub fn hide_objects(
     let mut output = source;
     for (range, text) in edits {
         output.replace_range(range, &text);
+    }
+    Ok(output)
+}
+
+pub fn set_gradients(
+    source: &str,
+    layer: &str,
+    size: [f32; 2],
+    changes: &[(String, String, lumapaint_core::gradient::Gradient)],
+) -> Result<String, String> {
+    let mut resolved = targets(source, layer, size);
+    let mut edits = Vec::new();
+    let mut requested = Vec::new();
+    let mut seen = HashSet::new();
+    for (id, target, gradient) in changes {
+        gradient.validate()?;
+        if !["fill", "stroke"].contains(&target.as_str()) || !seen.insert(id) {
+            return Err("Invalid SVG gradient target".into());
+        }
+        let i = resolved
+            .iter()
+            .position(|t| &t.object.id == id)
+            .ok_or("SVG object missing")?;
+        let object = resolved.remove(i);
+        requested.push((
+            id.clone(),
+            target.clone(),
+            gradient.clone(),
+            object.object.transform,
+        ));
+        edits.push((object.object.clone(), object));
+    }
+    let mut output = source.to_owned();
+    replace_many(
+        &mut output,
+        edits.into_iter().map(|(o, t)| (t, Some(o))).collect(),
+    )?;
+    let normalized = targets(&output, layer, size);
+    let xml = roxmltree::Document::parse(&output).map_err(|e| e.to_string())?;
+    let mut replacements = Vec::new();
+    let mut definitions = String::new();
+    let owners: HashSet<_> = requested
+        .iter()
+        .map(|(id, target, _, _)| format!("{id}/{target}"))
+        .collect();
+    for (number, (id, target, mut gradient, old_transform)) in requested.into_iter().enumerate() {
+        let object = normalized
+            .iter()
+            .find(|t| t.object.id == id)
+            .ok_or("Normalized SVG identity missing")?;
+        let node = xml
+            .descendants()
+            .find(|n| n.is_element() && n.range().start == object.source.element.start)
+            .ok_or("SVG paint target missing")?;
+        if let Some(g) = gradient.geometry {
+            let [a, b, c, d, e, f] = object.object.transform;
+            let det = a * d - b * c;
+            if det.abs() < 1e-10 {
+                return Err("Singular SVG transform".into());
+            }
+            let inverse = [
+                d / det,
+                -b / det,
+                -c / det,
+                a / det,
+                (c * f - d * e) / det,
+                (b * e - a * f) / det,
+            ];
+            gradient.geometry = Some(mul(inverse, mul(old_transform, g)));
+        }
+        let name = format!("{}gradient-{number}", prefix(&xml, node.range().start));
+        let bounds = lumapaint_core::stroke::path_bounds(&object.object.path.data)
+            .ok_or("SVG path bounds missing")?;
+        let filter = format!("{name}-dither");
+        let mut definition = gradient.svg_definition_in_bounds(&name, bounds);
+        if target == "fill" {
+            definition.push_str(&gradient.svg_dither_filter(&filter));
+        }
+        definitions.push_str(&format!("<defs xmlns=\"http://www.w3.org/2000/svg\" data-lumapaint-gradient-owner=\"{}\">{definition}</defs>", escape(&format!("{id}/{target}"))));
+        let existing_filter = node.attribute("filter").is_some_and(|f| f != "none")
+            || node
+                .attribute("style")
+                .is_some_and(|s| s.contains("filter:"));
+        let previous_dither = stored_gradient(node, &target).is_some_and(|g| g.dither);
+        if gradient.dither && existing_filter && !previous_dither {
+            return Err("Cannot replace an existing SVG filter with dither / SVGの既存フィルターをディザで置き換えることはできません / 无法使用仿色替换现有 SVG 滤镜".into());
+        }
+        let mut values = vec![(target.as_str(), format!("url(#{name})"))];
+        let opacity = format!("{target}-opacity");
+        values.push((opacity.as_str(), "1".into()));
+        if gradient.dither {
+            values.push(("filter", format!("url(#{filter})")));
+        } else if previous_dither {
+            values.push(("filter", "none".into()));
+        }
+        if target == "stroke" && object.path.stroke().is_none_or(|s| s.width().get() <= 0.) {
+            values.push(("stroke-width", "1".into()));
+        }
+        let metadata = format!("data-lumapaint-{target}-gradient");
+        let attrs = [
+            (target.as_str(), format!("url(#{name})")),
+            (
+                metadata.as_str(),
+                serde_json::to_string(&gradient).map_err(|e| e.to_string())?,
+            ),
+            (
+                "style",
+                override_style(node.attribute("style").unwrap_or(""), &values),
+            ),
+        ];
+        replacements.push((node.range(), attributes(&output, node, None, &attrs)?));
+    }
+    // Replaced private definitions are removed only when no unrelated element
+    // or stylesheet uses them. Repeated stop edits must not grow the source.
+    for defs in xml.descendants().filter(|n| {
+        n.is_element()
+            && n.has_tag_name("defs")
+            && n.attribute("data-lumapaint-gradient-owner")
+                .is_some_and(|owner| owners.contains(owner))
+    }) {
+        let ids: Vec<_> = defs
+            .descendants()
+            .filter_map(|n| n.attribute("id"))
+            .collect();
+        let shared = xml
+            .descendants()
+            .filter(|n| n.is_element())
+            .filter(|n| {
+                !defs.range().contains(&n.range().start)
+                    && !replacements
+                        .iter()
+                        .any(|(r, _)| r.contains(&n.range().start))
+            })
+            .any(|n| {
+                n.attributes()
+                    .any(|a| ids.iter().any(|id| a.value().contains(id)))
+                    || (n.has_tag_name("style")
+                        && n.text()
+                            .is_some_and(|text| ids.iter().any(|id| text.contains(id))))
+            });
+        if !shared {
+            replacements.push((defs.range(), String::new()));
+        }
+    }
+    // Insert before the root closing tag; no shared gradient is changed.
+    let root = xml.root_element();
+    let close = output[..root.range().end]
+        .rfind("</")
+        .ok_or("SVG closing tag missing")?;
+    replacements.push((close..close, definitions));
+    replacements.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
+    for (range, value) in replacements {
+        output.replace_range(range, &value);
     }
     Ok(output)
 }

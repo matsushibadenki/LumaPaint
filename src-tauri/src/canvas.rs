@@ -1780,7 +1780,12 @@ pub async fn apply_gradient(
     gradient.validate()?;
     #[cfg(target_os = "macos")]
     {
-        if target == "pixels" {
+        if target == "gradientLayer" {
+            on_main(window, move || {
+                platform::create_gradient_fill_layer(gradient)
+            })
+            .await
+        } else if target == "pixels" {
             let job = on_main(window.clone(), move || {
                 platform::prepare_pixel_gradient(&ids)
             })

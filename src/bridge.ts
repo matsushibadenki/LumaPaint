@@ -521,7 +521,7 @@ export function editCompoundShape(edit:CompoundShapeEdit):Promise<DocumentSnapsh
   return result;
 }
 
-export function applyGradient(ids: string[], target: 'fill' | 'stroke' | 'pixels', gradient: Gradient): Promise<DocumentSnapshot> {
+export function applyGradient(ids: string[], target: 'fill' | 'stroke' | 'pixels' | 'gradientLayer', gradient: Gradient): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('apply_gradient', { ids, target, gradient }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;

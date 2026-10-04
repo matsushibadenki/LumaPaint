@@ -33,6 +33,15 @@ pub trait SvgGeometryBackend: Send + Sync {
     fn show_all_objects(&self, source: &str) -> Result<String, String> {
         Ok(source.to_owned())
     }
+    fn set_gradients(
+        &self,
+        _source: &str,
+        _layer_id: &str,
+        _size: [f32; 2],
+        _changes: &[(String, String, crate::gradient::Gradient)],
+    ) -> Result<String, String> {
+        Err("SVG gradient editing unavailable".into())
+    }
     /// Return a complete replacement source atomically, leaving the original untouched on failure.
     fn apply(
         &self,

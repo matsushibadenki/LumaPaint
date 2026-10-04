@@ -773,69 +773,85 @@ impl Document {
             self.svg_layers
                 .iter()
                 .filter(|layer| !self.is_path_edit_layer(layer))
-                .map(|layer| LayerSnapshot {
-                    guide_color: self.layer_guide_color(&layer.id),
-                    objects: layer
-                        .vector_objects
-                        .iter()
-                        .map(|object| LayerObjectSnapshot {
-                            image_frame: object.image_frame.as_ref().map(|f| f.summary()),
-                            locked: self.object_is_locked(&object.id),
-                            opacity: object.opacity,
-                            blend_mode: object.blend_mode.clone(),
-                            fill_gradient: object.fill_gradient.clone(),
-                            stroke_gradient: object.stroke_gradient.clone(),
-                            fill_color: object.fill.map(|p| p.color),
-                            stroke_color: object.stroke.map(|p| p.color),
-                            stroke_style: object.stroke_style.clone(),
-                            stroke_contours: crate::stroke::contour_closed(&object.path.data),
-                            stroke_width: if object.stroke.is_some() {
-                                object.stroke_width
-                            } else {
-                                0.0
-                            },
-                            id: object.id.clone(),
-                            name: object.name.clone(),
-                            group_path: object.group_path.clone(),
-                            clipping_mask: object.clipping_group.is_some(),
-                            kind: object.kind,
-                            visible: object.visible,
-                        })
-                        .collect(),
-                    id: layer.id.clone(),
-                    name: layer.name.clone(),
-                    kind: if layer.paint_layer {
-                        "paint"
-                    } else if layer.vector_layer {
-                        "vector"
+                .map(|layer| {
+                    let imported = if !layer.vector_layer
+                        && self
+                            .selected_vector_objects
+                            .iter()
+                            .any(|id| id.starts_with(&format!("{}::", layer.id)))
+                    {
+                        self.imported_svg_objects(&layer.source, &layer.id)
+                            .into_iter()
+                            .filter(|o| self.selected_vector_objects.contains(&o.id))
+                            .collect::<Vec<_>>()
                     } else {
-                        "svg"
-                    },
-                    visible: self
-                        .layer_groups
-                        .members
-                        .iter()
-                        .find(|m| m.id == layer.id)
-                        .map_or(layer.visible, |m| m.visible),
-                    opacity: self
-                        .layer_groups
-                        .members
-                        .iter()
-                        .find(|m| m.id == layer.id)
-                        .and_then(|m| m.opacity)
-                        .unwrap_or(layer.opacity),
-                    locked: self
-                        .layer_groups
-                        .members
-                        .iter()
-                        .find(|m| m.id == layer.id)
-                        .map_or(layer.locked, |m| m.locked),
-                    alpha_locked: layer.alpha_locked,
-                    mask_enabled: layer.mask_enabled,
-                    mask_inverted: layer.mask_inverted,
-                    mask_density: layer.mask_density,
-                    deletable: true,
-                    stroke_count: 0,
+                        Vec::new()
+                    };
+                    LayerSnapshot {
+                        guide_color: self.layer_guide_color(&layer.id),
+                        objects: layer
+                            .vector_objects
+                            .iter()
+                            .chain(imported.iter())
+                            .map(|object| LayerObjectSnapshot {
+                                image_frame: object.image_frame.as_ref().map(|f| f.summary()),
+                                locked: self.object_is_locked(&object.id),
+                                opacity: object.opacity,
+                                blend_mode: object.blend_mode.clone(),
+                                fill_gradient: object.fill_gradient.clone(),
+                                stroke_gradient: object.stroke_gradient.clone(),
+                                fill_color: object.fill.map(|p| p.color),
+                                stroke_color: object.stroke.map(|p| p.color),
+                                stroke_style: object.stroke_style.clone(),
+                                stroke_contours: crate::stroke::contour_closed(&object.path.data),
+                                stroke_width: if object.stroke.is_some() {
+                                    object.stroke_width
+                                } else {
+                                    0.0
+                                },
+                                id: object.id.clone(),
+                                name: object.name.clone(),
+                                group_path: object.group_path.clone(),
+                                clipping_mask: object.clipping_group.is_some(),
+                                kind: object.kind,
+                                visible: object.visible,
+                            })
+                            .collect(),
+                        id: layer.id.clone(),
+                        name: layer.name.clone(),
+                        kind: if layer.paint_layer {
+                            "paint"
+                        } else if layer.vector_layer {
+                            "vector"
+                        } else {
+                            "svg"
+                        },
+                        visible: self
+                            .layer_groups
+                            .members
+                            .iter()
+                            .find(|m| m.id == layer.id)
+                            .map_or(layer.visible, |m| m.visible),
+                        opacity: self
+                            .layer_groups
+                            .members
+                            .iter()
+                            .find(|m| m.id == layer.id)
+                            .and_then(|m| m.opacity)
+                            .unwrap_or(layer.opacity),
+                        locked: self
+                            .layer_groups
+                            .members
+                            .iter()
+                            .find(|m| m.id == layer.id)
+                            .map_or(layer.locked, |m| m.locked),
+                        alpha_locked: layer.alpha_locked,
+                        mask_enabled: layer.mask_enabled,
+                        mask_inverted: layer.mask_inverted,
+                        mask_density: layer.mask_density,
+                        deletable: true,
+                        stroke_count: 0,
+                    }
                 }),
         );
         DocumentSnapshot {
@@ -2720,6 +2736,141 @@ impl Document {
         Ok(())
     }
 
+    /// An editable gradient fill above the pixel artwork. The original pixels
+    /// remain untouched; selection geometry becomes a saved vector mask.
+    pub fn add_gradient_fill_layer(
+        &mut self,
+        gradient: crate::gradient::Gradient,
+        engine: &dyn crate::vector::VectorPathEngine,
+    ) -> Result<String, String> {
+        gradient.validate()?;
+        if gradient.pixel_style.is_some() {
+            return Err("Gradient fill layers currently support linear and radial / グラデーションレイヤーは線形・円形に対応しています / 渐变填充图层目前支持线性和径向".into());
+        }
+        if self.svg_layers.len() >= MAX_SVG_LAYERS {
+            return Err("Layer capacity exceeded".into());
+        }
+        let rectangle = |x: f32, y: f32, w: f32, h: f32| VectorPath {
+            data: format!("M{x} {y}h{w}v{h}h{}Z", -w),
+            fill_rule: crate::vector::FillRule::NonZero,
+        };
+        let mut path = rectangle(0., 0., self.width as f32, self.height as f32);
+        if let Some(selection) = &self.selection {
+            for region in &selection.regions {
+                let [x, y, w, h] = region.bounds;
+                let shape = match region.shape {
+                    SelectionShape::Rectangle => rectangle(x, y, w, h),
+                    SelectionShape::Ellipse => VectorPath {
+                        data: format!(
+                            "M{} {}a{} {} 0 1 0 {} 0a{} {} 0 1 0 {} 0Z",
+                            x + w,
+                            y + h * 0.5,
+                            w * 0.5,
+                            h * 0.5,
+                            -w,
+                            w * 0.5,
+                            h * 0.5,
+                            w
+                        ),
+                        fill_rule: crate::vector::FillRule::NonZero,
+                    },
+                };
+                path = match region.operation {
+                    SelectionOperation::Replace => shape,
+                    SelectionOperation::Add => {
+                        engine.combine(&path, &shape, PathOperation::Union)?
+                    }
+                    SelectionOperation::Subtract => {
+                        engine.combine(&path, &shape, PathOperation::Difference)?
+                    }
+                    SelectionOperation::Invert => {
+                        engine.combine(&shape, &path, PathOperation::Difference)?
+                    }
+                };
+            }
+        }
+        let bounds = crate::stroke::path_bounds(&path.data)
+            .ok_or("Empty gradient fill selection".to_string())?;
+        if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+            return Err("Empty gradient fill selection".into());
+        }
+        let mut serial = 1;
+        while self
+            .svg_layers
+            .iter()
+            .any(|l| l.id == format!("gradient-layer-{serial}"))
+        {
+            serial += 1;
+        }
+        let id = format!("gradient-layer-{serial}");
+        let object_id = format!("{id}-fill");
+        let object = VectorObject {
+            id: object_id.clone(),
+            name: "Gradient Fill".into(),
+            path,
+            transform: [1., 0., 0., 1., 0., 0.],
+            opacity: 1.,
+            blend_mode: "normal".into(),
+            group_path: vec![],
+            clipping_group: None,
+            bounds_reset: false,
+            fill: Some(VectorPaint {
+                color: gradient.stops[0].color,
+            }),
+            stroke: None,
+            stroke_width: 0.,
+            stroke_style: Default::default(),
+            fill_gradient: Some(gradient),
+            stroke_gradient: None,
+            live_corners: None,
+            rectangle_radii: None,
+            image_frame: None,
+            visible: true,
+            kind: VectorObjectKind::Compound,
+            control_points: vec![[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+            text: None,
+        };
+        object.validate()?;
+        let objects = vec![object];
+        let source = vector_svg(self.width, self.height, &objects);
+        let layer = SvgLayer {
+            id: id.clone(),
+            name: "Gradient Fill".into(),
+            source,
+            vector_objects: objects,
+            vector_layer: true,
+            paint_layer: false,
+            visible: true,
+            locked: false,
+            opacity: 1.,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        };
+        validate_svg_layer(&layer)?;
+        if self
+            .svg_layers
+            .iter()
+            .map(|l| l.source.len())
+            .sum::<usize>()
+            + layer.source.len()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Vector capacity exceeded".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers.push(layer);
+        self.layer_groups.reconcile(&self.svg_layers);
+        self.selected_layer = Some(id.clone());
+        self.selected_vector_objects = vec![object_id];
+        self.selection = None;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(id)
+    }
+
     pub fn set_selected_vector_gradient(
         &mut self,
         ids: &[String],
@@ -2768,15 +2919,80 @@ impl Document {
         if !["fill", "stroke"].contains(&target) {
             return Err("Invalid paint target".into());
         }
-        if !ids.iter().all(|id| {
-            self.svg_layers
-                .iter()
-                .any(|l| l.vector_objects.iter().any(|o| &o.id == id))
-        }) {
-            return Err("Imported SVG gradient editing requires native paths / SVGのパスを編集可能なパスに変換してください / 请将 SVG 转换为可编辑路径".into());
+        let available: std::collections::HashSet<String> = self
+            .svg_layers
+            .iter()
+            .flat_map(|layer| {
+                if layer.vector_layer {
+                    layer
+                        .vector_objects
+                        .iter()
+                        .map(|o| o.id.clone())
+                        .collect::<Vec<_>>()
+                } else if ids
+                    .iter()
+                    .any(|id| id.starts_with(&format!("{}::", layer.id)))
+                {
+                    self.imported_svg_objects(&layer.source, &layer.id)
+                        .into_iter()
+                        .map(|o| o.id)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        if !ids.iter().all(|id| available.contains(id)) {
+            return Err("Gradient object missing".into());
         }
         let mut layers = self.svg_layers.clone();
         for layer in &mut layers {
+            if !layer.vector_layer {
+                let objects = self.imported_svg_objects(&layer.source, &layer.id);
+                let mut changes = Vec::new();
+                for object in objects.iter().filter(|object| ids.contains(&object.id)) {
+                    if layer.locked
+                        || !layer.visible
+                        || !object.visible
+                        || self.object_is_locked(&object.id)
+                    {
+                        return Err("SVG object is locked or hidden / SVGがロックまたは非表示です / SVG 已锁定或隐藏".into());
+                    }
+                    let mut gradient = gradient.clone();
+                    if document_space {
+                        gradient.geometry = gradient.geometry.map(|g| {
+                            let [a, b, c, d, e, f] = object.transform;
+                            let det = a * d - b * c;
+                            let [ga, gb, gc, gd, ge, gf] = g;
+                            [
+                                (d * ga - c * gb) / det,
+                                (-b * ga + a * gb) / det,
+                                (d * gc - c * gd) / det,
+                                (-b * gc + a * gd) / det,
+                                (d * (ge - e) - c * (gf - f)) / det,
+                                (-b * (ge - e) + a * (gf - f)) / det,
+                            ]
+                        });
+                        gradient.validate()?;
+                    }
+                    changes.push((object.id.clone(), target.to_owned(), gradient));
+                }
+                if !changes.is_empty() {
+                    layer.source = self
+                        .svg_geometry_backend
+                        .as_ref()
+                        .ok_or("SVG adapter unavailable")?
+                        .set_gradients(
+                            &layer.source,
+                            &layer.id,
+                            [self.width as f32, self.height as f32],
+                            &changes,
+                        )?;
+                    validate_svg_layer(layer)?;
+                    validate_svg_edit_source(&layer.source)?;
+                }
+                continue;
+            }
             let mut changed = false;
             for object in &mut layer.vector_objects {
                 if !ids.contains(&object.id) {
@@ -7221,7 +7437,11 @@ fn validate_svg_layer(layer: &SvgLayer) -> Result<(), String> {
     {
         return Err("Invalid SVG layer opacity".into());
     }
-    if layer.source.len() > MAX_SVG_BYTES || !layer.source.contains("<svg") {
+    if layer.source.len() > MAX_SVG_BYTES
+        || (!layer.source.contains("<svg")
+            && !roxmltree::Document::parse(&layer.source)
+                .is_ok_and(|xml| xml.root_element().tag_name().name() == "svg"))
+    {
         return Err("SVG must contain an <svg> root and be no larger than 4 MiB".into());
     }
     if layer.paint_layer && layer.vector_layer {

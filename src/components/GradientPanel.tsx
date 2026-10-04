@@ -1,3 +1,4 @@
+import { listen } from '@tauri-apps/api/event';
 import { useEffect, useRef, useState } from 'react';
 import { setGradientTool, gradientToolOptions, applyGradient, type Gradient, type DocumentSnapshot } from '../bridge';
 import type { Locale } from '../i18n';
@@ -33,12 +34,15 @@ function NumberField({label, value, min, max, onDraft, onCommit}:{label:string;v
 export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate,editorGradient,onDraft,onOpenSwatches,onRegister}:{toolActive?:boolean;locale:Locale;document:DocumentSnapshot;enabled:boolean;onUpdate:(d:DocumentSnapshot)=>void;editorGradient?:Gradient;onDraft?:(g:Gradient)=>void;onOpenSwatches?:()=>void;onRegister?:(g:Gradient)=>void}) {
   const t=gradientLabels[locale];const [gradient,setGradient]=useState<Gradient>(()=>structuredClone(editorGradient??basicGradientSamples[0].gradient));const current=useRef(gradient);current.current=gradient;
   const [toolLoaded,setToolLoaded]=useState(false);
-  const [stop,setStop]=useState(0);const [target,setTarget]=useState<'fill'|'stroke'>('fill');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const ramp=useRef<HTMLDivElement>(null);
+  const [stop,setStop]=useState(0);
+  useEffect(()=>{if(!toolActive)return;let live=true;let release: (()=>void)|undefined;
+    void listen<number>('lumapaint-gradient-stop',event=>{if(live)setStop(Math.min(event.payload,current.current.stops.length-1));}).then(fn=>{if(live)release=fn;else fn();});
+    return()=>{live=false;release?.();};},[toolActive]);const [target,setTarget]=useState<'fill'|'stroke'>('fill');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const ramp=useRef<HTMLDivElement>(null);
   const editorKey=JSON.stringify(editorGradient);
   useEffect(()=>{if(editorKey){const g=JSON.parse(editorKey) as Gradient;current.current=g;setGradient(g);setStop(i=>Math.min(i,g.stops.length-1));}},[editorKey]);
   const selected=document.layers.flatMap(l=>l.objects.filter(o=>document.selectedVectorObjects.includes(o.id)).map(o=>({l,o})));
   const layer=document.layers.find(l=>l.id===document.layerId);const pixels=selected.length===0&&layer?.kind==='paint';
-  const editable=onDraft?enabled:enabled&&!document.activeSavedPath&&!busy&&(pixels?!!layer?.visible&&!layer.locked&&!layer.alphaLocked:selected.length>0&&selected.every(({l,o})=>l.kind==='vector'&&l.visible&&!l.locked&&o.visible&&!o.locked&&o.kind!=='text'));
+  const editable=onDraft?enabled:enabled&&!document.activeSavedPath&&!busy&&(pixels?!!layer?.visible&&!layer.locked&&!layer.alphaLocked:selected.length>0&&selected.every(({l,o})=>(l.kind==='vector'||l.kind==='svg')&&l.visible&&!l.locked&&o.visible&&!o.locked&&o.kind!=='text'));
   useEffect(()=>{if(!pixels&&current.current.pixelStyle){const g={...current.current,pixelStyle:undefined};current.current=g;setGradient(g);}},[pixels]);
   const stored=target==='fill'?selected[0]?.o.fillGradient:selected[0]?.o.strokeGradient;
   const storedKey=JSON.stringify(stored);const selectionKey=document.selectedVectorObjects.join(',');
@@ -76,6 +80,8 @@ export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate
     <NumberField label={`${t.opacity} %`} value={s.color[3]/255*100} min={0} max={100} onDraft={n=>changeStop({color:[s.color[0],s.color[1],s.color[2],Math.round(n/100*255)]})} onCommit={commit}/>
     <NumberField label={`${t.position} %`} value={s.position*100} min={(gradient.stops[stop-1]?.position??0)*100} max={(gradient.stops[stop+1]?.position??1)*100} onDraft={n=>changeStop({position:n/100})} onCommit={commit}/>
     {stop<gradient.stops.length-1&&<NumberField label={`${t.midpoint} %`} value={s.midpoint*100} min={1} max={99} onDraft={n=>changeStop({midpoint:n/100})} onCommit={commit}/>}
+    {!onDraft&&pixels&&<button className="gradient-apply" disabled={!!gradient.pixelStyle} onClick={()=>{setBusy(true);setError('');void applyGradient([],'gradientLayer',current.current).then(onUpdate).catch(e=>setError(String(e))).finally(()=>setBusy(false));}}>{locale==='ja'?'非破壊グラデーションレイヤーを作成':locale==='en'?'Create editable gradient fill layer':'创建可编辑渐变填充图层'}</button>}
+    {!onDraft&&pixels&&gradient.pixelStyle&&<p>{locale==='ja'?'非破壊レイヤーは線形・円形に対応しています。':locale==='en'?'Editable fill layers support linear and radial gradients.':'可编辑填充图层支持线性和径向渐变。'}</p>}
     {!onDraft&&<button className="gradient-apply" onClick={()=>void apply()}>{t.apply}</button>}</fieldset>
     <p className="gradient-hint">{onDraft?t.hint:editable?(pixels?t.pixelHint:t.hint):t.select}</p>{error&&<p role="alert" className="gradient-error">{error}</p>}
   </div>;

@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 pub mod frame_cache;
 mod frame_overlay;
+pub mod gradient_raster;
 #[cfg(feature = "skia")]
 mod native_bezier;
 #[cfg(feature = "skia")]

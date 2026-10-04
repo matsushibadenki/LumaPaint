@@ -2,6 +2,7 @@
 use crate::{document::SvgLayer, vector::VectorObject};
 use std::collections::{BTreeMap, VecDeque};
 
+pub mod pages;
 pub(crate) mod picking;
 pub mod spatial;
 

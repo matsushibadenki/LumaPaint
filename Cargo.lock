@@ -2239,6 +2239,7 @@ dependencies = [
  "pollster",
  "resvg",
  "rustybuzz",
+ "serde_json",
  "skia-safe",
  "ttf-parser",
  "unicode-segmentation",
