@@ -274,6 +274,8 @@ mod tool_menu;
 
 #[cfg(any(target_os = "macos", test))]
 pub mod project_file;
+#[cfg(target_os = "macos")]
+mod vector_export;
 
 #[cfg(any(target_os = "macos", test))]
 mod recovery;

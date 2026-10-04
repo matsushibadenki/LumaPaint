@@ -78,7 +78,7 @@ impl LayerGroupsState {
             .iter()
             .find(|g| g.children.iter().any(|child| child == id))
     }
-    fn ancestors(&self, id: &str) -> Vec<&LayerGroup> {
+    pub(super) fn ancestors(&self, id: &str) -> Vec<&LayerGroup> {
         let mut parents = vec![];
         let mut current = id;
         for _ in 0..=self.groups.len() {
@@ -90,7 +90,7 @@ impl LayerGroupsState {
         }
         parents
     }
-    fn flatten(&self, ids: &[String], out: &mut Vec<String>) {
+    pub(super) fn flatten(&self, ids: &[String], out: &mut Vec<String>) {
         for id in ids {
             if let Some(g) = self.groups.iter().find(|g| &g.id == id) {
                 self.flatten(&g.children, out);

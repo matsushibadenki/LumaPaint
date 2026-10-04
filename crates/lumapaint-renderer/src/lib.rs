@@ -14,6 +14,7 @@ mod frame_overlay;
 pub mod gradient_raster;
 #[cfg(feature = "skia")]
 mod native_bezier;
+pub mod portable_paths;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
 mod workspace;

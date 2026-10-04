@@ -6,6 +6,7 @@ use std::num::NonZeroU32;
 use std::str::FromStr;
 
 #[rustfmt::skip] mod names;
+mod css_values;
 mod parse;
 mod text;
 
@@ -25,6 +26,8 @@ pub struct Document<'input> {
     nodes: Vec<NodeData>,
     attrs: Vec<Attribute<'input>>,
     links: HashMap<String, NodeId>,
+    custom_properties: HashMap<usize, std::sync::Arc<css_values::Properties>>,
+    custom_property_bytes: usize,
 }
 
 impl<'input> Document<'input> {
@@ -1084,6 +1087,12 @@ impl SvgNode<'_, '_> {
 
 /// Resolve static CSS 2D transform functions into the SVG transform representation.
 pub(crate) fn css_transform(value: &str) -> Option<svgtypes::Transform> {
+    css_transform_with_reference(value, None)
+}
+pub(crate) fn css_transform_with_reference(
+    value: &str,
+    reference: Option<[f64; 2]>,
+) -> Option<svgtypes::Transform> {
     if value.trim() == "none" {
         return "matrix(1 0 0 1 0 0)".parse().ok();
     }
@@ -1094,7 +1103,7 @@ pub(crate) fn css_transform(value: &str) -> Option<svgtypes::Transform> {
             .split(|c: char| c == ',' || c.is_whitespace())
             .filter(|s| !s.is_empty())
             .collect();
-        let length = |s: &str| -> Option<f64> {
+        let length = |s: &str, axis: usize| -> Option<f64> {
             let length: svgtypes::Length = s.parse().ok()?;
             Some(
                 length.number
@@ -1105,6 +1114,7 @@ pub(crate) fn css_transform(value: &str) -> Option<svgtypes::Transform> {
                         svgtypes::LengthUnit::Mm => 96. / 25.4,
                         svgtypes::LengthUnit::Pt => 96. / 72.,
                         svgtypes::LengthUnit::Pc => 16.,
+                        svgtypes::LengthUnit::Percent => reference?[axis] / 100.,
                         _ => return None,
                     },
             )
@@ -1127,15 +1137,15 @@ pub(crate) fn css_transform(value: &str) -> Option<svgtypes::Transform> {
         let text = match name.trim() {
             "translate" if (1..=2).contains(&args.len()) => format!(
                 "translate({} {})",
-                length(argument(0)?)?,
+                length(argument(0)?, 0)?,
                 if let Some(v) = argument(1) {
-                    length(v)?
+                    length(v, 1)?
                 } else {
                     0.
                 }
             ),
-            "translateX" if args.len() == 1 => format!("translate({} 0)", length(args[0])?),
-            "translateY" if args.len() == 1 => format!("translate(0 {})", length(args[0])?),
+            "translateX" if args.len() == 1 => format!("translate({} 0)", length(args[0], 0)?),
+            "translateY" if args.len() == 1 => format!("translate(0 {})", length(args[0], 1)?),
             "scale" if (1..=2).contains(&args.len()) => format!(
                 "scale({} {})",
                 number(args[0])?,

@@ -1919,6 +1919,8 @@ fn vector_pointer(
 
 #[derive(Clone)]
 struct DirectGesture {
+    corner: Option<(String, lumapaint_core::bezier::CornerHandle)>,
+    corner_all: bool,
     start: [f32; 2],
     current: [f32; 2],
     marquee: bool,
@@ -1971,6 +1973,32 @@ fn direct_pointer(
             })
         });
         let tolerance = box_tolerance();
+        if let Some((id, handle)) = objects
+            .iter()
+            .rev()
+            .filter(|(_, o)| document.selected_vector_ids().contains(&o.id))
+            .find_map(|(_, o)| {
+                bezier::corner_handles(o, tolerance * 2.)
+                    .into_iter()
+                    .find(|h| {
+                        (h.point[0] - position[0]).hypot(h.point[1] - position[1]) <= tolerance
+                    })
+                    .map(|h| (o.id.clone(), h))
+            })
+        {
+            DIRECT_GESTURE.with(|draft| {
+                *draft.borrow_mut() = Some(DirectGesture {
+                    corner: Some((id, handle)),
+                    corner_all: flags.contains(NSEventModifierFlags::Shift),
+                    start: position,
+                    current: position,
+                    marquee: false,
+                    baseline: vec![],
+                    break_smooth: false,
+                })
+            });
+            return Ok(());
+        }
         let hit = objects
             .iter()
             .rev()
@@ -2035,6 +2063,8 @@ fn direct_pointer(
         direct_select_ids(document)?;
         DIRECT_GESTURE.with(|draft| {
             *draft.borrow_mut() = Some(DirectGesture {
+                corner: None,
+                corner_all: false,
                 start: position,
                 current: position,
                 marquee,
@@ -2046,7 +2076,10 @@ fn direct_pointer(
         DIRECT_GESTURE.with(|draft| {
             if let Some(draft) = draft.borrow_mut().as_mut() {
                 draft.current = position;
-                if flags.contains(NSEventModifierFlags::Shift) && !draft.marquee {
+                if flags.contains(NSEventModifierFlags::Shift)
+                    && !draft.marquee
+                    && draft.corner.is_none()
+                {
                     let dx = position[0] - draft.start[0];
                     let dy = position[1] - draft.start[1];
                     if dx.abs() > dy.abs() {
@@ -2060,7 +2093,9 @@ fn direct_pointer(
         });
         if phase == 2 {
             if let Some(draft) = DIRECT_GESTURE.with(|draft| draft.borrow_mut().take()) {
-                if draft.marquee {
+                if draft.corner.is_some() {
+                    apply_corner_gesture(document, &draft)?;
+                } else if draft.marquee {
                     let mut points = draft.baseline;
                     for (_, object) in direct_objects(document) {
                         for index in bezier::anchor_indices(&object) {
@@ -2096,6 +2131,37 @@ fn direct_pointer(
     Ok(())
 }
 
+fn apply_corner_gesture(document: &mut Document, draft: &DirectGesture) -> Result<(), String> {
+    let Some((id, handle)) = &draft.corner else {
+        return Ok(());
+    };
+    if draft.start == draft.current {
+        return Ok(());
+    }
+    let delta = [
+        draft.current[0] - draft.start[0],
+        draft.current[1] - draft.start[1],
+    ];
+    let radius = (handle.radius
+        + (delta[0] * handle.direction[0] + delta[1] * handle.direction[1]) / handle.factor)
+        .clamp(0., 4096.);
+    let values = if draft.corner_all {
+        let object = document
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| &o.id == id)
+            .ok_or("Corner object missing")?
+            .1;
+        lumapaint_core::bezier::corner_handles(&object, 0.)
+            .into_iter()
+            .map(|h| (h.anchor, radius))
+            .collect()
+    } else {
+        vec![(handle.anchor, radius)]
+    };
+    document.set_live_corner_values(id, &values)
+}
+
 fn anchor_guides_preview(document: &Document, scale: f32) -> Result<Document, String> {
     let mut preview = document.clone();
     for (layer, object) in direct_objects(document)
@@ -2120,14 +2186,18 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
     let points = DIRECT_POINTS.with(|points| points.borrow().clone());
     let gesture = DIRECT_GESTURE.with(|draft| draft.borrow().clone());
     if let Some(draft) = gesture.as_ref().filter(|draft| !draft.marquee) {
-        preview.move_vector_controls(
-            &points,
-            [
-                draft.current[0] - draft.start[0],
-                draft.current[1] - draft.start[1],
-            ],
-            draft.break_smooth,
-        )?;
+        if draft.corner.is_some() {
+            apply_corner_gesture(&mut preview, draft)?;
+        } else {
+            preview.move_vector_controls(
+                &points,
+                [
+                    draft.current[0] - draft.start[0],
+                    draft.current[1] - draft.start[1],
+                ],
+                draft.break_smooth,
+            )?;
+        }
     }
     let objects = direct_objects(&preview);
     for (serial, (layer, object)) in objects
@@ -2151,6 +2221,9 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
         marker.kind = VectorObjectKind::Compound;
         marker.transform = [1., 0., 0., 1., 0., 0.];
         marker.stroke = None;
+        marker.fill_gradient = None;
+        marker.stroke_gradient = None;
+        marker.live_corners = None;
         marker.fill = Some(VectorPaint {
             color: document.layer_guide_color(&layer),
         });
@@ -2170,6 +2243,19 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
                 r * 2.,
                 -r * 2.
             );
+        }
+        marker.path.fill_rule = lumapaint_core::vector::FillRule::EvenOdd;
+        for handle in lumapaint_core::bezier::corner_handles(&object, box_tolerance() * 2.) {
+            let [x, y] = handle.point;
+            for r in [4.5 / zoom, 2.5 / zoom] {
+                let _ = write!(
+                    marker.path.data,
+                    " M {} {y} a {r} {r} 0 1 0 {} 0 a {r} {r} 0 1 0 {} 0 Z",
+                    x - r,
+                    2. * r,
+                    -2. * r
+                );
+            }
         }
         if !marker.path.data.is_empty() {
             preview.append_vector_guide(&layer, marker)?;
@@ -3531,17 +3617,13 @@ pub fn reorder_vector_objects(
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 pub fn combine_selected_vectors(operation: PathOperation) -> Result<DocumentSnapshot, String> {
-    ensure_document_open()?;
-    DOCUMENT.with(|doc| {
-        doc.borrow_mut()
-            .combine_selected_vectors(operation, |back, front, op| {
-                lumapaint_renderer::vector::skia_paths::SkiaPathEngine
-                    .combine_objects(back, front, op)
-            })
-    })?;
-    redraw()?;
-    emit_document();
-    Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+    use lumapaint_core::vector::PathfinderOperation as Op;
+    pathfinder_vectors(match operation {
+        PathOperation::Union => Op::Unite,
+        PathOperation::Difference => Op::MinusFront,
+        PathOperation::Intersection => Op::Intersect,
+        PathOperation::Xor => Op::Exclude,
+    })
 }
 pub fn pathfinder_vectors(
     operation: lumapaint_core::vector::PathfinderOperation,
@@ -5259,6 +5341,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn corner_gesture_changes_one_corner_and_shift_changes_all_with_single_undo() {
+        let mut document = Document::default();
+        let layer = document.add_vector_layer().unwrap();
+        let object = PenDraft {
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: vec![
+                ([20., 20.], [20., 20.]),
+                ([200., 20.], [200., 20.]),
+                ([100., 180.], [100., 180.]),
+            ],
+        }
+        .object(true, "corner-test")
+        .unwrap();
+        document
+            .upsert_vector_object(&layer, object.clone())
+            .unwrap();
+        document
+            .select_vector_objects(vec![object.id.clone()])
+            .unwrap();
+        let before = document.encode().unwrap();
+        let handle = lumapaint_core::bezier::corner_handles(&object, 8.)[0].clone();
+        let draft = DirectGesture {
+            corner: Some((object.id.clone(), handle.clone())),
+            corner_all: false,
+            start: handle.point,
+            current: [
+                handle.point[0] + handle.direction[0] * handle.factor * 10.,
+                handle.point[1] + handle.direction[1] * handle.factor * 10.,
+            ],
+            marquee: false,
+            baseline: vec![],
+            break_smooth: false,
+        };
+        let mut preview = document.clone();
+        apply_corner_gesture(&mut preview, &draft).unwrap();
+        assert_eq!(document.encode().unwrap(), before);
+        apply_corner_gesture(&mut document, &draft).unwrap();
+        let object = document
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == "corner-test")
+            .unwrap()
+            .1;
+        let radii = &object.live_corners.as_ref().unwrap().radii;
+        assert_eq!(radii.iter().filter(|r| **r > 0.).count(), 1);
+        document.undo();
+        assert_eq!(document.encode().unwrap(), before);
+        apply_corner_gesture(
+            &mut document,
+            &DirectGesture {
+                corner_all: true,
+                ..draft
+            },
+        )
+        .unwrap();
+        let object = document
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == "corner-test")
+            .unwrap()
+            .1;
+        assert!(object
+            .live_corners
+            .as_ref()
+            .unwrap()
+            .radii
+            .iter()
+            .all(|r| (*r - 10.).abs() < 0.001));
+        document.undo();
+        assert_eq!(document.encode().unwrap(), before);
+    }
+
+    #[test]
     fn guide_selection_routes_shift_marquee_without_moving_pixel_layer() {
         let mut d = Document::default();
         assert!(selection_uses_pixel_move(&d, CanvasTool::VectorSelect));
@@ -6908,11 +7064,63 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
     text_editor::finish(true)?;
     use super::FileAction;
     match action {
+        FileAction::Export => {
+            ensure_document_open()?;
+            if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+                return Err("Tiled SVG export is not available / タイル文書のSVG書き出しは未対応です / 瓦片文档尚不支持SVG导出".into());
+            }
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("SVG", &["svg"])
+                .add_filter("PDF", &["pdf"])
+                .set_file_name("Untitled.svg")
+                .save_file()
+            else {
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            };
+            let document = DOCUMENT.with(|doc| doc.borrow().clone());
+            let label = current_label();
+            let app = APP.get().ok_or("Application unavailable")?.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+                {
+                    crate::vector_export::pdf(&document)
+                } else {
+                    crate::vector_export::svg(&document)
+                };
+                let _ = app.run_on_main_thread(move || {
+                    let Ok(_session) = SessionGuard::enter(&label) else {
+                        return;
+                    };
+                    match result {
+                        Err(error) => emit_error(error),
+                        Ok(result) => {
+                            if !result.report.issues.is_empty()
+                                && rfd::MessageDialog::new()
+                                    .set_title("互換性 / Compatibility / 兼容性")
+                                    .set_description(crate::vector_export::report_text(
+                                        &result.report,
+                                    ))
+                                    .set_buttons(rfd::MessageButtons::OkCancel)
+                                    .show()
+                                    != rfd::MessageDialogResult::Ok
+                            {
+                                return;
+                            }
+                            if let Err(error) = crate::project_file::write(&path, &result.bytes) {
+                                emit_error(error);
+                            }
+                        }
+                    }
+                });
+            });
+        }
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "LumaPaint / JPEG / PNG",
-                    &["lumapaint", "jpg", "jpeg", "png"],
+                    "LumaPaint / SVG / PDF / AI / JPEG / PNG",
+                    &["lumapaint", "svg", "pdf", "ai", "jpg", "jpeg", "png"],
                 )
                 .pick_file()
             else {
@@ -6923,6 +7131,92 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            if matches!(extension.as_str(), "pdf" | "ai") {
+                let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                file.take(32 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                let app = APP.get().ok_or("Application unavailable")?.clone();
+                let label = current_label();
+                let format = if extension == "ai" {
+                    lumapaint_formats::export::FormatId::Illustrator
+                } else {
+                    lumapaint_formats::export::FormatId::Pdf
+                };
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let result = lumapaint_formats::io::read_document(
+                        format,
+                        name,
+                        &bytes,
+                        lumapaint_formats::io::ReadOptions {
+                            allow_lossy: true,
+                            ..Default::default()
+                        },
+                    );
+                    let _=app.run_on_main_thread(move||{
+                        let Ok(_session)=SessionGuard::enter(&label) else{return;};
+                        match result {
+                            Err(error)=>emit_error(error.to_string()),
+                            Ok(decoded)=>{
+                                if !decoded.report.issues.is_empty() {
+                                    let codes = crate::vector_export::report_text(&decoded.report);
+                                    let description=format!("PDF/AIの対応範囲外の内容が省略される場合があります。複数ページは1ページ目を読み込みます。\nUnsupported PDF/AI content may be omitted. Multi-page files open the first page.\n不支持的PDF/AI内容可能被省略，多页文件将打开第一页。\n\n{codes}");
+                                    if rfd::MessageDialog::new().set_title("互換性 / Compatibility / 兼容性").set_description(description).set_buttons(rfd::MessageButtons::OkCancel).show()!=rfd::MessageDialogResult::Ok {return;}
+                                }
+                                let lumapaint_formats::io::ReadContent::Vector(mut document)=decoded.content else{return;};
+                                lumapaint_svg::attach(&mut document);
+                                if let Err(error)=document.svg_layers().try_for_each(|l|validate_svg(&l.source)){emit_error(error);return;}
+                                park_active_document();activate_document(OpenDocument{id:next_document_id(),content:OpenDocumentContent::Legacy(document),path:None,fingerprint:None});
+                                if let Err(error)=redraw(){emit_error(error);}emit_document();
+                            }
+                        }
+                    });
+                });
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
+            if extension == "svg" {
+                let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                file.take(4 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                let decoded = lumapaint_formats::io::read_document(
+                    lumapaint_formats::export::FormatId::Svg,
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    &bytes,
+                    lumapaint_formats::io::ReadOptions::default(),
+                )
+                .map_err(|e| e.to_string())?;
+                let lumapaint_formats::io::ReadContent::Vector(mut document) = decoded.content
+                else {
+                    return Err("Expected SVG document".into());
+                };
+                lumapaint_svg::attach(&mut document);
+                for layer in document.svg_layers() {
+                    validate_svg(&layer.source)?;
+                }
+                park_active_document();
+                activate_document(OpenDocument {
+                    id: next_document_id(),
+                    content: OpenDocumentContent::Legacy(document),
+                    path: None,
+                    fingerprint: None,
+                });
+                redraw()?;
+                emit_document();
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
             if matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
                 let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
                 if metadata.len() > 3 * 1024 * 1024 - 1024 {

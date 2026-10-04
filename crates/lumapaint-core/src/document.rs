@@ -4708,17 +4708,34 @@ impl Document {
                     })
             })
             .collect();
-        if matches.len() != selected.len() || matches.iter().any(|(li, _)| *li != matches[0].0) {
-            return Err("Select shapes on the same vector layer".into());
+        if matches.len() != selected.len() {
+            return Err("Selected vector shapes are missing".into());
         }
-        let li = matches[0].0;
-        let layer = &self.svg_layers[li];
+        let cross_layer = matches.iter().any(|(li, _)| *li != matches[0].0);
+        if cross_layer && self.svg_layers.len() >= 16 {
+            return Err("Too many layers for a Pathfinder result layer".into());
+        }
+        let li = matches.last().unwrap().0;
         let objects: Vec<_> = matches
             .iter()
-            .map(|(_, oi)| layer.vector_objects[*oi].clone())
+            .map(|(source_layer, oi)| {
+                let source = &self.svg_layers[*source_layer];
+                let mut object = source.vector_objects[*oi].clone();
+                if cross_layer {
+                    object.opacity *= source.effective_opacity();
+                    for group in &mut object.group_path {
+                        *group = format!("{}:{group}", source.id);
+                    }
+                    if let Some(group) = &mut object.clipping_group {
+                        *group = format!("{}:{group}", source.id);
+                    }
+                }
+                object
+            })
             .collect();
-        if layer.locked
-            || !layer.visible
+        if matches
+            .iter()
+            .any(|(li, _)| self.svg_layers[*li].locked || !self.svg_layers[*li].visible)
             || objects.iter().any(|object| {
                 !object.visible
                     || self.object_is_locked(&object.id)
@@ -4729,7 +4746,9 @@ impl Document {
         {
             return Err("Select visible filled shapes on an unlocked layer".into());
         }
-        for object in &objects {
+        for (li, oi) in &matches {
+            let layer = &self.svg_layers[*li];
+            let object = &layer.vector_objects[*oi];
             if let Some(group) = object.group_path.first().or(object.clipping_group.as_ref()) {
                 if layer.vector_objects.iter().any(|o| {
                     (o.group_path.contains(group) || o.clipping_group.as_ref() == Some(group))
@@ -4762,34 +4781,103 @@ impl Document {
             object.id = id;
             object.validate()?;
         }
-        let mut updated = layer.clone();
-        let insertion = matches.last().unwrap().1;
-        let mut merged = Vec::new();
-        for (oi, object) in updated.vector_objects.into_iter().enumerate() {
-            if !selected.contains(&object.id) {
-                merged.push(object);
+        let mut layers = self.svg_layers.clone();
+        let root = self
+            .layer_groups
+            .ancestors(&self.svg_layers[li].id)
+            .last()
+            .map_or_else(|| self.svg_layers[li].id.clone(), |g| g.id.clone());
+        let mut root_leaves = Vec::new();
+        self.layer_groups
+            .flatten(std::slice::from_ref(&root), &mut root_leaves);
+        let result_index = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| root_leaves.contains(&l.id))
+            .map(|(i, _)| i + 1)
+            .max()
+            .unwrap_or(li + 1);
+        let mut result_layer_id = None;
+        if cross_layer {
+            for layer in &mut layers {
+                if layer
+                    .vector_objects
+                    .iter()
+                    .any(|o| selected.contains(&o.id))
+                {
+                    layer.vector_objects.retain(|o| !selected.contains(&o.id));
+                    layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                }
             }
-            if oi == insertion {
-                merged.extend(results.iter().cloned());
+            if !results.is_empty() {
+                let mut id = format!("pathfinder-layer-{}", self.revision);
+                while layers.iter().any(|l| l.id == id) {
+                    id.push('x');
+                }
+                result_layer_id = Some(id.clone());
+                layers.insert(
+                    result_index,
+                    SvgLayer {
+                        id,
+                        name: "Pathfinder".into(),
+                        visible: true,
+                        opacity: 1.,
+                        locked: false,
+                        alpha_locked: false,
+                        mask_enabled: false,
+                        mask_inverted: false,
+                        mask_density: 1.,
+                        source: vector_svg(self.width, self.height, &results),
+                        paint_layer: false,
+                        vector_layer: true,
+                        vector_objects: results.clone(),
+                    },
+                );
             }
+        } else {
+            let insertion = matches.last().unwrap().1;
+            let mut merged = Vec::new();
+            for (oi, object) in layers[li].vector_objects.drain(..).enumerate() {
+                if !selected.contains(&object.id) {
+                    merged.push(object);
+                }
+                if oi == insertion {
+                    merged.extend(results.iter().cloned());
+                }
+            }
+            layers[li].vector_objects = merged;
+            layers[li].source = vector_svg(self.width, self.height, &layers[li].vector_objects);
         }
-        updated.vector_objects = merged;
-        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
-        let total = updated.source.len()
-            + self
-                .svg_layers
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != li)
-                .map(|(_, layer)| layer.source.len())
-                .sum::<usize>();
-        if total > MAX_SVG_TOTAL_BYTES {
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
-        validate_svg_layer(&updated)?;
+        for layer in &layers {
+            validate_svg_layer(layer)?;
+        }
         self.finish();
         let before = self.vector_history_state();
-        self.svg_layers[li] = updated;
+        self.svg_layers = layers;
+        self.layer_groups.reconcile(&self.svg_layers);
+        if let Some(id) = result_layer_id {
+            self.layer_groups.roots.retain(|r| r != &id);
+            let index = self
+                .layer_groups
+                .roots
+                .iter()
+                .position(|r| r == &root)
+                .unwrap_or(0);
+            self.layer_groups.roots.insert(index, id);
+        }
+        self.selected_layer = self
+            .svg_layers
+            .iter()
+            .find(|l| {
+                l.vector_objects
+                    .iter()
+                    .any(|o| results.iter().any(|r| r.id == o.id))
+            })
+            .map(|l| l.id.clone());
         self.selected_vector_objects = results.iter().map(|object| object.id.clone()).collect();
         self.record_vector_edit(before);
         self.revision += 1;
@@ -5870,6 +5958,15 @@ impl Document {
     ) -> Result<(), String> {
         self.edit_direct_controls(controls, |o, indices| {
             Ok(Some(crate::bezier::round_corners(o, indices, radius)?))
+        })
+    }
+    pub fn set_live_corner_values(
+        &mut self,
+        id: &str,
+        values: &[(usize, f32)],
+    ) -> Result<(), String> {
+        self.edit_direct_controls(&[(id.to_owned(), 0)], |o, _| {
+            Ok(Some(crate::bezier::round_corner_values(o, values)?))
         })
     }
     pub fn direct_preview_svg(&self, ids: &[String]) -> String {

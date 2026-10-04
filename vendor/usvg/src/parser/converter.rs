@@ -987,7 +987,25 @@ pub fn svg_paint_order_to_usvg(order: svgtypes::PaintOrder) -> PaintOrder {
 
 impl SvgNode<'_, '_> {
     pub(crate) fn resolve_transform(&self, transform_aid: AId, state: &State) -> Transform {
-        let mut transform: Transform = self.attribute(transform_aid).unwrap_or_default();
+        let mut transform: Transform = self
+            .attribute::<&str>(transform_aid)
+            .and_then(|value| {
+                svgtree::css_transform_with_reference(
+                    value,
+                    Some([
+                        state.view_box.width() as f64,
+                        state.view_box.height() as f64,
+                    ]),
+                )
+            })
+            .map(|t| {
+                Transform::from_row(
+                    t.a as f32, t.b as f32, t.c as f32, t.d as f32, t.e as f32, t.f as f32,
+                )
+            })
+            .filter(Transform::is_valid)
+            .or_else(|| self.attribute(transform_aid))
+            .unwrap_or_default();
         let transform_origin: Option<TransformOrigin> = self.attribute(AId::TransformOrigin);
 
         if let Some(transform_origin) = transform_origin {

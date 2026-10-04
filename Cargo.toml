@@ -16,6 +16,7 @@ codegen-units = 1
 [patch.crates-io]
 block = { path = "vendor/block" }
 usvg = { path = "vendor/usvg" }
+simplecss = { path = "vendor/simplecss" }
 
 # Native drawing must remain interactive in `tauri dev` as well as release builds.
 [profile.dev.package.lumapaint-core]

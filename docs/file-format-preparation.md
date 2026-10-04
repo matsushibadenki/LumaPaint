@@ -20,7 +20,7 @@
 | RAW | 読み込みのみ計画 | カメラRAWの現像アダプター、機種・CFA・WB・色空間。任意の生バッファは幅・高さ・配列・エンディアンの明示が別途必要 |
 | HEIF / HEIC | 準備 | 実行環境のコーデック機能検査、主画像・補助画像・ICC・HDR・向き |
 | AVIF | 準備 | コーデック機能検査、透過・色深度・HDR・フレーム |
-| AI | 条件付き読み込みを計画 | PDF互換部分を検証してPDF経路へ渡す。旧PostScript系やIllustrator固有情報は別扱い。ネイティブAI書き出しは計画対象にしない |
+| AI | macOSでPDF互換部分を部分読み込み | 未対応PDF内容はレポート。旧PostScript系やIllustrator固有データは未対応。ネイティブAIの書き出しは別のparser／writerが必要 |
 
 ## 入出力契約
 
@@ -39,8 +39,8 @@
 
 - [Done] 全指定形式のID・拡張子別名・分類・操作別の現在／予定状態を共通化。PSD共通読み込み、タイル保持、未対応形式の拒否をテスト。
 - [Next] PNG／JPEG／WebPの独立コーデックと書き出し。次にBMP／TIFF／GIF／ICOとORAのレイヤー読み込み。
-- [Next] PSDのホスト接続とレイヤー保持、SVG／PDFの既存準備からメニュー接続。
-- [Later] EXRと高精度モデル、RAW現像、HEIF／AVIF、KRAの段階的読み込み、AIのPDF互換部分。
+- [Next] PSDのホスト接続とレイヤー保持、PDF読み込みの外観互換とページ選択。SVG／PDFの開く・書き出しはmacOSで接続済み。
+- [Later] EXRと高精度モデル、RAW現像、HEIF／AVIF、KRAの段階的読み込み。AIのPDF互換部分は部分対応済み。
 
 ## 一次資料
 

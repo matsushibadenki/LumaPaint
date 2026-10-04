@@ -1003,6 +1003,7 @@ mod tests {
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FileAction {
+    Export,
     Open,
     Save,
     SaveAs,

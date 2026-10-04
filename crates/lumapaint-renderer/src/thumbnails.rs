@@ -39,6 +39,16 @@ pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, Strin
             .remove(0),
     )
 }
+/// Export-quality host fallback for PDF effects. All pixels remain in Rust.
+pub fn document_png(document: &Document) -> Result<Vec<u8>, String> {
+    let (w, h) = document.dimensions();
+    if u64::from(w) * u64::from(h) > 16_777_216 {
+        return Err("Document exceeds raster export limit".into());
+    }
+    Ok(render_sized(document, w.max(h) as f32, true)?
+        .channels
+        .remove(0))
+}
 fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<Thumbnails, String> {
     let snapshot = document.snapshot();
     let scale = (max_side / snapshot.width.max(snapshot.height) as f32).min(1.);

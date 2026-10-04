@@ -1103,11 +1103,19 @@ pub struct LiveCorners {
     pub source: String,
     pub anchors: Vec<usize>,
     pub radius: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub radii: Vec<f32>,
 }
 impl LiveCorners {
     pub fn validate(&self) -> Result<(), String> {
         if !self.radius.is_finite()
             || !(0.0..=4096.).contains(&self.radius)
+            || (!self.radii.is_empty()
+                && (self.radii.len() != self.anchors.len()
+                    || self
+                        .radii
+                        .iter()
+                        .any(|r| !r.is_finite() || !(0.0..=4096.).contains(r))))
             || self.source.len() > 1024 * 1024
             || self.anchors.len() > 65_536
         {
@@ -1133,15 +1141,44 @@ pub fn round_corners(
     indices: &[usize],
     radius: f32,
 ) -> Result<VectorObject, String> {
-    if !radius.is_finite() || !(0.0..=4096.).contains(&radius) {
-        return Err("Invalid corner radius".into());
-    }
-    let (source, indices) = object
+    // Legacy numeric editing applies one radius to the current live-corner set.
+    let indices = object
         .live_corners
         .as_ref()
-        .map_or((object.path.data.clone(), indices.to_vec()), |c| {
-            (c.source.clone(), c.anchors.clone())
-        });
+        .map_or(indices, |c| c.anchors.as_slice());
+    round_corner_values(
+        object,
+        &indices.iter().map(|i| (*i, radius)).collect::<Vec<_>>(),
+    )
+}
+
+/// Source anchor indices remain stable while rounded geometry gains extra anchors.
+pub fn round_corner_values(
+    object: &VectorObject,
+    changes: &[(usize, f32)],
+) -> Result<VectorObject, String> {
+    if changes.is_empty()
+        || changes
+            .iter()
+            .any(|(_, r)| !r.is_finite() || !(0.0..=4096.).contains(r))
+    {
+        return Err("Invalid corner radius".into());
+    }
+    let source = object
+        .live_corners
+        .as_ref()
+        .map_or_else(|| object.path.data.clone(), |c| c.source.clone());
+    let mut values = std::collections::BTreeMap::new();
+    if let Some(c) = &object.live_corners {
+        for (i, anchor) in c.anchors.iter().enumerate() {
+            values.insert(*anchor, c.radii.get(i).copied().unwrap_or(c.radius));
+        }
+    }
+    for (anchor, radius) in changes {
+        values.insert(*anchor, *radius);
+    }
+    let indices: Vec<_> = values.keys().copied().collect();
+    let radius = changes.last().unwrap().1;
     let mut original = object.clone();
     original.live_corners = None;
     original.kind = VectorObjectKind::Compound;
@@ -1161,25 +1198,38 @@ pub fn round_corners(
         return Err("Select corner anchors / 角の節点を選択してください / 请选择角点".into());
     }
     let selected: std::collections::BTreeSet<_> = anchors.iter().copied().collect();
+    let values: std::collections::BTreeMap<_, _> = values
+        .into_iter()
+        .map(|(i, r)| (aliases.get(&i).copied().unwrap_or(i), r))
+        .collect();
     let mut contours = Vec::new();
     for (start, end, closed) in contour_ranges(&original) {
         let p = &original.control_points[start..end];
-        if !anchors.iter().any(|i| *i >= start && *i < end) || radius == 0. {
+        if !anchors
+            .iter()
+            .any(|i| *i >= start && *i < end && values.get(i).copied().unwrap_or(0.) > 0.)
+        {
             contours.push((p.to_vec(), closed));
             continue;
         }
         let world: Vec<_> = p.iter().map(|&p| world_point(&original, p)).collect();
-        for segment in world.windows(4).step_by(3) {
-            if point_line_distance(segment[1], segment[0], segment[3]) > 0.001
+        if world.windows(4).step_by(3).any(|segment| {
+            point_line_distance(segment[1], segment[0], segment[3]) > 0.001
                 || point_line_distance(segment[2], segment[0], segment[3]) > 0.001
-            {
-                return Err("Live corners require straight edges / ライブコーナーは直線の角に対応しています / 实时圆角需要直线边".into());
-            }
+        }) {
+            let rounded = curved_corners(&world, closed, start, &values)?;
+            let local = rounded
+                .into_iter()
+                .map(|p| local_point(&original, p))
+                .collect::<Result<Vec<_>, _>>()?;
+            contours.push((local, closed));
+            continue;
         }
         let n = (p.len() - 1) / 3 + usize::from(!closed);
         let mut corners = Vec::new();
         for i in 0..n {
             let at = world[i * 3];
+            let radius = values.get(&(start + i * 3)).copied().unwrap_or(0.);
             let mut incoming = at;
             let mut outgoing = at;
             let mut c1 = at;
@@ -1231,6 +1281,10 @@ pub fn round_corners(
     pack(&mut result, contours)?;
     result.live_corners = Some(LiveCorners {
         source,
+        radii: anchors
+            .iter()
+            .map(|i| values.get(i).copied().unwrap_or(0.))
+            .collect(),
         anchors,
         radius,
     });
@@ -1351,7 +1405,7 @@ mod contour_edit_tests {
         assert!(moved.live_corners.is_none());
     }
     #[test]
-    fn corners_clamp_adjacent_edges_and_reject_curves_handles_and_bad_radius() {
+    fn corners_clamp_adjacent_edges_and_reject_handles_and_bad_radius() {
         let o = object("M0 0H10V10H0Z");
         let rounded = round_corners(&o, &[0, 3, 6, 9], 1000.).unwrap();
         rounded.validate().unwrap();
@@ -1361,7 +1415,7 @@ mod contour_edit_tests {
         assert!(round_corners(&o, &[1], 5.).is_err());
         assert!(round_corners(&o, &[3], f32::NAN).is_err());
         let curve = object("M0 0C0 100 100 100 100 0L200 0");
-        assert!(round_corners(&curve, &[3], 5.).is_err());
+        assert!(round_corners(&curve, &[3], 5.).is_ok());
     }
 }
 
@@ -1385,5 +1439,297 @@ mod contour_operation_tests {
         assert_eq!(segment_indices(&o).len(), 2);
         smooth(&mut o).unwrap();
         assert_eq!(contour_ranges(&o).len(), 2);
+    }
+}
+
+fn unit(v: [f32; 2]) -> Option<[f32; 2]> {
+    let l = v[0].hypot(v[1]);
+    (l > 1e-6).then_some([v[0] / l, v[1] / l])
+}
+fn tangent(c: &[[f32; 2]; 4], t: f32) -> Option<[f32; 2]> {
+    let t = t.clamp(0.00001, 0.99999);
+    let q = 1. - t;
+    unit(std::array::from_fn(|i| {
+        3. * q * q * (c[1][i] - c[0][i])
+            + 6. * q * t * (c[2][i] - c[1][i])
+            + 3. * t * t * (c[3][i] - c[2][i])
+    }))
+}
+fn split_cubic(c: [[f32; 2]; 4], t: f32) -> ([[f32; 2]; 4], [[f32; 2]; 4]) {
+    let a = lerp(c[0], c[1], t);
+    let b = lerp(c[1], c[2], t);
+    let d = lerp(c[2], c[3], t);
+    let e = lerp(a, b, t);
+    let f = lerp(b, d, t);
+    let g = lerp(e, f, t);
+    ([c[0], a, e, g], [g, f, d, c[3]])
+}
+fn trim_cubic(c: [[f32; 2]; 4], lo: f32, hi: f32) -> [[f32; 2]; 4] {
+    if hi <= 1e-7 {
+        return [c[0]; 4];
+    }
+    let left = split_cubic(c, hi).0;
+    split_cubic(left, (lo / hi).clamp(0., 1.)).1
+}
+struct Fillet {
+    incoming: f32,
+    outgoing: f32,
+    curve: [[f32; 2]; 4],
+}
+fn fillet(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4], requested: f32) -> Option<Fillet> {
+    let u = tangent(a, 1.)?;
+    let v = tangent(b, 0.)?;
+    let cross = u[0] * v[1] - u[1] * v[0];
+    if cross.abs() < 0.001 || requested <= 0. {
+        return None;
+    }
+    let turn = cross.signum();
+    let length = |c: &[[f32; 2]; 4]| {
+        (0..24)
+            .map(|i| {
+                distance(
+                    evaluate(c, i as f32 / 24.),
+                    evaluate(c, (i + 1) as f32 / 24.),
+                )
+            })
+            .sum::<f32>()
+    };
+    let la = length(a);
+    let lb = length(b);
+    let angle = (-u[0] * v[0] - u[1] * v[1]).clamp(-1., 1.).acos();
+    let d_factor = 1. / (angle * 0.5).tan();
+    let mut radius = requested.min(la.min(lb) * 0.48 / d_factor);
+    for _ in 0..12 {
+        let center = |c: &[[f32; 2]; 4], t: f32| -> Option<[f32; 2]> {
+            let p = evaluate(c, t);
+            let v = tangent(c, t)?;
+            Some([p[0] - v[1] * turn * radius, p[1] + v[0] * turn * radius])
+        };
+        let residual = |x: f32, y: f32| -> Option<[f32; 2]> {
+            let a = center(a, x)?;
+            let b = center(b, y)?;
+            Some([a[0] - b[0], a[1] - b[1]])
+        };
+        let (mut x, mut y) = (
+            (1. - radius * d_factor / la).clamp(0.51, 0.9999),
+            (radius * d_factor / lb).clamp(0.0001, 0.49),
+        );
+        for _ in 0..32 {
+            let r = residual(x, y)?;
+            if r[0].hypot(r[1]) < 0.0005 {
+                let p = evaluate(a, x);
+                let q = evaluate(b, y);
+                let c = center(a, x)?;
+                let pa = [p[0] - c[0], p[1] - c[1]];
+                let qa = [q[0] - c[0], q[1] - c[1]];
+                let sweep = (pa[0] * qa[1] - pa[1] * qa[0])
+                    .atan2(pa[0] * qa[0] + pa[1] * qa[1])
+                    .abs();
+                if !(0.001..std::f32::consts::PI).contains(&sweep) {
+                    break;
+                }
+                let h = 4. / 3. * (sweep / 4.).tan() * radius;
+                let u = tangent(a, x)?;
+                let v = tangent(b, y)?;
+                return Some(Fillet {
+                    incoming: x,
+                    outgoing: y,
+                    curve: [
+                        p,
+                        [p[0] + u[0] * h, p[1] + u[1] * h],
+                        [q[0] - v[0] * h, q[1] - v[1] * h],
+                        q,
+                    ],
+                });
+            }
+            let h = 0.0001;
+            let rx = residual(x + h, y)?;
+            let ry = residual(x, y + h)?;
+            let ax = (rx[0] - r[0]) / h;
+            let bx = (rx[1] - r[1]) / h;
+            let ay = (ry[0] - r[0]) / h;
+            let by = (ry[1] - r[1]) / h;
+            let det = ax * by - ay * bx;
+            if det.abs() < 1e-7 {
+                break;
+            }
+            let dx = (r[0] * by - r[1] * ay) / det;
+            let dy = (ax * r[1] - bx * r[0]) / det;
+            let next_x = x - dx;
+            let next_y = y - dy;
+            if !(0.5001..0.999999).contains(&next_x) || !(0.000001..0.4999).contains(&next_y) {
+                break;
+            }
+            x = next_x;
+            y = next_y;
+        }
+        radius *= 0.5;
+    }
+    None
+}
+fn curved_corners(
+    p: &[[f32; 2]],
+    closed: bool,
+    start: usize,
+    values: &std::collections::BTreeMap<usize, f32>,
+) -> Result<Vec<[f32; 2]>, String> {
+    let segments: Vec<[[f32; 2]; 4]> = p
+        .windows(4)
+        .step_by(3)
+        .map(|c| c.try_into().unwrap())
+        .collect();
+    let count = segments.len() + usize::from(!closed);
+    let mut rounded: Vec<Option<Fillet>> = (0..count).map(|_| None).collect();
+    for (i, item) in rounded.iter_mut().enumerate() {
+        if !closed && (i == 0 || i + 1 == count) {
+            continue;
+        }
+        let radius = values.get(&(start + i * 3)).copied().unwrap_or(0.);
+        if radius <= 0. {
+            continue;
+        }
+        let a = &segments[(i + segments.len() - 1) % segments.len()];
+        let b = &segments[i % segments.len()];
+        *item = fillet(a, b, radius);
+        if item.is_none() {
+            return Err("Corner has no stable tangent arc / この角には安定した接線円弧を作れません / 无法为此角创建稳定的相切圆弧".into());
+        }
+    }
+    let mut out = Vec::new();
+    for (i, c) in segments.into_iter().enumerate() {
+        let next = (i + 1) % count;
+        let c = trim_cubic(
+            c,
+            rounded[i].as_ref().map_or(0., |f| f.outgoing),
+            rounded[next].as_ref().map_or(1., |f| f.incoming),
+        );
+        if out.is_empty() {
+            out.push(c[0]);
+        }
+        out.extend_from_slice(&c[1..]);
+        if let Some(f) = &rounded[next] {
+            out.extend_from_slice(&f.curve[1..]);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone)]
+pub struct CornerHandle {
+    pub anchor: usize,
+    pub point: [f32; 2],
+    pub direction: [f32; 2],
+    pub radius: f32,
+    pub factor: f32,
+}
+pub fn corner_handles(object: &VectorObject, offset: f32) -> Vec<CornerHandle> {
+    let mut source = object.clone();
+    if let Some(c) = &object.live_corners {
+        source.path.data = c.source.clone();
+        source.kind = VectorObjectKind::Compound;
+        source.live_corners = None;
+    }
+    let Some(source) = editable(&source) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for (s, e, closed) in contour_ranges(&source) {
+        let p = &source.control_points[s..e];
+        let count = (p.len() - 1) / 3 + usize::from(!closed);
+        for i in 0..count {
+            if !closed && (i == 0 || i + 1 == count) {
+                continue;
+            }
+            let incoming: [_; 4] = p
+                [((i + count - 1) % count) * 3..((i + count - 1) % count) * 3 + 4]
+                .try_into()
+                .unwrap();
+            let outgoing: [_; 4] = p[i * 3..i * 3 + 4].try_into().unwrap();
+            let incoming = incoming.map(|p| world_point(&source, p));
+            let outgoing = outgoing.map(|p| world_point(&source, p));
+            let (Some(u), Some(v)) = (tangent(&incoming, 1.), tangent(&outgoing, 0.)) else {
+                continue;
+            };
+            let Some(direction) = unit([v[0] - u[0], v[1] - u[1]]) else {
+                continue;
+            };
+            let angle = (-u[0] * v[0] - u[1] * v[1]).clamp(-1., 1.).acos();
+            if !(0.01..std::f32::consts::PI - 0.01).contains(&angle) {
+                continue;
+            }
+            let factor = 1. / (angle * 0.5).sin();
+            let anchor = s + i * 3;
+            let radius = object
+                .live_corners
+                .as_ref()
+                .and_then(|c| {
+                    c.anchors
+                        .iter()
+                        .position(|a| *a == anchor)
+                        .map(|i| c.radii.get(i).copied().unwrap_or(c.radius))
+                })
+                .unwrap_or(0.);
+            let at = world_point(&source, p[i * 3]);
+            let distance = offset + radius * factor;
+            out.push(CornerHandle {
+                anchor,
+                point: [
+                    at[0] + direction[0] * distance,
+                    at[1] + direction[1] * distance,
+                ],
+                direction,
+                radius,
+                factor,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod extended_corner_tests {
+    use super::contour_edit_tests::object;
+    use super::*;
+    #[test]
+    fn independent_radii_keep_source_and_legacy_metadata_and_restore() {
+        let o = object("M0 0H100V100H0Z");
+        let first = round_corner_values(&o, &[(0, 10.)]).unwrap();
+        let second = round_corner_values(&first, &[(3, 25.)]).unwrap();
+        let c = second.live_corners.as_ref().unwrap();
+        assert_eq!(c.anchors, vec![0, 3]);
+        assert_eq!(c.radii, vec![10., 25.]);
+        assert_eq!(c.source, o.path.data);
+        let decoded: VectorObject =
+            serde_json::from_str(&serde_json::to_string(&second).unwrap()).unwrap();
+        assert_eq!(decoded, second);
+        let restored = round_corner_values(&second, &[(0, 0.), (3, 0.)]).unwrap();
+        assert_eq!(restored.path.data, o.path.data);
+        let legacy: LiveCorners =
+            serde_json::from_str(r#"{"source":"M0 0H100V100H0Z","anchors":[0],"radius":12}"#)
+                .unwrap();
+        legacy.validate().unwrap();
+        assert!(legacy.radii.is_empty());
+        assert_eq!(corner_handles(&second, 8.).len(), 4);
+    }
+    #[test]
+    fn curved_fillet_meets_both_curve_tangents_and_preserves_remainder() {
+        let a = [[0., 0.], [0., 100.], [100., 100.], [100., 0.]];
+        let b = [[100., 0.], [100., 0.], [200., 0.], [200., 0.]];
+        let f = fillet(&a, &b, 8.).unwrap();
+        let incoming = tangent(&a, f.incoming).unwrap();
+        let outgoing = tangent(&b, f.outgoing).unwrap();
+        let first = unit([f.curve[1][0] - f.curve[0][0], f.curve[1][1] - f.curve[0][1]]).unwrap();
+        let last = unit([f.curve[3][0] - f.curve[2][0], f.curve[3][1] - f.curve[2][1]]).unwrap();
+        assert!((incoming[0] * first[0] + incoming[1] * first[1]) > 0.99999);
+        assert!((outgoing[0] * last[0] + outgoing[1] * last[1]) > 0.99999);
+        let o = object("M0 0C0 100 100 100 100 0L200 0");
+        let r = round_corner_values(&o, &[(3, 8.)]).unwrap();
+        let p = cubic_contours(&r.path.data).unwrap();
+        assert_eq!(p[0].0[0], [0., 0.]);
+        assert_eq!(*p[0].0.last().unwrap(), [200., 0.]);
+        assert_eq!(
+            round_corner_values(&r, &[(3, 0.)]).unwrap().path.data,
+            o.path.data
+        );
     }
 }

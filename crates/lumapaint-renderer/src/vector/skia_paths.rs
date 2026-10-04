@@ -38,8 +38,10 @@ impl VectorPathEngine for SkiaPathEngine {
                 PathOperation::Intersection => PathOp::Intersect,
                 PathOperation::Xor => PathOp::XOR,
             },
-        )
-        .ok_or("Skia path operation failed")?;
+        );
+        let Some(result) = result else {
+            return crate::portable_paths::PortablePathEngine.combine(left, right, operation);
+        };
         let fill_rule = match result.fill_type() {
             PathFillType::Winding => FillRule::NonZero,
             PathFillType::EvenOdd => FillRule::EvenOdd,

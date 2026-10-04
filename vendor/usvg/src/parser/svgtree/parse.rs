@@ -71,6 +71,8 @@ fn parse<'input>(
         nodes: Vec::new(),
         attrs: Vec::new(),
         links: HashMap::new(),
+        custom_properties: HashMap::new(),
+        custom_property_bytes: 0,
     };
 
     // build a map of id -> node for resolve_href
@@ -229,6 +231,70 @@ pub(crate) fn parse_svg_element<'input>(
     ignore_ids: bool,
     doc: &mut Document<'input>,
 ) -> Result<NodeId, Error> {
+    let inherited = doc.custom_properties.get(&parent_id.get_usize()).cloned();
+    let mut custom: Option<super::css_values::Properties> = None;
+    let mut priorities = HashMap::new();
+    let mut changed = false;
+    let mut exceeded = false;
+    let mut collect = |declaration: &Declaration| {
+        if !declaration.name.starts_with("--") || declaration.name.len() == 2 {
+            return;
+        }
+        let custom =
+            custom.get_or_insert_with(|| inherited.as_deref().cloned().unwrap_or_default());
+        if (custom.len() >= 128 && !custom.contains_key(declaration.name))
+            || declaration.value.len() > 4096
+        {
+            exceeded = true;
+            return;
+        }
+        if !declaration.important && priorities.get(declaration.name) == Some(&true) {
+            return;
+        }
+        priorities.insert(declaration.name.to_string(), declaration.important);
+        changed = true;
+        match declaration.value.trim() {
+            "initial" => {
+                custom.remove(declaration.name);
+            }
+            "inherit" | "unset" => {
+                if let Some(value) = inherited.as_deref().and_then(|p| p.get(declaration.name)) {
+                    custom.insert(declaration.name.into(), value.clone());
+                } else {
+                    custom.remove(declaration.name);
+                }
+            }
+            value => {
+                custom.insert(declaration.name.into(), value.into());
+            }
+        }
+    };
+    for rule in &style_sheet.rules {
+        if rule.selector.matches(&XmlNode(xml_node)) {
+            for declaration in &rule.declarations {
+                collect(declaration);
+            }
+        }
+    }
+    if let Some(style) = xml_node.attribute("style") {
+        for d in simplecss::DeclarationTokenizer::from(style) {
+            collect(&d);
+        }
+    }
+    if exceeded {
+        return Err(Error::NodesLimitReached);
+    }
+    let custom = if changed {
+        let values = super::css_values::compute(custom.unwrap_or_default())
+            .ok_or(Error::NodesLimitReached)?;
+        doc.custom_property_bytes += values.iter().map(|(n, v)| n.len() + v.len()).sum::<usize>();
+        if doc.custom_property_bytes > 64 * 1024 * 1024 {
+            return Err(Error::NodesLimitReached);
+        }
+        std::sync::Arc::new(values)
+    } else {
+        inherited.unwrap_or_default()
+    };
     let attrs_start_idx = doc.attrs.len();
 
     // Copy presentational attributes first.
@@ -310,7 +376,20 @@ pub(crate) fn parse_svg_element<'input>(
     let mut write_declaration = |declaration: &Declaration| {
         // TODO: perform XML attribute normalization
         let imp = declaration.important;
-        let val = declaration.value;
+        if declaration.name.starts_with("--") {
+            return;
+        }
+        let value = if declaration.value.contains("var(") || declaration.value.contains("calc(") {
+            super::css_values::substitute(declaration.value, &custom)
+                .and_then(|v| super::css_values::calculate(&v))
+        } else {
+            None
+        };
+        let val = if declaration.value.contains("var(") || declaration.value.contains("calc(") {
+            value.as_deref().unwrap_or("inherit")
+        } else {
+            declaration.value
+        };
         let val = if declaration.name == "d" {
             val.trim()
                 .strip_prefix("path(")
@@ -417,6 +496,9 @@ pub(crate) fn parse_svg_element<'input>(
         },
     );
 
+    if !custom.is_empty() {
+        doc.custom_properties.insert(node_id.get_usize(), custom);
+    }
     doc.nodes[node_id.get_usize()].source_range = Some(xml_node.range());
     Ok(node_id)
 }
@@ -444,7 +526,15 @@ fn append_attribute<'input>(
     }
 
     if aid.allows_inherit_value() && &*value == "inherit" {
-        return resolve_inherit(parent_id, aid, doc);
+        if resolve_inherit(parent_id, aid, doc) {
+            return true;
+        }
+        doc.append_attribute(
+            aid,
+            roxmltree::StringStorage::Borrowed("initial"),
+            important,
+        );
+        return true;
     }
 
     doc.append_attribute(aid, value, important);
@@ -692,6 +782,7 @@ impl simplecss::Element for XmlNode<'_, '_> {
 
     fn pseudo_class_matches(&self, class: simplecss::PseudoClass) -> bool {
         match class {
+            simplecss::PseudoClass::Root => self.0.parent_element().is_none(),
             simplecss::PseudoClass::FirstChild => self.prev_sibling_element().is_none(),
             // TODO: lang
             _ => false, // Since we are querying a static SVG we can ignore other pseudo-classes.

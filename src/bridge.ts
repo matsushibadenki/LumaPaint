@@ -359,7 +359,7 @@ export async function getRuntimeInfo(): Promise<RuntimeInfo | null> {
   return invoke<RuntimeInfo>('runtime_info');
 }
 
-export function projectAction(action: 'open' | 'save' | 'saveAs'): Promise<DocumentSnapshot> {
+export function projectAction(action: 'open' | 'save' | 'saveAs' | 'export'): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('project_action', { action }));
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;

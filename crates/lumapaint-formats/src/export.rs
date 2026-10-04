@@ -1,5 +1,5 @@
 //! Export contracts accept immutable native model data and never a renderer or UI state.
-use crate::{CompatibilityTier, ConversionIssue, ConversionReport};
+use crate::ConversionReport;
 use lumapaint_core::document::{Document, DocumentState};
 use serde::Serialize;
 
@@ -54,6 +54,8 @@ pub fn capabilities() -> Vec<FormatCapabilities> {
 #[derive(Clone, Debug)]
 pub struct ExportSnapshot {
     state: DocumentState,
+    paint_png: Option<Vec<u8>>,
+    document_png: Option<Vec<u8>>,
 }
 impl ExportSnapshot {
     pub fn capture(document: &Document) -> Self {
@@ -61,10 +63,55 @@ impl ExportSnapshot {
         copy.finish();
         Self {
             state: copy.document_state(),
+            paint_png: None,
+            document_png: None,
         }
     }
     pub fn state(&self) -> &DocumentState {
         &self.state
+    }
+    /// Optional host-produced paint composite, before layer opacity/masks. Never crosses IPC.
+    /// Keep the model snapshot intact, including its editable brush history.
+    pub fn with_paint_png(mut self, png: Vec<u8>) -> Result<Self, ExportError> {
+        self.validate_png(&png)?;
+        self.paint_png = Some(png);
+        Ok(self)
+    }
+    pub fn with_document_png(mut self, png: Vec<u8>) -> Result<Self, ExportError> {
+        self.validate_png(&png)?;
+        self.document_png = Some(png);
+        Ok(self)
+    }
+    fn validate_png(&self, bytes: &[u8]) -> Result<(), ExportError> {
+        let invalid = || ExportError::InvalidDocument("Invalid export PNG".into());
+        if bytes.len() > 128 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_limits(png::Limits {
+            bytes: 128 * 1024 * 1024,
+        });
+        let mut reader = decoder.read_info().map_err(|_| invalid())?;
+        let info = reader.info();
+        if (info.width, info.height) != (self.state.width, self.state.height)
+            || info.animation_control.is_some()
+        {
+            return Err(invalid());
+        }
+        let size = reader
+            .output_buffer_size()
+            .filter(|s| *s <= 128 * 1024 * 1024)
+            .ok_or_else(invalid)?;
+        let mut pixels = vec![0; size];
+        reader.next_frame(&mut pixels).map_err(|_| invalid())?;
+        reader.finish().map_err(|_| invalid())?;
+        Ok(())
+    }
+    pub(crate) fn document_png(&self) -> Option<&[u8]> {
+        self.document_png.as_deref()
+    }
+    pub(crate) fn paint_png(&self) -> Option<&[u8]> {
+        self.paint_png.as_deref()
     }
 }
 
@@ -131,22 +178,29 @@ pub fn export(
     match format {
         FormatId::Native => NativeExporter.export(snapshot, options),
         FormatId::Svg => crate::svg::SvgExporter.export(snapshot, options),
+        FormatId::Pdf => crate::pdf::PdfExporter.export(snapshot, options),
         other => Err(ExportError::Unsupported(other)),
-    }
-}
-
-pub(crate) fn appearance_report() -> ConversionReport {
-    ConversionReport {
-        issues: vec![ConversionIssue {
-            code: "svg.embedded_layers_not_editable",
-            tier: CompatibilityTier::C,
-        }],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raster_attachment_rejects_truncated_or_wrong_size_png() {
+        let snapshot = ExportSnapshot::capture(&Document::default());
+        assert!(snapshot
+            .clone()
+            .with_paint_png(b"\x89PNG\r\n\x1a\n".to_vec())
+            .is_err());
+        let mut bytes = Vec::new();
+        {
+            let encoder = png::Encoder::new(&mut bytes, 1, 1);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0]).unwrap();
+        }
+        assert!(snapshot.with_document_png(bytes).is_err());
+    }
     #[test]
     fn export_does_not_save_or_mutate_document_and_unavailable_formats_are_explicit() {
         let document = Document::default();
@@ -164,7 +218,7 @@ mod tests {
         );
         assert_eq!(document.snapshot().revision, 0);
         assert!(!document.snapshot().dirty);
-        for format in [FormatId::Pdf, FormatId::Illustrator, FormatId::Psd] {
+        for format in [FormatId::Illustrator, FormatId::Psd] {
             assert!(
                 matches!(export(format, &snapshot, ExportOptions { allow_lossy: true }), Err(ExportError::Unsupported(found)) if found == format)
             );

@@ -19,6 +19,23 @@ fn output(path: Path, source: &VectorObject, strip_stroke: bool) -> Result<Vecto
         },
     };
     object.control_points = path.points().iter().map(|p| [p.x, p.y]).collect();
+    for gradient in [&mut object.fill_gradient, &mut object.stroke_gradient]
+        .into_iter()
+        .flatten()
+    {
+        let bounds =
+            lumapaint_core::stroke::path_bounds(&source.path.data).unwrap_or([0., 0., 1., 1.]);
+        let g = gradient.geometry_in_bounds(bounds);
+        let t = source.transform;
+        gradient.geometry = Some([
+            t[0] * g[0] + t[2] * g[1],
+            t[1] * g[0] + t[3] * g[1],
+            t[0] * g[2] + t[2] * g[3],
+            t[1] * g[2] + t[3] * g[3],
+            t[0] * g[4] + t[2] * g[5] + t[4],
+            t[1] * g[4] + t[3] * g[5] + t[5],
+        ]);
+    }
     object.transform = [1., 0., 0., 1., 0., 0.];
     object.kind = VectorObjectKind::Compound;
     object.text = None;
@@ -162,6 +179,7 @@ pub fn compute(objects: &[VectorObject], operation: Op) -> Result<Vec<VectorObje
                 for (path, i) in regions {
                     if let Some((existing, _)) = merged.iter_mut().find(|(_, j)| {
                         objects[*j].fill == objects[i].fill
+                            && objects[*j].fill_gradient == objects[i].fill_gradient
                             && objects[*j].opacity == objects[i].opacity
                             && objects[*j].blend_mode == objects[i].blend_mode
                     }) {
@@ -280,6 +298,7 @@ pub fn compute(objects: &[VectorObject], operation: Op) -> Result<Vec<VectorObje
 mod tests {
     use super::*;
     use lumapaint_core::{document::Document, vector::VectorPaint};
+    use lumapaint_formats::native::NativeDocumentCodec;
     fn shape(id: &str, x: f32, color: [u8; 4]) -> VectorObject {
         VectorObject {
             id: id.into(),
@@ -381,6 +400,59 @@ mod tests {
             assert!(edge.stroke.is_some());
             assert!(!edge.path.data.contains('Z'));
         }
+    }
+    #[test]
+    fn cross_layer_three_shapes_keep_style_stacking_atomic_history_and_native_reload() {
+        let mut doc = Document::default();
+        let back = doc.add_vector_layer().unwrap();
+        let front = doc.add_vector_layer().unwrap();
+        let above = doc.add_vector_layer().unwrap();
+        doc.upsert_vector_object(&back, shape("a", 0., [255, 0, 0, 255]))
+            .unwrap();
+        doc.upsert_vector_object(&back, shape("b", 10., [0, 255, 0, 255]))
+            .unwrap();
+        doc.upsert_vector_object(&front, shape("c", 20., [0, 0, 255, 255]))
+            .unwrap();
+        doc.upsert_vector_object(&above, shape("untouched", 40., [255, 255, 0, 255]))
+            .unwrap();
+        doc.select_vector_objects(vec!["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        let before = doc.encode().unwrap();
+        assert!(doc
+            .pathfinder_selected_vectors(Op::Unite, |_, _| Err("failed".into()))
+            .is_err());
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.pathfinder_selected_vectors(Op::Unite, compute).unwrap();
+        let layers: Vec<_> = doc.svg_layers().collect();
+        assert_eq!(layers.last().unwrap().id, above);
+        let result = &layers[layers.len() - 2].vector_objects[0];
+        assert_eq!(result.fill.unwrap().color, [0, 0, 255, 255]);
+        assert!(covers(std::slice::from_ref(result), (5., 10.)));
+        let encoded = doc.encode().unwrap();
+        let mut restored = Document::decode(&encoded).unwrap();
+        assert_eq!(restored.encode().unwrap(), encoded);
+        doc.undo();
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.redo();
+        assert_eq!(doc.encode().unwrap(), encoded);
+    }
+    #[test]
+    fn transformed_gradient_is_baked_once_and_merge_keeps_distinct_gradients() {
+        let mut a = shape("a", 0., [255, 0, 0, 255]);
+        a.transform = [2., 0., 0., 3., 40., 50.];
+        let mut gradient:lumapaint_core::gradient::Gradient=serde_json::from_str(r#"{"kind":"linear","angle":0,"aspect":1,"method":"classic","stops":[{"position":0,"color":[0,0,0,255],"midpoint":0.5},{"position":1,"color":[255,255,255,255],"midpoint":0.5}]}"#).unwrap();
+        gradient.geometry = Some([20., 0., 0., 20., 0., 0.]);
+        a.fill_gradient = Some(gradient.clone());
+        let b = shape("b", 10., [255, 0, 0, 255]);
+        let result = compute(&[a, b], Op::Trim).unwrap();
+        assert!(result.iter().any(|o| o
+            .fill_gradient
+            .as_ref()
+            .is_some_and(|g| g.geometry == Some([40., 0., 0., 60., 40., 50.]))));
+        let mut a = shape("a", 0., [255, 0, 0, 255]);
+        a.fill_gradient = Some(gradient);
+        let b = shape("b", 10., [255, 0, 0, 255]);
+        assert_eq!(compute(&[a, b], Op::Merge).unwrap().len(), 2);
     }
     #[test]
     fn document_result_is_atomic_and_undo_redo_restores_selection() {

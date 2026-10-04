@@ -937,6 +937,26 @@ mod resolved_edit_tests {
         object
     }
     #[test]
+    fn css_variables_calc_and_viewbox_percent_transforms_are_editable() {
+        let mut source=r##"<svg width="200" height="100" viewBox="0 0 200 100"><style>:root{--w:40px;--ink:red}rect{x:calc(10px + 5px);width:var(--w);height:calc(10px * 2);fill:var(--ink);transform:translate(10%,20%)}</style><rect id="editable"/></svg>"##.to_owned();
+        let before = targets(&source, "l", [200., 100.]);
+        assert_eq!(before.len(), 1);
+        let target = before.into_iter().next().unwrap();
+        let point =
+            lumapaint_core::bezier::world_point(&target.object, target.object.control_points[0]);
+        assert_eq!(point, [35., 20.]);
+        let id = target.object.id.clone();
+        let next = moved(target.object.clone(), [3., 4.]);
+        replace(&mut source, target, Some(next)).unwrap();
+        let after = targets(&source, "l", [200., 100.]);
+        let o = after.iter().find(|t| t.object.id == id).unwrap();
+        assert_eq!(
+            lumapaint_core::bezier::world_point(&o.object, o.object.control_points[0]),
+            [38., 24.]
+        );
+        assert!(source.contains("--w:40px") && source.contains("--ink:red"));
+    }
+    #[test]
     fn every_basic_shape_is_editable_and_keeps_identity_after_conversion() {
         for element in [
             r#"<rect x="10" y="10" width="30" height="20" rx="5"/>"#,

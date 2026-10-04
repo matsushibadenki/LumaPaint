@@ -87,7 +87,9 @@ pub const FILE_FORMATS: &[FileFormat] = &[
         open_adapter: true,
         import_adapter: true,
         export_adapter: true,
+        editor_open: cfg!(target_os = "macos"),
         editor_import: cfg!(target_os = "macos"),
+        editor_export: cfg!(target_os = "macos"),
         partial: true,
         ..entry(
             FormatId::Svg,
@@ -96,12 +98,20 @@ pub const FILE_FORMATS: &[FileFormat] = &[
             FormatFamily::Vector,
         )
     },
-    entry(
-        FormatId::Pdf,
-        &["pdf"],
-        "application/pdf",
-        FormatFamily::Vector,
-    ),
+    FileFormat {
+        open_adapter: true,
+        import_adapter: true,
+        export_adapter: true,
+        partial: true,
+        editor_open: cfg!(target_os = "macos"),
+        editor_export: cfg!(target_os = "macos"),
+        ..entry(
+            FormatId::Pdf,
+            &["pdf"],
+            "application/pdf",
+            FormatFamily::Vector,
+        )
+    },
     FileFormat {
         open_adapter: true,
         import_adapter: true,
@@ -190,6 +200,10 @@ pub const FILE_FORMATS: &[FileFormat] = &[
     ),
     // AI reading may use its PDF-compatible portion. Native AI authoring remains uncommitted.
     FileFormat {
+        open_adapter: true,
+        import_adapter: true,
+        partial: true,
+        editor_open: cfg!(target_os = "macos"),
         planned_export: false,
         ..entry(
             FormatId::Illustrator,
@@ -324,6 +338,20 @@ pub fn read_document(
             })
         }
         FormatId::Pdf => crate::pdf::read(bytes, options),
+        FormatId::Illustrator => {
+            if !bytes.starts_with(b"%PDF-") {
+                return Err(ImportError::Unsupported("ai.private_format"));
+            }
+            let mut decoded = crate::pdf::read(bytes, options)?;
+            decoded.report.issues.push(crate::ConversionIssue {
+                code: "ai.pdf_compatible_only",
+                tier: crate::CompatibilityTier::B,
+            });
+            if !options.allow_lossy {
+                return Err(ImportError::LossyConversionRequiresConsent(decoded.report));
+            }
+            Ok(decoded)
+        }
         _ => Err(ImportError::Unsupported("io.read_format")),
     }
 }
@@ -451,14 +479,14 @@ mod tests {
             FileOperation::Export,
         ] {
             assert!(adapter_available(FormatId::Svg, operation));
-            assert!(!adapter_available(FormatId::Pdf, operation));
+            assert!(adapter_available(FormatId::Pdf, operation));
         }
         let svg = FILE_FORMATS
             .iter()
             .find(|entry| entry.format == FormatId::Svg)
             .unwrap();
-        assert!(!svg.editor_open);
-        assert!(!svg.editor_export);
+        assert_eq!(svg.editor_open, cfg!(target_os = "macos"));
+        assert_eq!(svg.editor_export, cfg!(target_os = "macos"));
     }
     #[test]
     fn source_validation_precedes_host_document_mutation() {
