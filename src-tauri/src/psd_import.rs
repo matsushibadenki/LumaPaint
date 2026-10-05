@@ -35,7 +35,7 @@ pub(crate) struct Prepared {
 }
 fn error(error: ImportError) -> String {
     let message = match error {
-        ImportError::Unsupported(_) => "This PSD format is unsupported. Currently supported: PSD v1, RGB8 composite images, uncompressed or PackBits. / このPSD形式は未対応です。現在はPSD v1・RGB8統合画像・非圧縮またはPackBitsに対応しています。 / 此PSD格式不受支持。目前支持PSD v1、RGB8合成图像、无压缩或PackBits。",
+        ImportError::Unsupported(_) => "This PSD/PSB feature is unsupported. Supported: RGB8 raster layers or merged images, Raw/PackBits/ZIP. / このPSD/PSBの機能は未対応です。RGB8ラスターレイヤーまたは統合画像とRaw・PackBits・ZIPに対応しています。 / 此PSD/PSB功能不受支持。目前支持RGB8栅格图层或合成图像，以及Raw、PackBits和ZIP。",
         ImportError::LimitExceeded(_) => "PSD exceeds the input or canvas limit / PSDが入力容量または用紙寸法の上限を超えています / PSD超出输入或画布限制",
         _ => "PSD is damaged or incomplete / PSDが破損しているか不完全です / PSD已损坏或不完整",
     };
@@ -57,7 +57,15 @@ fn decode(path: &Path) -> Result<Prepared, String> {
         .to_string_lossy()
         .into_owned();
     let decoded = lumapaint_formats::io::read_document(
-        lumapaint_formats::export::FormatId::Psd,
+        if path
+            .extension()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("psb"))
+        {
+            lumapaint_formats::export::FormatId::Psb
+        } else {
+            lumapaint_formats::export::FormatId::Psd
+        },
         name.clone(),
         &bytes,
         lumapaint_formats::io::ReadOptions {
@@ -83,6 +91,8 @@ fn report_text(report: &ConversionReport) -> String {
     report.issues.iter().map(|issue| match issue.code {
         "psd.extraChannelsNotPreserved" => "Saved alpha or spot channels are not retained. / 保存されたアルファ・スポットチャンネルは保持されません。 / 保存的Alpha或专色通道不会保留。",
         "psd.maskDensityBaked" => "Mask density is applied to mask pixels; its original numeric setting is not retained. / マスク密度を画素に反映します。元の密度数値は保持されません。 / 蒙版密度将应用到像素，原始密度数值不会保留。",
+        "psd.editingMetadataNotPreserved" => "Additional Photoshop editing and color settings are not retained. Partial position or pixel locks become full locks. Layer pixels were compared with the merged preview. / Photoshopの追加編集情報・色設定は保持されません。位置・画素の部分ロックは全体のロックへ変換します。レイヤーの画素は統合プレビューと比較済みです。 / Photoshop的其他编辑信息和颜色设置不会保留。位置或像素的部分锁定将转换为完全锁定。图层像素已与合成预览比较。",
+        "psd.previewMismatch" => "The layer composite differs from the Photoshop preview. The merged image is used to preserve the imported appearance. / レイヤーの合成結果がPhotoshopのプレビューと異なるため、読み込み時の見た目を保つ統合画像を使用します。 / 图层合成结果与Photoshop预览不同，将使用合成图像保留导入时的外观。",
         "psd.layersFlattened" => "Layers are flattened to the merged image. / レイヤーは統合画像になります。 / 图层将合并为一张图像。",
         "psd.resolutionNotPreserved" => "Original resolution metadata is not retained. / 元の解像度情報は保持されません。 / 原始分辨率元数据不会保留。",
         "psd.iccProfileNotPreserved" => "ICC profiles are not retained; colors may differ. / ICCプロファイルは保持されず、色が異なる場合があります。 / ICC配置文件不会保留，颜色可能不同。",

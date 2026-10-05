@@ -41,6 +41,74 @@ pub struct RasterLayerState {
     pub mask_tiles: Vec<MaskTileState>,
 }
 
+/// Composite validated snapshot layers with the same CPU kernel as the live document.
+/// This borrows pixel payloads; import verification does not clone a full document.
+pub fn composite_raster_layers_tile(
+    layers: &[RasterLayerState],
+    coord: TileCoord,
+) -> Option<Vec<u8>> {
+    composite_sources(layers.iter().filter_map(|layer| {
+        if !layer.visible || layer.opacity <= 0.0 {
+            return None;
+        }
+        Some(CompositeSource {
+            pixels: &layer.tiles.iter().find(|tile| tile.coord == coord)?.pixels,
+            opacity: layer.opacity,
+            mask: layer
+                .mask_tiles
+                .iter()
+                .find(|tile| tile.coord == coord)
+                .map(|tile| tile.values.as_slice()),
+            mask_enabled: layer.mask_enabled,
+            mask_inverted: layer.mask_inverted,
+            mask_density: layer.mask_density,
+        })
+    }))
+}
+struct CompositeSource<'a> {
+    pixels: &'a [u8],
+    opacity: f32,
+    mask: Option<&'a [u8]>,
+    mask_enabled: bool,
+    mask_inverted: bool,
+    mask_density: f32,
+}
+fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> Option<Vec<u8>> {
+    let mut sources = sources.peekable();
+    sources.peek()?;
+    let mut result = vec![0u8; TILE_BYTES];
+    for source in sources {
+        for (index, (target, pixel)) in result
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(source.pixels.as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            let mask_value = source.mask.map_or(255, |tile| tile[index]);
+            let coverage = source.mask_density * f32::from(mask_value) / 255.0;
+            let mask = if !source.mask_enabled {
+                1.0
+            } else if source.mask_inverted {
+                1.0 - coverage
+            } else {
+                coverage
+            };
+            let opacity = source.opacity * mask;
+            let alpha = (f32::from(pixel[3]) * opacity).round() as u32;
+            let remaining = 255 - alpha;
+            let out_alpha = (alpha + div_255(u32::from(target[3]) * remaining)).min(255);
+            for channel in 0..3 {
+                let foreground = div_255(u32::from(pixel[channel]) * alpha);
+                let background = div_255(u32::from(target[channel]) * remaining);
+                target[channel] = (foreground + background).min(out_alpha) as u8;
+            }
+            target[3] = out_alpha as u8;
+        }
+    }
+    result.iter().any(|byte| *byte != 0).then_some(result)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RasterTileState {
@@ -1015,47 +1083,19 @@ impl TiledRasterDocument {
         if coord.x >= self.width.div_ceil(TILE_SIZE) || coord.y >= self.height.div_ceil(TILE_SIZE) {
             return None;
         }
-        let sources = self
-            .layers
-            .iter()
-            .filter(|layer| layer.visible && layer.opacity > 0.0)
-            .filter_map(|layer| layer.tiles.tile(coord).map(|tile| (tile, layer)))
-            .collect::<Vec<_>>();
-        if sources.is_empty() {
-            return None;
-        }
-        let mut result = vec![0u8; TILE_BYTES];
-        for (source, layer) in sources {
-            let mask_tile = layer.mask.tiles.get(&coord);
-            for (index, (target, pixel)) in result
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .zip(source.as_chunks::<4>().0.iter())
-                .enumerate()
-            {
-                let mask_value = mask_tile.map_or(255, |tile| tile[index]);
-                let coverage = layer.mask_density * f32::from(mask_value) / 255.0;
-                let mask = if !layer.mask_enabled {
-                    1.0
-                } else if layer.mask_inverted {
-                    1.0 - coverage
-                } else {
-                    coverage
-                };
-                let opacity = layer.opacity * mask;
-                let alpha = (f32::from(pixel[3]) * opacity).round() as u32;
-                let remaining = 255 - alpha;
-                let out_alpha = (alpha + div_255(u32::from(target[3]) * remaining)).min(255);
-                for channel in 0..3 {
-                    let foreground = div_255(u32::from(pixel[channel]) * alpha);
-                    let background = div_255(u32::from(target[channel]) * remaining);
-                    target[channel] = (foreground + background).min(out_alpha) as u8;
-                }
-                target[3] = out_alpha as u8;
+        composite_sources(self.layers.iter().filter_map(|layer| {
+            if !layer.visible || layer.opacity <= 0.0 {
+                return None;
             }
-        }
-        result.iter().any(|byte| *byte != 0).then_some(result)
+            Some(CompositeSource {
+                pixels: layer.tiles.tile(coord)?,
+                opacity: layer.opacity,
+                mask: layer.mask.tiles.get(&coord).map(Vec::as_slice),
+                mask_enabled: layer.mask_enabled,
+                mask_inverted: layer.mask_inverted,
+                mask_density: layer.mask_density,
+            })
+        }))
     }
 
     pub fn add_layer(&mut self, id: String, name: String) -> Result<(), String> {

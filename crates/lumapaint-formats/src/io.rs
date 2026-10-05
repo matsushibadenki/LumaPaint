@@ -125,6 +125,18 @@ pub const FILE_FORMATS: &[FileFormat] = &[
             FormatFamily::Layered,
         )
     },
+    FileFormat {
+        open_adapter: true,
+        import_adapter: true,
+        partial: true,
+        editor_open: cfg!(target_os = "macos"),
+        ..entry(
+            FormatId::Psb,
+            &["psb"],
+            "image/vnd.adobe.photoshop",
+            FormatFamily::Layered,
+        )
+    },
     entry(
         FormatId::Ora,
         &["ora"],
@@ -328,7 +340,13 @@ pub fn read_document(
                 report: ConversionReport::default(),
             })
         }
-        FormatId::Psd => {
+        FormatId::Psd | FormatId::Psb => {
+            let version = crate::psd::read_header(bytes)?.version;
+            if (format == FormatId::Psb) != (version == 2) {
+                return Err(ImportError::Malformed(
+                    "PSD/PSB version does not match format",
+                ));
+            }
             let imported = crate::psd::PsdImporter.import(
                 bytes,
                 ImportOptions {
@@ -361,6 +379,38 @@ pub fn read_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn psb_registry_routes_version_two_and_never_coerces_psd_headers() {
+        assert_eq!(format_from_extension("PSB"), Some(FormatId::Psb));
+        let capability = FILE_FORMATS.iter().find(|f| f.format == FormatId::Psb);
+        assert!(capability.is_some());
+        let bytes = include_bytes!("../tests/fixtures/lp-psb-layers.psb");
+        let loaded = read_document(
+            FormatId::Psb,
+            "日本語.psb".into(),
+            bytes,
+            ReadOptions::default(),
+        )
+        .unwrap();
+        let ReadContent::Raster(state) = loaded.content else {
+            panic!()
+        };
+        assert!(state.layers.iter().any(|layer| layer.name == "日本語"));
+        assert!(read_document(
+            FormatId::Psd,
+            "wrong.psd".into(),
+            bytes,
+            ReadOptions::default()
+        )
+        .is_err());
+        assert!(read_document(
+            FormatId::Psb,
+            "wrong.psb".into(),
+            include_bytes!("../tests/fixtures/lp-psd-layers.psd"),
+            ReadOptions::default()
+        )
+        .is_err());
+    }
     #[test]
     fn every_requested_extension_has_one_route_and_unimplemented_adapters_stay_disabled() {
         use std::collections::HashSet;

@@ -7159,8 +7159,18 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "LumaPaint / SVG / PDF / AI / PSD / JPEG / PNG",
-                    &["lumapaint", "svg", "pdf", "ai", "psd", "jpg", "jpeg", "png"],
+                    "LumaPaint / SVG / PDF / AI / PSD / PSB / JPEG / PNG",
+                    &[
+                        "lumapaint",
+                        "svg",
+                        "pdf",
+                        "ai",
+                        "psd",
+                        "psb",
+                        "jpg",
+                        "jpeg",
+                        "png",
+                    ],
                 )
                 .pick_file()
             else {
@@ -7171,7 +7181,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            if extension == "psd" {
+            if extension == "psd" || extension == "psb" {
                 crate::psd_import::open(
                     APP.get().ok_or("Application unavailable")?.clone(),
                     current_label(),

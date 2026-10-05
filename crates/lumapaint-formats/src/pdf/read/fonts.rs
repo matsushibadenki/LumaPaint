@@ -1,4 +1,4 @@
-//! Bounded embedded TrueType / OpenType fonts and Identity-H / Identity-V CID fonts.
+//! Bounded embedded TrueType / CID OpenType CFF fonts and Identity-H / Identity-V CID fonts.
 use super::*;
 use std::{
     collections::HashMap,
@@ -157,7 +157,12 @@ impl Interpreter<'_> {
             let dict = resolve(self.doc, &descendants[0])?
                 .as_dict()
                 .map_err(|_| malformed())?;
-            if dict.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"CIDFontType2") {
+            if ![b"CIDFontType2".as_slice(), b"CIDFontType0"].contains(
+                &dict
+                    .get(b"Subtype")
+                    .and_then(Object::as_name)
+                    .map_err(|_| malformed())?,
+            ) {
                 return Err(ImportError::Unsupported("pdf.font_program"));
             }
             dict
@@ -333,26 +338,56 @@ impl Interpreter<'_> {
                     }
                 }
             }
-            let map = dict
-                .get(b"CIDToGIDMap")
-                .ok()
-                .map(|v| resolve(self.doc, v))
-                .transpose()?;
-            if let Some(map) = map.filter(|m| m.as_name().ok() != Some(b"Identity")) {
-                let stream = map.as_stream().map_err(|_| malformed())?;
-                let data = stream
-                    .get_plain_content_with_limit(131072)
-                    .map_err(|_| ImportError::LimitExceeded("pdf.font_mapping"))?;
-                if data.len() % 2 != 0 {
-                    return Err(malformed());
+            if dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"CIDFontType0") {
+                if dict.get(b"CIDToGIDMap").is_ok() {
+                    return Err(ImportError::Unsupported("pdf.font_mapping"));
                 }
-                data.as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|p| Some(u16::from_be_bytes(*p)))
-                    .collect()
+                let cff = face
+                    .tables()
+                    .cff
+                    .as_ref()
+                    .ok_or(ImportError::Unsupported("pdf.font_program"))?;
+                let mut pairs = Vec::new();
+                let mut max = 0u16;
+                for gid in 0..face.number_of_glyphs() {
+                    let cid = cff
+                        .glyph_cid(ttf_parser::GlyphId(gid))
+                        .ok_or(ImportError::Unsupported("pdf.font_program"))?;
+                    max = max.max(cid);
+                    pairs.push((cid, gid));
+                }
+                let mut mapping = vec![None; usize::from(max) + 1];
+                for (cid, gid) in pairs {
+                    if mapping[usize::from(cid)].replace(gid).is_some() {
+                        return Err(malformed());
+                    }
+                }
+                mapping
             } else {
-                (0..face.number_of_glyphs()).map(Some).collect()
+                if face.tables().glyf.is_none() {
+                    return Err(ImportError::Unsupported("pdf.font_program"));
+                }
+                let map = dict
+                    .get(b"CIDToGIDMap")
+                    .ok()
+                    .map(|v| resolve(self.doc, v))
+                    .transpose()?;
+                if let Some(map) = map.filter(|m| m.as_name().ok() != Some(b"Identity")) {
+                    let stream = map.as_stream().map_err(|_| malformed())?;
+                    let data = stream
+                        .get_plain_content_with_limit(131072)
+                        .map_err(|_| ImportError::LimitExceeded("pdf.font_mapping"))?;
+                    if data.len() % 2 != 0 {
+                        return Err(malformed());
+                    }
+                    data.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|p| Some(u16::from_be_bytes(*p)))
+                        .collect()
+                } else {
+                    (0..face.number_of_glyphs()).map(Some).collect()
+                }
             }
         } else {
             let mut mapping = charmap(self.doc, b"StandardEncoding")?;

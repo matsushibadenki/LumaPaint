@@ -370,6 +370,64 @@ fn pdf_embedded_text_outlines_preserve_spacing_cid_mappings_stroke_and_clip_pixe
 }
 
 #[test]
+fn japanese_cff_cids_preserve_horizontal_and_vertical_positions_in_pdf_and_ai() {
+    for (name, bytes, expected) in [
+        (
+            "japanese-horizontal",
+            include_bytes!("../../lumapaint-formats/tests/fixtures/lp-japanese-cid-horizontal.pdf")
+                .as_slice(),
+            r#"<svg width="100" height="80"><g transform="matrix(1 0 0 -1 0 80)"><path d="M12 40L26 40L19 54Z M32 40H46V54H32Z"/></g></svg>"#,
+        ),
+        (
+            "japanese-vertical",
+            include_bytes!("../../lumapaint-formats/tests/fixtures/lp-japanese-cid-vertical.pdf")
+                .as_slice(),
+            r#"<svg width="100" height="80"><g transform="matrix(1 0 0 -1 0 80)"><path d="M42 47.4L56 47.4L49 61.4Z M42 27.4H56V41.4H42Z"/></g></svg>"#,
+        ),
+    ] {
+        for format in [FormatId::Pdf, FormatId::Illustrator] {
+            let result = read_document(
+                format,
+                name.into(),
+                bytes,
+                ReadOptions {
+                    raster_dpi: 72,
+                    allow_lossy: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(result
+                .report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "pdf.text_outlined"));
+            assert!(result
+                .report
+                .issues
+                .iter()
+                .all(|issue| matches!(issue.code, "pdf.text_outlined" | "ai.pdf_compatible_only")));
+            let ReadContent::Vector(document) = result.content else {
+                panic!()
+            };
+            let actual = &document.svg_layers().next().unwrap().source;
+            let golden = rasterize_svg(expected, 100, 80).unwrap();
+            let rendered = rasterize_svg(actual, 100, 80).unwrap();
+            let error: u64 = golden
+                .pixels
+                .iter()
+                .zip(&rendered.pixels)
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            assert!(
+                error < 8000,
+                "{name} {format:?}: pixel error {error}: {actual}"
+            );
+        }
+    }
+}
+
+#[test]
 fn pdf_vertical_cid_metrics_spacing_and_adjustments_preserve_pixels() {
     use lopdf::{dictionary, Document, Object};
     for (metrics, content, expected) in [

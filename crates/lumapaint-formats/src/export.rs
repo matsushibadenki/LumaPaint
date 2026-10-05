@@ -11,6 +11,7 @@ pub enum FormatId {
     Pdf,
     Illustrator,
     Psd,
+    Psb,
     Ora,
     Exr,
     Kra,
@@ -218,7 +219,7 @@ mod tests {
         );
         assert_eq!(document.snapshot().revision, 0);
         assert!(!document.snapshot().dirty);
-        for format in [FormatId::Illustrator, FormatId::Psd] {
+        for format in [FormatId::Illustrator, FormatId::Psd, FormatId::Psb] {
             assert!(
                 matches!(export(format, &snapshot, ExportOptions { allow_lossy: true }), Err(ExportError::Unsupported(found)) if found == format)
             );

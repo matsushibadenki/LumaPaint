@@ -1,4 +1,4 @@
-//! PSD v1 RGB8 merged-image adapter, based on Adobe's published specification.
+//! PSD v1 / PSB v2 RGB8 adapter, based on Adobe's published specification.
 //! Normal RGB8 raster layers can be retained; effects, masks, profiles and higher depths remain partial.
 mod layers;
 use crate::*;
@@ -11,6 +11,7 @@ pub const MAX_DIMENSION: u32 = 8192;
 pub struct PsdImporter;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
+    pub version: u16,
     pub channels: u16,
     pub width: u32,
     pub height: u32,
@@ -46,15 +47,38 @@ impl<'a> Reader<'a> {
         let size = self.u32()? as usize;
         self.take(size)
     }
+    fn length(&mut self, large: bool) -> Result<usize, ImportError> {
+        let value = if large {
+            let bytes: [u8; 8] = self.take(8)?.try_into().expect("eight bytes");
+            u64::from_be_bytes(bytes)
+        } else {
+            u64::from(self.u32()?)
+        };
+        if value > MAX_INPUT_BYTES as u64 {
+            return Err(ImportError::LimitExceeded("PSD/PSB section length"));
+        }
+        usize::try_from(value).map_err(|_| ImportError::LimitExceeded("PSD/PSB section length"))
+    }
+    fn sized_section(&mut self, large: bool) -> Result<&'a [u8], ImportError> {
+        let size = self.length(large)?;
+        self.take(size)
+    }
+    fn row_length(&mut self, large: bool) -> Result<usize, ImportError> {
+        if large {
+            self.length(false)
+        } else {
+            self.u16().map(usize::from)
+        }
+    }
 }
 pub fn read_header(bytes: &[u8]) -> Result<Header, ImportError> {
     let mut r = Reader { bytes, at: 0 };
     if r.take(4)? != b"8BPS" {
         return Err(ImportError::Malformed("PSD signature"));
     }
-    match r.u16()? {
-        1 => {}
-        2 => return Err(ImportError::Unsupported("PSB")),
+    let version = r.u16()?;
+    match version {
+        1 | 2 => {}
         _ => return Err(ImportError::Malformed("PSD version")),
     }
     if r.take(6)?.iter().any(|b| *b != 0) {
@@ -66,14 +90,15 @@ pub fn read_header(bytes: &[u8]) -> Result<Header, ImportError> {
     let depth = r.u16()?;
     let color_mode = r.u16()?;
     if !(1..=56).contains(&channels)
-        || !(1..=30000).contains(&width)
-        || !(1..=30000).contains(&height)
+        || !(1..=if version == 2 { 300000 } else { 30000 }).contains(&width)
+        || !(1..=if version == 2 { 300000 } else { 30000 }).contains(&height)
         || ![1, 8, 16, 32].contains(&depth)
         || ![0, 1, 2, 3, 4, 7, 8, 9].contains(&color_mode)
     {
         return Err(ImportError::Malformed("PSD header values"));
     }
     Ok(Header {
+        version,
         channels,
         width,
         height,
@@ -142,12 +167,12 @@ fn resources(data: &[u8], report: &mut ConversionReport) -> Result<(), ImportErr
 }
 // Negative layer count identifies the first extra channel as merged transparency.
 // Validate the container and record lengths before trusting that marker.
-fn merged_transparency(data: &[u8]) -> Result<bool, ImportError> {
+fn merged_transparency(data: &[u8], large: bool) -> Result<bool, ImportError> {
     if data.is_empty() {
         return Ok(false);
     }
     let mut outer = Reader { bytes: data, at: 0 };
-    let info = outer.section()?;
+    let info = outer.sized_section(large)?;
     let mut transparency = false;
     if !info.is_empty() {
         let mut r = Reader { bytes: info, at: 0 };
@@ -162,7 +187,7 @@ fn merged_transparency(data: &[u8]) -> Result<bool, ImportError> {
             }
             for _ in 0..channels {
                 r.u16()?;
-                let length = r.u32()? as usize;
+                let length = r.length(large)?;
                 payload = payload
                     .checked_add(length)
                     .ok_or(ImportError::Malformed("layer payload overflow"))?;
@@ -216,8 +241,8 @@ impl DocumentImporter for PsdImporter {
         }
         let mut report = ConversionReport::default();
         resources(r.section()?, &mut report)?;
-        let layer_data = r.section()?;
-        let transparency = merged_transparency(layer_data)?;
+        let layer_data = r.sized_section(h.version == 2)?;
+        let transparency = merged_transparency(layer_data, h.version == 2)?;
         if transparency && h.channels < 4 {
             return Err(ImportError::Malformed(
                 "missing merged transparency channel",
@@ -230,8 +255,8 @@ impl DocumentImporter for PsdImporter {
             });
         }
         let compression = r.u16()?;
-        if compression > 2 {
-            return Err(ImportError::Unsupported("ZIP prediction compression"));
+        if compression > 3 {
+            return Err(ImportError::Unsupported("PSD compression method"));
         }
         let rows = h.height as usize * usize::from(h.channels);
         if h.width as usize * rows > MAX_INPUT_BYTES {
@@ -239,7 +264,7 @@ impl DocumentImporter for PsdImporter {
         }
         let counts = if compression == 1 {
             (0..rows)
-                .map(|_| r.u16().map(usize::from))
+                .map(|_| r.row_length(h.version == 2))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             vec![]
@@ -249,8 +274,14 @@ impl DocumentImporter for PsdImporter {
             if remaining != h.width as usize * rows {
                 return Err(ImportError::Malformed("composite payload length"));
             }
-        } else if compression == 2 {
-            layers::zip_rows(&bytes[r.at..], h.width as usize, rows, |_, _| {})?;
+        } else if compression >= 2 {
+            layers::zip_rows_with_prediction(
+                &bytes[r.at..],
+                h.width as usize,
+                rows,
+                compression == 3,
+                |_, _| {},
+            )?;
         } else {
             let total = counts
                 .iter()
@@ -266,11 +297,27 @@ impl DocumentImporter for PsdImporter {
             }
         }
         let mut density_baked = false;
-        let retained = match layers::decode(layer_data, h, &mut density_baked) {
-            Ok(layers) => layers,
-            Err(ImportError::Unsupported(_)) => None,
-            Err(error) => return Err(error),
-        };
+        let mut discarded = false;
+        let mut retained =
+            match layers::decode_with_metadata(layer_data, h, &mut density_baked, &mut discarded) {
+                Ok(layers) => layers,
+                Err(ImportError::Unsupported(_)) => None,
+                Err(error) => return Err(error),
+            };
+        // Comparing additional Photoshop settings requires a bounded merged preview.
+        // Larger files keep the conservative flattened path, rather than skip verification.
+        let preview_pixels = u64::from(h.width.div_ceil(TILE_SIZE))
+            * u64::from(h.height.div_ceil(TILE_SIZE))
+            * u64::from(TILE_SIZE * TILE_SIZE);
+        if discarded && preview_pixels > 4 * 1024 * 1024 {
+            retained = None;
+        }
+        if discarded && retained.is_some() {
+            report.issues.push(ConversionIssue {
+                code: "psd.editingMetadataNotPreserved",
+                tier: CompatibilityTier::D,
+            });
+        }
         if retained.is_none() && !layer_data.is_empty() {
             report.issues.push(ConversionIssue {
                 code: "psd.layersFlattened",
@@ -283,18 +330,23 @@ impl DocumentImporter for PsdImporter {
                 tier: CompatibilityTier::B,
             });
         }
-        if !options.allow_lossy && !report.issues.is_empty() {
-            return Err(ImportError::LossyConversionRequiresConsent(report));
+        if !discarded {
+            if let Some(layers) = retained.take() {
+                return finish(
+                    TiledRasterState {
+                        width: h.width,
+                        height: h.height,
+                        layers,
+                    },
+                    report,
+                    options,
+                );
+            }
         }
-        if let Some(layers) = retained {
-            return Ok(ImportedDocument {
-                raster: TiledRasterState {
-                    width: h.width,
-                    height: h.height,
-                    layers,
-                },
-                report,
-            });
+        // No layer verification is possible on this path. Report loss before
+        // allocating a potentially large flattened canvas if consent is absent.
+        if retained.is_none() && !options.allow_lossy && !report.issues.is_empty() {
+            return Err(ImportError::LossyConversionRequiresConsent(report));
         }
         let columns = h.width.div_ceil(TILE_SIZE);
         let tile_rows = h.height.div_ceil(TILE_SIZE);
@@ -327,8 +379,14 @@ impl DocumentImporter for PsdImporter {
                 }
             }
         };
-        if compression == 2 {
-            layers::zip_rows(&bytes[r.at..], h.width as usize, rows, &mut apply)?;
+        if compression >= 2 {
+            layers::zip_rows_with_prediction(
+                &bytes[r.at..],
+                h.width as usize,
+                rows,
+                compression == 3,
+                &mut apply,
+            )?;
             r.at = bytes.len();
         } else if compression == 0 {
             for index in 0..rows {
@@ -342,6 +400,47 @@ impl DocumentImporter for PsdImporter {
         }
         if r.at != bytes.len() {
             return Err(ImportError::Malformed("trailing composite data"));
+        }
+        if let Some(layers) = retained.take() {
+            let matches = tiles.iter().all(|tile| {
+                let rendered =
+                    lumapaint_core::tiles::composite_raster_layers_tile(&layers, tile.coord);
+                tile.pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .all(|(index, pixel)| {
+                        let rgba = rendered.as_ref().map_or([0; 4], |data| {
+                            data[index * 4..index * 4 + 4].try_into().expect("RGBA")
+                        });
+                        let alpha = u32::from(pixel[3]);
+                        rgba[3].abs_diff(pixel[3]) <= 1
+                            && (0..3).all(|c| {
+                                let expected = ((u32::from(pixel[c]) * alpha + 127) / 255) as u8;
+                                rgba[c].abs_diff(expected) <= 1
+                            })
+                    })
+            });
+            if matches {
+                return finish(
+                    TiledRasterState {
+                        width: h.width,
+                        height: h.height,
+                        layers,
+                    },
+                    report,
+                    options,
+                );
+            }
+            report.issues.push(ConversionIssue {
+                code: "psd.previewMismatch",
+                tier: CompatibilityTier::C,
+            });
+            report.issues.push(ConversionIssue {
+                code: "psd.layersFlattened",
+                tier: CompatibilityTier::C,
+            });
         }
         let raster = TiledRasterState {
             width: h.width,
@@ -360,8 +459,18 @@ impl DocumentImporter for PsdImporter {
                 mask_tiles: vec![],
             }],
         };
-        Ok(ImportedDocument { raster, report })
+        finish(raster, report, options)
     }
+}
+fn finish(
+    raster: TiledRasterState,
+    report: ConversionReport,
+    options: ImportOptions,
+) -> Result<ImportedDocument, ImportError> {
+    if !options.allow_lossy && !report.issues.is_empty() {
+        return Err(ImportError::LossyConversionRequiresConsent(report));
+    }
+    Ok(ImportedDocument { raster, report })
 }
 
 #[cfg(test)]
@@ -395,7 +504,7 @@ mod tests {
         }
         bytes
     }
-    fn zip_composite(bytes: &[u8]) -> Vec<u8> {
+    fn zip_composite(bytes: &[u8], prediction: bool) -> Vec<u8> {
         use std::io::Write;
         let mut r = Reader { bytes, at: 26 };
         r.section().unwrap();
@@ -405,11 +514,46 @@ mod tests {
         assert_eq!(r.u16().unwrap(), 0);
         let mut encoder =
             flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(&bytes[r.at..]).unwrap();
+        let mut samples = bytes[r.at..].to_vec();
+        if prediction {
+            let width = u32::from_be_bytes(bytes[18..22].try_into().unwrap()) as usize;
+            for row in samples.chunks_mut(width) {
+                let mut previous = 0u8;
+                for value in row {
+                    let current = *value;
+                    *value = current.wrapping_sub(previous);
+                    previous = current;
+                }
+            }
+        }
+        encoder.write_all(&samples).unwrap();
         let mut zip = bytes[..at].to_vec();
-        zip.extend(2u16.to_be_bytes());
+        zip.extend((if prediction { 3u16 } else { 2 }).to_be_bytes());
         zip.extend(encoder.finish().unwrap());
         zip
+    }
+    #[test]
+    fn predicted_composite_matches_raw_transparency_and_edge_tiles() {
+        for bytes in [
+            fixture(257, 2, false),
+            fixture(1, 3, false),
+            include_bytes!("../tests/fixtures/lp-psd-alpha.psd").to_vec(),
+        ] {
+            let raw = PsdImporter
+                .import(&bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            let zip = zip_composite(&bytes, true);
+            let result = PsdImporter
+                .import(&zip, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(raw.raster, result.raster);
+            assert_eq!(raw.report, result.report);
+            for end in 0..zip.len() {
+                assert!(PsdImporter
+                    .import(&zip[..end], ImportOptions { allow_lossy: true })
+                    .is_err());
+            }
+        }
     }
     #[test]
     fn zip_composite_matches_raw_edges_transparency_and_rejects_corruption() {
@@ -417,7 +561,7 @@ mod tests {
             fixture(257, 2, false),
             include_bytes!("../tests/fixtures/lp-psd-alpha.psd").to_vec(),
         ] {
-            let zip = zip_composite(&bytes);
+            let zip = zip_composite(&bytes, false);
             let raw = PsdImporter
                 .import(&bytes, ImportOptions { allow_lossy: true })
                 .unwrap();
@@ -493,7 +637,7 @@ mod tests {
     }
     #[test]
     fn incompatible_headers_are_not_coerced_into_rgb8() {
-        for (offset, value) in [(4, 2u16), (12, 2), (22, 16), (24, 4)] {
+        for (offset, value) in [(12, 2u16), (22, 16), (24, 4)] {
             let mut bytes = fixture(3, 2, false);
             bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
             assert!(matches!(
@@ -513,6 +657,185 @@ mod tests {
         let mut channel = fixture(1, 1, false);
         channel[12..14].copy_from_slice(&0u16.to_be_bytes());
         assert!(read_header(&channel).is_err());
+    }
+    #[test]
+    fn psb_keeps_unicode_layers_across_compressions_and_rejects_invalid_lengths() {
+        let expected = PsdImporter
+            .import(
+                include_bytes!("../tests/fixtures/lp-psd-layers.psd"),
+                ImportOptions { allow_lossy: true },
+            )
+            .unwrap();
+        for bytes in [
+            include_bytes!("../tests/fixtures/lp-psb-layers.psb").as_slice(),
+            include_bytes!("../tests/fixtures/lp-psb-layers-rle.psb").as_slice(),
+            include_bytes!("../tests/fixtures/lp-psb-layers-zip.psb").as_slice(),
+            include_bytes!("../tests/fixtures/lp-psb-layers-prediction.psb").as_slice(),
+        ] {
+            assert_eq!(read_header(bytes).unwrap().version, 2);
+            let actual = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(actual.raster, expected.raster);
+            assert_eq!(actual.report, expected.report);
+            for end in 0..bytes.len() {
+                assert!(
+                    PsdImporter
+                        .import(&bytes[..end], ImportOptions { allow_lossy: true })
+                        .is_err(),
+                    "truncation {end}"
+                );
+            }
+            let mut corrupt = bytes.to_vec();
+            corrupt[34..42].copy_from_slice(&u64::MAX.to_be_bytes());
+            assert!(matches!(
+                PsdImporter.import(&corrupt, ImportOptions { allow_lossy: true }),
+                Err(ImportError::LimitExceeded(_))
+            ));
+            corrupt[34..42].copy_from_slice(&((bytes.len() - 42 + 1) as u64).to_be_bytes());
+            assert!(PsdImporter
+                .import(&corrupt, ImportOptions { allow_lossy: true })
+                .is_err());
+            let saved = crate::tile_container::encode(&actual.raster).unwrap();
+            assert_eq!(
+                crate::tile_container::decode(&saved).unwrap(),
+                expected.raster
+            );
+        }
+    }
+    #[test]
+    fn photoshop_2026_psb_resave_retains_unicode_layers_and_reports_metadata_loss() {
+        use lumapaint_core::tiles::TiledRasterDocument;
+        let original = PsdImporter
+            .import(
+                include_bytes!("../tests/fixtures/lp-psd-layers.psd"),
+                ImportOptions::default(),
+            )
+            .unwrap();
+        let bytes = include_bytes!("../tests/fixtures/lp-photoshop-2026-roundtrip.psb");
+        assert!(matches!(
+            PsdImporter.import(bytes, ImportOptions::default()),
+            Err(ImportError::LossyConversionRequiresConsent(_))
+        ));
+        let resaved = PsdImporter
+            .import(bytes, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert!(resaved
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.editingMetadataNotPreserved"));
+        assert!(!resaved
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.layersFlattened"));
+        assert_eq!(resaved.raster.layers.len(), 3);
+        assert_eq!(resaved.raster.layers[1].name, "日本語");
+        assert_eq!(resaved.raster.layers[2].name, "简体中文");
+        assert!(resaved.raster.layers[0].locked);
+        let saved = crate::tile_container::encode(&resaved.raster).unwrap();
+        assert_eq!(
+            crate::tile_container::decode(&saved).unwrap(),
+            resaved.raster
+        );
+        let source = TiledRasterDocument::from_state(original.raster).unwrap();
+        let actual = TiledRasterDocument::from_state(resaved.raster).unwrap();
+        let expected = source.composite_tile(TileCoord { x: 0, y: 0 }).unwrap();
+        let rendered = actual.composite_tile(TileCoord { x: 0, y: 0 }).unwrap();
+        for y in 0..2 {
+            for x in 0..4 {
+                let at = (y * TILE_SIZE as usize + x) * 4;
+                for c in 0..4 {
+                    assert!(
+                        expected[at + c].abs_diff(rendered[at + c]) <= 1,
+                        "Photoshop pixel ({x},{y}) channel {c}: {} != {}",
+                        expected[at + c],
+                        rendered[at + c]
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn photoshop_metadata_never_bypasses_a_mismatching_merged_preview() {
+        let source = include_bytes!("../tests/fixtures/lp-photoshop-2026-roundtrip.psb");
+        let mut r = Reader {
+            bytes: source,
+            at: 26,
+        };
+        r.section().unwrap();
+        r.section().unwrap();
+        r.sized_section(true).unwrap();
+        let mut changed = source[..r.at].to_vec();
+        changed.extend([0, 0]); // Valid raw RGB merged image, deliberately different.
+        changed.extend([0; 4 * 2 * 3]);
+        let imported = PsdImporter
+            .import(&changed, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert_eq!(imported.raster.layers.len(), 1);
+        assert_eq!(imported.raster.layers[0].id, "psd-composite");
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.layersFlattened"));
+        assert_eq!(
+            &imported.raster.layers[0].tiles[0].pixels[..4],
+            &[0, 0, 0, 255]
+        );
+        let Err(ImportError::LossyConversionRequiresConsent(report)) =
+            PsdImporter.import(&changed, ImportOptions::default())
+        else {
+            panic!()
+        };
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+    }
+    #[test]
+    fn psd_metadata_verification_keeps_unicode_layers_but_not_unknown_features() {
+        let source = include_bytes!("../tests/fixtures/lp-psd-layers.psd");
+        let mut r = Reader {
+            bytes: source,
+            at: 26,
+        };
+        r.section().unwrap();
+        r.section().unwrap();
+        let length_offset = r.at;
+        let layer_data = r.section().unwrap();
+        let end = r.at;
+        for (key, retains) in [(b"CAI ", true), (b"zzzz", false)] {
+            let mut tag = b"8BIM".to_vec();
+            tag.extend(key);
+            tag.extend(4u32.to_be_bytes());
+            tag.extend([0; 4]);
+            let mut bytes = source.to_vec();
+            bytes[length_offset..length_offset + 4]
+                .copy_from_slice(&((layer_data.len() + tag.len()) as u32).to_be_bytes());
+            bytes.splice(end..end, tag);
+            let imported = PsdImporter
+                .import(&bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(imported.raster.layers.len(), if retains { 3 } else { 1 });
+            assert_eq!(
+                imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.layersFlattened"),
+                !retains
+            );
+            if retains {
+                assert_eq!(imported.raster.layers[1].name, "日本語");
+            }
+        }
     }
     #[test]
     fn lossy_resources_and_layers_require_explicit_opt_in() {

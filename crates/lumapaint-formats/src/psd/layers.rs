@@ -43,7 +43,68 @@ fn tile_count(rect: [u32; 4]) -> usize {
 fn unsupported() -> ImportError {
     ImportError::Unsupported("PSD raster layer features")
 }
-fn name(extra: &[u8]) -> Result<(String, bool, bool), ImportError> {
+fn tag<'a>(
+    r: &mut Reader<'a>,
+    large: bool,
+    alignment: usize,
+) -> Result<(&'a [u8], &'a [u8]), ImportError> {
+    let signature = r.take(4)?;
+    if signature != b"8BIM" && signature != b"8B64" {
+        return Err(ImportError::Malformed("layer extra signature"));
+    }
+    let key = r.take(4)?;
+    let wide = signature == b"8B64"
+        || (large
+            && matches!(
+                key,
+                b"LMsk"
+                    | b"Lr16"
+                    | b"Lr32"
+                    | b"Layr"
+                    | b"Mt16"
+                    | b"Mt32"
+                    | b"Mtrn"
+                    | b"Alph"
+                    | b"FMsk"
+                    | b"lnk2"
+                    | b"FEid"
+                    | b"FXid"
+                    | b"PxSD"
+            ));
+    let data = r.sized_section(wide)?;
+    r.take((alignment - data.len() % alignment) % alignment)?;
+    Ok((key, data))
+}
+fn metadata(data: &[u8]) -> Result<(), ImportError> {
+    let mut r = Reader { bytes: data, at: 0 };
+    let count = r.u32()?;
+    if count > 1024 {
+        return Err(ImportError::LimitExceeded("PSD metadata items"));
+    }
+    for _ in 0..count {
+        if r.take(4)? != b"8BIM" {
+            return Err(ImportError::Malformed("PSD metadata signature"));
+        }
+        r.take(4)?;
+        if r.take(1)?[0] > 1 || r.take(3)? != [0; 3] {
+            return Err(ImportError::Malformed("PSD metadata flags"));
+        }
+        r.section()?;
+    }
+    if r.at != data.len() {
+        return Err(ImportError::Malformed("PSD metadata length"));
+    }
+    Ok(())
+}
+#[cfg(test)]
+fn name(extra: &[u8], large: bool) -> Result<(String, bool, bool), ImportError> {
+    name_with_metadata(extra, large, &mut false)
+}
+fn name_with_metadata(
+    extra: &[u8],
+    large: bool,
+    discarded: &mut bool,
+) -> Result<(String, bool, bool), ImportError> {
     let mut r = Reader {
         bytes: extra,
         at: 0,
@@ -66,14 +127,7 @@ fn name(extra: &[u8]) -> Result<(String, bool, bool), ImportError> {
     let mut locked = false;
     let mut alpha_locked = false;
     while r.at < extra.len() {
-        if r.take(4)? != b"8BIM" {
-            return Err(ImportError::Malformed("layer extra signature"));
-        }
-        let key = r.take(4)?;
-        let data = r.section()?;
-        if data.len() % 2 != 0 {
-            r.take(1)?;
-        }
+        let (key, data) = tag(&mut r, large, 2)?;
         match key {
             b"luni" => {
                 if unicode.is_some() {
@@ -99,11 +153,25 @@ fn name(extra: &[u8]) -> Result<(String, bool, bool), ImportError> {
                         .map_err(|_| ImportError::Malformed("Unicode layer name"))?,
                 );
             }
-            b"lyid" if data.len() == 4 => {}
-            b"lspf" if data == [0, 0, 0, 0] || data == [0, 0, 0, 1] || data == [0, 0, 0, 7] => {
-                locked = data[3] == 7;
-                alpha_locked = data[3] & 1 != 0;
+            b"shmd" => {
+                metadata(data)?;
+                *discarded = true;
             }
+            b"fxrp" if data.len() == 16 => {
+                for value in data.as_chunks::<8>().0 {
+                    if !f64::from_be_bytes(*value).is_finite() {
+                        return Err(ImportError::Malformed("PSD reference point"));
+                    }
+                }
+                *discarded = true;
+            }
+            // Partial position/composite locks are conservatively projected to a full lock.
+            b"lspf" if data.len() == 4 && data[..3] == [0; 3] && data[3] <= 15 => {
+                locked = data[3] & 14 != 0;
+                alpha_locked = data[3] & 1 != 0;
+                *discarded |= ![0, 1, 7].contains(&data[3]);
+            }
+            b"lyid" if data.len() == 4 => {}
             b"clbl" | b"infx" if data == [0, 0, 0, 0] || data == [1, 0, 0, 0] => {}
             b"knko" if data == [0, 0, 0, 0] => {}
             b"lclr" if data == [0; 8] => {}
@@ -203,6 +271,15 @@ pub(super) fn zip_rows(
     data: &[u8],
     width: usize,
     height: usize,
+    visit: impl FnMut(usize, &[u8]),
+) -> Result<(), ImportError> {
+    zip_rows_with_prediction(data, width, height, false, visit)
+}
+pub(super) fn zip_rows_with_prediction(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    prediction: bool,
     mut visit: impl FnMut(usize, &[u8]),
 ) -> Result<(), ImportError> {
     use flate2::{Decompress, FlushDecompress, Status};
@@ -237,6 +314,13 @@ pub(super) fn zip_rows(
             ended = step(&mut decoder, &mut row[written..])? == Status::StreamEnd;
             written += (decoder.total_out() - before) as usize;
         }
+        if prediction {
+            let mut previous = 0u8;
+            for value in &mut row {
+                previous = previous.wrapping_add(*value);
+                *value = previous;
+            }
+        }
         visit(y, &row);
     }
     while !ended {
@@ -257,6 +341,7 @@ fn rows(
     data: &[u8],
     width: usize,
     height: usize,
+    large: bool,
     mut visit: impl FnMut(usize, &[u8]),
 ) -> Result<(), ImportError> {
     let mut r = Reader { bytes: data, at: 0 };
@@ -271,7 +356,7 @@ fn rows(
         }
         1 => {
             let counts = (0..height)
-                .map(|_| r.u16().map(usize::from))
+                .map(|_| r.row_length(large))
                 .collect::<Result<Vec<_>, _>>()?;
             for (y, size) in counts.into_iter().enumerate() {
                 let row = packbits(r.take(size)?, width)?;
@@ -282,26 +367,41 @@ fn rows(
             }
         }
         2 => zip_rows(&data[2..], width, height, visit)?,
+        3 => zip_rows_with_prediction(&data[2..], width, height, true, visit)?,
         _ => return Err(unsupported()),
     }
     Ok(())
 }
-pub(super) fn decode(
+pub(super) fn decode_with_metadata(
     data: &[u8],
     h: Header,
     density_baked: &mut bool,
+    discarded: &mut bool,
 ) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
     *density_baked = false;
     if data.is_empty() {
         return Ok(None);
     }
     let mut outer = Reader { bytes: data, at: 0 };
-    let info = outer.section()?;
+    let info = outer.sized_section(h.version == 2)?;
     if info.is_empty() {
         return Ok(None);
     }
-    if !outer.section()?.is_empty() || outer.at != data.len() {
+    if !outer.section()?.is_empty() {
         return Err(unsupported());
+    }
+    while outer.at < data.len() {
+        let (key, bytes) = tag(&mut outer, h.version == 2, 4)?;
+        match key {
+            b"Patt" if bytes.is_empty() => {}
+            b"CAI " | b"GenI" | b"OCIO" | b"cinf" if (4..=65536).contains(&bytes.len()) => {
+                *discarded = true;
+            }
+            b"FMsk" if bytes.len() == 12 => {
+                *discarded = true;
+            }
+            _ => return Err(unsupported()),
+        }
     }
     let mut r = Reader { bytes: info, at: 0 };
     let count = (r.u16()? as i16).unsigned_abs() as usize;
@@ -335,7 +435,7 @@ pub(super) fn decode(
         let mut channels = Vec::new();
         for _ in 0..n {
             let id = r.u16()? as i16;
-            let length = r.u32()? as usize;
+            let length = r.length(h.version == 2)?;
             if ![-2, -1, 0, 1, 2].contains(&id) {
                 return Err(unsupported());
             }
@@ -373,7 +473,7 @@ pub(super) fn decode(
             return Err(ImportError::Malformed("layer filler"));
         }
         let extra = r.section()?;
-        name(extra)?;
+        name_with_metadata(extra, h.version == 2, discarded)?;
         let mask = mask(extra, h, rect)?;
         if mask.is_some() != channels.iter().any(|(id, _)| *id == -2) {
             return Err(ImportError::Malformed("layer mask channel"));
@@ -399,7 +499,7 @@ pub(super) fn decode(
     for record in &records {
         for &(id, length) in &record.channels {
             let (width, height) = channel_size(record, id);
-            rows(r.take(length)?, width, height, |_, _| {})?;
+            rows(r.take(length)?, width, height, h.version == 2, |_, _| {})?;
         }
     }
     let mut storage = 0usize;
@@ -432,7 +532,8 @@ pub(super) fn decode(
     let mut layers = Vec::new();
     for (index, record) in records.into_iter().enumerate() {
         let [top, left, _, _] = record.rect;
-        let (name, locked, alpha_locked) = name(record.extra)?;
+        let (name, locked, alpha_locked) =
+            name_with_metadata(record.extra, h.version == 2, discarded)?;
         let alpha = record.channels.iter().any(|(id, _)| *id == -1);
         let mut tiles = BTreeMap::<TileCoord, Vec<u8>>::new();
         let mut masks = BTreeMap::<TileCoord, Vec<u8>>::new();
@@ -461,7 +562,7 @@ pub(super) fn decode(
             let (width, height) = channel_size(&record, id);
             if id == -2 {
                 let mask = record.mask.expect("validated mask channel");
-                rows(r.take(length)?, width, height, |y, row| {
+                rows(r.take(length)?, width, height, h.version == 2, |y, row| {
                     for (x, &value) in row.iter().enumerate() {
                         let dx = mask.rect[1] + x as u32;
                         let dy = mask.rect[0] + y as u32;
@@ -477,7 +578,7 @@ pub(super) fn decode(
                 })?;
                 continue;
             }
-            rows(r.take(length)?, width, height, |y, row| {
+            rows(r.take(length)?, width, height, h.version == 2, |y, row| {
                 for (x, &value) in row.iter().enumerate() {
                     let dx = left + x as u32;
                     let dy = top + y as u32;
@@ -524,6 +625,15 @@ pub(super) fn decode(
     }
     *density_baked = records_density_baked;
     Ok(Some(layers))
+}
+
+#[cfg(test)]
+fn decode(
+    data: &[u8],
+    h: Header,
+    density_baked: &mut bool,
+) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
+    decode_with_metadata(data, h, density_baked, &mut false)
 }
 
 #[cfg(test)]
@@ -610,6 +720,42 @@ mod tests {
         encoder.write_all(data).unwrap();
         encoder.finish().unwrap()
     }
+    fn prediction_bytes(data: &[u8], width: usize) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        for row in data.chunks(width.max(1)) {
+            let mut previous = 0u8;
+            for &value in row {
+                encoded.push(value.wrapping_sub(previous));
+                previous = value;
+            }
+        }
+        encoded
+    }
+    #[test]
+    fn prediction_wraps_unsigned_bytes_and_resets_for_each_row() {
+        // Independent golden differences: wraparound, decreasing samples and row reset.
+        let encoded = zipped(&[250, 11, 255, 7, 249, 255]);
+        let mut result = Vec::new();
+        zip_rows_with_prediction(&encoded, 3, 2, true, |_, row| result.extend_from_slice(row))
+            .unwrap();
+        assert_eq!(result, [250, 5, 4, 7, 0, 255]);
+        for end in 0..encoded.len() {
+            assert!(zip_rows_with_prediction(&encoded[..end], 3, 2, true, |_, _| {}).is_err());
+        }
+        let mut corrupt = encoded.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert!(zip_rows_with_prediction(&corrupt, 3, 2, true, |_, _| {}).is_err());
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(zip_rows_with_prediction(&trailing, 3, 2, true, |_, _| {}).is_err());
+        let mut one = Vec::new();
+        zip_rows_with_prediction(&zipped(&[100, 200]), 1, 2, true, |_, row| {
+            one.extend_from_slice(row)
+        })
+        .unwrap();
+        assert_eq!(one, [100, 200]);
+        zip_rows_with_prediction(&zipped(&[]), 0, 0, true, |_, _| {}).unwrap();
+    }
     #[test]
     fn zip_streams_require_exact_size_checksum_end_marker_and_no_trailing_bytes() {
         let encoded = zipped(&[1, 2, 3, 4, 5, 6]);
@@ -639,23 +785,24 @@ mod tests {
         let raw = PsdImporter
             .import(fixture(false), ImportOptions::default())
             .unwrap();
-        let zip = PsdImporter
-            .import(
-                include_bytes!("../../tests/fixtures/lp-psd-layers-zip.psd"),
-                ImportOptions::default(),
-            )
-            .unwrap();
-        assert_eq!(raw.raster, zip.raster);
-        assert_eq!(raw.report, zip.report);
-        assert_eq!(
-            crate::tile_container::decode(&crate::tile_container::encode(&zip.raster).unwrap())
-                .unwrap(),
-            zip.raster
-        );
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-psd-layers-zip.psd").as_slice(),
+            include_bytes!("../../tests/fixtures/lp-psd-layers-prediction.psd").as_slice(),
+        ] {
+            let zip = PsdImporter.import(bytes, ImportOptions::default()).unwrap();
+            assert_eq!(raw.raster, zip.raster);
+            assert_eq!(raw.report, zip.report);
+            assert_eq!(
+                crate::tile_container::decode(&crate::tile_container::encode(&zip.raster).unwrap())
+                    .unwrap(),
+                zip.raster
+            );
+        }
     }
     #[test]
     fn zip_masks_with_density_match_raw_before_any_document_is_created() {
         let h = Header {
+            version: 1,
             width: 4,
             height: 2,
             channels: 3,
@@ -664,45 +811,53 @@ mod tests {
         };
         let mut raw = region_layer(20, false, [0, 0, 2, 4], [1, 1, 2, 3], 255, &[32, 128]);
         raw[86..88].copy_from_slice(&[1, 128]);
-        let mut outer = Reader { bytes: &raw, at: 0 };
-        let info = outer.section().unwrap();
-        let mut r = Reader {
-            bytes: info,
-            at: 18,
-        };
-        let n = r.u16().unwrap();
-        let mut channels = Vec::new();
-        for _ in 0..n {
-            r.u16().unwrap();
-            let at = r.at;
-            let size = r.u32().unwrap() as usize;
-            channels.push((at, size));
+        for prediction in [false, true] {
+            let mut outer = Reader { bytes: &raw, at: 0 };
+            let info = outer.section().unwrap();
+            let mut r = Reader {
+                bytes: info,
+                at: 18,
+            };
+            let n = r.u16().unwrap();
+            let mut channels = Vec::new();
+            for _ in 0..n {
+                let id = r.u16().unwrap() as i16;
+                let at = r.at;
+                let size = r.u32().unwrap() as usize;
+                channels.push((id, at, size));
+            }
+            r.take(12).unwrap();
+            r.section().unwrap();
+            let mut encoded = info[..r.at].to_vec();
+            for (id, at, size) in channels {
+                let channel = r.take(size).unwrap();
+                assert_eq!(&channel[..2], &[0, 0]);
+                let mut zip = vec![0, if prediction { 3 } else { 2 }];
+                let samples = if prediction {
+                    prediction_bytes(&channel[2..], if id == -2 { 2 } else { 4 })
+                } else {
+                    channel[2..].to_vec()
+                };
+                zip.extend(zipped(&samples));
+                encoded[at..at + 4].copy_from_slice(&(zip.len() as u32).to_be_bytes());
+                encoded.extend(zip);
+            }
+            if !encoded.len().is_multiple_of(2) {
+                encoded.push(0);
+            }
+            let mut zip = (encoded.len() as u32).to_be_bytes().to_vec();
+            zip.extend(encoded);
+            zip.extend([0; 4]);
+            assert_eq!(
+                decode(&raw, h, &mut false).unwrap(),
+                decode(&zip, h, &mut false).unwrap()
+            );
         }
-        r.take(12).unwrap();
-        r.section().unwrap();
-        let mut encoded = info[..r.at].to_vec();
-        for (at, size) in channels {
-            let channel = r.take(size).unwrap();
-            assert_eq!(&channel[..2], &[0, 0]);
-            let mut zip = vec![0, 2];
-            zip.extend(zipped(&channel[2..]));
-            encoded[at..at + 4].copy_from_slice(&(zip.len() as u32).to_be_bytes());
-            encoded.extend(zip);
-        }
-        if !encoded.len().is_multiple_of(2) {
-            encoded.push(0);
-        }
-        let mut zip = (encoded.len() as u32).to_be_bytes().to_vec();
-        zip.extend(encoded);
-        zip.extend([0; 4]);
-        assert_eq!(
-            decode(&raw, h, &mut false).unwrap(),
-            decode(&zip, h, &mut false).unwrap()
-        );
     }
     #[test]
     fn relative_masks_resolve_signed_offsets_without_moving_layer_pixels() {
         let h = Header {
+            version: 1,
             width: 4,
             height: 2,
             channels: 3,
@@ -738,6 +893,7 @@ mod tests {
     #[test]
     fn density_preserves_photoshop_coverage_and_requires_conversion_consent() {
         let h = Header {
+            version: 1,
             width: 2,
             height: 1,
             channels: 3,
@@ -810,6 +966,7 @@ mod tests {
     #[test]
     fn partial_density_includes_the_outside_background_and_rejects_other_parameters() {
         let h = Header {
+            version: 1,
             width: 4,
             height: 2,
             channels: 3,
@@ -860,6 +1017,7 @@ mod tests {
     #[test]
     fn partial_masks_keep_background_position_inversion_and_disabled_pixels() {
         let h = Header {
+            version: 1,
             width: 4,
             height: 2,
             channels: 3,
@@ -953,6 +1111,7 @@ mod tests {
         data.extend(combined);
         data.extend([0; 4]);
         let h = Header {
+            version: 1,
             width: 8192,
             height: 8192,
             channels: 3,
@@ -967,6 +1126,7 @@ mod tests {
     #[test]
     fn partial_mask_crosses_tiles_and_rejects_invalid_bounds() {
         let h = Header {
+            version: 1,
             width: 258,
             height: 1,
             channels: 3,
@@ -1030,6 +1190,7 @@ mod tests {
     #[test]
     fn canvas_masks_keep_pixels_disable_invert_and_native_roundtrip() {
         let h = Header {
+            version: 1,
             width: 2,
             height: 1,
             channels: 3,
@@ -1209,11 +1370,11 @@ mod tests {
             extra.extend(4u32.to_be_bytes());
             extra.extend(data);
         }
-        assert_eq!(name(&extra).unwrap(), ("A".into(), false, true));
+        assert_eq!(name(&extra, false).unwrap(), ("A".into(), false, true));
         for (key, data) in [
             (b"knko", [1, 0, 0, 0]),
             (b"iOpa", [128, 0, 0, 0]),
-            (b"lspf", [0, 0, 0, 4]),
+            (b"lspf", [0, 0, 0, 16]),
         ] {
             let mut unsupported_extra = extra.clone();
             unsupported_extra.extend(b"8BIM");
@@ -1221,10 +1382,50 @@ mod tests {
             unsupported_extra.extend(4u32.to_be_bytes());
             unsupported_extra.extend(data);
             assert!(matches!(
-                name(&unsupported_extra),
+                name(&unsupported_extra, false),
                 Err(ImportError::Unsupported(_))
             ));
         }
+    }
+    #[test]
+    fn partial_protection_and_reference_points_report_projection_without_unlocking() {
+        for flags in [2u8, 4, 5, 8, 13] {
+            let mut extra = vec![0; 8];
+            extra.extend([1, b'A', 0, 0]);
+            extra.extend(b"8BIMlspf");
+            extra.extend(4u32.to_be_bytes());
+            extra.extend([0, 0, 0, flags]);
+            extra.extend(b"8BIMfxrp");
+            extra.extend(16u32.to_be_bytes());
+            extra.extend(4.5f64.to_be_bytes());
+            extra.extend((-2.0f64).to_be_bytes());
+            let mut discarded = false;
+            let (_, locked, alpha_locked) =
+                name_with_metadata(&extra, false, &mut discarded).unwrap();
+            assert!(locked && discarded);
+            assert_eq!(alpha_locked, flags & 1 != 0);
+            let size = extra.len();
+            extra[size - 8..].copy_from_slice(&f64::NAN.to_be_bytes());
+            assert!(name_with_metadata(&extra, false, &mut false).is_err());
+        }
+    }
+    #[test]
+    fn metadata_container_rejects_truncation_invalid_flags_and_excessive_counts() {
+        let mut data = 1u32.to_be_bytes().to_vec();
+        data.extend(b"8BIMcust");
+        data.extend([1, 0, 0, 0]);
+        data.extend(4u32.to_be_bytes());
+        data.extend([0; 4]);
+        metadata(&data).unwrap();
+        for end in 0..data.len() {
+            assert!(metadata(&data[..end]).is_err());
+        }
+        let mut bad = data.clone();
+        bad[12] = 2;
+        assert!(metadata(&bad).is_err());
+        bad = data;
+        bad[..4].copy_from_slice(&1025u32.to_be_bytes());
+        assert!(matches!(metadata(&bad), Err(ImportError::LimitExceeded(_))));
     }
     #[test]
     fn total_layer_expansion_is_bounded_before_channel_allocation() {
@@ -1249,6 +1450,7 @@ mod tests {
         data.extend([0; 4]);
         let h = Header {
             channels: 3,
+            version: 1,
             width: 8192,
             height: 8192,
             depth: 8,
@@ -1285,7 +1487,7 @@ mod tests {
                 Err(ImportError::LimitExceeded("PSD layer name"))
             ));
         }
-        assert!(rows(&[0, 0, 1], 2, 1, |_, _| {}).is_err());
-        assert!(rows(&[0, 1, 0, 2, 253, 7], 2, 1, |_, _| {}).is_err());
+        assert!(rows(&[0, 0, 1], 2, 1, false, |_, _| {}).is_err());
+        assert!(rows(&[0, 1, 0, 2, 253, 7], 2, 1, false, |_, _| {}).is_err());
     }
 }
