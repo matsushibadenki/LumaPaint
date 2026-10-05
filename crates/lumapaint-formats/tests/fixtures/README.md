@@ -10,3 +10,5 @@ of system fonts. No third-party font data is included in the fixture.
 `lp-psd-alpha.psd` is an artificial PSD v1 RGB8 with one RGBA layer and a white-matted merged preview. Its four pixels are half-transparent red, quarter-transparent blue, opaque green, and transparent. It contains no third-party artwork.
 
 `lp-psd-layers.psd` and `lp-psd-layers-rle.psd` are artificial three-layer RGB8 PSDs. They contain an opaque red base, a half-opacity blue pixel with a Japanese Unicode name, and a hidden green layer with a Simplified Chinese name. They test normal blending, position, order, names and protection flags without third-party artwork.
+
+`lp-psd-layers-zip.psd` contains the same synthetic pixels and metadata as `lp-psd-layers.psd`, with zlib/ZIP without prediction for all layer channels and the merged image. It tests compression-independent native state and contains no third-party artwork.

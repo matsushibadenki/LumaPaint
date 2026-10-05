@@ -230,8 +230,8 @@ impl DocumentImporter for PsdImporter {
             });
         }
         let compression = r.u16()?;
-        if compression > 1 {
-            return Err(ImportError::Unsupported("ZIP compression"));
+        if compression > 2 {
+            return Err(ImportError::Unsupported("ZIP prediction compression"));
         }
         let rows = h.height as usize * usize::from(h.channels);
         if h.width as usize * rows > MAX_INPUT_BYTES {
@@ -249,6 +249,8 @@ impl DocumentImporter for PsdImporter {
             if remaining != h.width as usize * rows {
                 return Err(ImportError::Malformed("composite payload length"));
             }
+        } else if compression == 2 {
+            layers::zip_rows(&bytes[r.at..], h.width as usize, rows, |_, _| {})?;
         } else {
             let total = counts
                 .iter()
@@ -263,7 +265,8 @@ impl DocumentImporter for PsdImporter {
                 packbits(check.take(size)?, h.width as usize)?;
             }
         }
-        let retained = match layers::decode(layer_data, h) {
+        let mut density_baked = false;
+        let retained = match layers::decode(layer_data, h, &mut density_baked) {
             Ok(layers) => layers,
             Err(ImportError::Unsupported(_)) => None,
             Err(error) => return Err(error),
@@ -272,6 +275,12 @@ impl DocumentImporter for PsdImporter {
             report.issues.push(ConversionIssue {
                 code: "psd.layersFlattened",
                 tier: CompatibilityTier::C,
+            });
+        }
+        if retained.is_some() && density_baked {
+            report.issues.push(ConversionIssue {
+                code: "psd.maskDensityBaked",
+                tier: CompatibilityTier::B,
             });
         }
         if !options.allow_lossy && !report.issues.is_empty() {
@@ -297,36 +306,38 @@ impl DocumentImporter for PsdImporter {
                 })
             })
             .collect();
-        // Decode one planar scanline at a time into native tiles, avoiding a second full image buffer.
-        for channel in 0..usize::from(h.channels) {
-            for y in 0..h.height {
-                let decoded;
-                let row = if compression == 0 {
-                    r.take(h.width as usize)?
-                } else {
-                    decoded = packbits(
-                        r.take(counts[channel * h.height as usize + y as usize])?,
-                        h.width as usize,
-                    )?;
-                    &decoded
-                };
-                if channel > 2 && !(channel == 3 && transparency) {
-                    continue;
-                }
-                for (x, &value) in row.iter().enumerate() {
-                    let tile =
-                        &mut tiles[(y / TILE_SIZE * columns + x as u32 / TILE_SIZE) as usize];
-                    let at = ((y % TILE_SIZE) * TILE_SIZE + x as u32 % TILE_SIZE) as usize * 4;
-                    if channel == 3 {
-                        for color in &mut tile.pixels[at..at + 3] {
-                            *color = remove_white_matte(*color, value);
-                        }
-                        tile.pixels[at + 3] = value;
-                    } else {
-                        tile.pixels[at + channel] = value;
-                        tile.pixels[at + 3] = 255;
+        // Decode one planar scanline into tiles; ZIP also keeps only a scanline buffer.
+        let mut apply = |index: usize, row: &[u8]| {
+            let channel = index / h.height as usize;
+            let y = (index % h.height as usize) as u32;
+            if channel > 2 && !(channel == 3 && transparency) {
+                return;
+            }
+            for (x, &value) in row.iter().enumerate() {
+                let tile = &mut tiles[(y / TILE_SIZE * columns + x as u32 / TILE_SIZE) as usize];
+                let at = ((y % TILE_SIZE) * TILE_SIZE + x as u32 % TILE_SIZE) as usize * 4;
+                if channel == 3 {
+                    for color in &mut tile.pixels[at..at + 3] {
+                        *color = remove_white_matte(*color, value);
                     }
+                    tile.pixels[at + 3] = value;
+                } else {
+                    tile.pixels[at + channel] = value;
+                    tile.pixels[at + 3] = 255;
                 }
+            }
+        };
+        if compression == 2 {
+            layers::zip_rows(&bytes[r.at..], h.width as usize, rows, &mut apply)?;
+            r.at = bytes.len();
+        } else if compression == 0 {
+            for index in 0..rows {
+                apply(index, r.take(h.width as usize)?);
+            }
+        } else {
+            for (index, size) in counts.into_iter().enumerate() {
+                let row = packbits(r.take(size)?, h.width as usize)?;
+                apply(index, &row);
             }
         }
         if r.at != bytes.len() {
@@ -383,6 +394,55 @@ mod tests {
             }
         }
         bytes
+    }
+    fn zip_composite(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut r = Reader { bytes, at: 26 };
+        r.section().unwrap();
+        r.section().unwrap();
+        r.section().unwrap();
+        let at = r.at;
+        assert_eq!(r.u16().unwrap(), 0);
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&bytes[r.at..]).unwrap();
+        let mut zip = bytes[..at].to_vec();
+        zip.extend(2u16.to_be_bytes());
+        zip.extend(encoder.finish().unwrap());
+        zip
+    }
+    #[test]
+    fn zip_composite_matches_raw_edges_transparency_and_rejects_corruption() {
+        for bytes in [
+            fixture(257, 2, false),
+            include_bytes!("../tests/fixtures/lp-psd-alpha.psd").to_vec(),
+        ] {
+            let zip = zip_composite(&bytes);
+            let raw = PsdImporter
+                .import(&bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            let result = PsdImporter
+                .import(&zip, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(raw.raster, result.raster);
+            assert_eq!(raw.report, result.report);
+            lumapaint_core::tiles::TiledRasterDocument::from_state(result.raster).unwrap();
+            for end in 0..zip.len() {
+                assert!(PsdImporter
+                    .import(&zip[..end], ImportOptions { allow_lossy: true })
+                    .is_err());
+            }
+            let mut corrupt = zip.clone();
+            *corrupt.last_mut().unwrap() ^= 1;
+            assert!(PsdImporter
+                .import(&corrupt, ImportOptions { allow_lossy: true })
+                .is_err());
+            let mut trailing = zip;
+            trailing.push(0);
+            assert!(PsdImporter
+                .import(&trailing, ImportOptions { allow_lossy: true })
+                .is_err());
+        }
     }
     #[test]
     fn raw_and_packbits_produce_identical_native_tiles_and_save_roundtrip() {

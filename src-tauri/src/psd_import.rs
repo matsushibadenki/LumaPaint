@@ -82,6 +82,7 @@ fn decode(path: &Path) -> Result<Prepared, String> {
 fn report_text(report: &ConversionReport) -> String {
     report.issues.iter().map(|issue| match issue.code {
         "psd.extraChannelsNotPreserved" => "Saved alpha or spot channels are not retained. / 保存されたアルファ・スポットチャンネルは保持されません。 / 保存的Alpha或专色通道不会保留。",
+        "psd.maskDensityBaked" => "Mask density is applied to mask pixels; its original numeric setting is not retained. / マスク密度を画素に反映します。元の密度数値は保持されません。 / 蒙版密度将应用到像素，原始密度数值不会保留。",
         "psd.layersFlattened" => "Layers are flattened to the merged image. / レイヤーは統合画像になります。 / 图层将合并为一张图像。",
         "psd.resolutionNotPreserved" => "Original resolution metadata is not retained. / 元の解像度情報は保持されません。 / 原始分辨率元数据不会保留。",
         "psd.iccProfileNotPreserved" => "ICC profiles are not retained; colors may differ. / ICCプロファイルは保持されず、色が異なる場合があります。 / ICC配置文件不会保留，颜色可能不同。",
