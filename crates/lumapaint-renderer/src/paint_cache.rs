@@ -27,7 +27,9 @@ impl PaintCache {
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4])
+        self.tiles.layers()[0]
+            .effects
+            .apply(self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]))
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -80,6 +82,12 @@ impl PaintCache {
             document.background_visible(),
             document.paint_layer_opacity(),
         )? {
+            dirty.extend(changes.coords);
+        }
+        if let Some(changes) = self
+            .tiles
+            .set_layer_effects("paint", document.layer_effects("layer-1"))?
+        {
             dirty.extend(changes.coords);
         }
         self.tiles.discard_history();

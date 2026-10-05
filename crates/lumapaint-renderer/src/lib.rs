@@ -624,6 +624,7 @@ pub fn project_committed_paint_layer_at_scale(
         paint.mask_density,
     )?;
     projected.set_layer_appearance(&paint.id, paint.visible, paint.opacity)?;
+    projected.set_layer_effects(&paint.id, source.layer_effects(&paint.id))?;
     projected.set_layer_locks(&paint.id, paint.locked, paint.alpha_locked)?;
     projected.discard_history();
     Ok(projected)
@@ -1297,6 +1298,7 @@ pub struct Renderer {
     brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
     workspace_pipeline: wgpu::RenderPipeline,
+    workspace_full_pipeline: wgpu::RenderPipeline,
     object_pipeline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
     object_cache: HashMap<String, ObjectLayerCache>,
@@ -1404,6 +1406,16 @@ fn create_layer_pipeline(
     source: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_layer_pipeline_with_fragment(device, layouts, format, source, label, "fs_main")
+}
+fn create_layer_pipeline_with_fragment(
+    device: &wgpu::Device,
+    layouts: &[&wgpu::BindGroupLayout],
+    format: wgpu::TextureFormat,
+    source: &str,
+    label: &str,
+    fragment: &str,
+) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: layouts,
@@ -1427,7 +1439,7 @@ fn create_layer_pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fragment),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -2462,6 +2474,14 @@ impl Renderer {
             include_str!("workspace.wgsl"),
             "Artboard exterior",
         );
+        let workspace_full_pipeline = create_layer_pipeline_with_fragment(
+            &device,
+            &[&bind_layout, &svg_bind_layout],
+            format,
+            include_str!("workspace.wgsl"),
+            "Full viewport layer effects",
+            "fs_full",
+        );
         let tile_pipeline = create_textured_layer_pipeline(
             &device,
             &bind_layout,
@@ -2531,6 +2551,7 @@ impl Renderer {
             brush_sampler,
             svg_pipeline,
             workspace_pipeline,
+            workspace_full_pipeline,
             object_pipeline,
             object_layout,
             object_cache: HashMap::new(),
@@ -2711,7 +2732,8 @@ impl Renderer {
         } else {
             (document, offset, defer_svg)
         };
-        if document.paint_source().is_some()
+        if document.has_layer_effects("layer-1")
+            || document.paint_source().is_some()
             || document.visible_strokes().any(|stroke| stroke.eraser)
         {
             let started = std::time::Instant::now();
@@ -2916,6 +2938,9 @@ impl Renderer {
             self.native_geometry.retain(&live, &layers);
             if !self.outline_view && viewport.screen_zoom() > 1.5 {
                 for layer in document.visible_svg_layers() {
+                    if document.has_layer_effects(&layer.id) {
+                        continue;
+                    }
                     if self.native_geometry.prepare(
                         &self.device,
                         &self.queue,
@@ -2932,6 +2957,9 @@ impl Renderer {
         }
         let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
+            if document.has_layer_effects(&original.id) {
+                continue;
+            }
             if native_layers.contains(&original.id) {
                 continue;
             }
@@ -3081,7 +3109,10 @@ impl Renderer {
             self.install_prepared_svg(prepared)?;
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
-        let exterior_needed = high_zoom
+        let exterior_needed = document
+            .visible_svg_layers()
+            .any(|l| document.has_layer_effects(&l.id))
+            || high_zoom
             || document
                 .visible_svg_layers()
                 .filter(|layer| !object_layers.contains(layer.id.as_str()))
@@ -3359,11 +3390,16 @@ impl Renderer {
                     .as_ref()
                     .and_then(|images| images.iter().find(|image| image.source == layer.id))
                 {
-                    pass.set_pipeline(&self.workspace_pipeline);
+                    let full_layer = high_zoom || document.has_layer_effects(&layer.id);
+                    pass.set_pipeline(if full_layer {
+                        &self.workspace_full_pipeline
+                    } else {
+                        &self.workspace_pipeline
+                    });
                     pass.set_bind_group(0, &self.bind_group, &[]);
                     pass.set_bind_group(1, &image.bind_group, &[]);
                     pass.draw(0..6, 0..1);
-                    if high_zoom {
+                    if full_layer {
                         continue;
                     }
                 }
@@ -4473,5 +4509,27 @@ mod object_translation_tests {
         );
         moved.reverse();
         assert_eq!(uniform_object_translation(&old, &moved, &selected), None);
+    }
+}
+
+/// Adjust premultiplied renderer pixels without changing alpha or model source data.
+pub fn apply_layer_effects(
+    pixels: &mut [u8],
+    effects: &lumapaint_core::layer_effects::LayerEffects,
+) {
+    if !effects.enabled {
+        return;
+    }
+    for p in pixels.as_chunks_mut::<4>().0 {
+        if p[3] == 0 {
+            continue;
+        }
+        let alpha = u32::from(p[3]);
+        let straight =
+            [0, 1, 2].map(|i| ((u32::from(p[i]) * 255 + alpha / 2) / alpha).min(255) as u8);
+        let adjusted = effects.apply([straight[0], straight[1], straight[2], p[3]]);
+        for i in 0..3 {
+            p[i] = ((u32::from(adjusted[i]) * alpha + 127) / 255) as u8;
+        }
     }
 }

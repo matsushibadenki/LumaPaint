@@ -601,6 +601,7 @@ pub(super) fn decode_with_metadata(
             })?;
         }
         layers.push(RasterLayerState {
+            effects: Default::default(),
             blend_mode: record.blend_mode,
             id: format!("psd-layer-{index}"),
             name,

@@ -63,7 +63,8 @@ impl ColorSampler {
             }
         }
         for layer in document.visible_svg_layers() {
-            let pixel = rasterize_svg_workspace(&layer.source, [width, height], [1, 1], rect)?;
+            let mut pixel = rasterize_svg_workspace(&layer.source, [width, height], [1, 1], rect)?;
+            crate::apply_layer_effects(&mut pixel, &document.layer_effects(&layer.id));
             over(
                 &mut result,
                 pixel[..4].try_into().unwrap(),

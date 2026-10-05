@@ -83,6 +83,29 @@ impl DocumentExporter for SvgExporter {
         let document =
             Document::from_document_state(state.clone()).map_err(ExportError::InvalidDocument)?;
         let mut report = ConversionReport::default();
+        if state.layer_effects.iter().any(|(id, e)| {
+            e.enabled
+                && if id == "layer-1" {
+                    document.background_visible()
+                } else {
+                    document.visible_svg_layers().any(|l| &l.id == id)
+                }
+        }) {
+            report.issues.push(ConversionIssue {
+                code: "svg.layer_effects_rasterized",
+                tier: CompatibilityTier::C,
+            });
+            if !options.allow_lossy {
+                return Err(ExportError::LossyConversionRequiresConsent(report));
+            }
+            let png = snapshot
+                .document_png()
+                .ok_or(ExportError::UnsupportedFeature(
+                    "svg.layer_effects_require_raster_fallback",
+                ))?;
+            let data = base64::engine::general_purpose::STANDARD.encode(png);
+            return Ok(ExportedDocument { format: self.format(), media_type:"image/svg+xml", bytes: format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\"><image width=\"100%\" height=\"100%\" href=\"data:image/png;base64,{data}\"/></svg>", state.width,state.height).into_bytes(), report });
+        }
         let brush = state.layer_visible && !state.strokes.is_empty();
         if brush {
             report.issues.push(ConversionIssue {
@@ -167,6 +190,37 @@ impl DocumentExporter for SvgExporter {
 mod tests {
     use super::*;
     use crate::export::export;
+    #[test]
+    fn ordinary_effects_require_explicit_raster_fallback_and_consent() {
+        let mut d = Document::default();
+        d.set_layer_effects(
+            "layer-1",
+            lumapaint_core::layer_effects::LayerEffects {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let snapshot = ExportSnapshot::capture(&d);
+        assert!(matches!(
+            export(FormatId::Svg, &snapshot, ExportOptions::default()),
+            Err(ExportError::LossyConversionRequiresConsent(_))
+        ));
+        assert!(matches!(
+            export(
+                FormatId::Svg,
+                &snapshot,
+                ExportOptions { allow_lossy: true }
+            ),
+            Err(ExportError::UnsupportedFeature(
+                "svg.layer_effects_require_raster_fallback"
+            ))
+        ));
+        let loaded =
+            crate::native::decode(&crate::native::encode_state(&d.document_state()).unwrap())
+                .unwrap();
+        assert!(loaded.has_layer_effects("layer-1"));
+    }
     #[test]
     fn isolated_editable_layers_keep_ids_references_and_document_unchanged() {
         let first = r##"<svg width="80" height="60"><defs><linearGradient id="same"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><style>rect {fill:url(#same)}</style><rect width="80" height="60"/></svg>"##;

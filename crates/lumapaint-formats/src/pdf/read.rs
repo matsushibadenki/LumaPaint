@@ -776,19 +776,96 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
     }
     let doc = load(bytes)?;
     let pages = doc.get_pages();
+    read_page(&doc, &pages, options, true)
+}
+/// Decode the shared PDF object graph once and construct an atomic publication.
+pub fn read_all(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
+    options.validate(FormatId::Pdf)?;
+    if options.raster_dpi > 1200 {
+        return Err(ImportError::Unsupported("pdf.document_resolution"));
+    }
+    let doc = load(bytes)?;
+    let pages = doc.get_pages();
+    if pages.is_empty() || pages.len() > 512 {
+        return Err(ImportError::LimitExceeded("pdf.publication_pages"));
+    }
+    let mut states = Vec::with_capacity(pages.len());
+    let mut report = ConversionReport::default();
+    let mut total = 0usize;
+    for index in 0..pages.len() {
+        let decoded = read_page(
+            &doc,
+            &pages,
+            ReadOptions {
+                page_index: index as u32,
+                ..options
+            },
+            false,
+        )?;
+        let ReadContent::Vector(document) = decoded.content else {
+            return Err(malformed());
+        };
+        for layer in document.svg_layers() {
+            total = total
+                .checked_add(layer.source.len())
+                .ok_or(ImportError::LimitExceeded("pdf.publication_content"))?;
+        }
+        if total > 128 * 1024 * 1024 {
+            return Err(ImportError::LimitExceeded("pdf.publication_content"));
+        }
+        states.push(document.document_state());
+        for issue in decoded.report.issues {
+            if !report.issues.contains(&issue) {
+                report.issues.push(issue);
+            }
+        }
+    }
+    let mut first = states.remove(0);
+    if !states.is_empty() {
+        use lumapaint_core::document::{PageBinding, PageBookState, PageState};
+        let count = states.len() + 1;
+        let mut records = vec![PageState {
+            id: "page-1".into(),
+            content: None,
+        }];
+        records.extend(states.into_iter().enumerate().map(|(i, state)| PageState {
+            id: format!("page-{}", i + 2),
+            content: Some(Box::new(state)),
+        }));
+        first.pages = Some(PageBookState {
+            facing: false,
+            binding: PageBinding::LeftToRight,
+            active: 0,
+            next_id: count as u64 + 1,
+            pages: records,
+        });
+    }
+    let document =
+        lumapaint_core::document::Document::from_document_state(first).map_err(|_| malformed())?;
+    Ok(ReadDocument {
+        content: ReadContent::Vector(Box::new(document)),
+        report,
+    })
+}
+fn read_page(
+    doc: &lopdf::Document,
+    pages: &std::collections::BTreeMap<u32, ObjectId>,
+    options: ReadOptions,
+    selected_only: bool,
+) -> Result<ReadDocument, ImportError> {
     let id = *pages
         .values()
         .nth(options.page_index as usize)
         .ok_or(ImportError::Malformed("pdf.page_index"))?;
-    let bbox = inherited(&doc, id, b"CropBox")?
-        .or(inherited(&doc, id, b"MediaBox")?)
+    let bbox = inherited(doc, id, b"CropBox")?
+        .or(inherited(doc, id, b"MediaBox")?)
         .ok_or_else(malformed)?;
     let p = nums(bbox.as_array().map_err(|_| malformed())?, 4)?;
     let (w, h) = (p[2] - p[0], p[3] - p[1]);
     if w <= 0. || h <= 0. {
         return Err(malformed());
     }
-    let rotate = inherited(&doc, id, b"Rotate")?
+    let rotate = inherited(doc, id, b"Rotate")?
         .map(num)
         .transpose()?
         .unwrap_or(0.);
@@ -801,7 +878,7 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
         .map_err(|_| malformed())?
         .get(b"UserUnit")
         .ok()
-        .map(|o| resolve(&doc, o).and_then(num))
+        .map(|o| resolve(doc, o).and_then(num))
         .transpose()?
         .unwrap_or(1.);
     if user_unit <= 0. || user_unit > 75000. {
@@ -824,12 +901,12 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
         return Err(ImportError::LimitExceeded("pdf.page_size"));
     }
     let empty = Dictionary::new();
-    let resources = inherited(&doc, id, b"Resources")?
+    let resources = inherited(doc, id, b"Resources")?
         .map(|o| o.as_dict().map_err(|_| malformed()))
         .transpose()?
         .unwrap_or(&empty);
     let mut parser = Interpreter {
-        doc: &doc,
+        doc,
         body: String::new(),
         defs: String::new(),
         issues: vec![],
@@ -843,7 +920,7 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
         image_remaining: 64 * 1024 * 1024,
         image_cache: Default::default(),
     };
-    if pages.len() > 1 {
+    if selected_only && pages.len() > 1 {
         parser.unsupported("pdf.selected_page_only")?;
     }
     if doc

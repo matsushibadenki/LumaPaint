@@ -29,6 +29,13 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
     let mut copy = document.clone();
     copy.finish();
     let mut snapshot = ExportSnapshot::capture(&copy);
+    if snapshot.state().layer_effects.values().any(|e| e.enabled) {
+        snapshot = snapshot
+            .with_document_png(lumapaint_renderer::thumbnails::document_png(&copy)?)
+            .map_err(|e| e.to_string())?;
+        return export(format, &snapshot, ExportOptions { allow_lossy: true })
+            .map_err(|e| e.to_string());
+    }
     if snapshot.state().layer_visible && !snapshot.state().strokes.is_empty() {
         let (w, h) = copy.dimensions();
         if u64::from(w) * u64::from(h) > 16_777_216 {
@@ -91,6 +98,7 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
         "pdf.annotations_omitted" => "PDFの注釈は省略されます。\nPDF annotations are omitted.\n省略PDF批注。",
         "pdf.transparency_group" | "pdf.soft_mask" | "pdf.blend_mode" | "pdf.graphics_effect" => "PDFの透明効果を正確に再現できない部分があります。\nSome PDF transparency effects cannot be reproduced accurately.\n部分PDF透明效果无法准确重现。",
         "pdf.optional_content" | "pdf.unsupported_operator" => "PDFの一部の表示設定や描画命令は対応範囲外です。\nSome PDF display settings or drawing instructions are unsupported.\n部分PDF显示设置或绘制指令不受支持。",
+        "svg.layer_effects_rasterized" => "レイヤーエフェクトの見た目を保持するため画像へ統合します。編集可能な設定はネイティブ形式に保存してください。\nLayer effects are flattened to preserve appearance. Save editable settings in the native format.\n图层效果将合并为图像以保留外观。请使用原生格式保存可编辑设置。",
         _ => "外部形式への変換で編集情報が変わります。\nConversion changes editing information.\n格式转换会改变编辑信息。"
     }).collect::<Vec<_>>().join("\n\n")
 }

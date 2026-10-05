@@ -108,27 +108,48 @@ pub(crate) async fn pdf_import_apply(
     token: u64,
     page_index: u32,
     dpi: u32,
+    all_pages: bool,
 ) -> Result<bool, String> {
     let owner = crate::modal_windows::owner(&window)?;
     let app = window.app_handle().clone();
     let pending = app
         .state::<Imports>()
         .begin(&owner, token, page_index, dpi)?;
+    if all_pages && pending.target.is_some() {
+        app.state::<Imports>().release(&owner, token);
+        return Err("All pages must be opened as a document / 全ページは文書として開いてください / 所有页面必须作为文档打开".into());
+    }
     #[cfg(target_os = "macos")]
     let result = async {
         let decoded = tauri::async_runtime::spawn_blocking(move || {
-            lumapaint_formats::io::read_document(
-                pending.format,
-                pending.info.name.clone(),
-                &pending.bytes,
-                lumapaint_formats::io::ReadOptions {
-                    page_index,
-                    raster_dpi: dpi,
-                    allow_lossy: true,
-                    ..Default::default()
-                },
-            )
-            .map(|d| (d, pending.target, pending.info.name))
+            let options = lumapaint_formats::io::ReadOptions {
+                page_index,
+                raster_dpi: dpi,
+                allow_lossy: true,
+                ..Default::default()
+            };
+            let decoded = if all_pages {
+                lumapaint_formats::pdf::read_all(&pending.bytes, options).map(|mut decoded| {
+                    if pending.format == lumapaint_formats::export::FormatId::Illustrator {
+                        decoded
+                            .report
+                            .issues
+                            .push(lumapaint_formats::ConversionIssue {
+                                code: "ai.pdf_compatible_only",
+                                tier: lumapaint_formats::CompatibilityTier::B,
+                            });
+                    }
+                    decoded
+                })
+            } else {
+                lumapaint_formats::io::read_document(
+                    pending.format,
+                    pending.info.name.clone(),
+                    &pending.bytes,
+                    options,
+                )
+            };
+            decoded.map(|d| (d, pending.target, pending.info.name))
         })
         .await
         .map_err(|e| e.to_string())?

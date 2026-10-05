@@ -101,6 +101,8 @@ impl RasterBlendMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RasterLayerState {
     #[serde(default)]
+    pub effects: crate::layer_effects::LayerEffects,
+    #[serde(default)]
     pub blend_mode: RasterBlendMode,
     pub id: String,
     pub name: String,
@@ -126,6 +128,7 @@ pub fn composite_raster_layers_tile(
             return None;
         }
         Some(CompositeSource {
+            effects: &layer.effects,
             blend_mode: layer.blend_mode,
             pixels: &layer.tiles.iter().find(|tile| tile.coord == coord)?.pixels,
             opacity: layer.opacity,
@@ -141,6 +144,7 @@ pub fn composite_raster_layers_tile(
     }))
 }
 struct CompositeSource<'a> {
+    effects: &'a crate::layer_effects::LayerEffects,
     blend_mode: RasterBlendMode,
     pixels: &'a [u8],
     opacity: f32,
@@ -161,6 +165,8 @@ fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> 
             .zip(source.pixels.as_chunks::<4>().0.iter())
             .enumerate()
         {
+            let adjusted = source.effects.apply(*pixel);
+            let pixel = &adjusted;
             let mask_value = source.mask.map_or(255, |tile| tile[index]);
             let coverage = source.mask_density * f32::from(mask_value) / 255.0;
             let mask = if !source.mask_enabled {
@@ -684,6 +690,7 @@ fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) 
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterLayer {
+    pub effects: crate::layer_effects::LayerEffects,
     pub blend_mode: RasterBlendMode,
     pub id: String,
     pub name: String,
@@ -729,6 +736,16 @@ impl RasterLayer {
 
 #[derive(Clone, Debug, PartialEq)]
 enum RasterEdit {
+    Effects {
+        id: String,
+        before: Box<crate::layer_effects::LayerEffects>,
+        after: Box<crate::layer_effects::LayerEffects>,
+    },
+    StackOrder {
+        before: Vec<String>,
+        after: Vec<String>,
+        coords: Vec<TileCoord>,
+    },
     Blend {
         layer_id: String,
         before: RasterBlendMode,
@@ -971,6 +988,7 @@ impl TiledRasterDocument {
                 .layers
                 .iter()
                 .map(|layer| RasterLayerState {
+                    effects: layer.effects.clone(),
                     blend_mode: layer.blend_mode,
                     id: layer.id.clone(),
                     name: layer.name.clone(),
@@ -1027,6 +1045,8 @@ impl TiledRasterDocument {
             document.add_layer(saved.id.clone(), saved.name)?;
             let layer = document.layers.last_mut().expect("layer was just added");
             layer.blend_mode = saved.blend_mode;
+            saved.effects.validate()?;
+            layer.effects = saved.effects;
             layer.visible = saved.visible;
             layer.opacity = saved.opacity;
             layer.locked = saved.locked;
@@ -1201,6 +1221,7 @@ impl TiledRasterDocument {
                 return None;
             }
             Some(CompositeSource {
+                effects: &layer.effects,
                 blend_mode: layer.blend_mode,
                 pixels: layer.tiles.tile(coord)?,
                 opacity: layer.opacity,
@@ -1223,6 +1244,7 @@ impl TiledRasterDocument {
             return Err("Invalid or duplicate raster layer".into());
         }
         self.layers.push(RasterLayer {
+            effects: Default::default(),
             blend_mode: RasterBlendMode::Normal,
             id,
             name,
@@ -1282,6 +1304,35 @@ impl TiledRasterDocument {
         Ok(Some(TileInvalidation { layer_id, coords }))
     }
 
+    pub fn set_layer_effects(
+        &mut self,
+        id: &str,
+        effects: crate::layer_effects::LayerEffects,
+    ) -> Result<Option<TileInvalidation>, String> {
+        effects.validate()?;
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|l| l.id == id)
+            .ok_or("Unknown raster layer")?;
+        if layer.effects == effects {
+            return Ok(None);
+        }
+        if layer.locked {
+            return Err("Raster layer is locked".into());
+        }
+        let before = std::mem::replace(&mut layer.effects, effects.clone());
+        let coords = layer.tiles.allocated_coords().collect();
+        self.record_edit(RasterEdit::Effects {
+            id: id.into(),
+            before: Box::new(before),
+            after: Box::new(effects),
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: id.into(),
+            coords,
+        }))
+    }
     pub fn set_layer_blend_mode(
         &mut self,
         layer_id: &str,
@@ -1460,6 +1511,43 @@ impl TiledRasterDocument {
             layer_id: layer_id.into(),
             coords,
         }))
+    }
+
+    /// Atomic panel ordering, top to bottom. Histories store identities, never pixel copies.
+    pub fn reorder_layers(&mut self, ids: &[String]) -> Result<Option<TileInvalidation>, String> {
+        let before = self.layers.iter().map(|l| l.id.clone()).collect::<Vec<_>>();
+        let after = ids.iter().rev().cloned().collect::<Vec<_>>();
+        let unique = after.iter().collect::<BTreeSet<_>>();
+        if after.len() != before.len()
+            || unique.len() != before.len()
+            || before.iter().any(|id| !unique.contains(id))
+        {
+            return Err("Invalid raster layer order".into());
+        }
+        if before == after {
+            return Ok(None);
+        }
+        let first = before.iter().zip(&after).position(|(a, b)| a != b).unwrap();
+        let last = before
+            .iter()
+            .zip(&after)
+            .rposition(|(a, b)| a != b)
+            .unwrap();
+        let coords = self.layers[first..=last]
+            .iter()
+            .flat_map(|l| l.tiles.allocated_coords())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.layers
+            .sort_by_key(|l| after.iter().position(|id| id == &l.id).unwrap());
+        let layer_id = after[first].clone();
+        self.record_edit(RasterEdit::StackOrder {
+            before,
+            after,
+            coords: coords.clone(),
+        });
+        Ok(Some(TileInvalidation { layer_id, coords }))
     }
 
     /// Move a layer to a zero-based back-to-front index.
@@ -1711,6 +1799,38 @@ impl TiledRasterDocument {
             return Ok(None);
         };
         let invalidation = match edit {
+            RasterEdit::Effects { id, before, after } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == *id)
+                    .ok_or("Missing effect layer")?;
+                if layer.effects != **if undo { after } else { before } {
+                    return Err("Layer effects changed outside history".into());
+                }
+                layer.effects = (**if undo { before } else { after }).clone();
+                TileInvalidation {
+                    layer_id: id.clone(),
+                    coords: layer.tiles.allocated_coords().collect(),
+                }
+            }
+            RasterEdit::StackOrder {
+                before,
+                after,
+                coords,
+            } => {
+                let expected = if undo { after } else { before };
+                let next = if undo { before } else { after };
+                if self.layers.iter().map(|l| &l.id).ne(expected.iter()) {
+                    return Err("Raster layer order changed outside history".into());
+                }
+                self.layers
+                    .sort_by_key(|l| next.iter().position(|id| id == &l.id).unwrap());
+                TileInvalidation {
+                    layer_id: next[0].clone(),
+                    coords: coords.clone(),
+                }
+            }
             RasterEdit::Blend {
                 layer_id,
                 before,
@@ -1889,6 +2009,103 @@ fn div_255(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_effects_preserve_pixels_validate_atomically_and_undo() {
+        let mut d = TiledRasterDocument::new(1, 1).unwrap();
+        d.add_layer("image".into(), "Image".into()).unwrap();
+        d.write_rect("image", [0, 0, 1, 1], &[64, 64, 64, 128])
+            .unwrap();
+        d.discard_history();
+        let original = d.state();
+        let e = crate::layer_effects::LayerEffects {
+            enabled: true,
+            grading_blend: 75.,
+            grading_balance: -35.,
+            values: [1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+            ..Default::default()
+        };
+        let update = d.set_layer_effects("image", e.clone()).unwrap().unwrap();
+        assert_eq!(update.coords, vec![TileCoord { x: 0, y: 0 }]);
+        assert_eq!(d.state().layers[0].tiles, original.layers[0].tiles);
+        assert_eq!(
+            &d.prepare_uploads(&update).unwrap()[0].pixels[..4],
+            &[45, 45, 45, 128]
+        );
+        assert!(d.set_layer_effects("image", e.clone()).unwrap().is_none());
+        let changed = d.state();
+        let mut invalid = e;
+        invalid.grading_balance = 101.;
+        assert!(d.set_layer_effects("image", invalid).is_err());
+        assert_eq!(d.state(), changed);
+        d.undo().unwrap();
+        assert_eq!(d.state(), original);
+        assert!(!d.can_undo());
+        d.redo().unwrap();
+        assert_eq!(d.state(), changed);
+        let mut legacy = serde_json::to_value(original).unwrap();
+        legacy["layers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("effects");
+        let state: TiledRasterState = serde_json::from_value(legacy).unwrap();
+        assert!(
+            !TiledRasterDocument::from_state(state).unwrap().layers()[0]
+                .effects
+                .enabled
+        );
+    }
+
+    #[test]
+    fn full_layer_order_is_atomic_single_undo_and_invalidates_crossed_tiles() {
+        let mut doc = TiledRasterDocument::new(1024, 1).unwrap();
+        for (id, x, color) in [
+            ("fixed", 768, [0, 255, 0, 255]),
+            ("back", 0, [255, 0, 0, 255]),
+            ("front", 0, [0, 0, 255, 255]),
+        ] {
+            doc.add_layer(id.into(), id.into()).unwrap();
+            doc.write_rect(id, [x, 0, 1, 1], &color).unwrap();
+        }
+        doc.write_mask_rect("back", [0, 0, 1, 1], &[128]).unwrap();
+        doc.discard_history();
+        let original = doc.state();
+        let revision = doc.revision();
+        let coord = TileCoord { x: 0, y: 0 };
+        assert_eq!(&doc.composite_tile(coord).unwrap()[..4], &[0, 0, 255, 255]);
+        let order = vec!["back".into(), "front".into(), "fixed".into()];
+        let update = doc.reorder_layers(&order).unwrap().unwrap();
+        assert_eq!(update.coords, vec![coord]);
+        let uploads = doc.prepare_uploads(&update).unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(&uploads[0].pixels[..4], &[255, 0, 0, 255]);
+        assert_eq!(doc.revision(), revision + 1);
+        assert_eq!(&doc.composite_tile(coord).unwrap()[..4], &[255, 0, 0, 255]);
+        let reordered = doc.state();
+        for layer in &reordered.layers {
+            assert_eq!(
+                layer,
+                original.layers.iter().find(|l| l.id == layer.id).unwrap()
+            );
+        }
+        assert!(doc.reorder_layers(&order).unwrap().is_none());
+        assert_eq!(doc.revision(), revision + 1);
+        for invalid in [
+            vec!["back".into(), "back".into(), "fixed".into()],
+            vec!["missing".into(), "front".into(), "fixed".into()],
+            vec!["fixed".into()],
+        ] {
+            assert!(doc.reorder_layers(&invalid).is_err());
+            assert_eq!(doc.state(), reordered);
+        }
+        doc.undo().unwrap().unwrap();
+        assert_eq!(doc.state(), original);
+        assert!(!doc.can_undo());
+        assert!(doc.reorder_layers(&["missing".into()]).is_err());
+        assert!(doc.can_redo());
+        doc.redo().unwrap().unwrap();
+        assert_eq!(doc.state(), reordered);
+    }
 
     #[test]
     fn blend_edit_invalidates_owned_tiles_and_is_atomic_undoable() {

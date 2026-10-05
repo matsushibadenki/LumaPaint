@@ -523,6 +523,7 @@ impl DocumentImporter for PsdImporter {
             width: h.width,
             height: h.height,
             layers: vec![RasterLayerState {
+                effects: Default::default(),
                 blend_mode: RasterBlendMode::Normal,
                 id: "psd-composite".into(),
                 name: "PSD composite".into(),

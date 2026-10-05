@@ -263,7 +263,7 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] PSB v2のRGB8部分読み込みとmacOS「開く」を追加。64bit長・32bitRLE行長、4圧縮方式、Unicode名・ネイティブ保存・不正長を検証。Photoshop 2026での別名保存ファイルも、追加情報の損失を報告し、プレビューとの画素比較を通過すればレイヤーを保持。
 - [Done] Photoshopが再保存で追加する文書／レイヤー情報のための不要な統合を減らす。既知の追加情報を省略するときはRGB8合成プレビューとの誤差1/255以内を確認し、日本語名・表示・画素をレイヤーとして保持。部分ロックを全体ロックへ変換し、設定の欠落を三言語で報告。差がある場合と検証容量を超える場合は統合画像へ戻す。未知の機能は引き続き未対応。
 - [Next] SVG・AI・PDF・PSD・PSB・INDDの日本語／Adobe往復精度を機能別に検証。残る差と判定条件は `docs/file-format-preparation.md` の互換表で管理。INDD直接I/OとIDML交換経路を区別する。
-- [Next] PDFの編集可能な文字情報、追加のフォント・任意CMap、追加画像形式・タイルパターン・追加shading／非線形補間・追加の透明効果・ICCの外観保持、一括の複数ページ追加。AI固有データの読み書きと非PDF互換AIは未対応。
+- [Next] PDFの編集可能な文字情報、追加のフォント・任意CMap、追加画像形式・タイルパターン・追加shading／非線形補間・追加の透明効果・ICCの外観保持。AI固有データの読み書きと非PDF互換AIは未対応。
 - [Done] 読み込みSVGのrect／ellipse／circle／line／polyline／polygon、静的CSSの座標・寸法・d・表示・2D変形、use／入れ子のuse／symbolのインスタンスをダイレクト選択の編集対象にする。Rustの描画パーサーと同じ解決済み形状から節点を生成。図形は編集時にベジェ化し、useはそのインスタンスだけ独立化。共有定義・他のインスタンス・グラデーション・クリップを保持し、複数輪郭の同時編集・安定した識別子・保存／再読込・Undo/Redoを検証。変換前後の描画ピクセルを比較して外観維持を確認。macOSで読み込みSVGを画像レイヤー移動より優先して節点編集へ振り分け、CSS図形・useの片方の節点移動とUndoを操作確認。
 - [Done] 静的SVGのCSS変数（:root、継承、重要度、大小文字区別、フォールバック、循環無効化）とcalc（同種単位／物理単位換算・四則演算）、viewBox基準のパーセントtranslateを共通パーサーへ追加。描画・ダイレクト選択・SVG出力が同じ解決結果を使用。展開深さ・値容量・変数数・総メモリを制限し、循環やゼロ除算は無効化。明示図形との画素一致と節点移動を検証。
 - [Next] SVGの動的CSS・3D変形、calcの異種単位（%＋pxなど）・transform-box:fill-boxの解決と編集。
@@ -572,6 +572,7 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] New-document page count, single/facing layout and left-to-right or right-to-left binding. A single first page followed by paired spreads; right binding mirrors page sides and panel order.
 - [Done] Dockable/floating Pages panel with lazy native content thumbnails, active-page highlighting, insertion, duplication, deletion, drag reordering and earlier/later controls. Page operations support Undo/Redo; layout Undo preserves changes on other pages. Japanese, English and Simplified Chinese.
 - [Done] Active spread fits and displays both pages on the native canvas; clicking the neighboring page makes it editable. Vector neighbors retain SVG fidelity; painted neighbors use a Rust-owned composite cache capped at 2048 pixels. Only small panel thumbnails cross IPC. Native file envelope limit raised to 64 MiB for multi-page documents.
+- [Done] 複数ページPDFの全ページ読み込み。Rustで共有PDFを一度解析し、論理順・個別寸法・指定DPIを保持した単一文書を生成。通常の「開く」は全ページが既定、指定ページのみも選択可能。レイヤー読み込みは指定ページのみ。最大512ページ・展開SVG合計128MiB、途中の変換失敗時は元文書を変更しない。ネイティブ保存・再読込と全ページPDF再出力を検証。
 - [Done] 全ページPDF書き出し。論理ページ順、個別寸法・DPI、各ページのリソースを保持し、元文書・履歴を変更しない。
 - [Next] ページ別SVG出力、親ページ、余白・裁ち落とし、見開き横断オブジェクトとテキスト連結。SVGは現在アクティブページのみ。
 - [Later] Section numbering, alternate layouts, page-size presets per section and booklet imposition.
@@ -596,3 +597,28 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] タイル文書のレイヤーパネルから合成モードを変更。選択・ロック解除を接続し、設定と画素をRust側に保持。変更は1回のUndo／Redoとして記録し、編集メニューにも履歴操作を接続。
 - [Done] タイル文書のPSD／PSB書き出しを止めていた旧読み取り専用判定を修正。対応操作だけを個別に許可する。
 - [Next] 追加モード・グループ、ICC／Photoshopの追加合成設定、GPUでのレイヤー合成。現在の追加モードはRustのCPUタイル合成から既存GPU表示へ渡す。
+
+- [Done] タイル文書のレイヤーパネルで表示切り替え・不透明度・名前変更・ロックを接続。選択を維持し、履歴とネイティブ／PSD／PSB保存に反映する。不透明度スライダーは操作中の値をUI内で保持し、指を離す／キー操作終了／フォーカス移動で一度確定し、連続描画・履歴の増殖を抑える。グループ・追加削除など未接続の操作は継続して無効。
+
+- [Done] タイル文書のレイヤーをドラッグ／Alt＋上下キーで並べ替え。Rust側で全IDを検証して重なり順を一括変更し、1回のUndo／Redo、選択ID・ピクセル・マスクの維持、交差範囲のタイル無効化、ネイティブ／PSD／PSB再読込を検証。グループ・追加削除は未接続。
+
+- [Done] タイル文書のマスク有効／無効・反転・濃度調整をレイヤーパネルへ接続。無効化してもマスク画素と設定を保持し、再有効化・Undo／Redo・ネイティブ保存に対応。濃度はLumaPaintの既存の被覆率計算を維持し、PSD／PSBでは8bitマスクに焼き込む変換を確認する。グループ・濃度のPhotoshop互換パラメーター・ぼかし・マスク画素のGUI描画は未完了。
+
+## レイヤーエフェクト（画像調整）
+
+- [Done] RGB8タイルレイヤーの非破壊エフェクトモデル、fx／ドッキング・フローティング対応パネルを追加。露光量・コントラスト・ハイライト・シャドウ・白／黒レベル・相対色温度／色かぶり・自然な彩度・彩度、RGB／各色の折れ線カーブを編集し、有効／無効・リセット・Undo／Redo・ネイティブ保存に対応。数値確定／スライダー終了時に描画更新する。元画素とマスクを保持し、旧文書は効果なしとして読む。
+- [Done] PSD／PSB出力ではエフェクトを各レイヤーの画素へ焼き込み、編集可能なエフェクト設定が保持されない変換を三言語で確認。ネイティブ形式では設定と元画素を保持し、書き出し前後の合成・アルファを検証する。
+- [Next] 効果のGPU計算とCPUフォールバック、画面更新キャッシュ・ヒストグラム。今回の色調処理は独立RustのCPU処理であり、Camera Rawと同一の計算／RAW現像互換ではない。
+- [Next] テクスチャ・明瞭度・かすみ除去、キャリブレーション、シャープ・ノイズ軽減・粒子・周辺光量・空間ぼかし。
+- [Later] RAWセンサー現像、HDR処理、カメラ／レンズプロファイル、色収差・フリンジ、深度付きレンズぼかし、AIノイズ除去／スーパー解像度。必要なプロファイル・RAW／深度情報とモデルを独立I/O層で設計する。
+
+- [Done] RGB8画像レイヤーの8色HSLミキサー、シャドウ／中間調／ハイライトの色相・彩度・輝度調整。数値確定・スライダー操作終了時に更新し、Undo／Redo・ネイティブ保存・PSD／PSBの画素への適用に接続。独自のRGB8処理でありCamera Rawの数値互換ではない。
+- [Done] カラーグレーディングの直接操作ホイール（ドラッグと矢印キー）、ブレンド・バランス調整。ホイールのドラッグ中はUI内の値のみ更新し、離した時に1回の描画・履歴更新。キャンセルは元の値へ戻す。旧保存ファイルはブレンド50・バランス0で従来の見た目を維持。
+
+- [Done] 通常文書の描画・画像・ベクターレイヤーにもエフェクトパネルを接続。モデル設定・履歴・ネイティブ保存を保持し、描画キャッシュ・サムネイル・スポイトを更新。SVG／PDFは画像統合の変換報告付きで見た目を保持する。
+
+- [Done] レイヤーエフェクトの全調整スライダーを不透明度と共通のCompactSliderへ統一。数値欄の右端・チェックボックス・見出し・余白を揃え、280px／220px幅の表示と数値確定・キー操作を検証。
+
+- [Done] カーブ上のクリック追加（最大16点）、ドラッグ・矢印キー移動、Delete／グラフ外ドラッグでの中間点削除、入力／出力0〜255編集、チャンネル単位リセット。RGB／各色を3次ベジェ相当の形状保持補間で滑らかにつなぎ、旧保存ファイルは折れ線補間を維持。端点の入力移動、Undo／Redo、ネイティブ保存、PSD／PSBの画素適用を検証。Photoshopの操作方式を参考にした独自補間であり、Adobeの数値計算との完全一致を保証しない。
+
+- [Done] レイヤーエフェクト適用時に低倍率のアートボード内が描画されず白くなる不具合を修正。外側専用シェーダーとレイヤー全体用シェーダーを分離し、高倍率・高DPIでも二重描画を避ける。

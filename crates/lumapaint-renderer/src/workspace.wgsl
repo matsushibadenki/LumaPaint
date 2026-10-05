@@ -18,3 +18,9 @@ struct VertexOut { @builtin(position) position: vec4<f32>, @location(0) uv: vec2
     if scale <= 1.5 && all(point >= vec2(0.0)) && all(point < u.document.xy) { discard; }
     return textureSample(image, image_sampler, in.uv);
 }
+
+// Effects and high-zoom layers replace the document pass, so their interior
+// must remain visible. Exterior-only rendering keeps fs_main above.
+@fragment fn fs_full(in: VertexOut) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, in.uv);
+}

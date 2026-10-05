@@ -80,7 +80,14 @@ export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<D
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
+export interface LayerEffects { enabled: boolean; values: number[]; curves: [number, number][][]; curveSmooth: boolean[]; mixer: number[][]; grading: number[][]; gradingBlend: number; gradingBalance: number }
+export const defaultLayerEffects = (): LayerEffects => ({ enabled: false, curveSmooth: Array(4).fill(true), gradingBlend: 50, gradingBalance: 0, mixer: Array.from({length:8},()=>[0,0,0]), grading: Array.from({length:3},()=>[0,0,0]), values: Array(10).fill(0), curves: Array.from({length: 4}, () => [[0,0],[1,1]]) });
+export function setLayerEffects(id: string, effects: LayerEffects): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_layer_effects', { id, effects }));
+  canvasQueue = result.then(() => undefined, () => undefined); return result;
+}
 export interface LayerSnapshot {
+  effects?: LayerEffects;
   rasterBlendMode?: RasterBlendMode;
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }

@@ -406,6 +406,8 @@ pub struct LayerObjectSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct LayerSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub effects: Option<crate::layer_effects::LayerEffects>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub raster_blend_mode: Option<crate::tiles::RasterBlendMode>,
     pub guide_color: [u8; 4],
     pub objects: Vec<LayerObjectSnapshot>,
@@ -531,6 +533,7 @@ struct VectorHistoryState {
     layers: Vec<SvgLayer>,
     selection: Vec<String>,
     strokes: Option<Vec<Stroke>>,
+    layer_effects: std::collections::BTreeMap<String, crate::layer_effects::LayerEffects>,
     paint_source: Option<String>,
     pixel_selection: Option<Selection>,
 }
@@ -547,6 +550,7 @@ pub struct PaintProjectionState {
     mask_enabled: bool,
     mask_inverted: bool,
     mask_density: u32,
+    effects_key: u64,
 }
 
 impl PaintProjectionState {
@@ -559,6 +563,11 @@ impl PaintProjectionState {
             && self.mask_enabled == next.mask_enabled
             && self.mask_inverted == next.mask_inverted
             && self.mask_density == next.mask_density
+            && self.effects_key == next.effects_key
+    }
+
+    pub fn same_effects(self, next: Self) -> bool {
+        self.effects_key == next.effects_key
     }
 
     pub fn locks(self) -> (bool, bool) {
@@ -617,6 +626,7 @@ pub struct Document {
     page_redo: Vec<pages::PageHistory>,
     canvas_color: CanvasColor,
     pixel_aspect_ratio: f32,
+    layer_effects: std::collections::BTreeMap<String, crate::layer_effects::LayerEffects>,
     paint_source: Option<String>,
     strokes: Vec<Stroke>,
     redo: Vec<Stroke>,
@@ -673,6 +683,7 @@ impl Default for Document {
             page_redo: Vec::new(),
             canvas_color: CanvasColor::White,
             pixel_aspect_ratio: 1.0,
+            layer_effects: Default::default(),
             paint_source: None,
             strokes: Vec::new(),
             redo: Vec::new(),
@@ -753,11 +764,32 @@ impl Document {
             mask_enabled: self.layer_mask_enabled,
             mask_inverted: self.layer_mask_inverted,
             mask_density: self.layer_mask_density.to_bits(),
+            effects_key: {
+                use std::hash::Hasher;
+                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                let effects = self.layer_effects("layer-1");
+                hash.write_u8(u8::from(effects.enabled));
+                for smooth in effects.curve_smooth {
+                    hash.write_u8(u8::from(smooth));
+                }
+                for value in effects
+                    .values
+                    .iter()
+                    .chain(effects.mixer.iter().flatten())
+                    .chain(effects.grading.iter().flatten())
+                    .chain(effects.curves.iter().flatten().flatten())
+                    .chain([effects.grading_blend, effects.grading_balance].iter())
+                {
+                    hash.write_u32(value.to_bits());
+                }
+                hash.finish()
+            },
         }
     }
 
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
+            effects: Some(self.layer_effects("layer-1")),
             raster_blend_mode: None,
             guide_color: self.layer_guide_color("layer-1"),
             objects: Vec::new(),
@@ -793,6 +825,7 @@ impl Document {
                         Vec::new()
                     };
                     LayerSnapshot {
+                        effects: Some(self.layer_effects(&layer.id)),
                         raster_blend_mode: None,
                         guide_color: self.layer_guide_color(&layer.id),
                         objects: layer
@@ -977,6 +1010,14 @@ impl Document {
             color_mode: self.color_mode,
             color_profile: Some(self.color_profile),
             bit_depth: self.bit_depth,
+            layer_effects: self
+                .layer_effects
+                .iter()
+                .filter(|(id, _)| {
+                    id.as_str() == "layer-1" || self.svg_layers.iter().any(|l| &l.id == *id)
+                })
+                .map(|(id, e)| (id.clone(), e.clone()))
+                .collect(),
             paint_source: self.paint_source.clone(),
             strokes: self.strokes.clone(),
             svg_layers: self
@@ -1044,6 +1085,15 @@ impl Document {
                 return Err("Too many stroke points".into());
             }
         }
+        if file.layer_effects.len() > MAX_SVG_LAYERS + 1 {
+            return Err("Too many layer effects".into());
+        }
+        for (id, effects) in &file.layer_effects {
+            effects.validate()?;
+            if id != "layer-1" && !file.svg_layers.iter().any(|l| &l.id == id) {
+                return Err("Unknown effect layer".into());
+            }
+        }
         for layer in &file.svg_layers {
             validate_svg_layer(layer)?;
         }
@@ -1105,6 +1155,7 @@ impl Document {
             page_redo: Vec::new(),
             canvas_color: file.canvas_color.unwrap_or_default(),
             pixel_aspect_ratio: file.pixel_aspect_ratio.unwrap_or(1.0),
+            layer_effects: file.layer_effects,
             paint_source: file.paint_source,
             strokes: file.strokes,
             svg_layers: file.svg_layers,
@@ -1389,6 +1440,40 @@ impl Document {
             return Err("Layer not found".into());
         }
         self.scene_journal.layers_changed(&before, &self.svg_layers);
+        self.revision += 1;
+        Ok(())
+    }
+    pub fn layer_effects(&self, id: &str) -> crate::layer_effects::LayerEffects {
+        self.layer_effects.get(id).cloned().unwrap_or_default()
+    }
+    pub fn has_layer_effects(&self, id: &str) -> bool {
+        self.layer_effects.get(id).is_some_and(|e| e.enabled)
+    }
+    pub fn set_layer_effects(
+        &mut self,
+        id: &str,
+        effects: crate::layer_effects::LayerEffects,
+    ) -> Result<(), String> {
+        effects.validate()?;
+        let locked = if id == "layer-1" {
+            self.layer_locked
+        } else {
+            self.svg_layers
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?
+                .locked
+        };
+        if self.layer_effects(id) == effects {
+            return Ok(());
+        }
+        if locked {
+            return Err("Layer is locked".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.layer_effects.insert(id.into(), effects);
+        self.record_vector_edit(before);
         self.revision += 1;
         Ok(())
     }
@@ -6157,6 +6242,7 @@ impl Document {
             layers: self.svg_layers.clone(),
             selection: self.selected_vector_objects.clone(),
             strokes: None,
+            layer_effects: self.layer_effects.clone(),
             paint_source: self.paint_source.clone(),
             pixel_selection: self.selection.clone(),
         }
@@ -6173,6 +6259,7 @@ impl Document {
         self.path_editing = state.path_editing;
         self.saved_paths = state.saved_paths;
         self.clipping_path_id = state.clipping_path_id;
+        self.layer_effects = state.layer_effects;
         self.paint_source = state.paint_source;
         self.selection = state.pixel_selection;
         if let Some(strokes) = state.strokes {
@@ -6590,6 +6677,57 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ordinary_layer_effects_snapshot_history_and_saved_state() {
+        let mut d = Document::default();
+        let id = d.add_vector_layer().unwrap();
+        let source = d.svg_layers().next().unwrap().source.clone();
+        assert!(d.snapshot().layers.iter().all(|l| l.effects.is_some()));
+        let e = crate::layer_effects::LayerEffects {
+            enabled: true,
+            grading_balance: 25.,
+            ..Default::default()
+        };
+        d.set_layer_effects(&id, e.clone()).unwrap();
+        assert_eq!(d.svg_layers().next().unwrap().source, source);
+        assert_eq!(
+            d.snapshot()
+                .layers
+                .iter()
+                .find(|l| l.id == id)
+                .unwrap()
+                .effects,
+            Some(e.clone())
+        );
+        let revision = d.revision();
+        d.set_layer_effects(&id, e.clone()).unwrap();
+        assert_eq!(d.revision(), revision);
+        let saved = d.document_state();
+        let loaded = Document::from_document_state(saved.clone()).unwrap();
+        assert_eq!(loaded.layer_effects(&id), e);
+        d.undo();
+        assert!(!d.has_layer_effects(&id));
+        d.redo();
+        assert_eq!(d.layer_effects(&id), e);
+        let before = d.paint_projection_state();
+        d.set_layer_effects("layer-1", e.clone()).unwrap();
+        assert!(!before.same_effects(d.paint_projection_state()));
+        let mut invalid = e;
+        invalid.values[0] = f32::NAN;
+        let revision = d.revision();
+        assert!(d.set_layer_effects("layer-1", invalid).is_err());
+        assert_eq!(d.revision(), revision);
+        let mut old = serde_json::to_value(saved).unwrap();
+        old.as_object_mut().unwrap().remove("layerEffects");
+        assert!(
+            Document::from_document_state(serde_json::from_value(old).unwrap())
+                .unwrap()
+                .snapshot()
+                .layers
+                .iter()
+                .all(|l| !l.effects.as_ref().unwrap().enabled)
+        );
+    }
     #[test]
     fn switching_point_text_direction_preserves_first_glyph_in_world_coordinates() {
         use crate::vector::{VectorText, WritingMode};
@@ -7447,6 +7585,8 @@ pub struct DocumentState {
     pub bit_depth: u8,
     #[serde(default)]
     pub paint_source: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub layer_effects: std::collections::BTreeMap<String, crate::layer_effects::LayerEffects>,
     pub strokes: Vec<Stroke>,
     #[serde(default)]
     pub svg_layers: Vec<SvgLayer>,

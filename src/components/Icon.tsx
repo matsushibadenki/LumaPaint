@@ -1,6 +1,7 @@
 type Name = 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-type PanelIconName = 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+type PanelIconName = 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
+  effects: 'M4 5h16 M4 12h16 M4 19h16 M8 3v4 M16 10v4 M10 17v4',
   folder: 'M3 6h6l2 2h10v12H3Z',
   links:'M9 14l6-4M8 6H6a4 4 0 0 0 0 8h3M16 18h2a4 4 0 0 0 0-8h-3',
   imageFrameRectangle:'M3 4h18v16H3zM3 4l18 16M21 4L3 20',

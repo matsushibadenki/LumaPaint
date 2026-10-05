@@ -163,6 +163,28 @@ pub fn write(
     // Reuse the independent model's complete validation before trusting pixel buffers.
     lumapaint_core::tiles::TiledRasterDocument::from_state(state.clone())
         .map_err(ExportError::InvalidDocument)?;
+    let effects_baked = state.layers.iter().any(|l| l.effects.enabled);
+    let mut baked;
+    let state = if effects_baked {
+        for layer in &state.layers {
+            layer
+                .effects
+                .validate()
+                .map_err(ExportError::InvalidDocument)?;
+        }
+        baked = state.clone();
+        for layer in &mut baked.layers {
+            for tile in &mut layer.tiles {
+                for pixel in tile.pixels.as_chunks_mut::<4>().0 {
+                    *pixel = layer.effects.apply(*pixel);
+                }
+            }
+            layer.effects = Default::default();
+        }
+        &baked
+    } else {
+        state
+    };
     let canvas_area = u64::from(state.width) * u64::from(state.height);
     let estimated_pixels = state.layers.iter().fold(canvas_area * 4, |sum, layer| {
         let rect = bounds(layer, state.width, state.height);
@@ -177,6 +199,9 @@ pub fn write(
         return Err(invalid("PSD/PSB export exceeds 128 MiB"));
     }
     let mut report = ConversionReport::default();
+    if effects_baked {
+        issue(&mut report, "psd.layerEffectsBaked");
+    }
     if state.resolution.is_some_and(|r| {
         [r.x_ppi, r.y_ppi]
             .iter()
@@ -356,6 +381,61 @@ mod tests {
             y_display: ResolutionDisplayUnit::PixelsPerInch,
             width_display: PrintDimensionUnit::Centimeters,
             height_display: PrintDimensionUnit::Points,
+        }
+    }
+    #[test]
+    fn effects_export_requires_consent_bakes_appearance_and_native_preserves_source() {
+        let mut document = lumapaint_core::tiles::TiledRasterDocument::new(1, 1).unwrap();
+        document
+            .add_layer("image".into(), "日本語画像".into())
+            .unwrap();
+        document
+            .write_rect("image", [0, 0, 1, 1], &[64, 32, 16, 255])
+            .unwrap();
+        document
+            .set_layer_effects(
+                "image",
+                lumapaint_core::layer_effects::LayerEffects {
+                    enabled: true,
+                    values: [1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                    mixer: [[20., 30., 10.]; 8],
+                    grading: [[30., 15., 2.], [200., 10., -5.], [270., 20., 3.]],
+                    grading_blend: 75.,
+                    grading_balance: -35.,
+                    curves: [
+                        vec![[0.08, 0.], [0.4, 0.65], [0.95, 1.]],
+                        vec![[0., 0.], [1., 1.]],
+                        vec![[0., 0.], [1., 1.]],
+                        vec![[0., 0.], [1., 1.]],
+                    ],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let source = document.state();
+        let native = crate::tile_container::encode(&source).unwrap();
+        assert_eq!(crate::tile_container::decode(&native).unwrap(), source);
+        for large in [false, true] {
+            assert!(matches!(
+                write(&source, large, ExportOptions::default()),
+                Err(ExportError::LossyConversionRequiresConsent(_))
+            ));
+            let exported = write(&source, large, ExportOptions { allow_lossy: true }).unwrap();
+            assert!(exported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layerEffectsBaked"));
+            let loaded = crate::psd::PsdImporter
+                .import(&exported.bytes, crate::ImportOptions::default())
+                .unwrap()
+                .raster;
+            assert_eq!(
+                &loaded.layers[0].tiles[0].pixels[..4],
+                &source.layers[0].effects.apply([64, 32, 16, 255])
+            );
+            assert!(!loaded.layers[0].effects.enabled);
+            assert_eq!(&source.layers[0].tiles[0].pixels[..4], &[64, 32, 16, 255]);
         }
     }
     #[test]

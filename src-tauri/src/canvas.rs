@@ -404,6 +404,23 @@ pub async fn toggle_layer(
 }
 
 #[tauri::command]
+pub async fn set_layer_effects(
+    window: tauri::WebviewWindow,
+    id: String,
+    effects: lumapaint_core::layer_effects::LayerEffects,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_layer_effects(id, effects)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, effects);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
 pub async fn set_raster_blend_mode(
     window: tauri::WebviewWindow,
     id: String,

@@ -8,7 +8,7 @@ use crate::{
 };
 use base64::Engine;
 mod read;
-pub use read::{inspect, PageInfo};
+pub use read::{inspect, read_all, PageInfo};
 pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
     read::read(bytes, options)
 }
@@ -234,6 +234,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(120., 80.), (120., 80.), (60., 100.)]
         );
+        // All-page decoding does not report discarded pages or require consent for that.
+        let imported = read_all(
+            &result.bytes,
+            ReadOptions {
+                raster_dpi: 72,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "pdf.selected_page_only"));
+        let crate::io::ReadContent::Vector(document) = imported.content else {
+            panic!()
+        };
+        assert_eq!(document.pages_snapshot().pages.len(), 3);
+        let saved = crate::native::encode_state(&document.document_state()).unwrap();
+        let restored = crate::native::decode(&saved).unwrap();
+        let mut again = PdfPublication::default();
+        for (index, (size, color)) in [
+            ((120, 80), "#ff0000"),
+            ((120, 80), "#0000ff"),
+            ((60, 100), "#008000"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let page = restored.detached_page(index).unwrap();
+            assert_eq!(page.dimensions(), size);
+            assert_eq!(page.document_state().resolution, Some(72));
+            assert!(page.svg_layers().next().unwrap().source.contains(color));
+            again
+                .push(
+                    PdfExporter
+                        .export(&ExportSnapshot::capture(&page), ExportOptions::default())
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        let again = again.finish(ExportOptions::default()).unwrap();
+        assert_eq!(
+            inspect(&again.bytes)
+                .unwrap()
+                .iter()
+                .map(|p| (p.width_points, p.height_points))
+                .collect::<Vec<_>>(),
+            [(120., 80.), (120., 80.), (60., 100.)]
+        );
         for index in 0..3 {
             let result = read(
                 &result.bytes,
@@ -250,6 +300,58 @@ mod tests {
             };
             assert_eq!(doc.svg_layers().count(), 1);
         }
+    }
+    #[test]
+    fn all_page_import_checks_later_pages_and_page_count_before_installation() {
+        use lopdf::{dictionary, Object};
+        fn fixture(count: usize, annotated: bool) -> Vec<u8> {
+            let mut doc = lopdf::Document::with_version("1.7");
+            let root = doc.new_object_id();
+            let mut kids = Vec::new();
+            for index in 0..count {
+                let mut page = dictionary! { "Type" => "Page", "Parent" => root,
+                "MediaBox" => vec![0.into(),0.into(),72.into(),144.into()] };
+                if annotated && index + 1 == count {
+                    page.set("Annots", Object::Array(vec![]));
+                }
+                kids.push(doc.add_object(page).into());
+            }
+            doc.objects.insert(
+                root,
+                Object::Dictionary(
+                    dictionary! { "Type" => "Pages", "Count" => count as i64, "Kids" => kids },
+                ),
+            );
+            let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => root });
+            doc.trailer.set("Root", catalog);
+            let mut bytes = Vec::new();
+            doc.save_to(&mut bytes).unwrap();
+            bytes
+        }
+        let bytes = fixture(2, true);
+        assert!(matches!(
+            read_all(&bytes, ReadOptions::default()),
+            Err(ImportError::LossyConversionRequiresConsent(_))
+        ));
+        let decoded = read_all(
+            &bytes,
+            ReadOptions {
+                allow_lossy: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded.report.issues.len(), 1);
+        assert_eq!(decoded.report.issues[0].code, "pdf.annotations_omitted");
+        assert!(matches!(
+            read_all(&fixture(513, false), ReadOptions::default()),
+            Err(ImportError::LimitExceeded("pdf.publication_pages"))
+        ));
+        let decoded = read_all(&fixture(1, false), ReadOptions::default()).unwrap();
+        let crate::io::ReadContent::Vector(doc) = decoded.content else {
+            panic!()
+        };
+        assert!(doc.document_state().pages.is_none());
     }
     #[test]
     fn publication_rejects_empty_wrong_format_and_multi_page_inputs_atomically() {

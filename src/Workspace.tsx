@@ -1,4 +1,4 @@
-import { setRasterBlendMode, type RasterBlendMode } from './bridge';
+import { setLayerEffects, setRasterBlendMode, type RasterBlendMode } from './bridge';
 import { invoke } from '@tauri-apps/api/core';
 import { DocumentTabMenu } from './components/DocumentTabMenu';
 import { moveDocumentToWindow, openDocumentView } from './bridge';
@@ -450,11 +450,11 @@ export function Workspace() {
   }, [documentEditable, updateDocument]);
 
   const setLayerVisibility = useCallback(async (id: string) => {
-    if (!ready || busy) return;
+    if (!ready || busy || fileBusy) return;
     setBusy(true); setError('');
     try { updateDocument(await toggleLayer(id)); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
-  }, [ready, busy, updateDocument]);
+  }, [ready, busy, fileBusy, updateDocument]);
   const changeRasterBlendMode = useCallback(async (id: string, mode: RasterBlendMode) => {
     if (!ready || busy || fileBusy) return;
     setBusy(true); setError('');
@@ -463,11 +463,11 @@ export function Workspace() {
     finally { setBusy(false); }
   }, [ready, busy, fileBusy, updateDocument]);
   const setLayerSettings = useCallback(async (settings: LayerSettings) => {
-    if (!ready || busy) return;
+    if (!ready || busy || fileBusy) return;
     setBusy(true); setError('');
     try { updateDocument(await updateLayer(settings)); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
-  }, [ready, busy, updateDocument]);
+  }, [ready, busy, fileBusy, updateDocument]);
   const removeLayer = useCallback(async (id: string) => {
     if (!ready || busy) return;
     setBusy(true); setError('');
@@ -481,11 +481,11 @@ export function Workspace() {
     finally { setBusy(false); }
   }, [ready, busy, updateDocument]);
   const moveLayer = useCallback(async (ids: string[]) => {
-    if (!ready || busy) return;
+    if (!ready || busy || fileBusy) return;
     setBusy(true); setError('');
     try { updateDocument(await reorderLayers(ids)); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
-  }, [ready, busy, updateDocument]);
+  }, [ready, busy, fileBusy, updateDocument]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
@@ -691,7 +691,7 @@ export function Workspace() {
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentDock>
       </div>
-      {panels && <Inspector rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector onLayerEffects={(id, effects) => { if (!ready || busy || fileBusy) return; setBusy(true); setError(''); void setLayerEffects(id, effects).then(updateDocument).catch(cause => setError(String(cause))).finally(() => setBusy(false)); }} rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changeForeground} onBackgroundChange={setBackgroundColor} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
         onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>

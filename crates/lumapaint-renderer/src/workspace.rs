@@ -4,6 +4,7 @@ use lumapaint_core::document::SvgLayer;
 
 struct RetainedLayer {
     layer: SvgLayer,
+    effects: lumapaint_core::layer_effects::LayerEffects,
     size: [u32; 2],
     pixels: Vec<u8>,
 }
@@ -12,7 +13,12 @@ struct RetainedLayer {
 pub(super) struct WorkspaceCache {
     key: Option<[f32; 8]>,
     journal_cursor: u64,
-    layers: Vec<(String, String, f32)>,
+    layers: Vec<(
+        String,
+        String,
+        f32,
+        lumapaint_core::layer_effects::LayerEffects,
+    )>,
     retained: std::collections::HashMap<String, RetainedLayer>,
 }
 
@@ -85,10 +91,11 @@ impl WorkspaceCache {
                 .layers
                 .iter()
                 .zip(&layers)
-                .all(|((id, source, opacity), layer)| {
+                .all(|((id, source, opacity, effects), layer)| {
                     *id == layer.id
                         && *source == layer.source
                         && *opacity == layer.effective_opacity()
+                        && *effects == document.layer_effects(&layer.id)
                 })
         {
             return Ok(None);
@@ -111,11 +118,12 @@ impl WorkspaceCache {
         let mut retained = std::collections::HashMap::new();
         let mut prepared = Vec::with_capacity(layers.len());
         for layer in &layers {
+            let effects = document.layer_effects(&layer.id);
             let opacity = layer.effective_opacity();
             let old = self
                 .retained
                 .get(&layer.id)
-                .filter(|old| same_view && old.size == size);
+                .filter(|old| same_view && old.size == size && old.effects == effects);
             if let Some(old) = old.filter(|old| {
                 old.layer.source == layer.source && old.layer.effective_opacity() == opacity
             }) {
@@ -156,6 +164,7 @@ impl WorkspaceCache {
                         [right - left, bottom - top],
                         tile_rect,
                     )?;
+                    crate::apply_layer_effects(&mut tile, &effects);
                     apply_opacity(&mut tile, opacity);
                     for row in y..y + height {
                         let from = ((row - top) * (right - left) + x - left) as usize * 4;
@@ -172,6 +181,7 @@ impl WorkspaceCache {
                     size,
                     rect,
                 )?;
+                crate::apply_layer_effects(&mut pixels, &effects);
                 apply_opacity(&mut pixels, opacity);
                 pixels
             };
@@ -179,6 +189,7 @@ impl WorkspaceCache {
                 layer.id.clone(),
                 RetainedLayer {
                     layer: (*layer).clone(),
+                    effects,
                     size,
                     pixels: pixels.clone(),
                 },
@@ -207,6 +218,7 @@ impl WorkspaceCache {
                     layer.id.clone(),
                     layer.source.clone(),
                     layer.effective_opacity(),
+                    document.layer_effects(&layer.id),
                 )
             })
             .collect();
@@ -332,6 +344,50 @@ mod tests {
     use super::*;
     use lumapaint_formats::native::NativeDocumentCodec;
 
+    #[test]
+    fn effects_invalidate_retained_pixels_without_changing_svg() {
+        let mut d = Document::default();
+        d.import_svg("image".into(),r##"<svg width="960" height="640"><rect width="960" height="640" fill="#404040"/></svg>"##.into()).unwrap();
+        let id = d.svg_layers().next().unwrap().id.clone();
+        let source = d.svg_layers().next().unwrap().source.clone();
+        let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
+        let mut cache = WorkspaceCache::default();
+        let before = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert!(cache.prepare(&d, viewport, [0., 0.]).unwrap().is_none());
+        let mut e = lumapaint_core::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        e.values[0] = 1.;
+        d.set_layer_effects(&id, e).unwrap();
+        let after = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        let index = before[0]
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .position(|p| p[3] == 255)
+            .unwrap()
+            * 4;
+        assert_eq!(&before[0].pixels[index..index + 4], &[64, 64, 64, 255]);
+        assert_eq!(&after[0].pixels[index..index + 4], &[90, 90, 90, 255]);
+        assert_eq!(d.svg_layers().next().unwrap().source, source);
+        assert!(cache.prepare(&d, viewport, [0., 0.]).unwrap().is_none());
+        d.undo();
+        let undone = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert_eq!(undone[0].pixels, before[0].pixels);
+        let sampled = crate::color_sampler::ColorSampler::default()
+            .sample(&d, lumapaint_core::document::Point { x: 100., y: 100. })
+            .unwrap();
+        assert_eq!(sampled, Some([64, 64, 64]));
+        d.redo();
+        assert_eq!(
+            crate::color_sampler::ColorSampler::default()
+                .sample(&d, lumapaint_core::document::Point { x: 100., y: 100. })
+                .unwrap(),
+            Some([90, 90, 90])
+        );
+    }
     #[test]
     fn dirty_tiles_match_full_transparent_composition_across_tile_edges() {
         let mut document = Document::default();

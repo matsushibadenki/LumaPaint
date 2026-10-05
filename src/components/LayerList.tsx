@@ -7,11 +7,13 @@ import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename }: {
+export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
   groups:LayerGroupsState; onGroupEdit:(edit:LayerGroupEdit)=>void;
   thumbnails?: Record<string,string>; thumbnailError?: string;
   layers: LayerSnapshot[]; textObjects: TextObjectSnapshot[]; selectedId: string; enabled: boolean; locale: Locale;
   selectable?: boolean;
+  appearanceEnabled?: boolean;
+  reorderEnabled?: boolean;
   selectedObjects: string[]; onSelectObject: (layerId: string, objectId: string) => void;
   onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
   onReorderObjects: (layerId: string, ids: string[]) => void;
@@ -68,7 +70,7 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
     window.addEventListener('keydown', escape);
     window.addEventListener('blur', cancel);
     return () => { cancel(); window.removeEventListener('keydown', escape); window.removeEventListener('blur', cancel); };
-  }, [orderKey, enabled]);
+  }, [orderKey, enabled, reorderEnabled]);
 
   function hitGap(x: number, y: number): number | null {
     const element = list.current;
@@ -81,7 +83,7 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
       return y < rect.top + rect.height / 2;
     });
     // The legacy base layer is fixed; the last valid gap is immediately above it.
-    return Math.min(index < 0 ? rows.length : index, displayed.filter(layer => layer.deletable).length);
+    return Math.min(index < 0 ? rows.length : index, enabled ? displayed.filter(layer => layer.deletable).length : displayed.length);
   }
 
   useEffect(() => {
@@ -103,7 +105,13 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
   }, [draggedId, orderKey]);
 
   function start(event: PointerEvent<HTMLDivElement>, layer: LayerSnapshot) {
-    if (!enabled || event.button !== 0 || !event.isPrimary || gesture.current || (event.target as Element).closest('button, input')) return;
+    if (!reorderEnabled || event.button !== 0 || !event.isPrimary || gesture.current || (event.target as Element).closest('button, input')) return;
+    if (!enabled) {
+      onSelect(layer.id);
+      event.currentTarget.focus({ preventScroll: true });
+      gesture.current = { id: layer.id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, dragging: false };
+      return;
+    }
     if(event.shiftKey&&groups.selected.length) {
       const anchor=displayed.findIndex(row=>row.id===groups.selected[0]);
       const end=displayed.findIndex(row=>row.id===layer.id);
@@ -139,7 +147,18 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
     const current = gesture.current;
     if (!current || current.pointerId !== event.pointerId) return;
     const insertion = hitGap(event.clientX, event.clientY);
-    if (enabled && current.dragging && insertion !== null) {
+    if (reorderEnabled && current.dragging && insertion !== null) {
+      if (!enabled) {
+        const ids = displayed.map(layer => layer.id);
+        const from = ids.indexOf(current.id);
+        if (from >= 0) {
+          const next = ids.filter(id => id !== current.id);
+          next.splice(insertion - (from < insertion ? 1 : 0), 0, current.id);
+          if (next.some((id, i) => id !== ids[i])) onReorder(next);
+        }
+        cancel();
+        return;
+      }
       const rows=[...list.current!.querySelectorAll<HTMLElement>('[data-layer-id]')];
       const hover=rows.find(row=>{const r=row.getBoundingClientRect();return event.clientY>=r.top+8&&event.clientY<=r.bottom-8;});
       const folder=hover&&groups.groups.find(g=>g.id===hover.dataset.layerId);
@@ -261,11 +280,19 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
       const isExpanded = expanded.has(layer.id);
       return <Fragment key={layer.id}><div data-layer-id={layer.id} role="listitem" tabIndex={selectable ? 0 : -1}
       className={`layer-row${groups.selected.includes(layer.id) || (groups.selected.length===0&&selectedId === layer.id) ? ' selected' : ''}${draggedId === layer.id ? ' dragging' : ''}${gap === index ? ' insert-before' : ''}`}
-      style={{paddingLeft:6}} data-movable={enabled && layer.deletable} title={layer.deletable ? t.reorderLayer : t.fixedBaseLayer}
-      onPointerDown={event => { if (!enabled && selectable && event.button === 0 && !(event.target as Element).closest('input, button')) onSelect(layer.id); else start(event, layer); }}
+      style={{paddingLeft:6}} data-movable={reorderEnabled && (!enabled || layer.deletable)} title={reorderEnabled && (!enabled || layer.deletable) ? t.reorderLayer : t.fixedBaseLayer}
+      onPointerDown={event => { if (!reorderEnabled && selectable && event.button === 0 && !(event.target as Element).closest('input, button')) onSelect(layer.id); else start(event, layer); }}
       onKeyDown={event => {
         if (!selectable || (event.target as Element).closest('input, button')) return;
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(layer.id); }
+        if (!enabled && reorderEnabled && event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
+          event.preventDefault();
+          const ids = displayed.map(row => row.id);
+          const from = ids.indexOf(layer.id);
+          const to = from + (event.key === 'ArrowUp' ? -1 : 1);
+          if (to >= 0 && to < ids.length) { ids.splice(from, 1); ids.splice(to, 0, layer.id); onReorder(ids); }
+          return;
+        }
         if (!enabled) return;
         if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key) || !layer.deletable) return;
         event.preventDefault();
@@ -275,7 +302,7 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
         if(target>=0&&target<ids.length){ids.splice(position,1);ids.splice(target,0,layer.id);onGroupEdit({action:'reorder',ids,target:layer.parent??''});}
       }}>
       <div className="layer-indicators">
-      <button className="icon-button" disabled={!enabled} onClick={() => onToggle(layer.id)} title={layer.visible ? t.hideLayer : t.showLayer}
+      <button className="icon-button" disabled={!appearanceEnabled} onClick={() => onToggle(layer.id)} title={layer.visible ? t.hideLayer : t.showLayer}
         aria-label={`${layer.visible ? t.hideLayer : t.showLayer}: ${displayName}`} aria-pressed={layer.visible}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
       </div>
       <span className={`path-color-stripe${layer.kind === 'vector' ? '' : ' pixel-color-stripe'}`} aria-hidden="true" style={layer.kind === 'vector' ? { backgroundColor: `rgb(${(layer.guideColor ?? [48,144,255]).slice(0,3).join(',')})` } : undefined} />
@@ -286,7 +313,7 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
       {editingId === layer.id ? <input className="layer-name" autoFocus maxLength={120} aria-label={t.renameLayer} value={name}
         onFocus={event => event.currentTarget.select()} onChange={event => setName(event.target.value)}
         onBlur={() => commitName(layer)} onKeyDown={event => { if (event.key === 'Enter') commitName(layer); if (event.key === 'Escape') setEditingId(null); }} />
-        : <span className="layer-name" onDoubleClick={() => { if (enabled) { setName(displayName); setEditingId(layer.id); } }}>{displayName}</span>}
+        : <span className="layer-name" onDoubleClick={() => { if (appearanceEnabled) { setName(displayName); setEditingId(layer.id); } }}>{displayName}</span>}
       <span className="layer-type-label">{label}</span>
       </div>
       {layer.alphaLocked && <span className="layer-lock" title={t.lockAlpha}>α</span>}
@@ -296,7 +323,7 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
         <Icon name={isExpanded ? 'chevronDown' : 'chevronRight'} />
       </button>
       </div>
-      <button type="button" className="icon-button layer-lock-button" disabled={!enabled}
+      <button type="button" className="icon-button layer-lock-button" disabled={!appearanceEnabled}
         title={layer.locked ? t.unlockLayer : t.lockLayer}
         aria-label={`${layer.locked ? t.unlockLayer : t.lockLayer}: ${displayName}`}
         aria-pressed={layer.locked} onClick={() => onToggleLock(layer)}><Icon name={layer.locked ? 'lock' : 'unlock'} /></button>

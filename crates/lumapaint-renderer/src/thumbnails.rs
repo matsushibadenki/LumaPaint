@@ -96,10 +96,11 @@ fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<T
         }
         tiles.discard_history();
     }
+    let effects = document.layer_effects("layer-1");
     let mut paint = vec![0; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
-            let mut pixel = tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]);
+            let mut pixel = effects.apply(tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]));
             for c in 0..3 {
                 pixel[c] = (pixel[c] as u16 * pixel[3] as u16 / 255) as u8;
             }
@@ -129,7 +130,8 @@ fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<T
         .svg_layers()
         .filter(|layer| snapshot.layers.iter().any(|l| l.id == layer.id))
     {
-        let pixels = rasterize_svg(&layer.source, width, height)?.pixels;
+        let mut pixels = rasterize_svg(&layer.source, width, height)?.pixels;
+        crate::apply_layer_effects(&mut pixels, &document.layer_effects(&layer.id));
         if layer.visible {
             over(&mut composite, &pixels, layer.effective_opacity());
         }

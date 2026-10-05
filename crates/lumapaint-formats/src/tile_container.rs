@@ -37,6 +37,8 @@ struct Manifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayerManifest {
     #[serde(default)]
+    effects: lumapaint_core::layer_effects::LayerEffects,
+    #[serde(default)]
     blend_mode: lumapaint_core::tiles::RasterBlendMode,
     id: String,
     name: String,
@@ -72,6 +74,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
             (&tile.coord, &tile.values)
         })?;
         layers.push(LayerManifest {
+            effects: layer.effects.clone(),
             blend_mode: layer.blend_mode,
             id: layer.id.clone(),
             name: layer.name.clone(),
@@ -149,6 +152,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
         let tiles = read_tiles(&layer.tiles, payload, PIXEL_TILE_BYTES, &mut cursor)?;
         let mask_tiles = read_masks(&layer.mask_tiles, payload, MASK_TILE_BYTES, &mut cursor)?;
         layers.push(RasterLayerState {
+            effects: layer.effects,
             blend_mode: layer.blend_mode,
             id: layer.id,
             name: layer.name,

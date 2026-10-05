@@ -2112,6 +2112,14 @@ fn gpu_artboard_exterior_masks_page_pixels() {
         include_str!("workspace.wgsl"),
         "Exterior mask test",
     );
+    let full_pipeline = create_layer_pipeline_with_fragment(
+        &gpu.device,
+        &[&gpu.uniform_layout, &layout],
+        format,
+        include_str!("workspace.wgsl"),
+        "Full effects test",
+        "fs_full",
+    );
     let size = wgpu::Extent3d {
         width: 1,
         height: 1,
@@ -2158,10 +2166,13 @@ fn gpu_artboard_exterior_masks_page_pixels() {
             },
         ],
     });
-    for (pan, zoom, expected_alpha) in [
-        (0.0, 1.0 / 13.0, 0),
-        (100.0, 1.0 / 13.0, 128),
-        (0.0, 640.0 / 13.0, 128),
+    for (full, pan, zoom, expected_alpha) in [
+        (false, 0.0, 1.0 / 13.0, 0),
+        (false, 100.0, 1.0 / 13.0, 128),
+        (false, 0.0, 640.0 / 13.0, 128),
+        (true, 0.0, 1.0 / 13.0, 128),
+        (true, 100.0, 1.0 / 13.0, 128),
+        (true, 0.0, 640.0 / 13.0, 128),
     ] {
         let buffer = gpu
             .device
@@ -2203,7 +2214,7 @@ fn gpu_artboard_exterior_masks_page_pixels() {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(if full { &full_pipeline } else { &pipeline });
             pass.set_bind_group(0, &uniforms, &[]);
             pass.set_bind_group(1, &group, &[]);
             pass.draw(0..6, 0..1);

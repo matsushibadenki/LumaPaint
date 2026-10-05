@@ -147,6 +147,7 @@ pub fn run() {
             canvas::toggle_layer,
             canvas::set_layer_settings,
             canvas::set_raster_blend_mode,
+            canvas::set_layer_effects,
             canvas::delete_layer,
             canvas::add_paint_layer,
             canvas::add_vector_layer,

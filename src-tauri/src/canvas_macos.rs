@@ -3474,6 +3474,27 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
 }
 
 pub fn toggle_layer(id: String) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+            let mut slot = d.borrow_mut();
+            let session = slot.as_mut().ok_or("Missing tiled document")?;
+            let layer = session
+                .document
+                .layers()
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Unknown raster layer")?;
+            let (visible, opacity) = (!layer.visible, layer.opacity);
+            session
+                .document
+                .set_layer_appearance(&id, visible, opacity)?;
+            Ok(())
+        })?;
+        redraw()?;
+        emit_document();
+        return tiled_snapshot();
+    }
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().toggle_layer(&id))?;
     redraw()?;
@@ -3502,6 +3523,31 @@ fn tiled_snapshot() -> Result<DocumentSnapshot, String> {
             .ok_or_else(|| "Missing tiled document".into())
     })
 }
+pub fn set_layer_effects(
+    id: String,
+    effects: lumapaint_core::layer_effects::LayerEffects,
+) -> Result<DocumentSnapshot, String> {
+    if !ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_document_open()?;
+        DOCUMENT.with(|d| d.borrow_mut().set_layer_effects(&id, effects))?;
+        redraw()?;
+        emit_document();
+        return Ok(DOCUMENT.with(|d| d.borrow().snapshot()));
+    }
+    ensure_tiled_open()?;
+    ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+        d.borrow_mut()
+            .as_mut()
+            .ok_or("Missing tiled document")?
+            .document
+            .set_layer_effects(&id, effects)?;
+        Ok(())
+    })?;
+    redraw()?;
+    emit_document();
+    tiled_snapshot()
+}
+
 pub fn set_raster_blend_mode(
     id: String,
     mode: lumapaint_core::tiles::RasterBlendMode,
@@ -3798,6 +3844,20 @@ pub fn edit_selected_paths(action: PathEditAction) -> Result<DocumentSnapshot, S
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 pub fn reorder_layers(ids: Vec<String>) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+            d.borrow_mut()
+                .as_mut()
+                .ok_or("Missing tiled document")?
+                .document
+                .reorder_layers(&ids)?;
+            Ok(())
+        })?;
+        redraw()?;
+        emit_document();
+        return tiled_snapshot();
+    }
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().reorder_layers(&ids))?;
     redraw()?;
@@ -4367,10 +4427,9 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
         return;
     }
     if can_reconcile_tile_preview(canvas.tile_cache.as_ref(), document, key)
-        && canvas
-            .tile_cache
-            .as_ref()
-            .is_some_and(|cache| cache.state.stroke_count == state.stroke_count)
+        && canvas.tile_cache.as_ref().is_some_and(|cache| {
+            cache.state.stroke_count == state.stroke_count && cache.state.same_effects(state)
+        })
     {
         let cache = canvas
             .tile_cache
@@ -4805,6 +4864,7 @@ impl TiledSession {
             .layers()
             .iter()
             .map(|layer| LayerSnapshot {
+                effects: Some(layer.effects.clone()),
                 raster_blend_mode: Some(layer.blend_mode),
                 guide_color: [48, 144, 255, 255],
                 objects: Vec::new(),
@@ -5545,7 +5605,222 @@ mod tests {
         })
         .unwrap();
         assert!(set_raster_blend_mode("top".into(), RasterBlendMode::Screen).is_ok());
+        let hidden = toggle_layer("top".into()).unwrap();
+        assert!(!hidden.layers[1].visible);
+        assert_eq!(hidden.layer_id, "top");
+        assert!(edit(DocumentAction::Undo).unwrap().layers[1].visible);
+        assert!(!edit(DocumentAction::Redo).unwrap().layers[1].visible);
+        let changed = set_layer_settings(LayerSettings {
+            id: "top".into(),
+            name: "背景 / Background / 背景".into(),
+            opacity: 0.4,
+            locked: true,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        })
+        .unwrap();
+        assert_eq!(changed.layers[1].opacity, 0.4);
+        assert!(changed.layers[1].locked);
+        assert_eq!(changed.layers[1].name, "背景 / Background / 背景");
+        assert_eq!(edit(DocumentAction::Undo).unwrap().layers[1].opacity, 1.);
+        assert_eq!(edit(DocumentAction::Redo).unwrap().layers[1].opacity, 0.4);
+        // Visibility remains editable while locked, without changing pixel storage.
+        assert!(toggle_layer("top".into()).unwrap().layers[1].visible);
+        assert!(!toggle_layer("top".into()).unwrap().layers[1].visible);
+        let state = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state());
+        assert!(toggle_layer("unknown".into()).is_err());
+        assert_eq!(
+            state,
+            ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state())
+        );
+        let native = lumapaint_formats::tile_container::encode(&state).unwrap();
+        assert_eq!(
+            state,
+            lumapaint_formats::tile_container::decode(&native).unwrap()
+        );
+        for format in [
+            lumapaint_formats::export::FormatId::Psd,
+            lumapaint_formats::export::FormatId::Psb,
+        ] {
+            let exported = lumapaint_formats::export::export_raster(
+                format,
+                &state,
+                lumapaint_formats::export::ExportOptions { allow_lossy: true },
+            )
+            .unwrap();
+            assert!(exported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.protectionExpanded"));
+            let loaded = lumapaint_formats::psd::PsdImporter
+                .import(&exported.bytes, Default::default())
+                .unwrap()
+                .raster;
+            assert!(!loaded.layers[1].visible);
+            assert_eq!(loaded.layers[1].opacity, 0.4);
+            assert_eq!(loaded.layers[1].name, state.layers[1].name);
+            assert_eq!(loaded.layers[1].tiles, state.layers[1].tiles);
+        }
+        let moved = reorder_layers(vec!["base".into(), "top".into()]).unwrap();
+        assert_eq!(moved.layers[0].id, "top");
+        assert_eq!(moved.layer_id, "top");
+        assert_eq!(edit(DocumentAction::Undo).unwrap().layers[0].id, "base");
+        assert_eq!(edit(DocumentAction::Redo).unwrap().layers[0].id, "top");
+        let reordered =
+            ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state());
+        assert!(reorder_layers(vec!["base".into(), "base".into()]).is_err());
+        assert_eq!(
+            reordered,
+            ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state())
+        );
+        let saved = lumapaint_formats::tile_container::encode(&reordered).unwrap();
+        assert_eq!(
+            lumapaint_formats::tile_container::decode(&saved).unwrap(),
+            reordered
+        );
+        for format in [
+            lumapaint_formats::export::FormatId::Psd,
+            lumapaint_formats::export::FormatId::Psb,
+        ] {
+            let saved = lumapaint_formats::export::export_raster(
+                format,
+                &reordered,
+                lumapaint_formats::export::ExportOptions { allow_lossy: true },
+            )
+            .unwrap();
+            let loaded = lumapaint_formats::psd::PsdImporter
+                .import(&saved.bytes, Default::default())
+                .unwrap()
+                .raster;
+            assert_eq!(loaded.layers.len(), 2);
+            assert_eq!(
+                loaded.layers.iter().map(|l| &l.name).collect::<Vec<_>>(),
+                reordered.layers.iter().map(|l| &l.name).collect::<Vec<_>>()
+            );
+            assert_eq!(loaded.layers[0].tiles, reordered.layers[0].tiles);
+        }
     }
+    #[test]
+    fn tiled_mask_panel_settings_disable_without_erasing_and_round_trip() {
+        use lumapaint_formats::DocumentImporter;
+        let mut document = TiledRasterDocument::new(2, 1).unwrap();
+        document
+            .add_layer("masked".into(), "マスク / Mask / 蒙版".into())
+            .unwrap();
+        document
+            .write_rect("masked", [0, 0, 2, 1], &[0, 0, 255, 255, 0, 0, 255, 255])
+            .unwrap();
+        document
+            .write_mask_rect("masked", [0, 0, 2, 1], &[0, 255])
+            .unwrap();
+        document.set_layer_mask("masked", true, false, 1.).unwrap();
+        document.discard_history();
+        let original = document.state();
+        let revision = document.revision();
+        let previous = ACTIVE_TILED_DOCUMENT.with(|d| {
+            d.replace(Some(TiledSession {
+                selected_layer: Some("masked".into()),
+                document,
+                file_name: None,
+                name: "Mask test".into(),
+                saved_revision: Some(revision),
+            }))
+        });
+        let was_open = DOCUMENT_OPEN.with(|o| o.replace(true));
+        struct Restore(Option<TiledSession>, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE_TILED_DOCUMENT.with(|d| *d.borrow_mut() = self.0.take());
+                DOCUMENT_OPEN.with(|o| o.set(self.1));
+            }
+        }
+        let _restore = Restore(previous, was_open);
+        let settings = LayerSettings {
+            id: "masked".into(),
+            name: "マスク / Mask / 蒙版".into(),
+            opacity: 1.,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: true,
+            mask_inverted: true,
+            mask_density: 0.5,
+        };
+        let changed = set_layer_settings(settings.clone()).unwrap();
+        assert!(changed.layers[0].mask_inverted);
+        assert_eq!(changed.layers[0].mask_density, 0.5);
+        let coord = lumapaint_core::tiles::TileCoord { x: 0, y: 0 };
+        let pixels = ACTIVE_TILED_DOCUMENT.with(|d| {
+            d.borrow()
+                .as_ref()
+                .unwrap()
+                .document
+                .composite_tile(coord)
+                .unwrap()
+        });
+        assert_eq!(&pixels[..8], &[0, 0, 255, 255, 0, 0, 128, 128]);
+        assert!(
+            set_layer_settings(LayerSettings {
+                mask_enabled: false,
+                ..settings.clone()
+            })
+            .unwrap()
+            .layers[0]
+                .mask_inverted
+        );
+        let disabled =
+            ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state());
+        assert!(!disabled.layers[0].mask_enabled);
+        assert_eq!(disabled.layers[0].mask_tiles, original.layers[0].mask_tiles);
+        assert_eq!(disabled.layers[0].tiles, original.layers[0].tiles);
+        assert_eq!(
+            edit(DocumentAction::Undo).unwrap().layers[0].mask_density,
+            0.5
+        );
+        let restored = edit(DocumentAction::Undo).unwrap();
+        assert_eq!(restored.layers[0].mask_density, 1.);
+        assert!(!restored.layers[0].mask_inverted);
+        assert!(!restored.can_undo);
+        edit(DocumentAction::Redo).unwrap();
+        edit(DocumentAction::Redo).unwrap();
+        set_layer_settings(settings).unwrap();
+        let state = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state());
+        assert_eq!(state.layers[0].mask_tiles, original.layers[0].mask_tiles);
+        let saved = lumapaint_formats::tile_container::encode(&state).unwrap();
+        assert_eq!(
+            lumapaint_formats::tile_container::decode(&saved).unwrap(),
+            state
+        );
+        for format in [
+            lumapaint_formats::export::FormatId::Psd,
+            lumapaint_formats::export::FormatId::Psb,
+        ] {
+            let saved = lumapaint_formats::export::export_raster(
+                format,
+                &state,
+                lumapaint_formats::export::ExportOptions { allow_lossy: true },
+            )
+            .unwrap();
+            assert!(saved
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.nativeMaskDensityBaked"));
+            let loaded = lumapaint_formats::psd::PsdImporter
+                .import(&saved.bytes, Default::default())
+                .unwrap()
+                .raster;
+            let loaded = TiledRasterDocument::from_state(loaded).unwrap();
+            let actual = loaded.composite_tile(coord).unwrap();
+            for (a, b) in pixels[..8].iter().zip(&actual[..8]) {
+                assert!(a.abs_diff(*b) <= 1);
+            }
+            assert_eq!(loaded.state().layers[0].tiles, state.layers[0].tiles);
+        }
+    }
+
     #[test]
     fn corner_gesture_changes_one_corner_and_shift_changes_all_with_single_undo() {
         let mut document = Document::default();
@@ -9458,8 +9733,11 @@ pub fn apply_pdf_import(
         return Err("Expected PDF vector document".into());
     };
     lumapaint_svg::attach(&mut document);
-    for layer in document.svg_layers() {
-        validate_svg(&layer.source)?;
+    for index in 0..document.pages_snapshot().pages.len() {
+        let page = document.page_document(index).ok_or("Missing PDF page")?;
+        for layer in page.svg_layers() {
+            validate_svg(&layer.source)?;
+        }
     }
     if target.is_some() {
         let destination = DOCUMENT.with(|doc| doc.borrow().snapshot());

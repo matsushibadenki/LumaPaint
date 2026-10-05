@@ -1,3 +1,5 @@
+import { LayerEffectsPanel, effectLabels } from './LayerEffectsPanel';
+import { LayerOpacityControl } from './LayerOpacityControl';
 import { rasterBlendModes, rasterBlendLabels } from './raster-blend-labels';
 import {layerGroupLabels} from './layer-group-labels';
 import { PagesPanel,pagesLabels } from './PagesPanel';
@@ -26,7 +28,7 @@ import { TextPanel } from './TextPanel';
 import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
-const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'pathfinder', 'pages', 'links', 'text', 'layers', 'document'] as const;
+const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'pathfinder', 'pages', 'links', 'effects', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -60,9 +62,10 @@ function initialPanelOrder(): PanelId[] {
   return [...panelIds];
 }
 
-const panelIcons = { pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
+const panelIcons = { effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
-export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  onLayerEffects: (id: string, effects: import('../bridge').LayerEffects) => void;
   rasterEnabled: boolean;
   onRasterBlendMode: (id: string, mode: import('../bridge').RasterBlendMode) => void;
   onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
@@ -128,7 +131,7 @@ export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, 
       setLayerPanelMode(mode);
     } catch (cause) { setPathTabError(String(cause)); }
   };
-  const labels: Record<PanelId, string> = { pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
+  const labels: Record<PanelId, string> = { effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
   useEffect(() => {
@@ -139,6 +142,9 @@ export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, 
   const selectedLayer = selectedGroup ? undefined : document.layers.find(layer => layer.id === selectedLayerId) ?? document.layers.at(-1);
   const layerSettings = (layer: NonNullable<typeof selectedLayer>, changes: Partial<LayerSettings> = {}): LayerSettings => ({ id: layer.id, name: layer.name, opacity: layer.opacity, locked: layer.locked, alphaLocked: layer.alphaLocked, maskEnabled: layer.maskEnabled, maskInverted: layer.maskInverted, maskDensity: layer.maskDensity, ...changes });
   const maskTarget=selectedGroup??selectedLayer;
+  const tiledMaskTarget = !!selectedLayer?.rasterBlendMode;
+  const tiledMaskDensityLabel = { en: 'Mask coverage', ja: 'マスク被覆率', 'zh-CN': '蒙版覆盖率' }[locale];
+  const maskEnabledLabel = { en: 'Use layer mask', ja: 'マスクを有効にする', 'zh-CN': '启用图层蒙版' }[locale];
   const changeMask=(patch:Partial<{maskEnabled:boolean;maskInverted:boolean;maskDensity:number}>)=>{
     if(selectedGroup)onLayerGroupEdit({action:'mask',id:selectedGroup.id,mask:{enabled:patch.maskEnabled??selectedGroup.maskEnabled,inverted:patch.maskInverted??selectedGroup.maskInverted,density:patch.maskDensity??selectedGroup.maskDensity}});
     else if(selectedLayer)onLayerSettings(layerSettings(selectedLayer,patch));
@@ -178,6 +184,7 @@ export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, 
   return <aside className={`inspector${draggedPanel?' panel-drag-active':''}`} aria-label={t.properties}>
     <div className="dock-resizer" role="separator" aria-orientation="vertical" aria-label={locale==='ja'?'パネルの幅':locale==='en'?'Panel width':'面板宽度'} aria-valuemin={260} aria-valuemax={600} aria-valuenow={dockWidth} tabIndex={0} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeDock.current={x:e.clientX,width:dockWidth};}} onPointerMove={e=>{if(resizeDock.current)setDockWidth(Math.max(260,Math.min(600,window.innerWidth*.6,resizeDock.current.width+resizeDock.current.x-e.clientX)));}} onPointerUp={()=>{resizeDock.current=null;}} onPointerCancel={()=>{resizeDock.current=null;}} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setDockWidth(w=>Math.max(260,Math.min(600,w+(e.key==='ArrowLeft'?16:-16))));}}}/>
     <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}><strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong><button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
+    {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
     <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
       {order.map(panel => <Fragment key={panel}><button
         id={`inspector-tab-${panel}`}
@@ -240,10 +247,14 @@ export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, 
       <div className="layer-subtabs"><button className={layerPanelMode === 'layers' ? 'active' : ''} onClick={() => void switchLayerPanel('layers')}>{t.layers}</button><button className={layerPanelMode === 'channels' ? 'active' : ''} onClick={() => void switchLayerPanel('channels')}>{t.channels}</button><button className={layerPanelMode === 'paths' ? 'active' : ''} onClick={() => setLayerPanelMode('paths')}>{t.paths}</button></div>
       {pathTabError && <p role="alert">{pathTabError}</p>}
       {layerPanelMode === 'paths' ? <PathsPanel document={document} locale={locale} enabled={enabled} onAction={onSavedPathAction} /> : layerPanelMode === 'channels' ? <ChannelsPanel thumbnails={thumbnails.channels} thumbnailError={thumbnails.error} locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
-        <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select aria-label={t.layerBlendMode} disabled={!rasterEnabled || !selectedLayer?.rasterBlendMode || selectedLayer.locked} value={selectedLayer?.rasterBlendMode ?? 'normal'} onChange={event => selectedLayer && onRasterBlendMode(selectedLayer.id, event.target.value as import('../bridge').RasterBlendMode)}>{rasterBlendModes.map(mode => <option key={mode} value={mode}>{rasterBlendLabels[locale][mode]}</option>)}</select></label><label><span>{t.layerOpacity}</span><div><CompactSlider disabled={!enabled || !selectedLayer} min="0" max="100" value={Math.round((selectedLayer?.opacity ?? 1) * 100)} onChange={event => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity: Number(event.target.value) / 100 }))} /><output>{Math.round((selectedLayer?.opacity ?? 1) * 100)}%</output></div></label></div>
+        <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select aria-label={t.layerBlendMode} disabled={!rasterEnabled || !selectedLayer?.rasterBlendMode || selectedLayer.locked} value={selectedLayer?.rasterBlendMode ?? 'normal'} onChange={event => selectedLayer && onRasterBlendMode(selectedLayer.id, event.target.value as import('../bridge').RasterBlendMode)}>{rasterBlendModes.map(mode => <option key={mode} value={mode}>{rasterBlendLabels[locale][mode]}</option>)}</select></label><label><span>{t.layerOpacity}</span><div><LayerOpacityControl key={selectedLayer?.id ?? ''} label={t.layerOpacity} disabled={!(enabled || rasterEnabled) || !selectedLayer} opacity={selectedLayer?.opacity ?? 1} onCommit={opacity => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity }))} /></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!(enabled || rasterEnabled) || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
-        {maskTarget?.maskEnabled && <div className="mask-controls"><label><span>{t.maskDensity}</span><CompactSlider disabled={!enabled} min="0" max="100" value={Math.round(maskTarget.maskDensity * 100)} onChange={event=>changeMask({maskDensity:Number(event.target.value)/100})}/><output>{Math.round(maskTarget.maskDensity*100)}%</output></label><button disabled={!enabled} className={maskTarget.maskInverted?'active':''} onClick={()=>changeMask({maskInverted:!maskTarget.maskInverted})}>{t.invertMask}</button></div>}
-        <LayerList groups={document.layerGroups} onGroupEdit={onLayerGroupEdit} thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} selectable={enabled || rasterEnabled} locale={locale}
+        {maskTarget && (maskTarget.maskEnabled || tiledMaskTarget) && <div className="mask-controls">
+          {tiledMaskTarget && <label className="mask-enabled-toggle"><input type="checkbox" disabled={!rasterEnabled} checked={maskTarget.maskEnabled} onChange={event => changeMask({ maskEnabled: event.currentTarget.checked })} />{maskEnabledLabel}</label>}
+          <label><span>{tiledMaskTarget ? tiledMaskDensityLabel : t.maskDensity}</span>{tiledMaskTarget ? <LayerOpacityControl key={`mask-${maskTarget.id}`} label={tiledMaskDensityLabel} disabled={!rasterEnabled || !maskTarget.maskEnabled || maskTarget.locked} opacity={maskTarget.maskDensity} onCommit={maskDensity => changeMask({ maskDensity })} /> : <><CompactSlider disabled={!enabled} min="0" max="100" value={Math.round(maskTarget.maskDensity*100)} onChange={event=>changeMask({maskDensity:Number(event.target.value)/100})}/><output>{Math.round(maskTarget.maskDensity*100)}%</output></>}</label>
+          <button disabled={tiledMaskTarget ? !rasterEnabled || !maskTarget.maskEnabled || maskTarget.locked : !enabled} className={maskTarget.maskInverted?'active':''} onClick={()=>changeMask({maskInverted:!maskTarget.maskInverted})}>{t.invertMask}</button>
+        </div>}
+        <LayerList groups={document.layerGroups} onGroupEdit={onLayerGroupEdit} thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} selectable={enabled || rasterEnabled} appearanceEnabled={enabled || rasterEnabled} reorderEnabled={enabled || rasterEnabled} locale={locale}
           selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
           onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}
           onRename={(layer, name) => onLayerSettings(layerSettings(layer, { name }))} />
@@ -262,7 +273,7 @@ export function Inspector({ rasterEnabled, onRasterBlendMode, onLayerGroupEdit, 
           </div>
           <span className="layer-action-divider" aria-hidden="true" />
           <div className="layer-action-group">
-            <button disabled title={t.layerOptions} aria-label={t.layerOptions}>fx</button>
+            <button disabled={!selectedLayer?.effects} title={effectLabels[locale].title} aria-label={effectLabels[locale].title} onClick={() => setActivePanel('effects')}>fx</button>
             <button disabled={!enabled || !maskTarget} className={maskTarget?.maskEnabled?'active':''} title={maskTarget?.maskEnabled?t.removeMask:t.addMask} aria-label={maskTarget?.maskEnabled?t.removeMask:t.addMask} onClick={()=>maskTarget&&changeMask({maskEnabled:!maskTarget.maskEnabled,maskDensity:1,maskInverted:false})}>◐</button>
           </div>
         </div><p className="layer-group-hint">{layerGroupLabels[locale].hint}</p><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>

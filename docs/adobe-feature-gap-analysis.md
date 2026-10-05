@@ -25,7 +25,7 @@ PSD／PSB出力は非圧縮Raw、入力タイルとマスク計64MiB、出力128
 
 - [Done] タイル文書とPSD／PSBに6種類の追加合成モードを保持し、同じ合成カーネルで表示・保存プレビューを作る。統合画像との比較が通る場合にレイヤーを維持する。
 
-- [Done] タイルレイヤーパネルの合成モード変更、レイヤー選択、ロック解除とUndo／RedoをRustモデルへ接続。PSD／PSB書き出しのホスト判定も修正。
+- [Done] タイルレイヤーパネルの合成モード変更、レイヤー選択、表示切り替え・不透明度・名前変更・ロック・並べ替えとUndo／RedoをRustモデルへ接続。PSD／PSB書き出しのホスト判定も修正。
 
 ## 継続工程
 
@@ -38,3 +38,8 @@ PSD／PSB出力は非圧縮Raw、入力タイルとマスク計64MiB、出力128
 - [Later] 高精度画素・CMYK・ICC、プリフライト／パッケージ、表・脚注・目次、画像修復などを順次追加する。
 
 参照：[Adobe PSD／PSB仕様](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/)、[InDesignの保存形式とIDML](https://helpx.adobe.com/indesign/desktop/save-export-and-publish/save-and-export/save-documents.html)。
+
+- [Done] タイルのマスク有効／無効・反転・既存の濃度をパネルへ接続。マスク画素を保持し、ネイティブ／PSD／PSB往復と合成色の8bit誤差を検証。
+- [Next] PhotoshopのマスクDensity（既存LumaPaintの濃度とは計算が異なる）を独立した互換パラメーターとして保持し、旧文書の外観を維持する移行、ぼかし・画素編集を追加する。
+
+Densityの意味は[Adobe公式Photoshopリファレンス](https://helpx.adobe.com/pdf/cs6/photoshop_reference.pdf)を参照。今回のタイルUIは既存の反転前の被覆率を保持し、PhotoshopのDensityと同じ機能名・計算として扱わない。
