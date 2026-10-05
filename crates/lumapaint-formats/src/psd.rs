@@ -1,10 +1,12 @@
 //! PSD v1 / PSB v2 RGB8 adapter, based on Adobe's published specification.
 //! Normal RGB8 raster layers can be retained; effects, masks, profiles and higher depths remain partial.
 mod layers;
+mod write;
 use crate::*;
 use lumapaint_core::tiles::{
     RasterLayerState, RasterTileState, TileCoord, TiledRasterState, TILE_SIZE,
 };
+pub use write::write;
 
 pub const MAX_INPUT_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 8192;

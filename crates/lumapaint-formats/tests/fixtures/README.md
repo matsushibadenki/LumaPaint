@@ -41,3 +41,14 @@ its retained layer composite against the Adobe merged preview before accepting
 known additional settings. A changed preview forces explicit flattening.
 This is real Adobe resaving of synthetic artwork, not a representative production
 Photoshop text/smart-object/CMYK document or proof of complete PSB compatibility.
+
+## PSD／PSB writer verification (2026-10-05)
+
+`cargo run --offline --locked -p lumapaint-formats --example psd_roundtrip -- crates/lumapaint-formats/tests/fixtures/lp-psd-layers.psd /private/tmp/lp-written-layers.psd`
+
+The same command with `.psb` generates version 2. Both own outputs were opened
+in Photoshop 2026; Japanese and Simplified Chinese layer names, layer order,
+visibility and locks appeared correctly. Automated tests compare native raster
+state after write/read for both versions and composite pixels with quantized
+opacity/mask density. These tiny RGB8 fixtures do not establish compatibility
+for production PSD type layers, effects, profiles or smart objects.

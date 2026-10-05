@@ -183,6 +183,18 @@ pub fn export(
         other => Err(ExportError::Unsupported(other)),
     }
 }
+/// Export a validated independent raster snapshot; vector export is a separate contract.
+pub fn export_raster(
+    format: FormatId,
+    state: &lumapaint_core::tiles::TiledRasterState,
+    options: ExportOptions,
+) -> Result<ExportedDocument, ExportError> {
+    match format {
+        FormatId::Psd => crate::psd::write(state, false, options),
+        FormatId::Psb => crate::psd::write(state, true, options),
+        other => Err(ExportError::Unsupported(other)),
+    }
+}
 
 #[cfg(test)]
 mod tests {

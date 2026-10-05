@@ -116,6 +116,8 @@ pub const FILE_FORMATS: &[FileFormat] = &[
     FileFormat {
         open_adapter: true,
         import_adapter: true,
+        export_adapter: true,
+        editor_export: cfg!(target_os = "macos"),
         partial: true,
         editor_open: cfg!(target_os = "macos"),
         ..entry(
@@ -128,6 +130,8 @@ pub const FILE_FORMATS: &[FileFormat] = &[
     FileFormat {
         open_adapter: true,
         import_adapter: true,
+        export_adapter: true,
+        editor_export: cfg!(target_os = "macos"),
         partial: true,
         editor_open: cfg!(target_os = "macos"),
         ..entry(

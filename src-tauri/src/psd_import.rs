@@ -87,12 +87,15 @@ fn decode(path: &Path) -> Result<Prepared, String> {
         name,
     })
 }
-fn report_text(report: &ConversionReport) -> String {
+pub(crate) fn report_text(report: &ConversionReport) -> String {
     report.issues.iter().map(|issue| match issue.code {
         "psd.extraChannelsNotPreserved" => "Saved alpha or spot channels are not retained. / 保存されたアルファ・スポットチャンネルは保持されません。 / 保存的Alpha或专色通道不会保留。",
         "psd.maskDensityBaked" => "Mask density is applied to mask pixels; its original numeric setting is not retained. / マスク密度を画素に反映します。元の密度数値は保持されません。 / 蒙版密度将应用到像素，原始密度数值不会保留。",
         "psd.editingMetadataNotPreserved" => "Additional Photoshop editing and color settings are not retained. Partial position or pixel locks become full locks. Layer pixels were compared with the merged preview. / Photoshopの追加編集情報・色設定は保持されません。位置・画素の部分ロックは全体のロックへ変換します。レイヤーの画素は統合プレビューと比較済みです。 / Photoshop的其他编辑信息和颜色设置不会保留。位置或像素的部分锁定将转换为完全锁定。图层像素已与合成预览比较。",
         "psd.previewMismatch" => "The layer composite differs from the Photoshop preview. The merged image is used to preserve the imported appearance. / レイヤーの合成結果がPhotoshopのプレビューと異なるため、読み込み時の見た目を保つ統合画像を使用します。 / 图层合成结果与Photoshop预览不同，将使用合成图像保留导入时的外观。",
+        "psd.opacityQuantized" => "Layer opacity is rounded to Photoshop's 8bit value. / レイヤー不透明度をPhotoshopの8bit値へ丸めます。 / 图层不透明度将舍入为Photoshop的8位值。",
+        "psd.nativeMaskDensityBaked" => "Native mask density is applied to mask pixels; the density setting becomes 100%. / LumaPaintのマスク密度を画素に反映し、密度設定を100%にします。 / LumaPaint的蒙版密度将应用到像素，密度设置变为100%。",
+        "psd.protectionExpanded" => "Fully locked layers also receive transparency protection. / 全体ロックされたレイヤーに透明度保護も適用します。 / 完全锁定的图层也将应用透明度保护。",
         "psd.layersFlattened" => "Layers are flattened to the merged image. / レイヤーは統合画像になります。 / 图层将合并为一张图像。",
         "psd.resolutionNotPreserved" => "Original resolution metadata is not retained. / 元の解像度情報は保持されません。 / 原始分辨率元数据不会保留。",
         "psd.iccProfileNotPreserved" => "ICC profiles are not retained; colors may differ. / ICCプロファイルは保持されず、色が異なる場合があります。 / ICC配置文件不会保留，颜色可能不同。",

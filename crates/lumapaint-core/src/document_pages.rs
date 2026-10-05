@@ -192,6 +192,19 @@ impl Document {
             _ => None,
         }
     }
+    /// Independent page copy for conversion without retaining the publication or
+    /// changing its active page, selection, saved state or edit histories.
+    pub fn detached_page(&self, index: usize) -> Option<Document> {
+        let mut page = self.page_document(index)?.clone();
+        page.pages = None;
+        page.page_undo.clear();
+        page.page_redo.clear();
+        page.undo_order
+            .retain(|kind| !matches!(kind, HistoryKind::Page));
+        page.redo_order
+            .retain(|kind| !matches!(kind, HistoryKind::Page));
+        Some(page)
+    }
     pub fn facing_neighbor(&self) -> Option<(usize, f32, &Document)> {
         let b = self.pages.as_ref()?;
         if !b.facing || b.active == 0 {

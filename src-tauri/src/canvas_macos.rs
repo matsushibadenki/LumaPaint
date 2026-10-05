@@ -7100,6 +7100,76 @@ pub fn open_psd(prepared: crate::psd_import::Prepared) -> Result<(), String> {
     Ok(())
 }
 
+fn export_tiled_psd() -> Result<DocumentSnapshot, String> {
+    let snapshot = ACTIVE_TILED_DOCUMENT
+        .with(|d| d.borrow().as_ref().map(TiledSession::snapshot))
+        .ok_or("No tiled document")?;
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("PSD", &["psd"])
+        .add_filter("PSB", &["psb"])
+        .set_file_name("Untitled.psd")
+        .save_file()
+    else {
+        return Ok(snapshot);
+    };
+    let format = match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("psd") => lumapaint_formats::export::FormatId::Psd,
+        Some("psb") => lumapaint_formats::export::FormatId::Psb,
+        _ => {
+            return Err(
+                "Choose .psd or .psb / .psdまたは.psbを指定してください / 请选择.psd或.psb".into(),
+            )
+        }
+    };
+    let state = ACTIVE_TILED_DOCUMENT.with(|d| -> Result<_, String> {
+        let borrowed = d.borrow();
+        let session = borrowed.as_ref().ok_or("No tiled document")?;
+        let bytes: usize = session.document.layers().iter().map(|layer|
+            (layer.tiles.allocated_tile_count() * 4 + layer.mask.allocated_tile_count()) * (lumapaint_core::tiles::TILE_SIZE as usize).pow(2)).sum();
+        if bytes > 64 * 1024 * 1024 { return Err("PSD/PSB export source exceeds 64 MiB / PSD・PSB書き出し元のタイルが64MiBを超えています / PSD/PSB导出源瓦片超过64MiB".into()); }
+        Ok(session.document.state())
+    })?;
+    let label = current_label();
+    let app = APP.get().ok_or("Application unavailable")?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = lumapaint_formats::export::export_raster(
+            format,
+            &state,
+            lumapaint_formats::export::ExportOptions { allow_lossy: true },
+        )
+        .map_err(|e| e.to_string());
+        let _ = app.run_on_main_thread(move || {
+            let Ok(_session) = SessionGuard::enter(&label) else {
+                return;
+            };
+            match result {
+                Err(error) => emit_error(error),
+                Ok(result) => {
+                    if !result.report.issues.is_empty()
+                        && rfd::MessageDialog::new()
+                            .set_title("互換性 / Compatibility / 兼容性")
+                            .set_description(crate::psd_import::report_text(&result.report))
+                            .set_buttons(rfd::MessageButtons::OkCancel)
+                            .show()
+                            != rfd::MessageDialogResult::Ok
+                    {
+                        return;
+                    }
+                    if let Err(error) = crate::project_file::write(&path, &result.bytes) {
+                        emit_error(error);
+                    }
+                }
+            }
+        });
+    });
+    Ok(snapshot)
+}
+
 pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String> {
     text_editor::finish(true)?;
     use super::FileAction;
@@ -7107,7 +7177,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
         FileAction::Export => {
             ensure_document_open()?;
             if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
-                return Err("Tiled SVG export is not available / タイル文書のSVG書き出しは未対応です / 瓦片文档尚不支持SVG导出".into());
+                return export_tiled_psd();
             }
             let Some(path) = rfd::FileDialog::new()
                 .add_filter("SVG", &["svg"])

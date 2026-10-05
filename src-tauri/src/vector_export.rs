@@ -8,7 +8,22 @@ pub fn svg(document: &Document) -> Result<ExportedDocument, String> {
     build(document, FormatId::Svg)
 }
 pub fn pdf(document: &Document) -> Result<ExportedDocument, String> {
-    build(document, FormatId::Pdf)
+    let count = document.pages_snapshot().pages.len();
+    if count == 1 {
+        return build(document, FormatId::Pdf);
+    }
+    let mut publication = lumapaint_formats::pdf::PdfPublication::default();
+    for index in 0..count {
+        let page = document
+            .detached_page(index)
+            .ok_or("Publication page is missing")?;
+        publication
+            .push(build(&page, FormatId::Pdf)?)
+            .map_err(|e| e.to_string())?;
+    }
+    publication
+        .finish(ExportOptions { allow_lossy: true })
+        .map_err(|e| e.to_string())
 }
 fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, String> {
     let mut copy = document.clone();
@@ -25,14 +40,7 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
         tiles.set_layer_mask(&id, false, false, 1.)?;
         let mut pixels = vec![0; (w as usize) * (h as usize) * 4];
         for upload in tiles.prepare_full_uploads() {
-            let x = upload.coord.x * lumapaint_core::tiles::TILE_SIZE;
-            let y = upload.coord.y * lumapaint_core::tiles::TILE_SIZE;
-            for row in 0..upload.extent[1] {
-                let dst = (((y + row) * w + x) * 4) as usize;
-                let src = (row * upload.extent[0] * 4) as usize;
-                let len = (upload.extent[0] * 4) as usize;
-                pixels[dst..dst + len].copy_from_slice(&upload.pixels[src..src + len]);
-            }
+            copy_paint_tile(&mut pixels, w, &upload);
         }
         let png = lumapaint_renderer::vector::clipboard_png(w, h, pixels)?;
         snapshot = snapshot.with_paint_png(png).map_err(|e| e.to_string())?;
@@ -51,6 +59,16 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
         return export(format, &snapshot, options).map_err(|e| e.to_string());
     }
     result.map_err(|e| e.to_string())
+}
+
+fn copy_paint_tile(pixels: &mut [u8], width: u32, upload: &lumapaint_core::tiles::TileUpload) {
+    let [x, y] = upload.origin;
+    for row in 0..upload.extent[1] {
+        let dst = (((y + row) * width + x) * 4) as usize;
+        let src = (row * upload.bytes_per_row) as usize;
+        let len = (upload.extent[0] * 4) as usize;
+        pixels[dst..dst + len].copy_from_slice(&upload.pixels[src..src + len]);
+    }
 }
 
 pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
@@ -80,6 +98,73 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cropped_edge_tile_keeps_row_pitch_and_canvas_offset() {
+        use lumapaint_core::tiles::{TileCoord, TileUpload};
+        let mut tile = vec![99; 256 * 256 * 4];
+        tile[..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        tile[1024..1032].copy_from_slice(&[9, 10, 11, 12, 13, 14, 15, 16]);
+        let upload = TileUpload {
+            coord: TileCoord { x: 1, y: 0 },
+            origin: [256, 0],
+            extent: [2, 2],
+            bytes_per_row: 1024,
+            pixels: tile,
+        };
+        let mut canvas = vec![0; 258 * 2 * 4];
+        copy_paint_tile(&mut canvas, 258, &upload);
+        assert_eq!(&canvas[1024..1032], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&canvas[2056..2064], &[9, 10, 11, 12, 13, 14, 15, 16]);
+        assert!(canvas[..1024].iter().all(|v| *v == 0));
+        assert!(canvas[1032..2056].iter().all(|v| *v == 0));
+    }
+    #[test]
+    fn pdf_exports_inactive_pages_and_active_paint_without_changing_publication() {
+        use lumapaint_core::document::{Brush, PageBinding, PageEdit, Point};
+        let mut doc = Document::default();
+        doc.import_svg("日本語".into(), "<svg width=\"100\" height=\"60\"><rect width=\"80\" height=\"40\" fill=\"red\"/></svg>".into()).unwrap();
+        doc.edit_pages(PageEdit {
+            action: "duplicate".into(),
+            index: Some(0),
+            facing: None,
+            binding: None,
+        })
+        .unwrap();
+        doc.edit_pages(PageEdit {
+            action: "layout".into(),
+            index: None,
+            facing: Some(true),
+            binding: Some(PageBinding::RightToLeft),
+        })
+        .unwrap();
+        doc.edit_pages(PageEdit {
+            action: "select".into(),
+            index: Some(1),
+            facing: None,
+            binding: None,
+        })
+        .unwrap();
+        doc.begin(Point { x: 40., y: 40. }, Brush::default())
+            .unwrap();
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let snapshot = doc.snapshot();
+        let result = pdf(&doc).unwrap();
+        assert_eq!(
+            lumapaint_formats::pdf::inspect(&result.bytes)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(result
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "svg.brush_rasterized"));
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        assert!(doc.has_active_stroke());
+        assert_eq!(doc.snapshot().revision, snapshot.revision);
+        assert_eq!(doc.pages_snapshot().active, 1);
+    }
     #[test]
     fn prefixed_svg_filter_uses_pdf_raster_fallback_without_mutating_document() {
         let mut document = Document::default();

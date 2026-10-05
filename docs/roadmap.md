@@ -392,7 +392,8 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] PSD RGB8のZIP圧縮（予測なし）を統合画像・レイヤー・マスクで読み込み。行バッファだけで展開し、終端・チェックサム・入力／出力長を厳密に検証。Rawとの一致、透明度・端タイル・密度付きマスク・保存再読込・切断／過不足／連結ストリームをテスト。
 - [Done] PSD RGB8の予測付きZIPを統合画像・レイヤー・マスクで読み込み。各行の8bit差分を折り返し加算で復元し、行／チャンネル境界で累積値をリセット。複数レイヤー・透明度・端タイル・幅1・密度付きマスク・保存と破損入力を検証。16／32bitは引き続き未対応。
 - [Next] PSDの用紙外／ぼかし付きマスク、グループ、追加合成モード／クリッピング、用紙外レイヤーと追加メタデータを段階対応。未対応のレイヤー機能がある場合は全体を統合画像へ切り替えて確認。
-- [Later] PSD出力・実ファイルによる往復検証、OpenRaster、SVG往復品質、PDF／PDF互換AI。CMYK／高精度画素とICC変換はネイティブ側の準備後に対応。
+- [Done] PSD／PSBの通常RGB8ラスターレイヤー出力を独立I/O層とmacOS書き出しへ接続。Unicode名・表示・ロック・透明度・マスクと統合プレビューを検証。設定変換は三言語で確認。自作PSD／PSBをPhotoshop 2026で画面確認。
+- [Later] PSD高度機能の実ファイル往復検証、OpenRaster、SVG往復品質、PDF／PDF互換AI。CMYK／高精度画素とICC変換はネイティブ側の準備後に対応。
 - [Later] ページ／Storyを前提とするIDML、時間軸を前提とするアニメーション交換、ネイティブ形式の独立公開仕様・C ABI／WASM。
 
 ## AIによる直接制作・画像処理（MCP）
@@ -571,5 +572,11 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] New-document page count, single/facing layout and left-to-right or right-to-left binding. A single first page followed by paired spreads; right binding mirrors page sides and panel order.
 - [Done] Dockable/floating Pages panel with lazy native content thumbnails, active-page highlighting, insertion, duplication, deletion, drag reordering and earlier/later controls. Page operations support Undo/Redo; layout Undo preserves changes on other pages. Japanese, English and Simplified Chinese.
 - [Done] Active spread fits and displays both pages on the native canvas; clicking the neighboring page makes it editable. Vector neighbors retain SVG fidelity; painted neighbors use a Rust-owned composite cache capped at 2048 pixels. Only small panel thumbnails cross IPC. Native file envelope limit raised to 64 MiB for multi-page documents.
-- [Next] Multi-page PDF/SVG export, parent pages, margins/bleed and spread-wide objects/text threading. Current standalone exporters still target the active page.
+- [Done] 全ページPDF書き出し。論理ページ順、個別寸法・DPI、各ページのリソースを保持し、元文書・履歴を変更しない。
+- [Next] ページ別SVG出力、親ページ、余白・裁ち落とし、見開き横断オブジェクトとテキスト連結。SVGは現在アクティブページのみ。
 - [Later] Section numbering, alternate layouts, page-size presets per section and booklet imposition.
+
+## Adobe製品との機能差
+
+- [Done] 主要制作機能の実装状況と不足を [機能差一覧](adobe-feature-gap-analysis.md) に整理。3分野すべてを継続対象にする。
+- [Next] 組版のフレーム連結、ベクターのアピアランス、タイル文書の高度な合成・グループと入出力精度を段階的に進める。

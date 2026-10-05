@@ -14,6 +14,124 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
 }
 
 pub struct PdfExporter;
+/// Assemble independently exported pages without rendering, changing DPI, or
+/// discarding their own fonts, images, transparency and resource dictionaries.
+pub struct PdfPublication {
+    document: lopdf::Document,
+    pages: Vec<lopdf::ObjectId>,
+    report: ConversionReport,
+    input_bytes: usize,
+}
+impl Default for PdfPublication {
+    fn default() -> Self {
+        Self {
+            document: lopdf::Document::with_version("1.7"),
+            pages: Vec::new(),
+            report: ConversionReport::default(),
+            input_bytes: 0,
+        }
+    }
+}
+impl PdfPublication {
+    pub fn push(&mut self, exported: ExportedDocument) -> Result<(), ExportError> {
+        let invalid = || ExportError::InvalidDocument("Invalid PDF publication page".into());
+        if exported.format != FormatId::Pdf || self.pages.len() >= 512 {
+            return Err(invalid());
+        }
+        let total = self
+            .input_bytes
+            .checked_add(exported.bytes.len())
+            .ok_or_else(invalid)?;
+        if total > 128 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let mut page = lopdf::Document::load_mem(&exported.bytes).map_err(|_| invalid())?;
+        if page.get_pages().len() != 1 || page.is_encrypted() || page.objects.len() > 100_000 {
+            return Err(invalid());
+        }
+        let id = *page.get_pages().values().next().ok_or_else(invalid)?;
+        // Flatten inherited attributes before replacing the page's Parent.
+        // Referenced resources remain in the source object graph and are renumbered.
+        let mut dictionary = page.get_dictionary(id).map_err(|_| invalid())?.clone();
+        let mut parent = dictionary.get(b"Parent").ok().cloned();
+        let mut ancestors = std::collections::BTreeSet::new();
+        while let Some(object) = parent {
+            let parent_id = object.as_reference().map_err(|_| invalid())?;
+            if !ancestors.insert(parent_id) || ancestors.len() > 64 {
+                return Err(invalid());
+            }
+            let node = page.get_dictionary(parent_id).map_err(|_| invalid())?;
+            for key in [b"Resources".as_slice(), b"MediaBox", b"CropBox", b"Rotate"] {
+                if dictionary.get(key).is_err() {
+                    if let Ok(value) = node.get(key) {
+                        dictionary.set(key, value.clone());
+                    }
+                }
+            }
+            parent = node.get(b"Parent").ok().cloned();
+        }
+        page.objects
+            .insert(id, lopdf::Object::Dictionary(dictionary));
+        page.renumber_objects_with(self.document.max_id + 1);
+        let id = *page.get_pages().values().next().ok_or_else(invalid)?;
+        if self.document.objects.len() + page.objects.len() > 100_000 {
+            return Err(invalid());
+        }
+        self.document.max_id = self.document.max_id.max(page.max_id);
+        self.document.objects.extend(page.objects);
+        self.pages.push(id);
+        self.input_bytes = total;
+        for issue in exported.report.issues {
+            if !self.report.issues.contains(&issue) {
+                self.report.issues.push(issue);
+            }
+        }
+        Ok(())
+    }
+    pub fn finish(mut self, options: ExportOptions) -> Result<ExportedDocument, ExportError> {
+        use lopdf::{dictionary, Object};
+        if self.pages.is_empty() {
+            return Err(ExportError::InvalidDocument("Empty PDF publication".into()));
+        }
+        if !options.allow_lossy && !self.report.issues.is_empty() {
+            return Err(ExportError::LossyConversionRequiresConsent(self.report));
+        }
+        let root = self.document.new_object_id();
+        for id in &self.pages {
+            self.document
+                .get_dictionary_mut(*id)
+                .map_err(|e| ExportError::InvalidDocument(e.to_string()))?
+                .set("Parent", root);
+        }
+        self.document.objects.insert(
+            root,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Count" => self.pages.len() as i64,
+                "Kids" => self.pages.iter().copied().map(Object::Reference).collect::<Vec<_>>()
+            }),
+        );
+        let catalog = self
+            .document
+            .add_object(dictionary! { "Type" => "Catalog", "Pages" => root });
+        self.document.trailer.set("Root", catalog);
+        self.document.prune_objects();
+        let mut bytes = Vec::new();
+        self.document
+            .save_to(&mut bytes)
+            .map_err(|e| ExportError::InvalidDocument(e.to_string()))?;
+        if bytes.len() > 128 * 1024 * 1024 {
+            return Err(ExportError::InvalidDocument(
+                "PDF publication exceeds 128 MiB".into(),
+            ));
+        }
+        Ok(ExportedDocument {
+            format: FormatId::Pdf,
+            media_type: "application/pdf",
+            bytes,
+            report: self.report,
+        })
+    }
+}
 impl DocumentExporter for PdfExporter {
     fn format(&self) -> FormatId {
         FormatId::Pdf
@@ -87,6 +205,77 @@ impl DocumentExporter for PdfExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn publication_preserves_page_order_dimensions_and_individual_dpi() {
+        let mut publication = PdfPublication::default();
+        for (width, height, dpi, color) in [
+            (120, 80, 72, "red"),
+            (240, 160, 144, "blue"),
+            (60, 100, 72, "green"),
+        ] {
+            let mut doc = crate::svg::import("日本語ページ".into(), format!("<svg width=\"{width}\" height=\"{height}\"><rect width=\"{width}\" height=\"{height}\" fill=\"{color}\"/></svg>")).unwrap();
+            let mut state = doc.document_state();
+            state.resolution = Some(dpi);
+            doc = lumapaint_core::document::Document::from_document_state(state).unwrap();
+            publication
+                .push(
+                    PdfExporter
+                        .export(&ExportSnapshot::capture(&doc), ExportOptions::default())
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        let result = publication.finish(ExportOptions::default()).unwrap();
+        let pages = inspect(&result.bytes).unwrap();
+        assert_eq!(
+            pages
+                .iter()
+                .map(|p| (p.width_points, p.height_points))
+                .collect::<Vec<_>>(),
+            [(120., 80.), (120., 80.), (60., 100.)]
+        );
+        for index in 0..3 {
+            let result = read(
+                &result.bytes,
+                ReadOptions {
+                    page_index: index,
+                    allow_lossy: true,
+                    raster_dpi: 72,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let crate::io::ReadContent::Vector(doc) = result.content else {
+                panic!()
+            };
+            assert_eq!(doc.svg_layers().count(), 1);
+        }
+    }
+    #[test]
+    fn publication_rejects_empty_wrong_format_and_multi_page_inputs_atomically() {
+        assert!(PdfPublication::default()
+            .finish(ExportOptions::default())
+            .is_err());
+        let mut writer = PdfPublication::default();
+        assert!(writer
+            .push(ExportedDocument {
+                format: FormatId::Pdf,
+                media_type: "application/pdf",
+                bytes: two_pages(),
+                report: ConversionReport::default()
+            })
+            .is_err());
+        assert!(writer.pages.is_empty() && writer.document.objects.is_empty());
+        assert!(writer
+            .push(ExportedDocument {
+                format: FormatId::Svg,
+                media_type: "image/svg+xml",
+                bytes: vec![],
+                report: ConversionReport::default()
+            })
+            .is_err());
+        assert!(writer.pages.is_empty());
+    }
     fn two_pages() -> Vec<u8> {
         let document = crate::svg::import(
             "Pages".into(),
