@@ -74,7 +74,14 @@ export interface Gradient { pixelStyle?: 'angular'|'reflected'|'diamond'; geomet
 export type FrameFit="contain"|"cover"|"stretch";
 export interface ImageFrameSummary {fitting:FrameFit;sourcePath:string|null;name:string|null;size:[number,number]|null;contentTransform:[number,number,number,number,number,number]|null}
 export interface LayerObjectSnapshot { imageFrame?:ImageFrameSummary|null; fillGradient?: Gradient | null; strokeGradient?: Gradient | null; locked: boolean; strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
+export type RasterBlendMode = 'normal' | 'multiply' | 'screen' | 'darken' | 'lighten' | 'difference' | 'exclusion';
+export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_raster_blend_mode', { id, mode }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 export interface LayerSnapshot {
+  rasterBlendMode?: RasterBlendMode;
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }

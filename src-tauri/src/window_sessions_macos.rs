@@ -1104,6 +1104,7 @@ mod tests {
         activate_document(OpenDocument {
             id,
             content: OpenDocumentContent::Tiled(TiledSession {
+                selected_layer: None,
                 document,
                 file_name: Some("Shared tiles".into()),
                 saved_revision: Some(0),

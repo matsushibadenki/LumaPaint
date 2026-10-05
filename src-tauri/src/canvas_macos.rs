@@ -3481,7 +3481,61 @@ pub fn toggle_layer(id: String) -> Result<DocumentSnapshot, String> {
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
+fn ensure_tiled_open() -> Result<(), String> {
+    if DOCUMENT_OPEN.with(|open| open.get())
+        && ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        && !raster_import::active()
+    {
+        Ok(())
+    } else {
+        Err(
+            "No editable tiled document / 編集可能なタイル文書がありません / 没有可编辑的瓦片文档"
+                .into(),
+        )
+    }
+}
+fn tiled_snapshot() -> Result<DocumentSnapshot, String> {
+    ACTIVE_TILED_DOCUMENT.with(|d| {
+        d.borrow()
+            .as_ref()
+            .map(TiledSession::snapshot)
+            .ok_or_else(|| "Missing tiled document".into())
+    })
+}
+pub fn set_raster_blend_mode(
+    id: String,
+    mode: lumapaint_core::tiles::RasterBlendMode,
+) -> Result<DocumentSnapshot, String> {
+    ensure_tiled_open()?;
+    ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+        d.borrow_mut()
+            .as_mut()
+            .ok_or("No tiled document")?
+            .document
+            .set_layer_blend_mode(&id, mode)?;
+        Ok(())
+    })?;
+    redraw()?;
+    emit_document();
+    tiled_snapshot()
+}
+
 pub fn set_layer_settings(settings: LayerSettings) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+            d.borrow_mut()
+                .as_mut()
+                .ok_or("Missing tiled document")?
+                .document
+                .set_layer_settings(settings)?;
+            Ok(())
+        })?;
+        redraw()?;
+        emit_document();
+        return tiled_snapshot();
+    }
+
     ensure_document_open()?;
     DOCUMENT.with(|doc| doc.borrow_mut().set_layer_settings(settings))?;
     redraw()?;
@@ -3508,6 +3562,21 @@ pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 pub fn select_layer(id: String) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+            let mut d = d.borrow_mut();
+            let session = d.as_mut().ok_or("Missing tiled document")?;
+            if !session.document.layers().iter().any(|l| l.id == id) {
+                return Err("Unknown raster layer".into());
+            }
+            session.selected_layer = Some(id);
+            Ok(())
+        })?;
+        emit_document();
+        return tiled_snapshot();
+    }
+
     ensure_document_open()?;
     // Commit against the original destination before changing the selected layer.
     // A failed commit leaves both the editor and selection intact.
@@ -3599,6 +3668,9 @@ pub fn arrange_selected_vectors(action: String) -> Result<DocumentSnapshot, Stri
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 pub fn select_arrange_layer(id: String) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        return select_layer(id);
+    }
     ensure_document_open()?;
     text_editor::finish(true)?;
     DOCUMENT.with(|doc| doc.borrow_mut().select_layer_preserving_objects(id))?;
@@ -4694,6 +4766,7 @@ enum OpenDocumentContent {
 }
 
 struct TiledSession {
+    selected_layer: Option<String>,
     document: TiledRasterDocument,
     file_name: Option<String>,
     saved_revision: Option<u64>,
@@ -4713,13 +4786,26 @@ impl TiledSession {
         snapshot.width = width;
         snapshot.height = height;
         snapshot.raster_resolution = self.document.resolution();
-        snapshot.layer_id = "tile-preview".into();
+        snapshot.layer_id = self
+            .selected_layer
+            .clone()
+            .or_else(|| {
+                self.document
+                    .layers()
+                    .iter()
+                    .rev()
+                    .find(|l| l.visible)
+                    .map(|l| l.id.clone())
+            })
+            .or_else(|| self.document.layers().last().map(|l| l.id.clone()))
+            .unwrap_or_default();
         snapshot.layer_visible = self.document.layers().iter().any(|layer| layer.visible);
         snapshot.layers = self
             .document
             .layers()
             .iter()
             .map(|layer| LayerSnapshot {
+                raster_blend_mode: Some(layer.blend_mode),
                 guide_color: [48, 144, 255, 255],
                 objects: Vec::new(),
                 id: layer.id.clone(),
@@ -5360,6 +5446,106 @@ fn native_frame(
 mod tests {
     use super::*;
 
+    #[test]
+    fn tiled_layer_selection_blend_unlock_history_and_snapshot_stay_in_rust() {
+        use lumapaint_core::tiles::RasterBlendMode;
+        use lumapaint_formats::DocumentImporter;
+        let mut document = TiledRasterDocument::new(1, 1).unwrap();
+        document.add_layer("base".into(), "Base".into()).unwrap();
+        document.add_layer("top".into(), "日本語".into()).unwrap();
+        document
+            .write_rect("base", [0, 0, 1, 1], &[255, 0, 0, 255])
+            .unwrap();
+        document
+            .write_rect("top", [0, 0, 1, 1], &[0, 0, 255, 128])
+            .unwrap();
+        document.discard_history();
+        let revision = document.revision();
+        let previous = ACTIVE_TILED_DOCUMENT.with(|d| {
+            d.replace(Some(TiledSession {
+                selected_layer: None,
+                document,
+                name: "Test".into(),
+                file_name: None,
+                saved_revision: Some(revision),
+            }))
+        });
+        let was_open = DOCUMENT_OPEN.with(|o| o.replace(true));
+        struct Restore(Option<TiledSession>, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE_TILED_DOCUMENT.with(|d| *d.borrow_mut() = self.0.take());
+                DOCUMENT_OPEN.with(|o| o.set(self.1));
+            }
+        }
+        let _restore = Restore(previous, was_open);
+        assert!(ensure_document_open().is_err());
+        assert!(ensure_tiled_open().is_ok());
+        let selected = select_arrange_layer("base".into()).unwrap();
+        assert_eq!(selected.layer_id, "base");
+        assert!(!selected.dirty);
+        assert!(select_layer("missing".into()).is_err());
+        assert_eq!(tiled_snapshot().unwrap().layer_id, "base");
+        select_layer("top".into()).unwrap();
+        let changed = set_raster_blend_mode("top".into(), RasterBlendMode::Multiply).unwrap();
+        assert!(changed.dirty && changed.can_undo);
+        assert_eq!(
+            changed.layers[1].raster_blend_mode,
+            Some(RasterBlendMode::Multiply)
+        );
+        let saved_state =
+            ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().as_ref().unwrap().document.state());
+        let native = lumapaint_formats::tile_container::encode(&saved_state).unwrap();
+        assert_eq!(
+            lumapaint_formats::tile_container::decode(&native).unwrap(),
+            saved_state
+        );
+        for format in [
+            lumapaint_formats::export::FormatId::Psd,
+            lumapaint_formats::export::FormatId::Psb,
+        ] {
+            let saved =
+                lumapaint_formats::export::export_raster(format, &saved_state, Default::default())
+                    .unwrap();
+            let loaded = lumapaint_formats::psd::PsdImporter
+                .import(&saved.bytes, Default::default())
+                .unwrap();
+            assert_eq!(
+                loaded.raster.layers[1].blend_mode,
+                RasterBlendMode::Multiply
+            );
+            assert_eq!(loaded.raster.layers[1].tiles, saved_state.layers[1].tiles);
+        }
+        let undone = edit(DocumentAction::Undo).unwrap();
+        assert_eq!(
+            undone.layers[1].raster_blend_mode,
+            Some(RasterBlendMode::Normal)
+        );
+        assert!(undone.can_redo);
+        let redone = edit(DocumentAction::Redo).unwrap();
+        assert_eq!(
+            redone.layers[1].raster_blend_mode,
+            Some(RasterBlendMode::Multiply)
+        );
+        let settings = LayerSettings {
+            id: "top".into(),
+            name: "日本語".into(),
+            opacity: 1.,
+            locked: true,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        };
+        set_layer_settings(settings.clone()).unwrap();
+        assert!(set_raster_blend_mode("top".into(), RasterBlendMode::Screen).is_err());
+        set_layer_settings(LayerSettings {
+            locked: false,
+            ..settings
+        })
+        .unwrap();
+        assert!(set_raster_blend_mode("top".into(), RasterBlendMode::Screen).is_ok());
+    }
     #[test]
     fn corner_gesture_changes_one_corner_and_shift_changes_all_with_single_undo() {
         let mut document = Document::default();
@@ -7086,6 +7272,7 @@ pub fn open_psd(prepared: crate::psd_import::Prepared) -> Result<(), String> {
     activate_document(OpenDocument {
         id: next_document_id(),
         content: OpenDocumentContent::Tiled(TiledSession {
+            selected_layer: None,
             document: prepared.document,
             name: prepared.name,
             file_name: None,
@@ -7176,10 +7363,11 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
     use super::FileAction;
     match action {
         FileAction::Export => {
-            ensure_document_open()?;
             if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+                ensure_tiled_open()?;
                 return export_tiled_psd();
             }
+            ensure_document_open()?;
             let Some(path) = rfd::FileDialog::new()
                 .add_filter("SVG", &["svg"])
                 .add_filter("PDF", &["pdf"])
@@ -7350,6 +7538,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 }
                 crate::project_file::ProjectData::Tiled(state) => {
                     OpenDocumentContent::Tiled(TiledSession {
+                        selected_layer: None,
                         document: TiledRasterDocument::from_state(state)?,
                         file_name: Some(name.clone()),
                         saved_revision: Some(0),
@@ -7610,6 +7799,7 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
         }
         crate::project_file::ProjectData::Tiled(state) => {
             OpenDocumentContent::Tiled(TiledSession {
+                selected_layer: None,
                 document: TiledRasterDocument::from_state(state)?,
                 name: "Recovered tiled document / 復旧したタイル文書 / 恢复的瓦片文档".into(),
                 file_name: None,

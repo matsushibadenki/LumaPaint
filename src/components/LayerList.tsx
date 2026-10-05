@@ -7,10 +7,11 @@ import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename }: {
+export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename }: {
   groups:LayerGroupsState; onGroupEdit:(edit:LayerGroupEdit)=>void;
   thumbnails?: Record<string,string>; thumbnailError?: string;
   layers: LayerSnapshot[]; textObjects: TextObjectSnapshot[]; selectedId: string; enabled: boolean; locale: Locale;
+  selectable?: boolean;
   selectedObjects: string[]; onSelectObject: (layerId: string, objectId: string) => void;
   onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
   onReorderObjects: (layerId: string, ids: string[]) => void;
@@ -258,13 +259,14 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
       const displayName = !layer.deletable && ['Layer 1', 'Layer1', 'Background'].includes(layer.name) ? t.backgroundLayer : layer.name;
       const objects = layer.objects ?? [];
       const isExpanded = expanded.has(layer.id);
-      return <Fragment key={layer.id}><div data-layer-id={layer.id} role="listitem" tabIndex={enabled ? 0 : -1}
+      return <Fragment key={layer.id}><div data-layer-id={layer.id} role="listitem" tabIndex={selectable ? 0 : -1}
       className={`layer-row${groups.selected.includes(layer.id) || (groups.selected.length===0&&selectedId === layer.id) ? ' selected' : ''}${draggedId === layer.id ? ' dragging' : ''}${gap === index ? ' insert-before' : ''}`}
       style={{paddingLeft:6}} data-movable={enabled && layer.deletable} title={layer.deletable ? t.reorderLayer : t.fixedBaseLayer}
-      onPointerDown={event => start(event, layer)}
+      onPointerDown={event => { if (!enabled && selectable && event.button === 0 && !(event.target as Element).closest('input, button')) onSelect(layer.id); else start(event, layer); }}
       onKeyDown={event => {
-        if (!enabled || (event.target as Element).closest('input, button')) return;
+        if (!selectable || (event.target as Element).closest('input, button')) return;
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(layer.id); }
+        if (!enabled) return;
         if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key) || !layer.deletable) return;
         event.preventDefault();
         const ids=[...(layer.parent?groups.groups.find(g=>g.id===layer.parent)!.children:groups.roots)];

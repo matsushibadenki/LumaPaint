@@ -405,6 +405,8 @@ pub struct LayerObjectSnapshot {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raster_blend_mode: Option<crate::tiles::RasterBlendMode>,
     pub guide_color: [u8; 4],
     pub objects: Vec<LayerObjectSnapshot>,
     pub id: String,
@@ -756,6 +758,7 @@ impl Document {
 
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
+            raster_blend_mode: None,
             guide_color: self.layer_guide_color("layer-1"),
             objects: Vec::new(),
             id: "layer-1".into(),
@@ -790,6 +793,7 @@ impl Document {
                         Vec::new()
                     };
                     LayerSnapshot {
+                        raster_blend_mode: None,
                         guide_color: self.layer_guide_color(&layer.id),
                         objects: layer
                             .vector_objects

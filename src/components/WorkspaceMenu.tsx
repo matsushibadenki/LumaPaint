@@ -25,7 +25,7 @@ type Props = {
   onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
   onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear'|'snap'|'selectAll'|'invertSelection'|'deselect'|'thirds'|'quarters'|'margins'|'saveLayout'|'loadLayout')=>void;
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
-  locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean;
+  locale: Locale; document: DocumentSnapshot; canFile: boolean; hasDocument: boolean; canEdit: boolean; canHistory?: boolean;
   zoom: number; panels: boolean; onFile: (action: 'open' | 'save' | 'saveAs' | 'export') => void;
   onNewWindow: () => void; onNew: () => void; onCloseDocument: () => void;
   onPlace:()=>void;
@@ -46,6 +46,7 @@ type Props = {
 
 export function WorkspaceMenu(props: Props) {
   const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const canHistory = props.canHistory ?? canEdit;
   const guides={ja:['ガイド','ガイドを隠す','ガイドを表示','ガイドのロックを解除','ガイドをロック','ガイドを作成','ガイドを解除','ガイドを消去'],en:['Guides','Hide Guides','Show Guides','Unlock Guides','Lock Guides','Make Guides','Release Guides','Clear Guides'],'zh-CN':['参考线','隐藏参考线','显示参考线','解锁参考线','锁定参考线','建立参考线','释放参考线','清除参考线']}[locale];
   const clip = { ja: ['クリッピングパス', '作成', '削除', 'マスクを編集'], en: ['Clipping Path', 'Make', 'Release', 'Edit Mask'], 'zh-CN': ['剪切路径', '建立', '释放', '编辑蒙版'] }[locale];
   const t = menuMessages[locale], common = messages[locale], w = workspaceMessages[locale];
@@ -71,8 +72,8 @@ export function WorkspaceMenu(props: Props) {
       { label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
       { label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
       { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, { label: { ja: '読み込み…', en: 'Import…', 'zh-CN': '导入…' }[locale], enabled: canFile && hasDocument && canEdit, action: props.onImportImage }, { label: t.export, enabled: canFile && hasDocument, action: () => onFile('export') }],
-    [{ label: w.undo, enabled: canEdit && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
-      { label: w.redo, enabled: canEdit && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
+    [{ label: w.undo, enabled: canHistory && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
+      { label: w.redo, enabled: canHistory && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
       { label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, { label: t.cut, enabled: canEdit, shortcut: 'CmdOrCtrl+X', action: () => onEdit('cut') }, { label: t.copy, enabled: canEdit, shortcut: 'CmdOrCtrl+C', action: () => onEdit('copy') }, { label: t.paste, enabled: canEdit, shortcut: 'CmdOrCtrl+V', action: () => onEdit('paste') }, null,
       { label: t.clearLayer, enabled: canEdit && !doc.layers.find(layer => layer.id === doc.layerId)?.locked, action: () => onEdit('clearLayer') }],
     [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },

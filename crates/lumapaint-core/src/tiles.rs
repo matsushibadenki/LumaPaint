@@ -729,6 +729,11 @@ impl RasterLayer {
 
 #[derive(Clone, Debug, PartialEq)]
 enum RasterEdit {
+    Blend {
+        layer_id: String,
+        before: RasterBlendMode,
+        after: RasterBlendMode,
+    },
     Settings {
         before: LayerSettings,
         after: LayerSettings,
@@ -1277,6 +1282,36 @@ impl TiledRasterDocument {
         Ok(Some(TileInvalidation { layer_id, coords }))
     }
 
+    pub fn set_layer_blend_mode(
+        &mut self,
+        layer_id: &str,
+        mode: RasterBlendMode,
+    ) -> Result<Option<TileInvalidation>, String> {
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|l| l.id == layer_id)
+            .ok_or("Unknown raster layer")?;
+        if layer.blend_mode == mode {
+            return Ok(None);
+        }
+        if layer.locked {
+            return Err("Raster layer is locked".into());
+        }
+        let before = layer.blend_mode;
+        let coords = layer.tiles.allocated_coords().collect();
+        layer.blend_mode = mode;
+        self.record_edit(RasterEdit::Blend {
+            layer_id: layer_id.into(),
+            before,
+            after: mode,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: layer_id.into(),
+            coords,
+        }))
+    }
+
     pub fn set_layer_appearance(
         &mut self,
         layer_id: &str,
@@ -1676,6 +1711,26 @@ impl TiledRasterDocument {
             return Ok(None);
         };
         let invalidation = match edit {
+            RasterEdit::Blend {
+                layer_id,
+                before,
+                after,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?;
+                if layer.blend_mode != if undo { *after } else { *before } {
+                    return Err("Raster blend mode changed outside history".into());
+                }
+                let coords = layer.tiles.allocated_coords().collect();
+                layer.blend_mode = if undo { *before } else { *after };
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords,
+                }
+            }
             RasterEdit::Settings { before, after } => {
                 let layer = self
                     .layers
@@ -1835,6 +1890,55 @@ fn div_255(value: u32) -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn blend_edit_invalidates_owned_tiles_and_is_atomic_undoable() {
+        let mut doc = TiledRasterDocument::new(257, 1).unwrap();
+        doc.add_layer("top".into(), "Top".into()).unwrap();
+        doc.write_rect(
+            "top",
+            [255, 0, 2, 1],
+            &[64, 128, 192, 255, 128, 64, 32, 128],
+        )
+        .unwrap();
+        doc.discard_history();
+        let original = doc.state();
+        let revision = doc.revision();
+        let update = doc
+            .set_layer_blend_mode("top", RasterBlendMode::Multiply)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            update.coords,
+            vec![TileCoord { x: 0, y: 0 }, TileCoord { x: 1, y: 0 }]
+        );
+        assert_eq!(doc.revision(), revision + 1);
+        assert_eq!(doc.state().layers[0].tiles, original.layers[0].tiles);
+        assert!(doc
+            .set_layer_blend_mode("top", RasterBlendMode::Multiply)
+            .unwrap()
+            .is_none());
+        assert_eq!(doc.revision(), revision + 1);
+        assert!(doc
+            .set_layer_blend_mode("missing", RasterBlendMode::Screen)
+            .is_err());
+        assert_eq!(doc.undo().unwrap().unwrap().coords, update.coords);
+        assert_eq!(doc.state(), original);
+        assert!(doc.can_redo());
+        doc.redo().unwrap();
+        assert_eq!(doc.layers()[0].blend_mode, RasterBlendMode::Multiply);
+        doc.undo().unwrap();
+        doc.set_layer_blend_mode("top", RasterBlendMode::Screen)
+            .unwrap();
+        assert!(!doc.can_redo());
+        doc.set_layer_locks("top", true, false).unwrap();
+        let locked = doc.state();
+        let revision = doc.revision();
+        assert!(doc
+            .set_layer_blend_mode("top", RasterBlendMode::Difference)
+            .is_err());
+        assert_eq!(doc.state(), locked);
+        assert_eq!(doc.revision(), revision);
+    }
     #[test]
     fn blend_modes_have_expected_opaque_pixels_and_partial_alpha() {
         let coord = TileCoord { x: 0, y: 0 };
