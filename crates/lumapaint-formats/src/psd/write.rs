@@ -103,6 +103,40 @@ fn extra(
     ])?;
     Ok(out.0)
 }
+fn resolution_resource(resolution: RasterResolution) -> Vec<u8> {
+    let display = |unit| match unit {
+        ResolutionDisplayUnit::PixelsPerInch => 1u16,
+        ResolutionDisplayUnit::PixelsPerCentimeter => 2,
+    };
+    let dimension = |unit| match unit {
+        PrintDimensionUnit::Inches => 1u16,
+        PrintDimensionUnit::Centimeters => 2,
+        PrintDimensionUnit::Points => 3,
+        PrintDimensionUnit::Picas => 4,
+        PrintDimensionUnit::Columns => 5,
+    };
+    let mut bytes = b"8BIM".to_vec();
+    bytes.extend(1005u16.to_be_bytes());
+    bytes.extend([0, 0]);
+    bytes.extend(16u32.to_be_bytes());
+    for (ppi, unit, size_unit) in [
+        (
+            resolution.x_ppi,
+            resolution.x_display,
+            resolution.width_display,
+        ),
+        (
+            resolution.y_ppi,
+            resolution.y_display,
+            resolution.height_display,
+        ),
+    ] {
+        bytes.extend(((ppi * 65536.).round() as u32).to_be_bytes());
+        bytes.extend(display(unit).to_be_bytes());
+        bytes.extend(dimension(size_unit).to_be_bytes());
+    }
+    bytes
+}
 /// Normal RGB8 raster layers only. Quantized opacity/mask settings require consent.
 pub fn write(
     state: &TiledRasterState,
@@ -143,6 +177,13 @@ pub fn write(
         return Err(invalid("PSD/PSB export exceeds 128 MiB"));
     }
     let mut report = ConversionReport::default();
+    if state.resolution.is_some_and(|r| {
+        [r.x_ppi, r.y_ppi]
+            .iter()
+            .any(|v| (*v * 65536.).round() / 65536. != *v)
+    }) {
+        issue(&mut report, "psd.resolutionQuantized");
+    }
     for layer in &state.layers {
         let opacity = (layer.opacity * 255.).round() as u8;
         if (layer.opacity - f32::from(opacity) / 255.).abs() > 1e-7 {
@@ -168,7 +209,12 @@ pub fn write(
     out.bytes(&8u16.to_be_bytes())?;
     out.bytes(&3u16.to_be_bytes())?;
     out.length(0, false)?;
-    out.length(0, false)?;
+    let resources = state
+        .resolution
+        .map(resolution_resource)
+        .unwrap_or_default();
+    out.length(resources.len(), false)?;
+    out.bytes(&resources)?;
     let section = out.0.len();
     out.length(0, large)?;
     let info = out.0.len();
@@ -200,7 +246,8 @@ pub fn write(
             out.bytes(&(-2i16).to_be_bytes())?;
             out.length(state.width as usize * state.height as usize + 2, large)?;
         }
-        out.bytes(b"8BIMnorm")?;
+        out.bytes(b"8BIM")?;
+        out.bytes(blend_key(layer.blend_mode))?;
         out.bytes(&[
             (layer.opacity * 255.).round() as u8,
             0,
@@ -301,6 +348,148 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn resolution() -> RasterResolution {
+        RasterResolution {
+            x_ppi: 300.5,
+            y_ppi: 150.25,
+            x_display: ResolutionDisplayUnit::PixelsPerCentimeter,
+            y_display: ResolutionDisplayUnit::PixelsPerInch,
+            width_display: PrintDimensionUnit::Centimeters,
+            height_display: PrintDimensionUnit::Points,
+        }
+    }
+    #[test]
+    fn supported_blends_round_trip_with_native_pixels_and_psd_preview_guard() {
+        let mut state = PsdImporter
+            .import(
+                include_bytes!("../../tests/fixtures/lp-psd-layers.psd"),
+                ImportOptions::default(),
+            )
+            .unwrap()
+            .raster;
+        for mode in [
+            RasterBlendMode::Multiply,
+            RasterBlendMode::Screen,
+            RasterBlendMode::Darken,
+            RasterBlendMode::Lighten,
+            RasterBlendMode::Difference,
+            RasterBlendMode::Exclusion,
+        ] {
+            state.layers[1].blend_mode = mode;
+            state.layers[1].opacity = 128. / 255.;
+            state.layers[1].mask_enabled = true;
+            let mut values = vec![255; (TILE_SIZE * TILE_SIZE) as usize];
+            for y in 0..state.height as usize {
+                values[y * TILE_SIZE as usize..y * TILE_SIZE as usize + state.width as usize]
+                    .fill(128);
+            }
+            state.layers[1].mask_tiles = vec![lumapaint_core::tiles::MaskTileState {
+                coord: TileCoord { x: 0, y: 0 },
+                values,
+            }];
+            let encoded = crate::tile_container::encode(&state).unwrap();
+            assert_eq!(crate::tile_container::decode(&encoded).unwrap(), state);
+            for large in [false, true] {
+                let saved = write(&state, large, ExportOptions::default()).unwrap();
+                assert!(saved.report.issues.is_empty());
+                let imported = PsdImporter
+                    .import(&saved.bytes, ImportOptions::default())
+                    .unwrap();
+                assert_eq!(imported.raster, state);
+                // A stale/tampered merged preview must not allow silently different editable layers.
+                let mut mismatch = saved.bytes.clone();
+                let last = mismatch.len() - 1;
+                mismatch[last] ^= 255;
+                assert!(matches!(
+                    PsdImporter.import(&mismatch, ImportOptions::default()),
+                    Err(ImportError::LossyConversionRequiresConsent(_))
+                ));
+            }
+        }
+    }
+    #[test]
+    fn resolution_survives_psd_psb_native_save_and_live_restore() {
+        let mut state = PsdImporter
+            .import(
+                include_bytes!("../../tests/fixtures/lp-psd-layers.psd"),
+                ImportOptions::default(),
+            )
+            .unwrap()
+            .raster;
+        state.resolution = Some(resolution());
+        let native = crate::tile_container::encode(&state).unwrap();
+        let restored = crate::tile_container::decode(&native).unwrap();
+        assert_eq!(restored, state);
+        let live = lumapaint_core::tiles::TiledRasterDocument::from_state(restored).unwrap();
+        assert_eq!(live.resolution(), state.resolution);
+        assert_eq!(live.state(), state);
+        for large in [false, true] {
+            let saved = write(&live.state(), large, ExportOptions::default()).unwrap();
+            assert!(saved.report.issues.is_empty());
+            // Independent expected bytes: 300.5 and 150.25 signed 16.16 ppi.
+            assert_eq!(
+                &saved.bytes[34..62],
+                &[
+                    56, 66, 73, 77, 3, 237, 0, 0, 0, 0, 0, 16, 1, 44, 128, 0, 0, 2, 0, 2, 0, 150,
+                    64, 0, 0, 1, 0, 3
+                ]
+            );
+            let loaded = PsdImporter
+                .import(&saved.bytes, ImportOptions::default())
+                .unwrap();
+            assert_eq!(loaded.raster, state);
+            let r = loaded.raster.resolution.unwrap();
+            assert_eq!(r.size_inches(601, 601), [2., 4.]);
+        }
+    }
+    #[test]
+    fn fractional_resolution_rounding_requires_consent() {
+        let mut state = PsdImporter
+            .import(
+                include_bytes!("../../tests/fixtures/lp-psd-layers.psd"),
+                ImportOptions::default(),
+            )
+            .unwrap()
+            .raster;
+        let mut r = resolution();
+        r.x_ppi = 300.123456789;
+        state.resolution = Some(r);
+        assert!(matches!(
+            write(&state, false, ExportOptions::default()),
+            Err(ExportError::LossyConversionRequiresConsent(_))
+        ));
+        let output = write(&state, true, ExportOptions { allow_lossy: true }).unwrap();
+        assert_eq!(output.report.issues[0].code, "psd.resolutionQuantized");
+        let r2 = PsdImporter
+            .import(&output.bytes, ImportOptions::default())
+            .unwrap()
+            .raster
+            .resolution
+            .unwrap();
+        assert!((r2.x_ppi - r.x_ppi).abs() <= 0.5 / 65536.);
+        assert_eq!(r2.y_ppi, r.y_ppi);
+    }
+    #[test]
+    fn invalid_resolution_and_duplicate_resource_are_rejected() {
+        let resource = resolution_resource(resolution());
+        for (position, value) in [(0, 0u32), (0, 0x80000000)] {
+            let mut payload = resource[12..].to_vec();
+            payload[position..position + 4].copy_from_slice(&value.to_be_bytes());
+            assert!(read_resolution(&payload).is_err());
+        }
+        for pos in [4, 6, 12, 14] {
+            let mut payload = resource[12..].to_vec();
+            payload[pos..pos + 2].fill(0);
+            assert!(read_resolution(&payload).is_err());
+        }
+        assert!(read_resolution(&resource[12..27]).is_err());
+        let mut duplicated = resource.clone();
+        duplicated.extend(resource);
+        assert!(resources(&duplicated, &mut ConversionReport::default()).is_err());
+        let mut invalid = resolution();
+        invalid.y_ppi = f64::NAN;
+        assert!(invalid.validate().is_err());
+    }
     #[test]
     fn unicode_raster_layers_round_trip_in_psd_and_psb() {
         let original = PsdImporter

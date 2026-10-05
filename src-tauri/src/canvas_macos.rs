@@ -4712,6 +4712,7 @@ impl TiledSession {
         snapshot.file_name = self.file_name.clone();
         snapshot.width = width;
         snapshot.height = height;
+        snapshot.raster_resolution = self.document.resolution();
         snapshot.layer_id = "tile-preview".into();
         snapshot.layer_visible = self.document.layers().iter().any(|layer| layer.visible);
         snapshot.layers = self

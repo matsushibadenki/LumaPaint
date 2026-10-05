@@ -112,3 +112,23 @@ InDesignの交換形式については[Adobeの旧バージョン互換案内](h
 - [Done] 不透明度の丸め、マスク密度の画素化、保護設定の拡張はTier Bで通知。出力前の取消が可能。元文書を変更しない。
 
 入力タイルとマスク計64MiB、出力128MiB、8192pxの上限を適用。PSD v1／PSB v2の長さを区別し、RGB8以外と高度な編集情報は対象外。全ページPDF出力とAdobe機能差は [機能差一覧](adobe-feature-gap-analysis.md) を参照。
+
+## PSD／PSBの解像度情報
+
+- [Done] ResolutionInfo（resource 1005）の16.16固定小数点から水平・垂直ppiを読み込み、解像度と寸法の表示単位を保持。pixels/cmは表示指定であり、保存密度値は常にppiとして解釈する。
+- [Done] ネイティブタイルコンテナー、復旧、ライブモデル、PSD／PSB出力へ同じ情報を渡す。旧コンテナーで情報がない場合はNoneとして読み、画面で72ppiを使用する。
+- [Done] 定規は軸ごとの密度、寸法表示は幅／高さ各々の密度を使う。密度情報の有無で画素やキャンバス座標を変更しない。
+
+出力の固定小数点への丸めは `psd.resolutionQuantized`（Tier B）で通知。ICC等のその他リソースの省略通知は継続する。PSDの単位表示を保持しても、LumaPaintの全アプリ共通単位を自動変更しない。
+
+- [Done] 解像度付き自作PSBをPhotoshop 2026で開き、画像解像度が118.307pixels/cm（300.5ppi ÷ 2.54）と表示されることを確認。水平・垂直値の個別保持はバイナリ往復で検証。
+
+## RGB8レイヤーの追加合成モード
+
+- [Done] PSD／PSBの `mul `、`scrn`、`dark`、`lite`、`diff`、`smud` を独立モデルのMultiply／Screen／Darken／Lighten／Difference／Exclusionとして保持し、出力にも同じキーを書き込む。
+- [Done] RGB8の半透明とマスクを含む合成をライブ表示、参照プレビュー、出力で共用。元のレイヤー画素は保持する。
+- [Done] 非通常合成の入力は、統合プレビューと比較してから編集可能なレイヤーを採用する。不一致・比較容量上限超過・未対応機能がある入力は、損失確認を伴う統合画像へ切り替える。
+
+合成式は[W3C Compositing and Blending](https://www.w3.org/TR/compositing-1/)、形式キーは[Adobe PSD仕様](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/)を参照。ICC、特殊なガンマ設定やPhotoshopの全合成モードに対する保証ではない。通常RGB8のみという従来の記載に対し、この6種類を追加した。UIでのモード変更、グループ等は未対応。
+
+- [Done] 自作の乗算レイヤー付きPSBをPhotoshop 2026で開き、日本語レイヤーの「乗算」と50%不透明度表示を確認。全モードの画素と往復保持は自動テストで検証。

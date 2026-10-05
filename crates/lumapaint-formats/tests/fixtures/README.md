@@ -52,3 +52,29 @@ visibility and locks appeared correctly. Automated tests compare native raster
 state after write/read for both versions and composite pixels with quantized
 opacity/mask density. These tiny RGB8 fixtures do not establish compatibility
 for production PSD type layers, effects, profiles or smart objects.
+
+## Resolution resource verification (2026-10-05)
+
+The writer tests use independently specified resource 1005 bytes with 300.5 ppi
+(horizontal) and 150.25 ppi (vertical), mixed ppi/pixels-per-cm display units,
+and different physical-size display units. They check PSD/PSB and native
+container round trips, physical size, consent for 16.16 quantization, duplicate
+resources, invalid densities/units and truncation. Old manifests omit this field.
+A temporary own PSD with that resource was converted by `psd_roundtrip` to PSB
+and opened in Photoshop 2026. Image Size displayed `118.307 pixel/cm`, matching
+300.5 / 2.54. This verifies that density is stored in ppi even with cm display;
+it is not a guarantee of complete production-file interoperability.
+
+## Separable blend verification (2026-10-05)
+
+Core tests specify expected opaque RGB8 output for Multiply, Screen, Darken,
+Lighten, Difference and Exclusion, plus a partially transparent backdrop and
+transparent backdrop. Writer tests exercise all six modes with opacity and a
+mask through native containers and PSD/PSB, and reject a mismatched merged
+preview without loss consent. The importer comparison is bounded to 4 million
+allocated preview pixels; larger non-normal documents use the merged fallback.
+A temporary own RGB8 fixture's Japanese layer was set to Multiply with 128/255
+opacity and its merged blue component corrected to zero. `psd_roundtrip`
+exported it to PSB. Photoshop 2026 opened the output and showed the Japanese
+layer as Multiply (`乗算`) with 50% opacity. This verifies one own fixture,
+not arbitrary Photoshop blend settings, color profiles or every blend mode.

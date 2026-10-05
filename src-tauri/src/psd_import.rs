@@ -97,6 +97,7 @@ pub(crate) fn report_text(report: &ConversionReport) -> String {
         "psd.nativeMaskDensityBaked" => "Native mask density is applied to mask pixels; the density setting becomes 100%. / LumaPaintのマスク密度を画素に反映し、密度設定を100%にします。 / LumaPaint的蒙版密度将应用到像素，密度设置变为100%。",
         "psd.protectionExpanded" => "Fully locked layers also receive transparency protection. / 全体ロックされたレイヤーに透明度保護も適用します。 / 完全锁定的图层也将应用透明度保护。",
         "psd.layersFlattened" => "Layers are flattened to the merged image. / レイヤーは統合画像になります。 / 图层将合并为一张图像。",
+        "psd.resolutionQuantized" => "Resolution is rounded to the PSD fixed-point precision. / 解像度をPSDの固定小数点精度へ丸めます。 / 分辨率按PSD定点精度进行舍入。",
         "psd.resolutionNotPreserved" => "Original resolution metadata is not retained. / 元の解像度情報は保持されません。 / 原始分辨率元数据不会保留。",
         "psd.iccProfileNotPreserved" => "ICC profiles are not retained; colors may differ. / ICCプロファイルは保持されず、色が異なる場合があります。 / ICC配置文件不会保留，颜色可能不同。",
         _ => "Additional PSD metadata is not retained. / PSDの追加情報は保持されません。 / 其他PSD元数据不会保留。",

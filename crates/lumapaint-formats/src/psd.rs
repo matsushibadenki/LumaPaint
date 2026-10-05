@@ -4,10 +4,34 @@ mod layers;
 mod write;
 use crate::*;
 use lumapaint_core::tiles::{
-    RasterLayerState, RasterTileState, TileCoord, TiledRasterState, TILE_SIZE,
+    PrintDimensionUnit, RasterBlendMode, RasterLayerState, RasterResolution, RasterTileState,
+    ResolutionDisplayUnit, TileCoord, TiledRasterState, TILE_SIZE,
 };
 pub use write::write;
 
+fn read_blend_mode(key: &[u8]) -> Option<RasterBlendMode> {
+    Some(match key {
+        b"norm" => RasterBlendMode::Normal,
+        b"mul " => RasterBlendMode::Multiply,
+        b"scrn" => RasterBlendMode::Screen,
+        b"dark" => RasterBlendMode::Darken,
+        b"lite" => RasterBlendMode::Lighten,
+        b"diff" => RasterBlendMode::Difference,
+        b"smud" => RasterBlendMode::Exclusion,
+        _ => return None,
+    })
+}
+fn blend_key(mode: RasterBlendMode) -> &'static [u8; 4] {
+    match mode {
+        RasterBlendMode::Normal => b"norm",
+        RasterBlendMode::Multiply => b"mul ",
+        RasterBlendMode::Screen => b"scrn",
+        RasterBlendMode::Darken => b"dark",
+        RasterBlendMode::Lighten => b"lite",
+        RasterBlendMode::Difference => b"diff",
+        RasterBlendMode::Exclusion => b"smud",
+    }
+}
 pub const MAX_INPUT_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 8192;
 pub struct PsdImporter;
@@ -136,7 +160,11 @@ fn packbits(data: &[u8], width: usize) -> Result<Vec<u8>, ImportError> {
     }
     Ok(out)
 }
-fn resources(data: &[u8], report: &mut ConversionReport) -> Result<(), ImportError> {
+fn resources(
+    data: &[u8],
+    report: &mut ConversionReport,
+) -> Result<Option<RasterResolution>, ImportError> {
+    let mut resolution = None;
     let mut r = Reader { bytes: data, at: 0 };
     while r.at < data.len() {
         if r.take(4)? != b"8BIM" {
@@ -149,12 +177,18 @@ fn resources(data: &[u8], report: &mut ConversionReport) -> Result<(), ImportErr
             r.take(1)?;
         }
         let size = r.u32()? as usize;
-        r.take(size)?;
+        let payload = r.take(size)?;
         if !size.is_multiple_of(2) {
             r.take(1)?;
         }
+        if id == 1005 {
+            if resolution.is_some() {
+                return Err(ImportError::Malformed("duplicate resolution resource"));
+            }
+            resolution = Some(read_resolution(payload)?);
+            continue;
+        }
         let code = match id {
-            1005 => "psd.resolutionNotPreserved",
             1039 => "psd.iccProfileNotPreserved",
             _ => "psd.resourceNotPreserved",
         };
@@ -165,7 +199,39 @@ fn resources(data: &[u8], report: &mut ConversionReport) -> Result<(), ImportErr
             });
         }
     }
-    Ok(())
+    Ok(resolution)
+}
+fn read_resolution(data: &[u8]) -> Result<RasterResolution, ImportError> {
+    if data.len() != 16 {
+        return Err(ImportError::Malformed("resolution resource length"));
+    }
+    let mut r = Reader { bytes: data, at: 0 };
+    let display = |unit| match unit {
+        1 => Ok(ResolutionDisplayUnit::PixelsPerInch),
+        2 => Ok(ResolutionDisplayUnit::PixelsPerCentimeter),
+        _ => Err(ImportError::Malformed("resolution display unit")),
+    };
+    let dimension = |unit| match unit {
+        1 => Ok(PrintDimensionUnit::Inches),
+        2 => Ok(PrintDimensionUnit::Centimeters),
+        3 => Ok(PrintDimensionUnit::Points),
+        4 => Ok(PrintDimensionUnit::Picas),
+        5 => Ok(PrintDimensionUnit::Columns),
+        _ => Err(ImportError::Malformed("print dimension unit")),
+    };
+    // Both fixed-point densities are always pixels/inch, even with a cm display unit.
+    let result = RasterResolution {
+        x_ppi: f64::from(r.u32()?) / 65536.,
+        x_display: display(r.u16()?)?,
+        width_display: dimension(r.u16()?)?,
+        y_ppi: f64::from(r.u32()?) / 65536.,
+        y_display: display(r.u16()?)?,
+        height_display: dimension(r.u16()?)?,
+    };
+    result
+        .validate()
+        .map_err(|_| ImportError::Malformed("resolution density"))?;
+    Ok(result)
 }
 // Negative layer count identifies the first extra channel as merged transparency.
 // Validate the container and record lengths before trusting that marker.
@@ -242,7 +308,7 @@ impl DocumentImporter for PsdImporter {
             ));
         }
         let mut report = ConversionReport::default();
-        resources(r.section()?, &mut report)?;
+        let resolution = resources(r.section()?, &mut report)?;
         let layer_data = r.sized_section(h.version == 2)?;
         let transparency = merged_transparency(layer_data, h.version == 2)?;
         if transparency && h.channels < 4 {
@@ -306,12 +372,18 @@ impl DocumentImporter for PsdImporter {
                 Err(ImportError::Unsupported(_)) => None,
                 Err(error) => return Err(error),
             };
+        let verify_composite = discarded
+            || retained.as_ref().is_some_and(|layers| {
+                layers
+                    .iter()
+                    .any(|layer| layer.blend_mode != RasterBlendMode::Normal)
+            });
         // Comparing additional Photoshop settings requires a bounded merged preview.
         // Larger files keep the conservative flattened path, rather than skip verification.
         let preview_pixels = u64::from(h.width.div_ceil(TILE_SIZE))
             * u64::from(h.height.div_ceil(TILE_SIZE))
             * u64::from(TILE_SIZE * TILE_SIZE);
-        if discarded && preview_pixels > 4 * 1024 * 1024 {
+        if verify_composite && preview_pixels > 4 * 1024 * 1024 {
             retained = None;
         }
         if discarded && retained.is_some() {
@@ -332,10 +404,11 @@ impl DocumentImporter for PsdImporter {
                 tier: CompatibilityTier::B,
             });
         }
-        if !discarded {
+        if !verify_composite {
             if let Some(layers) = retained.take() {
                 return finish(
                     TiledRasterState {
+                        resolution,
                         width: h.width,
                         height: h.height,
                         layers,
@@ -427,6 +500,7 @@ impl DocumentImporter for PsdImporter {
             if matches {
                 return finish(
                     TiledRasterState {
+                        resolution,
                         width: h.width,
                         height: h.height,
                         layers,
@@ -445,9 +519,11 @@ impl DocumentImporter for PsdImporter {
             });
         }
         let raster = TiledRasterState {
+            resolution,
             width: h.width,
             height: h.height,
             layers: vec![RasterLayerState {
+                blend_mode: RasterBlendMode::Normal,
                 id: "psd-composite".into(),
                 name: "PSD composite".into(),
                 visible: true,

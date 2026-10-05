@@ -459,6 +459,8 @@ pub struct DocumentSnapshot {
     pub width: u32,
     pub height: u32,
     pub unit: DocumentUnit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raster_resolution: Option<crate::tiles::RasterResolution>,
     pub resolution: u32,
     pub artboards: bool,
     pub canvas_color: CanvasColor,
@@ -879,6 +881,7 @@ impl Document {
             width: self.width,
             height: self.height,
             unit: self.unit,
+            raster_resolution: None,
             resolution: self.resolution,
             artboards: self.artboards,
             pages: self.pages_snapshot(),

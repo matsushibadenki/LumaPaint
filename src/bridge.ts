@@ -51,6 +51,7 @@ export interface DocumentSnapshot {
   selection: Selection | null;
   name: string;
   width: number; height: number; layerId: string; layerVisible: boolean;
+  rasterResolution?: { xPpi: number; yPpi: number } | null;
   unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number;
   colorMode: ColorMode;
   colorProfile: ColorProfile;

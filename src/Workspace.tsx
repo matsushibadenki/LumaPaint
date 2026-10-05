@@ -131,6 +131,8 @@ export function Workspace() {
   }, []);
   const measurementUnit=useMeasurementUnit();
   const [documentState, setDocumentState] = useState(emptyDocument);
+  const horizontalResolution = documentState.rasterResolution?.xPpi ?? documentState.resolution;
+  const verticalResolution = documentState.rasterResolution?.yPpi ?? documentState.resolution;
   const [documents, setDocuments] = useState<DocumentTabSnapshot[]>([]);
   const [activeDocumentId, setActiveDocumentId] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
@@ -607,7 +609,7 @@ export function Workspace() {
         onWidth={async width => { updateDocument(await setVectorStrokeWidth(width,brush.color)); }}
         onTransform={async (action,values) => { updateDocument(await transformObjects(action,values)); }}
         onCombine={async operation => { updateDocument(await combineSelectedVectors(operation)); }} onTransformMenu={setTransformAction} onError={setError} /> : zoomTool ? <span className="selection-hint">{zoomTool === 'hand' ? t.handHint : t.zoomClickHint}</span> : canvasTool.startsWith('vector') ? <><span className="selection-hint">{canvasTool === 'vectorSelect' && documentState.selectedVectorObjects.length > 0 ? `${documentState.selectedVectorObjects.length} ${t.vectorSelected}` : canvasTool === 'vectorRotate' ? t.rotateHint : canvasTool === 'vectorScale' ? t.scaleHint : canvasTool === 'vectorDirectSelect' ? t.directHint : canvasTool.startsWith('vectorAnchor') ? t.anchorHint : canvasTool === 'vectorPen' ? t.penHint : toolMode === 'layout' ? t.layoutHint : t.vectorHint}</span>{canvasTool === 'vectorDirectSelect' && <button disabled={!documentEditable || busy} onClick={()=>setDirectControlOpen(true)}>{directControlLabels[locale].title}</button>}{canvasTool === 'vectorSelect' && <select className="path-operations" aria-label={t.pathOperations} title={t.pathOperations} value="" disabled={!ready || busy || (documentState.selectedVectorObjects.length < 2 || documentState.selectedVectorObjects.length > 64)} onChange={event => { const operation = event.target.value as PathOperation; event.currentTarget.value = ''; void combineVectors(operation); }}><option value="">{t.pathOperations}</option><option value="union">{t.pathUnion}</option><option value="difference">{t.pathDifference}</option><option value="intersection">{t.pathIntersection}</option><option value="xor">{t.pathXor}</option></select>}</> : (canvasTool === 'brush' || canvasTool === 'eraser') ? <>
-      <label className="size-control">{t.size}<SizeInput resolution={documentState.resolution} label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
+      <label className="size-control">{t.size}<SizeInput resolution={horizontalResolution} label={t.size} value={brush.size} onChange={size => setBrush(previous => ({ ...previous, size }))} /></label>
       <label className="hardness-control">{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => setBrush(previous => ({ ...previous, hardness }))} /></label>
       <label className="color-control"><span>{t.foreground}</span><ColorPickerPopover locale={locale} color={brush.color} label={t.foreground} onChange={changeForeground} /></label>
       </> : <span className="selection-hint">{canvasTool.startsWith('imageFrame')?t.frameHint:canvasTool==='gradient'?t.gradientHint:(canvasTool === 'text' || canvasTool === 'textVertical') ? textPanelMessages[locale].hint : (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical') ? t.textFrameHint : t.selectionHint}</span>}
@@ -618,7 +620,7 @@ export function Workspace() {
     <main className="editor-layout" inert={toneStudioOpen}>
       {toolSettings && <NativeModal kind="toolSettings" action={toolSettings} locale={locale} theme={theme} onClose={()=>setToolSettings(null)} onError={setError}><ToolSettingsDialog tool={toolSettings} locale={locale} document={documentState} brush={brush} onBrush={setBrush} onZoom={changeZoom} onUpdate={updateDocument} onClose={()=>setToolSettings(null)}/></NativeModal>}
       {directControlOpen && <NativeModal kind="directControls" locale={locale} theme={theme} onClose={()=>setDirectControlOpen(false)} onError={setError}><DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} /></NativeModal>}
-      {transformAction && <NativeModal kind="transform" locale={locale} theme={theme} onClose={()=>setTransformAction(null)} onError={setError} action={transformAction}><TransformDialog resolution={documentState.resolution} key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} /></NativeModal>}
+      {transformAction && <NativeModal kind="transform" locale={locale} theme={theme} onClose={()=>setTransformAction(null)} onError={setError} action={transformAction}><TransformDialog resolution={horizontalResolution} key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} /></NativeModal>}
       <nav className="tool-rail" aria-label={t.tools} title={toolSettingsLabels[locale].hint}>
         <ToolModeSwitch mode={toolMode} locale={locale} onChange={setToolMode} />
         <span className="tool-mode-divider" aria-hidden="true" />
@@ -662,7 +664,7 @@ export function Workspace() {
             </div>)}
             {!documentAvailable && <span className="no-document">{t.noDocument}</span>}
           </div>
-          {documentAvailable && <span className="document-dimensions">{Number((documentState.width/pixelsPerMeasurement(measurementUnit,documentState.resolution)).toFixed(3))} × {Number((documentState.height/pixelsPerMeasurement(measurementUnit,documentState.resolution)).toFixed(3))} {unitSymbols[measurementUnit]} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
+          {documentAvailable && <span className="document-dimensions">{Number((documentState.width/pixelsPerMeasurement(measurementUnit,horizontalResolution)).toFixed(3))} × {Number((documentState.height/pixelsPerMeasurement(measurementUnit,verticalResolution)).toFixed(3))} {unitSymbols[measurementUnit]} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
         </div>
         {tabMenu&&<DocumentTabMenu key={tabMenu.id} locale={locale} x={tabMenu.x} y={tabMenu.y} onClose={()=>setTabMenu(null)} onMove={async target=>{
           if(filePending.current)throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
@@ -673,7 +675,7 @@ export function Workspace() {
           filePending.current=true;setFileBusy(true);
           try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
         }}/>}
-        <DocumentDock locale={locale}><CanvasPreview resolution={documentState.resolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>

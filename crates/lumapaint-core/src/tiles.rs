@@ -22,12 +22,86 @@ pub struct TileCoord {
 pub struct TiledRasterState {
     pub width: u32,
     pub height: u32,
+    /// Physical pixel density, independent from canvas pixels and renderer scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<RasterResolution>,
     pub layers: Vec<RasterLayerState>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RasterResolution {
+    pub x_ppi: f64,
+    pub y_ppi: f64,
+    pub x_display: ResolutionDisplayUnit,
+    pub y_display: ResolutionDisplayUnit,
+    pub width_display: PrintDimensionUnit,
+    pub height_display: PrintDimensionUnit,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResolutionDisplayUnit {
+    PixelsPerInch,
+    PixelsPerCentimeter,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrintDimensionUnit {
+    Inches,
+    Centimeters,
+    Points,
+    Picas,
+    Columns,
+}
+impl RasterResolution {
+    pub fn validate(&self) -> Result<(), String> {
+        if [self.x_ppi, self.y_ppi]
+            .iter()
+            .any(|ppi| !ppi.is_finite() || !(1. / 65536. ..=32767.99998474121).contains(ppi))
+        {
+            return Err("Invalid raster resolution".into());
+        }
+        Ok(())
+    }
+    pub fn size_inches(&self, width: u32, height: u32) -> [f64; 2] {
+        [
+            f64::from(width) / self.x_ppi,
+            f64::from(height) / self.y_ppi,
+        ]
+    }
+}
+
+/// Separable RGB blend modes; independent from any renderer or file format.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RasterBlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
+}
+impl RasterBlendMode {
+    fn blend(self, back: f64, source: f64) -> f64 {
+        match self {
+            Self::Normal => source,
+            Self::Multiply => back * source,
+            Self::Screen => back + source - back * source,
+            Self::Darken => back.min(source),
+            Self::Lighten => back.max(source),
+            Self::Difference => (back - source).abs(),
+            Self::Exclusion => back + source - 2. * back * source,
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RasterLayerState {
+    #[serde(default)]
+    pub blend_mode: RasterBlendMode,
     pub id: String,
     pub name: String,
     pub visible: bool,
@@ -52,6 +126,7 @@ pub fn composite_raster_layers_tile(
             return None;
         }
         Some(CompositeSource {
+            blend_mode: layer.blend_mode,
             pixels: &layer.tiles.iter().find(|tile| tile.coord == coord)?.pixels,
             opacity: layer.opacity,
             mask: layer
@@ -66,6 +141,7 @@ pub fn composite_raster_layers_tile(
     }))
 }
 struct CompositeSource<'a> {
+    blend_mode: RasterBlendMode,
     pixels: &'a [u8],
     opacity: f32,
     mask: Option<&'a [u8]>,
@@ -96,12 +172,30 @@ fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> 
             };
             let opacity = source.opacity * mask;
             let alpha = (f32::from(pixel[3]) * opacity).round() as u32;
+            if alpha == 0 {
+                continue;
+            }
             let remaining = 255 - alpha;
             let out_alpha = (alpha + div_255(u32::from(target[3]) * remaining)).min(255);
             for channel in 0..3 {
                 let foreground = div_255(u32::from(pixel[channel]) * alpha);
                 let background = div_255(u32::from(target[channel]) * remaining);
-                target[channel] = (foreground + background).min(out_alpha) as u8;
+                target[channel] = if source.blend_mode == RasterBlendMode::Normal || target[3] == 0
+                {
+                    (foreground + background).min(out_alpha) as u8
+                } else {
+                    // W3C source-over: uncovered source + blended overlap + uncovered backdrop.
+                    let ab = f64::from(target[3]) / 255.;
+                    let asrc = f64::from(alpha) / 255.;
+                    let cb_premult = f64::from(target[channel]) / 255.;
+                    let cb = if ab > 0. { cb_premult / ab } else { 0. };
+                    let cs = f64::from(pixel[channel]) / 255.;
+                    (((1. - asrc) * cb_premult
+                        + asrc * ((1. - ab) * cs + ab * source.blend_mode.blend(cb, cs)))
+                        * 255.)
+                        .round()
+                        .clamp(0., f64::from(out_alpha)) as u8
+                };
             }
             target[3] = out_alpha as u8;
         }
@@ -590,6 +684,7 @@ fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) 
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterLayer {
+    pub blend_mode: RasterBlendMode,
     pub id: String,
     pub name: String,
     pub visible: bool,
@@ -839,6 +934,7 @@ fn dab_density_on_tiles(
 /// project format and preview path; legacy stroke/SVG documents remain separate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiledRasterDocument {
+    resolution: Option<RasterResolution>,
     width: u32,
     height: u32,
     layers: Vec<RasterLayer>,
@@ -851,6 +947,7 @@ impl TiledRasterDocument {
     pub fn new(width: u32, height: u32) -> Result<Self, String> {
         SparseTiles::new(width, height)?;
         Ok(Self {
+            resolution: None,
             width,
             height,
             layers: Vec::new(),
@@ -862,12 +959,14 @@ impl TiledRasterDocument {
 
     pub fn state(&self) -> TiledRasterState {
         TiledRasterState {
+            resolution: self.resolution,
             width: self.width,
             height: self.height,
             layers: self
                 .layers
                 .iter()
                 .map(|layer| RasterLayerState {
+                    blend_mode: layer.blend_mode,
                     id: layer.id.clone(),
                     name: layer.name.clone(),
                     visible: layer.visible,
@@ -905,6 +1004,10 @@ impl TiledRasterDocument {
     /// this method validates all semantic fields and tile payloads atomically.
     pub fn from_state(state: TiledRasterState) -> Result<Self, String> {
         let mut document = Self::new(state.width, state.height)?;
+        if let Some(resolution) = state.resolution {
+            resolution.validate()?;
+        }
+        document.resolution = state.resolution;
         if state.layers.len() > 16 {
             return Err("Too many raster layers".into());
         }
@@ -918,6 +1021,7 @@ impl TiledRasterDocument {
             }
             document.add_layer(saved.id.clone(), saved.name)?;
             let layer = document.layers.last_mut().expect("layer was just added");
+            layer.blend_mode = saved.blend_mode;
             layer.visible = saved.visible;
             layer.opacity = saved.opacity;
             layer.locked = saved.locked;
@@ -959,6 +1063,10 @@ impl TiledRasterDocument {
 
     pub fn layers(&self) -> &[RasterLayer] {
         &self.layers
+    }
+
+    pub fn resolution(&self) -> Option<RasterResolution> {
+        self.resolution
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -1088,6 +1196,7 @@ impl TiledRasterDocument {
                 return None;
             }
             Some(CompositeSource {
+                blend_mode: layer.blend_mode,
                 pixels: layer.tiles.tile(coord)?,
                 opacity: layer.opacity,
                 mask: layer.mask.tiles.get(&coord).map(Vec::as_slice),
@@ -1109,6 +1218,7 @@ impl TiledRasterDocument {
             return Err("Invalid or duplicate raster layer".into());
         }
         self.layers.push(RasterLayer {
+            blend_mode: RasterBlendMode::Normal,
             id,
             name,
             visible: true,
@@ -1725,6 +1835,50 @@ fn div_255(value: u32) -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn blend_modes_have_expected_opaque_pixels_and_partial_alpha() {
+        let coord = TileCoord { x: 0, y: 0 };
+        let mut document = TiledRasterDocument::new(1, 1).unwrap();
+        document.add_layer("base".into(), "Base".into()).unwrap();
+        document.add_layer("top".into(), "Top".into()).unwrap();
+        document
+            .write_rect("base", [0, 0, 1, 1], &[64, 128, 192, 255])
+            .unwrap();
+        document
+            .write_rect("top", [0, 0, 1, 1], &[128, 64, 128, 255])
+            .unwrap();
+        for (mode, expected) in [
+            (RasterBlendMode::Multiply, [32, 32, 96, 255]),
+            (RasterBlendMode::Screen, [160, 160, 224, 255]),
+            (RasterBlendMode::Darken, [64, 64, 128, 255]),
+            (RasterBlendMode::Lighten, [128, 128, 192, 255]),
+            (RasterBlendMode::Difference, [64, 64, 64, 255]),
+            (RasterBlendMode::Exclusion, [128, 128, 127, 255]),
+        ] {
+            document.layers[1].blend_mode = mode;
+            assert_eq!(&document.composite_tile(coord).unwrap()[..4], &expected);
+            assert_eq!(
+                composite_raster_layers_tile(&document.state().layers, coord),
+                document.composite_tile(coord)
+            );
+        }
+        document
+            .write_rect("base", [0, 0, 1, 1], &[0, 0, 0, 128])
+            .unwrap();
+        document
+            .write_rect("top", [0, 0, 1, 1], &[255, 255, 255, 128])
+            .unwrap();
+        document.layers[1].blend_mode = RasterBlendMode::Multiply;
+        assert_eq!(
+            &document.composite_tile(coord).unwrap()[..4],
+            &[64, 64, 64, 192]
+        );
+        document.layers[0].visible = false;
+        assert_eq!(
+            &document.composite_tile(coord).unwrap()[..4],
+            &[128, 128, 128, 128]
+        );
+    }
     #[test]
     fn paper_grain_is_fixed_and_has_dry_gaps() {
         let grains: Vec<_> = (0..100)

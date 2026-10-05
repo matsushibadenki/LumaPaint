@@ -4,7 +4,7 @@ import ts from 'typescript';
 async function load(path) { const code=ts.transpileModule(readFileSync(new URL(path,import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;return import('data:text/javascript;base64,'+Buffer.from(code).toString('base64')); }
 const {pixelsPerMeasurement}=await load('../src/measurement-math.ts');
 const {rulerTicks}=await load('../src/ruler-math.ts');
-for(const dpi of [72,144,300,1200]) {
+for(const dpi of [.5,72,144,150.25,300.5,1200]) {
  assert.equal(pixelsPerMeasurement('pixels',dpi),1);
  assert.ok(Math.abs(pixelsPerMeasurement('millimeters',dpi)*25.4-dpi)<1e-9);
  assert.ok(Math.abs(pixelsPerMeasurement('centimeters',dpi)*2.54-dpi)<1e-9);
@@ -22,3 +22,10 @@ for(const dpi of [72,144,300,1200]) {
 assert.deepEqual(rulerTicks(0,0,1),[]);
 assert.deepEqual(rulerTicks(100,0,0),[]);
 console.log('Measurement conversion and ruler pan/zoom regression checks passed.');
+
+// Non-square pixel density: 601 px equals 2 inches horizontally and 4 vertically.
+assert.equal(601 / pixelsPerMeasurement('inches',300.5),2);
+assert.equal(601 / pixelsPerMeasurement('inches',150.25),4);
+assert.equal(pixelsPerMeasurement('inches',NaN),72);
+assert.equal(pixelsPerMeasurement('inches',Infinity),72);
+assert.equal(pixelsPerMeasurement('inches',0),72);

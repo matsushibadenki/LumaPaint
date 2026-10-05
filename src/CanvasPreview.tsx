@@ -10,11 +10,11 @@ import type { ColorPickerOcclusion } from './components/ColorPickerPopover';
 
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
-export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, resolution=72, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
+export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, resolution=72, verticalResolution=resolution, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
   locale: Locale; theme: Theme; brush: Brush; tool: CanvasTool; zoom: number; onZoom: (zoom: number) => void;
   zoomCommand: { zoom: number; revision: number };
   onDisplayZoom: (zoom: number) => void;
-  channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; resolution?:number; footerAccessory?: ReactNode;
+  channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; resolution?:number; verticalResolution?:number; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
   const t = messages[locale];
@@ -148,7 +148,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
 
   return <section className="canvas-workspace" aria-label={t.canvas}>
     <div className="canvas-stage" data-document={hasDocument ? 'open' : 'empty'}>
-    {hasDocument && <Rulers locale={locale} resolution={resolution} viewport={info?.rulerViewport ?? null} />}
+    {hasDocument && <Rulers locale={locale} resolution={resolution} verticalResolution={verticalResolution} viewport={info?.rulerViewport ?? null} />}
     <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool.startsWith('imageFrame') ? workspaceMessages[locale].frameHint : tool === 'gradient' ? workspaceMessages[locale].gradientHint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && (status === 'browser' || status === 'unsupported') && <div className="paper-preview" aria-hidden="true" />}
       {status === 'failed' ? <div className="canvas-notice canvas-failure" role="alert">

@@ -7,7 +7,7 @@ import type { RulerViewport } from '../bridge';
 import { measurementUnits, pixelsPerMeasurement, setMeasurementUnit, unitName, unitSymbols, useMeasurementUnit } from '../measurement-units';
 import './rulers.css';
 import { rulerTicks } from '../ruler-math';
-export function Rulers({locale,resolution,viewport:initial}:{locale:Locale;resolution:number;viewport:RulerViewport|null}) {
+export function Rulers({locale,resolution,verticalResolution=resolution,viewport:initial}:{locale:Locale;resolution:number;verticalResolution?:number;viewport:RulerViewport|null}) {
   const unit=useMeasurementUnit(), [viewport,setViewport]=useState(initial);
   const [menu,setMenu]=useState<{x:number;y:number}|null>(null), [error,setError]=useState('');
   const menuRef=useRef<HTMLDivElement>(null);
@@ -25,8 +25,7 @@ export function Rulers({locale,resolution,viewport:initial}:{locale:Locale;resol
   useEffect(()=>{window.dispatchEvent(new Event('panel-layout-change'));return()=>{window.dispatchEvent(new Event('panel-layout-change'));};},[menu,error]);
   const open=(x:number,y:number)=>{setError('');setMenu({x:Math.min(x,window.innerWidth-210),y:Math.min(y,window.innerHeight-220)});};
   const v=viewport??{width:0,height:0,originX:0,originY:0,zoom:1};
-  const factor=pixelsPerMeasurement(unit,resolution)*v.zoom;
-  const render=(vertical:boolean)=>{const ticks=rulerTicks(vertical?v.height:v.width,vertical?v.originY+(v.rulerOrigin?.[1]??0)*v.zoom:v.originX+(v.rulerOrigin?.[0]??0)*v.zoom,factor);return <svg aria-hidden="true" width={vertical?16:'100%'} height={vertical?'100%':16}>{ticks.map((tick,i)=><g key={i}>{vertical?<><path d={`M16 ${tick.position}h-${tick.major?6:3}`}/>{tick.major&&<text transform={`translate(9 ${tick.position+3}) rotate(-90)`}>{tick.label}</text>}</>:<><path d={`M${tick.position} 16v-${tick.major?6:3}`}/>{tick.major&&<text x={tick.position+3} y={9}>{tick.label}</text>}</>}</g>)}</svg>;};
+  const render=(vertical:boolean)=>{const factor=pixelsPerMeasurement(unit,vertical?verticalResolution:resolution)*v.zoom;const ticks=rulerTicks(vertical?v.height:v.width,vertical?v.originY+(v.rulerOrigin?.[1]??0)*v.zoom:v.originX+(v.rulerOrigin?.[0]??0)*v.zoom,factor);return <svg aria-hidden="true" width={vertical?16:'100%'} height={vertical?'100%':16}>{ticks.map((tick,i)=><g key={i}>{vertical?<><path d={`M16 ${tick.position}h-${tick.major?6:3}`}/>{tick.major&&<text transform={`translate(9 ${tick.position+3}) rotate(-90)`}>{tick.label}</text>}</>:<><path d={`M${tick.position} 16v-${tick.major?6:3}`}/>{tick.major&&<text x={tick.position+3} y={9}>{tick.label}</text>}</>}</g>)}</svg>;};
   const dragGuide=(e:React.PointerEvent<HTMLElement>,axis:'horizontal'|'vertical'|'origin')=>{
     if(e.button!==0||!viewport)return;guideCleanup.current();e.preventDefault();setMenu(null);
     const target=e.currentTarget, slot=target.closest('.canvas-stage')?.querySelector('.native-slot');if(!slot)return;

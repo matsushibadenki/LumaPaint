@@ -6,6 +6,7 @@ struct Record<'a> {
     channels: Vec<(i16, usize)>,
     extra: &'a [u8],
     mask: Option<Mask>,
+    blend_mode: RasterBlendMode,
     opacity: u8,
     flags: u8,
 }
@@ -459,9 +460,7 @@ pub(super) fn decode_with_metadata(
         if r.take(4)? != b"8BIM" {
             return Err(ImportError::Malformed("layer blend signature"));
         }
-        if r.take(4)? != b"norm" {
-            return Err(unsupported());
-        }
+        let blend_mode = read_blend_mode(r.take(4)?).ok_or_else(unsupported)?;
         let opacity = r.take(1)?[0];
         let clipping = r.take(1)?[0];
         let flags = r.take(1)?[0];
@@ -488,6 +487,7 @@ pub(super) fn decode_with_metadata(
         records.push(Record {
             rect,
             channels,
+            blend_mode,
             opacity,
             flags,
             extra,
@@ -601,6 +601,7 @@ pub(super) fn decode_with_metadata(
             })?;
         }
         layers.push(RasterLayerState {
+            blend_mode: record.blend_mode,
             id: format!("psd-layer-{index}"),
             name,
             visible: record.flags & 2 == 0,
@@ -913,6 +914,7 @@ mod tests {
                     let layers = decode(&data, h, &mut baked).unwrap().unwrap();
                     assert_eq!(baked, density != 255);
                     let state = TiledRasterState {
+                        resolution: None,
                         width: 2,
                         height: 1,
                         layers,
@@ -987,6 +989,7 @@ mod tests {
                 let layers = decode(&data, h, &mut false).unwrap().unwrap();
                 let doc =
                     lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
+                        resolution: None,
                         width: 4,
                         height: 2,
                         layers,
@@ -1042,6 +1045,7 @@ mod tests {
                     .unwrap()
                     .unwrap();
                     let state = TiledRasterState {
+                        resolution: None,
                         width: 4,
                         height: 2,
                         layers,
@@ -1083,6 +1087,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
+            resolution: None,
             width: 4,
             height: 2,
             layers,
@@ -1149,6 +1154,7 @@ mod tests {
             .unwrap()
             .unwrap();
             let state = TiledRasterState {
+                resolution: None,
                 width: 258,
                 height: 1,
                 layers,
@@ -1224,6 +1230,7 @@ mod tests {
                 assert!(imported.report.issues.is_empty());
                 assert_eq!(imported.raster.layers, layers);
                 let state = TiledRasterState {
+                    resolution: None,
                     width: 2,
                     height: 1,
                     layers,
@@ -1241,6 +1248,7 @@ mod tests {
                 .unwrap();
             assert!(layers[0].mask_tiles.is_empty());
             lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
+                resolution: None,
                 width: 2,
                 height: 1,
                 layers,
@@ -1299,7 +1307,7 @@ mod tests {
     fn unsupported_blend_falls_back_to_the_entire_merged_image_with_consent() {
         let mut bytes = fixture(false).to_vec();
         let index = bytes.windows(8).position(|v| v == b"8BIMnorm").unwrap() + 4;
-        bytes[index..index + 4].copy_from_slice(b"mul ");
+        bytes[index..index + 4].copy_from_slice(b"hue ");
         assert!(matches!(
             PsdImporter.import(&bytes, ImportOptions::default()),
             Err(ImportError::LossyConversionRequiresConsent(_))

@@ -26,6 +26,8 @@ pub fn is_container(bytes: &[u8]) -> bool {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Manifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<lumapaint_core::tiles::RasterResolution>,
     width: u32,
     height: u32,
     layers: Vec<LayerManifest>,
@@ -34,6 +36,8 @@ struct Manifest {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayerManifest {
+    #[serde(default)]
+    blend_mode: lumapaint_core::tiles::RasterBlendMode,
     id: String,
     name: String,
     visible: bool,
@@ -68,6 +72,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
             (&tile.coord, &tile.values)
         })?;
         layers.push(LayerManifest {
+            blend_mode: layer.blend_mode,
             id: layer.id.clone(),
             name: layer.name.clone(),
             visible: layer.visible,
@@ -82,6 +87,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
         });
     }
     let manifest = serde_json::to_vec(&Manifest {
+        resolution: state.resolution,
         width: state.width,
         height: state.height,
         layers,
@@ -143,6 +149,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
         let tiles = read_tiles(&layer.tiles, payload, PIXEL_TILE_BYTES, &mut cursor)?;
         let mask_tiles = read_masks(&layer.mask_tiles, payload, MASK_TILE_BYTES, &mut cursor)?;
         layers.push(RasterLayerState {
+            blend_mode: layer.blend_mode,
             id: layer.id,
             name: layer.name,
             visible: layer.visible,
@@ -160,6 +167,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
         return Err("Tile payload contains unreferenced bytes".into());
     }
     let state = TiledRasterState {
+        resolution: manifest.resolution,
         width: manifest.width,
         height: manifest.height,
         layers,
@@ -269,6 +277,15 @@ mod tests {
         document.state()
     }
 
+    #[test]
+    fn legacy_manifest_without_resolution_remains_readable() {
+        let state = sample_state();
+        let bytes = encode(&state).unwrap();
+        let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes[28..28 + length]).unwrap();
+        assert!(manifest.get("resolution").is_none());
+        assert_eq!(decode(&bytes).unwrap().resolution, None);
+    }
     #[test]
     fn binary_container_round_trips_pixels_masks_and_manifest() {
         let state = sample_state();
