@@ -50,6 +50,21 @@ pub fn document_png(document: &Document) -> Result<Vec<u8>, String> {
         .remove(0))
 }
 fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<Thumbnails, String> {
+    render_sized_inner(document, max_side, page_only, false)
+}
+pub fn document_pixels(document: &Document) -> Result<Vec<u8>, String> {
+    let (w, h) = document.dimensions();
+    crate::vector::document_rgba_len(w, h)?;
+    Ok(render_sized_inner(document, w.max(h) as f32, true, true)?
+        .channels
+        .remove(0))
+}
+fn render_sized_inner(
+    document: &Document,
+    max_side: f32,
+    page_only: bool,
+    raw: bool,
+) -> Result<Thumbnails, String> {
     let snapshot = document.snapshot();
     let scale = (max_side / snapshot.width.max(snapshot.height) as f32).min(1.);
     let width = (snapshot.width as f32 * scale).round().max(1.) as u32;
@@ -72,6 +87,11 @@ fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<T
         let mut selection = stroke.selection.clone();
         if let Some(selection) = &mut selection {
             for region in &mut selection.regions {
+                for p in &mut region.points {
+                    p.x *= scale;
+                    p.y *= scale;
+                }
+                region.radius *= scale;
                 for value in &mut region.bounds {
                     *value *= scale;
                 }
@@ -152,9 +172,14 @@ fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<T
             }
         }
     }
+    if document.color_mode() == lumapaint_core::document::ColorMode::Grayscale {
+        crate::color_sampler::grayscale_pixels(&mut composite);
+    }
     Ok(Thumbnails {
         layers,
-        channels: if page_only {
+        channels: if raw {
+            vec![composite]
+        } else if page_only {
             vec![clipboard_png(width, height, composite)?]
         } else {
             channel_pngs(width, height, composite)?

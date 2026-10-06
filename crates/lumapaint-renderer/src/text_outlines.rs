@@ -87,7 +87,7 @@ fn collect(
             object.text=None;object.kind=VectorObjectKind::Compound;object.transform=[1.,0.,0.,1.,0.,0.];
             object.path=VectorPath{data:path.to_svg(),fill_rule:match path.fill_type(){PathFillType::EvenOdd=>FillRule::EvenOdd,_=>FillRule::NonZero}};
             object.control_points=path.points().iter().map(|p|[p.x,p.y]).collect();
-            object.fill=Some(VectorPaint{color:[color.red,color.green,color.blue,(fill.opacity().get()*255.).round()as u8]});
+            object.fill=Some(VectorPaint { registration: false,color:[color.red,color.green,color.blue,(fill.opacity().get()*255.).round()as u8]});
             object.stroke=None;object.stroke_width=0.;object.bounds_reset=false;
             object.validate()?;output.push(object);
         }

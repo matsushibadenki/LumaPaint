@@ -16,7 +16,7 @@ export const menuMessages = {
   en: {
     hide: 'Hide', hideSelection: 'Selection', hideArtworkAbove: 'All Artwork Above', hideOtherLayers: 'Other Layers', showAllObjects: 'Show All',
     lock: 'Lock', lockSelection: 'Selection', lockArtworkAbove: 'All Artwork Above', lockOtherLayers: 'Other Layers', unlockAllObjects: 'Unlock All', clearLayer: 'Clear All',
-    bar: 'Application menu', names: ['File', 'Edit', 'Image', 'Object', 'Layer', 'Type', 'Select', 'Filter', 'View', 'Plugins', 'Window', 'Help'],
+    bar: 'Application menu', names: ['File', 'Edit', 'Image', 'Object', 'Layer', 'Type', 'Selection', 'Filter', 'View', 'Plugins', 'Window', 'Help'],
     new: 'New', closeDocument: 'Close Document', importSvg: 'Import SVG, PDF or Image…', export: 'Export…', cut: 'Cut', copy: 'Copy', paste: 'Paste', colorSettings: 'Color settings…',
     colorMode: 'Color mode', bitDepth: 'Bit depth', imageSize: 'Image size…', canvasSize: 'Canvas size…', rotate: 'Rotate image…',
     path: 'Path', pathJoin: 'Join', pathAverage: 'Average…', pathOutline: 'Outline Stroke', pathOffset: 'Offset Path…', pathReverse: 'Reverse Path Direction', pathSimplify: 'Simplify…', pathSmooth: 'Smooth…', pathAddAnchors: 'Add Anchor Points', pathRemoveAnchors: 'Remove Anchor Points', pathDivideBelow: 'Divide Objects Below', pathSplitGrid: 'Split Into Grid…', pathCleanUp: 'Clean Up…',
@@ -30,7 +30,7 @@ export const menuMessages = {
   'zh-CN': {
     hide: '隐藏', hideSelection: '所选对象', hideArtworkAbove: '上方所有图稿', hideOtherLayers: '其他图层', showAllObjects: '显示全部',
     lock: '锁定', lockSelection: '所选对象', lockArtworkAbove: '上方所有图稿', lockOtherLayers: '其他图层', unlockAllObjects: '全部解锁', clearLayer: '全部清除',
-    bar: '应用菜单', names: ['文件', '编辑', '图像', '对象', '图层', '文字', '选择', '滤镜', '视图', '插件', '窗口', '帮助'],
+    bar: '应用菜单', names: ['文件', '编辑', '图像', '对象', '图层', '文字', '选区', '滤镜', '视图', '插件', '窗口', '帮助'],
     new: '新建', closeDocument: '关闭文档', importSvg: '导入SVG、PDF或图像…', export: '导出…', cut: '剪切', copy: '复制', paste: '粘贴', colorSettings: '颜色设置…',
     colorMode: '颜色模式', bitDepth: '位深度', imageSize: '图像大小…', canvasSize: '画布大小…', rotate: '旋转图像…',
     path: '路径', pathJoin: '连接', pathAverage: '平均…', pathOutline: '轮廓化描边', pathOffset: '偏移路径…', pathReverse: '反转路径方向', pathSimplify: '简化…', pathSmooth: '平滑…', pathAddAnchors: '添加锚点', pathRemoveAnchors: '删除锚点', pathDivideBelow: '分割下方对象', pathSplitGrid: '分割为网格…', pathCleanUp: '清理路径…',

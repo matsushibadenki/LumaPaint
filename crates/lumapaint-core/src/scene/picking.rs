@@ -48,17 +48,17 @@ impl LayerIndex {
             source_pointer: layer.source.as_ptr() as usize,
         }
     }
-    fn refresh(&mut self, layer: &SvgLayer, journal: &Journal, revision: u64) {
+    fn refresh(&mut self, layer: &SvgLayer, journal: &Journal, revision: u64) -> usize {
         let pointer = layer.source.as_ptr() as usize;
         if self.revision == revision
             && self.source_pointer == pointer
             && self.cursor == journal.cursor()
         {
-            return;
+            return 0;
         }
         let JournalRead::Incremental { changes, .. } = journal.read(self.cursor) else {
             *self = Self::build(layer, journal, revision);
-            return;
+            return layer.vector_objects.len();
         };
         let changes: Vec<_> = changes
             .iter()
@@ -77,7 +77,7 @@ impl LayerIndex {
                 .any(|c| c.removed || c.changes.structure)
         {
             *self = Self::build(layer, journal, revision);
-            return;
+            return layer.vector_objects.len();
         }
         for change in object_changes {
             if !(change.changes.geometry || change.changes.transform || change.changes.style) {
@@ -86,7 +86,7 @@ impl LayerIndex {
             let id = change.target.object.as_ref().unwrap();
             let Some(&position) = self.positions.get(id) else {
                 *self = Self::build(layer, journal, revision);
-                return;
+                return layer.vector_objects.len();
             };
             if layer.vector_objects[position].id != *id
                 || !self.tree.refit(
@@ -95,15 +95,37 @@ impl LayerIndex {
                 )
             {
                 *self = Self::build(layer, journal, revision);
-                return;
+                return layer.vector_objects.len();
             }
         }
         self.cursor = journal.cursor();
         self.revision = revision;
         self.source_pointer = pointer;
+        0
     }
 }
 impl PickingCache {
+    pub(crate) fn positions(
+        &mut self,
+        layer: &SvgLayer,
+        journal: &Journal,
+        revision: u64,
+        ids: &[String],
+    ) -> (Vec<usize>, usize) {
+        let mut scanned = 0;
+        let index = self.layers.entry(layer.id.clone()).or_insert_with(|| {
+            scanned = layer.vector_objects.len();
+            LayerIndex::build(layer, journal, revision)
+        });
+        scanned += index.refresh(layer, journal, revision);
+        let mut positions: Vec<_> = ids
+            .iter()
+            .filter_map(|id| index.positions.get(id).copied())
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        (positions, scanned)
+    }
     pub(crate) fn candidates(
         &mut self,
         layer: &SvgLayer,

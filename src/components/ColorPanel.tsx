@@ -2,13 +2,13 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import type { Brush } from '../bridge';
 import type { Locale } from '../i18n';
 import { HexInput, toHex } from './BrushControls';
-import { cmykToRgb, rgbToCmyk, type CmykColor } from '../color-models';
+import { labToRgb, rgbToLab, rgbToGray, cmykToRgb, rgbToCmyk, type CmykColor } from '../color-models';
 import { workspaceMessages } from '../workspace-i18n';
 
 export const colorPanelLabels = {
-  ja: { color: 'カラー', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
-  en: { color: 'Color', hue: 'Hue', saturation: 'Saturation', value: 'Brightness', model: 'Color model', red: 'Red', green: 'Green', blue: 'Blue', cyan: 'Cyan', magenta: 'Magenta', yellow: 'Yellow', black: 'Black', cmykNote: 'CMYK uses RGB conversion (no ICC transform).' },
-  'zh-CN': { color: '颜色', hue: '色相', saturation: '饱和度', value: '明度', model: '颜色模型', red: '红', green: '绿', blue: '蓝', cyan: '青色', magenta: '品红', yellow: '黄色', black: '黑色', cmykNote: 'CMYK为RGB换算值（无ICC转换）。' },
+  ja: { color: 'カラー', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', gray: 'グレー', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
+  en: { color: 'Color', hue: 'Hue', saturation: 'Saturation', value: 'Brightness', model: 'Color model', red: 'Red', green: 'Green', blue: 'Blue', cyan: 'Cyan', magenta: 'Magenta', yellow: 'Yellow', black: 'Black', gray: 'Gray', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK uses RGB conversion (no ICC transform).' },
+  'zh-CN': { color: '颜色', hue: '色相', saturation: '饱和度', value: '明度', model: '颜色模型', red: '红', green: '绿', blue: '蓝', cyan: '青色', magenta: '品红', yellow: '黄色', black: '黑色', gray: '灰度', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK为RGB换算值（无ICC转换）。' },
 };
 function hsv(rgb: Brush['color']) {
   const [r, g, b] = rgb.map(v => v / 255);
@@ -36,42 +36,43 @@ export function ColorPairControl({ foregroundStatus, backgroundStatus, labels, l
   const t = {...workspaceMessages[locale],...labels};
   const paintBackground = (color: Brush['color'], status?: 'none'|'mixed'|null) => status === 'none' ? 'linear-gradient(135deg, white 44%, #dc3232 45%, #dc3232 55%, white 56%)' : status === 'mixed' ? 'linear-gradient(90deg, #888 50%, #ddd 50%)' : toHex(color);
   return <div className={`color-pair${compact ? ' compact' : ''}`} role="group" aria-label={`${t.foreground} · ${t.background}`}>
-    <button type="button" className="background-color" style={{ background: paintBackground(background, backgroundStatus) }} aria-label={t.background} aria-pressed={activeColor === 'background'} title={`${t.background}: ${toHex(background)}`} onClick={() => onSelectColor('background')} />
-    <button type="button" className="foreground-color" style={{ background: paintBackground(foreground, foregroundStatus) }} aria-label={t.foreground} aria-pressed={activeColor === 'foreground'} title={`${t.foreground}: ${toHex(foreground)}`} onClick={() => onSelectColor('foreground')} />
+    <button type="button" className="background-color" style={{ background: paintBackground(background, backgroundStatus) }} aria-label={t.background} aria-pressed={activeColor === 'background'} title={`${t.background}: ${backgroundStatus === 'none' ? vectorLabels[locale].none : toHex(background)}`} onClick={() => onSelectColor('background')} />
+    <button type="button" className="foreground-color" style={{ background: paintBackground(foreground, foregroundStatus) }} aria-label={t.foreground} aria-pressed={activeColor === 'foreground'} title={`${t.foreground}: ${foregroundStatus === 'none' ? vectorLabels[locale].none : toHex(foreground)}`} onClick={() => onSelectColor('foreground')} />
     <button type="button" className="swap-colors" onClick={onSwap} title={`${t.swapColors}${labels ? '' : ' (X)'}`} aria-label={t.swapColors}>↔</button>
   </div>;
 }
 
-type ColorModel = 'hsb' | 'rgb' | 'cmyk';
-type ChannelKey = 'hue' | 'saturation' | 'value' | 'red' | 'green' | 'blue' | 'cyan' | 'magenta' | 'yellow' | 'black';
-type ColorChannel = { key: ChannelKey; short: string; value: number; max: number; unit: string; background: string };
+type ColorModel = 'hsb' | 'rgb' | 'cmyk' | 'grayscale' | 'lab';
+type ChannelKey = 'gray' | 'lightness' | 'labA' | 'labB' | 'hue' | 'saturation' | 'value' | 'red' | 'green' | 'blue' | 'cyan' | 'magenta' | 'yellow' | 'black';
+type ColorChannel = { key: ChannelKey; short: string; value: number; min?:number; max: number; unit: string; background: string };
 
-function ChannelNumber({ value, max, label, onChange }: { value: number; max: number; label: string; onChange: (value: number) => void }) {
+function ChannelNumber({ value, min=0, max, label, onChange }: { value: number; min?:number; max: number; label: string; onChange: (value: number) => void }) {
   const rounded = Math.round(value);
   const [draft, setDraft] = useState(String(rounded));
   useEffect(() => setDraft(String(rounded)), [rounded]);
-  return <input className="hsb-number" aria-label={label} type="number" min="0" max={max} step="1" value={draft}
+  return <input className="hsb-number" aria-label={label} type="number" min={min} max={max} step="1" value={draft}
     onChange={event => {
       setDraft(event.target.value);
       const next = event.target.valueAsNumber;
-      if (Number.isFinite(next) && next >= 0 && next <= max) onChange(next);
+      if (Number.isFinite(next) && next >= min && next <= max) onChange(next);
     }}
     onBlur={() => {
       const next = draft.trim() === '' ? rounded : Number(draft);
-      const clamped = Number.isFinite(next) ? Math.max(0, Math.min(max, Math.round(next))) : rounded;
+      const clamped = Number.isFinite(next) ? Math.max(min, Math.min(max, Math.round(next))) : rounded;
       setDraft(String(clamped)); onChange(clamped);
     }}
     onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
 }
 
-export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean }) {
+export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false, noColor = false, onNone, foregroundNone = false, backgroundNone = false }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean; noColor?: boolean; onNone?: () => void; foregroundNone?: boolean; backgroundNone?: boolean }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
   const [colorModel, setColorModel] = useState<ColorModel>('hsb');
+  const [labEdits, setLabEdits] = useState<Partial<Record<ColorTarget, {hex:string;values:[number,number,number]}>>>({});
   const [cmykEdits, setCmykEdits] = useState<Partial<Record<ColorTarget, { hex: string; values: CmykColor }>>>({});
   const [rememberedHue, setRememberedHue] = useState(0);
   const labels = vectorColors ? vectorLabels[locale] : workspaceMessages[locale];
   const fill = vectorColors?.fill ?? foregroundColor, stroke = vectorColors?.stroke ?? backgroundColor;
-  const status = vectorColors ? (activeColor === 'foreground' ? vectorColors.fillStatus : vectorColors.strokeStatus) : null;
+  const status = vectorColors ? (activeColor === 'foreground' ? vectorColors.fillStatus : vectorColors.strokeStatus) : (noColor || (activeColor === 'foreground' ? foregroundNone : backgroundNone) ? 'none' : null);
   const color = activeColor === 'background' ? stroke : fill;
   const onChange = vectorColors ? (color: Brush['color'])=>vectorColors.change(activeColor === 'foreground' ? 'fill' : 'stroke', color) : activeColor === 'background' ? onBackgroundChange : onForegroundChange;
   const savedCmyk = cmykEdits[activeColor];
@@ -125,7 +126,10 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
   const rgbKeys = ['red', 'green', 'blue'] as const;
   const cmykKeys = ['cyan', 'magenta', 'yellow', 'black'] as const;
   const gradient = (start: Brush['color'], end: Brush['color']) => `linear-gradient(to right, ${toHex(start)}, ${toHex(end)})`;
-  const channels: ColorChannel[] = colorModel === 'hsb' ? hsbChannels : colorModel === 'rgb'
+  const savedLab=labEdits[activeColor];
+  const lab = savedLab?.hex===toHex(color)?savedLab.values:rgbToLab(color);
+  const labKeys = ['lightness','labA','labB'] as const;
+  const channels: ColorChannel[] = colorModel === 'grayscale' ? [{key:'gray',short:'G',value:rgbToGray(color),max:255,unit:'',background:gradient([0,0,0],[255,255,255])}] : colorModel === 'lab' ? labKeys.map((key,i)=>({key,short:['L*','a*','b*'][i],value:lab[i],min:i===0?0:-128,max:i===0?100:127,unit:'',background: i===0?gradient([0,0,0],[255,255,255]):i===1?gradient([0,180,0],[220,0,180]):gradient([0,0,220],[220,220,0])})) : colorModel === 'hsb' ? hsbChannels : colorModel === 'rgb'
     ? rgbKeys.map((key, index) => {
       const start: Brush['color'] = [...color], end: Brush['color'] = [...color];
       start[index] = 0; end[index] = 255;
@@ -138,6 +142,9 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     });
   function setChannel(key: ChannelKey, n: number) {
     if (!Number.isFinite(n)) return;
+    if(key==='gray') {const v=Math.round(Math.max(0,Math.min(255,n)));onChange([v,v,v]);return;}
+    const labIndex = labKeys.findIndex(k=>k===key);
+    if(labIndex>=0) {const values:[number,number,number]=[...lab];values[labIndex]=Math.max(labIndex===0?0:-128,Math.min(labIndex===0?100:127,n));const next=labToRgb(values);setLabEdits(previous=>({...previous,[activeColor]:{hex:toHex(next),values}}));onChange(next);return;}
     const rgbIndex = rgbKeys.findIndex(channel => channel === key);
     if (rgbIndex >= 0) {
       const next: Brush['color'] = [...color];
@@ -158,15 +165,16 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
   }
   return <div className={`color-panel-controls${singleColor ? ' single-color' : ''}`}>
     <label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
-      <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option>
+      <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option><option value="grayscale">{locale==='ja'?'グレースケール':locale==='zh-CN'?'灰度':'Grayscale'}</option><option value="lab">Lab</option>
     </select></label>
     <div className="hsb-header">
-      {!singleColor && <ColorPairControl foregroundStatus={vectorColors?.fillStatus} backgroundStatus={vectorColors?.strokeStatus} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />}
+      {!singleColor && <ColorPairControl foregroundStatus={vectorColors?.fillStatus ?? (foregroundNone ? 'none' : null)} backgroundStatus={vectorColors?.strokeStatus ?? (backgroundNone ? 'none' : null)} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />}
       <div className="hsb-sliders">{channels.map(item => <div className="color-slider" key={activeColor + item.key}>
-        <span title={t[item.key]}>{item.short}</span><input aria-label={t[item.key]} type="range" min="0" max={item.max} value={Math.round(item.value)} style={{ background: item.background }} onChange={event => setChannel(item.key, Number(event.target.value))} />
-        <ChannelNumber label={t[item.key] + ' (' + item.short + ')'} max={item.max} value={item.value} onChange={next => setChannel(item.key, next)} /><span>{item.unit}</span>
+        <span title={t[item.key]}>{item.short}</span><input aria-label={t[item.key]} type="range" min={item.min??0} max={item.max} value={Math.round(item.value)} style={{ background: item.background }} onChange={event => setChannel(item.key, Number(event.target.value))} />
+        <ChannelNumber label={t[item.key] + ' (' + item.short + ')'} min={item.min} max={item.max} value={item.value} onChange={next => setChannel(item.key, next)} /><span>{item.unit}</span>
       </div>)}</div>
     </div>
+    {colorModel === 'lab' && <p className="color-model-note">{t.labNote}</p>}
     {colorModel === 'cmyk' && <p className="color-model-note">{t.cmykNote}</p>}
     <div className="color-wheel" role="group" aria-label={t.color}
       onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); pick(event, true); }}
@@ -178,7 +186,7 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
       <span className="color-wheel-marker" style={{ left: (50 + 46 * Math.cos(h * Math.PI / 180)) + '%', top: (50 - 46 * Math.sin(h * Math.PI / 180)) + '%' }} />
       <span className="color-wheel-marker" style={{ left: (29 + 62 * c) + '%', top: (50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
-    {vectorColors && <div><span>{labels[activeColor]}{status ? ` · ${vectorLabels[locale][status]}` : ''}</span> <button type="button" onClick={()=>vectorColors.change(activeColor==='foreground'?'fill':'stroke',null)}>{vectorLabels[locale].none}</button></div>}
+    {(vectorColors || onNone) && <div className="color-none-control"><button type="button" aria-pressed={status === 'none'} onClick={()=>vectorColors ? vectorColors.change(activeColor==='foreground'?'fill':'stroke',null) : onNone?.()}><span className="paint-none" aria-hidden="true" />{vectorLabels[locale].none}</button>{status === 'mixed' && <span>{vectorLabels[locale].mixed}</span>}</div>}
     <HexInput key={activeColor} color={color} onChange={onChange} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
   </div>;
 }

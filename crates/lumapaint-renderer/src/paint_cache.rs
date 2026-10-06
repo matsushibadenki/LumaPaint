@@ -182,6 +182,7 @@ mod tests {
 
     fn stroke(document: &mut Document, x: f32, erase: bool) {
         let brush = Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 20.,

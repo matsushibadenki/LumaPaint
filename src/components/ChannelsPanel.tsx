@@ -1,3 +1,4 @@
+import {modeLabels} from '../document-color-modes';
 import type { ColorMode, DisplayChannel } from '../bridge';
 import type { Locale } from '../i18n';
 
@@ -12,8 +13,8 @@ export function ChannelsPanel({ thumbnails = [], thumbnailError, locale, mode, v
 }) {
   const t = labels[locale];
   const rows: { id: DisplayChannel; label: string; symbol: string }[] = [
-    { id: 0, label: `${mode.toUpperCase()} · ${t.composite}`, symbol: mode.toUpperCase() },
-    ...(mode === 'cmyk' ? [
+    { id: 0, label: `${modeLabels[locale][mode]} · ${t.composite}`, symbol: mode.toUpperCase() },
+    ...((mode === 'grayscale' || mode === 'lab') ? [] : mode === 'cmyk' ? [
       { id: 5 as const, label: t.cyan, symbol: 'C' }, { id: 6 as const, label: t.magenta, symbol: 'M' },
       { id: 7 as const, label: t.yellow, symbol: 'Y' }, { id: 8 as const, label: t.black, symbol: 'K' },
     ] : [

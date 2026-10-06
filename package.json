@@ -12,7 +12,8 @@
     "check:architecture": "python3 scripts/check-core-boundary.py",
     "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "test:rust": "cargo test --workspace",
-    "test:measurements": "node scripts/test-measurements.mjs"
+    "test:measurements": "node scripts/test-measurements.mjs",
+    "test:color-modes": "node scripts/test-color-modes.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.12.1",

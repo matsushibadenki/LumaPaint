@@ -28,6 +28,8 @@ pub struct CanvasRequest {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[serde(default)]
     pub zoom_revision: Option<u64>,
+    #[serde(default)]
+    pub pasteboard_color: Option<[u8; 3]>,
     pub dark: bool,
     pub visible: bool,
     #[serde(default)]
@@ -42,8 +44,18 @@ pub enum CanvasTool {
     #[default]
     Brush,
     Eraser,
+    Blur,
+    Sharpen,
+    Smudge,
+    CloneStamp,
+    PaintBucket,
+    Lasso,
+    PolygonLasso,
+    MagneticLasso,
+    SelectionBrush,
     Eyedropper,
     Gradient,
+    Crop,
     Rectangle,
     Ellipse,
     VectorSelect,
@@ -328,6 +340,9 @@ pub fn initialize(app: &tauri::AppHandle) {
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DocumentAction {
+    CreateTrimMarks,
+    RegistrationFill,
+    RegistrationStroke,
     Undo,
     Redo,
     ToggleLayer,
@@ -1023,6 +1038,7 @@ mod tests {
     #[test]
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
+            pasteboard_color: None,
             overlays: Vec::new(),
             overlay: None,
             channel: 0,
@@ -1899,6 +1915,7 @@ pub async fn set_gradient_tool(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolOptionsSnapshot {
+    pub crop_bounds: Option<[f32; 4]>,
     gradient: lumapaint_core::gradient::Gradient,
     gradient_target: String,
     brush: Brush,
@@ -1952,7 +1969,8 @@ pub async fn numeric_tool(
 ) -> Result<DocumentSnapshot, String> {
     if !matches!(
         tool,
-        CanvasTool::Rectangle
+        CanvasTool::Crop
+            | CanvasTool::Rectangle
             | CanvasTool::Ellipse
             | CanvasTool::VectorRectangle
             | CanvasTool::VectorEllipse
@@ -2007,7 +2025,8 @@ impl ToolPreviewRequest {
             Self::Numeric { tool, bounds } => {
                 if !matches!(
                     tool,
-                    CanvasTool::Rectangle
+                    CanvasTool::Crop
+                        | CanvasTool::Rectangle
                         | CanvasTool::Ellipse
                         | CanvasTool::VectorRectangle
                         | CanvasTool::VectorEllipse
@@ -2252,4 +2271,178 @@ pub(crate) async fn apply_pdf_import(
 pub(crate) fn open_psd(owner: &str, prepared: crate::psd_import::Prepared) -> Result<(), String> {
     let _session = platform::SessionGuard::enter(owner)?;
     platform::open_psd(prepared)
+}
+
+#[tauri::command]
+pub async fn crop_action(window: tauri::WebviewWindow, confirm: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::crop_action(confirm)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, confirm);
+        Err("Native canvas unavailable".into())
+    }
+}
+
+#[tauri::command]
+pub async fn clone_stamp_settings(
+    window: tauri::WebviewWindow,
+) -> Result<lumapaint_core::clone_stamp::Settings, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::clone_stamp_settings).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(Default::default())
+    }
+}
+#[tauri::command]
+pub async fn set_clone_stamp_settings(
+    window: tauri::WebviewWindow,
+    settings: lumapaint_core::clone_stamp::Settings,
+) -> Result<(), String> {
+    settings.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_clone_stamp_settings(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native painting is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn retouch_settings(
+    window: tauri::WebviewWindow,
+) -> Result<lumapaint_core::retouch::Settings, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::retouch_settings).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(Default::default())
+    }
+}
+#[tauri::command]
+pub async fn set_retouch_settings(
+    window: tauri::WebviewWindow,
+    settings: lumapaint_core::retouch::Settings,
+) -> Result<(), String> {
+    settings.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_retouch_settings(settings)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native painting is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn paint_bucket_settings(
+    window: tauri::WebviewWindow,
+) -> Result<lumapaint_core::paint_bucket::Settings, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::paint_bucket_settings).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(Default::default())
+    }
+}
+#[tauri::command]
+pub async fn set_paint_bucket_settings(
+    window: tauri::WebviewWindow,
+    settings: lumapaint_core::paint_bucket::Settings,
+) -> Result<(), String> {
+    settings.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_paint_bucket_settings(settings)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native painting is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn selection_tool_settings(
+    window: tauri::WebviewWindow,
+) -> Result<lumapaint_core::selection_tools::Settings, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::selection_tool_settings).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(Default::default())
+    }
+}
+#[tauri::command]
+pub async fn set_selection_tool_settings(
+    window: tauri::WebviewWindow,
+    settings: lumapaint_core::selection_tools::Settings,
+) -> Result<(), String> {
+    settings.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::set_selection_tool_settings(settings)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, settings);
+        Err("Native selection is pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn selection_path_action(
+    window: tauri::WebviewWindow,
+    confirm: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::selection_path_action(confirm)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, confirm);
+        Err("Native selection is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn vector_selection_action(
+    window: tauri::WebviewWindow,
+    request: lumapaint_core::document::VectorSelectionRequest,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::vector_selection_action(request)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, request);
+        Err("Native vector editing is pending on this platform".into())
+    }
 }

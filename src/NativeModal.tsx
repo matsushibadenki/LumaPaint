@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale, Theme } from './i18n';
-export type ModalKind = 'settings' | 'newDocument' | 'colorSettings' | 'transform' | 'directControls' | 'importImage' | 'toolSettings' | 'pdfImport';
+export type ModalKind = 'vectorSelections' | 'settings' | 'newDocument' | 'colorSettings' | 'transform' | 'directControls' | 'importImage' | 'toolSettings' | 'pdfImport';
 export function NativeModal({ kind, locale, theme, action, onClose, onError, children }: {
   kind: ModalKind; locale: Locale; theme: Theme; action?: string; onClose: () => void; onError: (error: string) => void; children: ReactNode;
 }) {

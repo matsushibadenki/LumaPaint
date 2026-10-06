@@ -1,5 +1,14 @@
+#[path = "document_vector_selection.rs"]
+mod vector_selection;
+pub use vector_selection::{
+    SavedVectorSelection, SavedVectorSelectionSummary, VectorSelectionRequest,
+};
+#[path = "document_clone_stamp.rs"]
+mod clone_stamp;
 #[path = "document_compound_shapes.rs"]
 mod compound_shapes;
+#[path = "document_crop.rs"]
+mod crop;
 pub use compound_shapes::{CompoundShape, CompoundShapeEdit, CompoundShapeSnapshot};
 #[path = "document_layer_groups.rs"]
 mod layer_groups;
@@ -51,6 +60,8 @@ pub enum ColorMode {
     #[default]
     Rgb,
     Cmyk,
+    Grayscale,
+    Lab,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -61,6 +72,8 @@ pub enum ColorProfile {
     DisplayP3,
     AdobeRgb1998,
     JapanColor2001Coated,
+    GrayD65,
+    LabD50,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -96,8 +109,27 @@ pub struct DocumentSettings {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum NewDocumentGuideLayout {
+    Print {
+        bleed_mm: f32,
+    },
+    Manga {
+        trim_width_mm: f32,
+        trim_height_mm: f32,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NewDocumentSettings {
+    #[serde(default)]
+    pub guide_layout: Option<NewDocumentGuideLayout>,
     #[serde(default)]
     pub pages: Option<PageSetup>,
     pub document: DocumentSettings,
@@ -111,6 +143,8 @@ impl ColorProfile {
         match self {
             Self::Srgb | Self::DisplayP3 | Self::AdobeRgb1998 => ColorMode::Rgb,
             Self::JapanColor2001Coated => ColorMode::Cmyk,
+            Self::GrayD65 => ColorMode::Grayscale,
+            Self::LabD50 => ColorMode::Lab,
         }
     }
 }
@@ -118,6 +152,8 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
+    #[serde(default)]
+    pub no_color: bool,
     #[serde(default)]
     pub envelope: BrushEnvelope,
     #[serde(default)]
@@ -210,6 +246,7 @@ pub enum BrushSimulation {
 impl Default for Brush {
     fn default() -> Self {
         Self {
+            no_color: false,
             size: 16.0,
             envelope: BrushEnvelope::default(),
             simulation: BrushSimulation::Round,
@@ -448,6 +485,8 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub saved_vector_selections: Vec<SavedVectorSelectionSummary>,
+    pub can_reselect_vectors: bool,
     pub compound_shapes: Vec<CompoundShapeSnapshot>,
     pub layer_groups: LayerGroupsSnapshot,
     pub guides: GuidesSnapshot,
@@ -519,6 +558,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    crop_dimensions: Option<(u32, u32)>,
     compound_shapes: Vec<CompoundShape>,
     layer_groups: LayerGroupsState,
     guides: GuidesState,
@@ -536,6 +576,44 @@ struct VectorHistoryState {
     layer_effects: std::collections::BTreeMap<String, crate::layer_effects::LayerEffects>,
     paint_source: Option<String>,
     pixel_selection: Option<Selection>,
+}
+
+/// Diagnostic counters for the last successful translation or its Undo/Redo.
+/// Byte counts cover retained transform entries and source patch movement, not
+/// allocator overhead, validation temporaries or process-wide memory.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TranslationMetrics {
+    pub elapsed_us: u64,
+    pub journal_us: u64,
+    pub edited_objects: usize,
+    pub scanned_objects: usize,
+    pub history_transform_bytes: usize,
+    pub full_layer_snapshots: usize,
+    pub svg_generations: usize,
+    pub svg_patch_bytes: usize,
+    pub svg_source_search_bytes: usize,
+    pub estimated_source_relocation_bytes: usize,
+}
+
+/// Ordinary translations retain only the edited objects. Other edit kinds keep
+/// the existing complete-state contract until their delta transactions migrate.
+#[derive(Clone)]
+enum VectorHistoryEntry {
+    SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
+    PixelSelection(Option<Selection>),
+    State(Box<VectorHistoryState>),
+    Objects {
+        edits: Vec<ObjectHistoryEntry>,
+        selection: Vec<String>,
+        selected_layer: Option<String>,
+    },
+}
+#[derive(Clone)]
+struct ObjectHistoryEntry {
+    layer: usize,
+    position: usize,
+    transform: [f32; 6],
+    bounds: Option<[f64; 4]>,
 }
 
 /// Minimal state needed to decide whether a projected paint tile cache can be
@@ -602,6 +680,8 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    saved_vector_selections: std::sync::Arc<Vec<SavedVectorSelection>>,
+    previous_vector_selection: Vec<String>,
     compound_shapes: Vec<CompoundShape>,
     scene_journal: crate::scene::Journal,
     scene_picking: crate::scene::picking::PickingState,
@@ -642,8 +722,8 @@ pub struct Document {
     svg_layers: Vec<SvgLayer>,
     selected_layer: Option<String>,
     selected_vector_objects: Vec<String>,
-    vector_undo: Vec<VectorHistoryState>,
-    vector_redo: Vec<VectorHistoryState>,
+    vector_undo: Vec<VectorHistoryEntry>,
+    vector_redo: Vec<VectorHistoryEntry>,
     undo_order: Vec<HistoryKind>,
     redo_order: Vec<HistoryKind>,
     color_mode: ColorMode,
@@ -653,12 +733,17 @@ pub struct Document {
     point_count: usize,
     saved_revision: u64,
     text_change_generation: u64,
+    translation_metrics: TranslationMetrics,
+    noncanonical_vector_sources: std::collections::BTreeSet<String>,
+    transform_slots: TransformSlotCache,
     file_name: Option<String>,
 }
 
 impl Default for Document {
     fn default() -> Self {
         Self {
+            saved_vector_selections: std::sync::Arc::new(Vec::new()),
+            previous_vector_selection: Vec::new(),
             compound_shapes: Vec::new(),
             scene_journal: crate::scene::Journal::default(),
             scene_picking: crate::scene::picking::PickingState::default(),
@@ -710,6 +795,9 @@ impl Default for Document {
             point_count: 0,
             saved_revision: 0,
             text_change_generation: 0,
+            translation_metrics: TranslationMetrics::default(),
+            noncanonical_vector_sources: Default::default(),
+            transform_slots: TransformSlotCache::default(),
             file_name: None,
         }
     }
@@ -894,6 +982,15 @@ impl Document {
                 }),
         );
         DocumentSnapshot {
+            saved_vector_selections: self
+                .saved_vector_selections
+                .iter()
+                .map(|s| SavedVectorSelectionSummary {
+                    name: s.name.clone(),
+                    count: s.object_ids.len(),
+                })
+                .collect(),
+            can_reselect_vectors: !self.previous_vector_selection.is_empty(),
             compound_shapes: self.compound_shape_snapshot(),
             layer_groups: self.layer_groups_snapshot(),
             guides: self.guides.snapshot(),
@@ -983,6 +1080,8 @@ impl Document {
             layer_groups.roots.retain(|id| id != &edit.layer_id);
         }
         DocumentState {
+            saved_vector_selections: self.saved_vector_selections.as_ref().clone(),
+            pixel_selection: self.selection.clone(),
             compound_shapes: self.compound_shapes.clone(),
             layer_groups,
             guides: self.guides.clone(),
@@ -1031,6 +1130,9 @@ impl Document {
 
     /// Validate and restore model state; file signatures and codecs belong to the I/O layer.
     pub fn from_document_state(mut file: DocumentState) -> Result<Self, String> {
+        if let Some(selection) = &file.pixel_selection {
+            selection.validate()?;
+        }
         if file.width == 0
             || file.height == 0
             || file.width > MAX_DOCUMENT_DIMENSION
@@ -1056,6 +1158,8 @@ impl Document {
         let color_profile = file.color_profile.unwrap_or(match file.color_mode {
             ColorMode::Rgb => ColorProfile::Srgb,
             ColorMode::Cmyk => ColorProfile::JapanColor2001Coated,
+            ColorMode::Grayscale => ColorProfile::GrayD65,
+            ColorMode::Lab => ColorProfile::LabD50,
         });
         if color_profile.mode() != file.color_mode {
             return Err("Color profile is incompatible with the document color mode".into());
@@ -1133,9 +1237,21 @@ impl Document {
             .clone()
             .map(pages::PageBook::from_state)
             .transpose()?;
+        vector_selection::validate_saved(&file.saved_vector_selections)?;
         compound_shapes::validate_compound_shapes(&file.compound_shapes, &file.svg_layers)?;
+        let noncanonical_vector_sources = file
+            .svg_layers
+            .iter()
+            .filter(|l| {
+                l.vector_layer && l.source != vector_svg(file.width, file.height, &l.vector_objects)
+            })
+            .map(|l| l.id.clone())
+            .collect();
         let stroke_count = file.strokes.len();
         Ok(Self {
+            saved_vector_selections: std::sync::Arc::new(file.saved_vector_selections),
+            previous_vector_selection: Vec::new(),
+            selection: file.pixel_selection,
             compound_shapes: file.compound_shapes,
             layer_groups: file.layer_groups,
             guides: file.guides,
@@ -1159,6 +1275,7 @@ impl Document {
             paint_source: file.paint_source,
             strokes: file.strokes,
             svg_layers: file.svg_layers,
+            noncanonical_vector_sources,
             visible: file.layer_visible,
             layer_name: file.layer_name.unwrap_or_else(|| "Background".into()),
             layer_opacity: file.layer_opacity.unwrap_or(1.0),
@@ -1179,6 +1296,10 @@ impl Document {
         self.saved_revision = self.revision;
         self.file_name = Some(name);
     }
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
     pub fn set_color_mode(&mut self, mode: ColorMode) {
         self.finish();
         if self.color_mode != mode {
@@ -1186,6 +1307,8 @@ impl Document {
             self.color_profile = match mode {
                 ColorMode::Rgb => ColorProfile::Srgb,
                 ColorMode::Cmyk => ColorProfile::JapanColor2001Coated,
+                ColorMode::Grayscale => ColorProfile::GrayD65,
+                ColorMode::Lab => ColorProfile::LabD50,
             };
             self.revision += 1;
         }
@@ -1248,6 +1371,62 @@ impl Document {
         document.set_color_profile(settings.color_profile)?;
         document.set_bit_depth(settings.bit_depth)?;
         document.select_layer("layer-1".into())?;
+        if let Some(layout) = settings.guide_layout {
+            let factor = document.resolution as f32 / 25.4;
+            let (w, h) = (document.width as f32, document.height as f32);
+            let (x, y, right, bottom) = match layout {
+                NewDocumentGuideLayout::Print { bleed_mm } => {
+                    if !bleed_mm.is_finite() || !(0.0..=100.0).contains(&bleed_mm) {
+                        return Err("Invalid bleed size".into());
+                    }
+                    let bleed = bleed_mm * factor;
+                    (-bleed, -bleed, w + bleed, h + bleed)
+                }
+                NewDocumentGuideLayout::Manga {
+                    trim_width_mm,
+                    trim_height_mm,
+                } => {
+                    if [trim_width_mm, trim_height_mm]
+                        .iter()
+                        .any(|v| !v.is_finite() || *v <= 0.)
+                    {
+                        return Err("Invalid manga trim size".into());
+                    }
+                    let (tw, th) = if w > h {
+                        (
+                            trim_width_mm.max(trim_height_mm),
+                            trim_width_mm.min(trim_height_mm),
+                        )
+                    } else {
+                        (
+                            trim_width_mm.min(trim_height_mm),
+                            trim_width_mm.max(trim_height_mm),
+                        )
+                    };
+                    let (tw, th) = (tw * factor, th * factor);
+                    if tw > w + 0.5 || th > h + 0.5 {
+                        return Err("Manga trim size exceeds paper size".into());
+                    }
+                    ((w - tw) / 2., (h - th) / 2., (w + tw) / 2., (h + th) / 2.)
+                }
+            };
+            for (axis, position) in [
+                ("vertical", x),
+                ("vertical", right),
+                ("horizontal", y),
+                ("horizontal", bottom),
+            ] {
+                document.guides.items.push(Guide {
+                    id: format!("guide-{}", document.guides.next_id),
+                    axis: Some(axis.into()),
+                    position,
+                    layer_id: None,
+                    objects: vec![],
+                });
+                document.guides.next_id += 1;
+            }
+            document.guides.validate()?;
+        }
         if let Some(pages) = settings.pages {
             document.setup_pages(pages)?;
         }
@@ -1275,6 +1454,9 @@ impl Document {
         pressure: f32,
     ) -> Result<bool, String> {
         brush.validate()?;
+        if brush.no_color {
+            return Ok(false);
+        }
         if self
             .selected_layer
             .as_deref()
@@ -1315,7 +1497,14 @@ impl Document {
         if self.layer_alpha_locked {
             return Err("透明ピクセル保護を解除してください。\nDisable alpha lock to erase.\n请关闭透明像素锁定。".into());
         }
-        let started = self.begin_with_pressure(point, brush, pressure)?;
+        let started = self.begin_with_pressure(
+            point,
+            Brush {
+                no_color: false,
+                ..brush
+            },
+            pressure,
+        )?;
         if started {
             if let Some(stroke) = &mut self.active {
                 stroke.eraser = true;
@@ -1373,14 +1562,8 @@ impl Document {
             }
             Some(HistoryKind::Vector) => {
                 if let Some(previous) = self.vector_undo.pop() {
-                    let mut current = self.vector_history_state();
-                    if previous.strokes.is_some() {
-                        current.strokes = Some(self.strokes.clone());
-                    }
-                    self.scene_journal
-                        .layers_changed(&current.layers, &previous.layers);
+                    let current = self.exchange_vector_history(previous);
                     self.vector_redo.push(current);
-                    self.restore_vector_history(previous);
                     self.redo_order.push(HistoryKind::Vector);
                     self.revision += 1;
                 }
@@ -1402,14 +1585,8 @@ impl Document {
             }
             Some(HistoryKind::Vector) => {
                 if let Some(next) = self.vector_redo.pop() {
-                    let mut current = self.vector_history_state();
-                    if next.strokes.is_some() {
-                        current.strokes = Some(self.strokes.clone());
-                    }
-                    self.scene_journal
-                        .layers_changed(&current.layers, &next.layers);
+                    let current = self.exchange_vector_history(next);
                     self.vector_undo.push(current);
-                    self.restore_vector_history(next);
                     self.undo_order.push(HistoryKind::Vector);
                     self.revision += 1;
                 }
@@ -2254,6 +2431,7 @@ impl Document {
                 && object.transform[4..] == settings.position
                 && object.fill
                     == Some(crate::vector::VectorPaint {
+                        registration: false,
                         color: [r, g, b, 255],
                     })
             {
@@ -2264,6 +2442,7 @@ impl Document {
             object.transform[4] = settings.position[0];
             object.transform[5] = settings.position[1];
             object.fill = Some(crate::vector::VectorPaint {
+                registration: false,
                 color: [r, g, b, 255],
             });
             return self.upsert_vector_object(&layer_id, object);
@@ -2311,6 +2490,7 @@ impl Document {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(crate::vector::VectorPaint {
+                registration: false,
                 color: [r, g, b, 255],
             }),
             stroke: None,
@@ -2453,6 +2633,7 @@ impl Document {
                 object.stroke_width = width;
                 if width > 0.0 && object.stroke.is_none() {
                     object.stroke = Some(VectorPaint {
+                        registration: false,
                         color: [color[0], color[1], color[2], 255],
                     });
                 }
@@ -2538,7 +2719,6 @@ impl Document {
     }
 
     pub fn select_vector_objects(&mut self, ids: Vec<String>) -> Result<(), String> {
-        self.guides.selected.clear();
         if ids.len() > 4096 {
             return Err("Too many selected vector objects".into());
         }
@@ -2559,6 +2739,10 @@ impl Document {
             if !unique.contains(&id) {
                 unique.push(id);
             }
+        }
+        self.guides.selected.clear();
+        if !self.selected_vector_objects.is_empty() {
+            self.previous_vector_selection = self.selected_vector_objects.clone();
         }
         self.selected_vector_objects = self.expand_group_selection(&unique);
         Ok(())
@@ -2755,12 +2939,138 @@ impl Document {
         Ok(())
     }
 
+    pub fn create_trim_marks(&mut self) -> Result<(), String> {
+        let error = "Select one visible unlocked rectangle / 表示中でロックされていない四角形を1つ選択してください / 请选择一个可见且未锁定的矩形";
+        if self.path_editing.is_some() || self.selected_vector_objects.len() != 1 {
+            return Err(error.into());
+        }
+        let id = &self.selected_vector_objects[0];
+        let layer_index = self
+            .svg_layers
+            .iter()
+            .position(|l| l.vector_objects.iter().any(|o| &o.id == id))
+            .ok_or(error)?;
+        let layer = &self.svg_layers[layer_index];
+        let rectangle = layer.vector_objects.iter().find(|o| &o.id == id).unwrap();
+        if !layer.vector_layer
+            || !layer.visible
+            || layer.locked
+            || !rectangle.visible
+            || self.object_is_locked(id)
+            || rectangle.kind != VectorObjectKind::Rectangle
+        {
+            return Err(error.into());
+        }
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for p in vector_geometry_extrema(rectangle, |p| p) {
+            bounds[0] = bounds[0].min(p.x);
+            bounds[1] = bounds[1].min(p.y);
+            bounds[2] = bounds[2].max(p.x);
+            bounds[3] = bounds[3].max(p.y);
+        }
+        if bounds.iter().any(|v| !v.is_finite()) || bounds[2] <= bounds[0] || bounds[3] <= bounds[1]
+        {
+            return Err(error.into());
+        }
+        let [x, y, r, b] = bounds;
+        let gap = 3. * self.resolution as f32 / 25.4;
+        let length = 5. * self.resolution as f32 / 25.4;
+        let mut path = String::new();
+        for yy in [y, b, y - gap, b + gap] {
+            for (start, end) in [(x - gap - length, x - gap), (r + gap, r + gap + length)] {
+                path.push_str(&format!("M{start} {yy}L{end} {yy}"));
+            }
+        }
+        for xx in [x, r, x - gap, r + gap] {
+            for (start, end) in [(y - gap - length, y - gap), (b + gap, b + gap + length)] {
+                path.push_str(&format!("M{xx} {start}L{xx} {end}"));
+            }
+        }
+        // Center crosses stay outside the bleed, with a 1 mm clearance.
+        let clearance = self.resolution as f32 / 25.4;
+        let half = length / 2.;
+        let cx = (x + r) / 2.;
+        let cy = (y + b) / 2.;
+        for yy in [y - gap - clearance - half, b + gap + clearance + half] {
+            path.push_str(&format!("M{} {yy}L{} {yy}", cx - half, cx + half));
+            path.push_str(&format!("M{cx} {}L{cx} {}", yy - half, yy + half));
+        }
+        for xx in [x - gap - clearance - half, r + gap + clearance + half] {
+            path.push_str(&format!("M{xx} {}L{xx} {}", cy - half, cy + half));
+            path.push_str(&format!("M{} {cy}L{} {cy}", xx - half, xx + half));
+        }
+        let mut marks = rectangle.clone();
+        let mut serial = 1;
+        loop {
+            marks.id = format!("trim-marks-{serial}");
+            if !self
+                .svg_layers
+                .iter()
+                .any(|l| l.vector_objects.iter().any(|o| o.id == marks.id))
+            {
+                break;
+            }
+            serial += 1;
+        }
+        marks.name = "Trim marks / トリムマーク / 裁切标记".into();
+        marks.kind = VectorObjectKind::Path;
+        marks.path.data = path;
+        marks.transform = [1., 0., 0., 1., 0., 0.];
+        marks.fill = None;
+        marks.fill_gradient = None;
+        marks.stroke_gradient = None;
+        marks.stroke = Some(VectorPaint {
+            registration: true,
+            color: [0, 0, 0, 255],
+        });
+        marks.stroke_width = self.resolution as f32 / 72. * 0.25;
+        marks.stroke_style = Default::default();
+        marks.group_path.clear();
+        marks.clipping_group = None;
+        marks.text = None;
+        marks.image_frame = None;
+        marks.live_corners = None;
+        marks.rectangle_radii = None;
+        marks.control_points.clear();
+        marks.opacity = 1.;
+        marks.blend_mode = "normal".into();
+        marks.bounds_reset = false;
+        marks.validate()?;
+        let mut layers = self.svg_layers.clone();
+        layers[layer_index].vector_objects.push(marks.clone());
+        layers[layer_index].source =
+            vector_svg(self.width, self.height, &layers[layer_index].vector_objects);
+        validate_svg_layer(&layers[layer_index])?;
+        if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
+            return Err("Project contains too much vector data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers = layers;
+        self.selected_vector_objects = vec![marks.id];
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn set_selected_vector_paint(
         &mut self,
         ids: &[String],
         target: &str,
         color: Option<[u8; 3]>,
     ) -> Result<(), String> {
+        let registration = matches!(target, "registrationFill" | "registrationStroke");
+        let target = match target {
+            "registrationFill" => "fill",
+            "registrationStroke" => "stroke",
+            value => value,
+        };
+        let color = if registration { Some([0, 0, 0]) } else { color };
         if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
             || ids.is_empty()
             || ids.len() != self.selected_vector_objects.len()
@@ -2803,7 +3113,17 @@ impl Document {
                         object.stroke_gradient = None;
                     }
                     *paint = color.map(|[r, g, b]| VectorPaint {
-                        color: [r, g, b, paint.map_or(255, |p| p.color[3])],
+                        registration,
+                        color: [
+                            r,
+                            g,
+                            b,
+                            if registration {
+                                255
+                            } else {
+                                paint.map_or(255, |p| p.color[3])
+                            },
+                        ],
                     });
                 }
                 if object.stroke.is_some() && object.stroke_width <= 0. {
@@ -2851,6 +3171,14 @@ impl Document {
             for region in &selection.regions {
                 let [x, y, w, h] = region.bounds;
                 let shape = match region.shape {
+                    SelectionShape::Polygon | SelectionShape::Stroke => VectorPath {
+                        data: region.path_data(),
+                        fill_rule: if region.shape == SelectionShape::Polygon {
+                            crate::vector::FillRule::EvenOdd
+                        } else {
+                            crate::vector::FillRule::NonZero
+                        },
+                    },
                     SelectionShape::Rectangle => rectangle(x, y, w, h),
                     SelectionShape::Ellipse => VectorPath {
                         data: format!(
@@ -2907,6 +3235,7 @@ impl Document {
             clipping_group: None,
             bounds_reset: false,
             fill: Some(VectorPaint {
+                registration: false,
                 color: gradient.stops[0].color,
             }),
             stroke: None,
@@ -3120,11 +3449,13 @@ impl Document {
                 if target == "fill" {
                     object.fill_gradient = Some(gradient.clone());
                     object.fill = Some(VectorPaint {
+                        registration: false,
                         color: gradient.stops[0].color,
                     });
                 } else {
                     object.stroke_gradient = Some(gradient.clone());
                     object.stroke = Some(VectorPaint {
+                        registration: false,
                         color: gradient.stops[0].color,
                     });
                 }
@@ -4001,6 +4332,7 @@ impl Document {
             object.stroke_gradient = None;
             object.fill = None;
             object.stroke = Some(crate::vector::VectorPaint {
+                registration: false,
                 color: self.layer_guide_color(&edit.layer_id),
             });
             object.stroke_width = width;
@@ -4141,7 +4473,10 @@ impl Document {
             .map(|mut object| {
                 object.fill_gradient = None;
                 object.stroke_gradient = None;
-                object.fill = Some(crate::vector::VectorPaint { color: [255; 4] });
+                object.fill = Some(crate::vector::VectorPaint {
+                    registration: false,
+                    color: [255; 4],
+                });
                 object.stroke = None;
                 object
             })
@@ -4977,14 +5312,38 @@ impl Document {
     }
 
     /// One oriented bounding box shared by the selected objects.
+    // Preserve painter order: the first selected object's affine basis defines
+    // the oriented selection box. Selection order itself must not change it.
+    fn selected_drawing_objects(&self, editable_only: bool) -> Vec<&VectorObject> {
+        if self.selected_vector_objects.is_empty() {
+            return Vec::new();
+        }
+        let mut index = self.scene_picking.lock();
+        index.retain(&self.svg_layers);
+        let mut objects = Vec::new();
+        for layer in self.svg_layers.iter().filter(|layer| {
+            layer.visible
+                && !layer.locked
+                && (!editable_only || (layer.vector_layer && self.can_edit_path_layer(layer)))
+        }) {
+            let (positions, _) = index.positions(
+                layer,
+                &self.scene_journal,
+                self.revision,
+                &self.selected_vector_objects,
+            );
+            objects.extend(
+                positions
+                    .into_iter()
+                    .map(|i| &layer.vector_objects[i])
+                    .filter(|o| o.visible),
+            );
+        }
+        objects
+    }
+
     pub fn selected_vector_box(&self) -> Option<[[f32; 2]; 4]> {
-        let objects: Vec<_> = self
-            .svg_layers
-            .iter()
-            .filter(|l| l.visible && !l.locked)
-            .flat_map(|l| &l.vector_objects)
-            .filter(|o| o.visible && self.selected_vector_objects.contains(&o.id))
-            .collect();
+        let objects = self.selected_drawing_objects(false);
         if let Some(first) = objects.first().filter(|o| !o.bounds_reset) {
             let [a, b, c, d, e, f] = first.transform;
             let det = a * d - b * c;
@@ -5181,13 +5540,7 @@ impl Document {
             f32::NEG_INFINITY,
             f32::NEG_INFINITY,
         ];
-        for object in self
-            .svg_layers
-            .iter()
-            .filter(|l| self.can_edit_path_layer(l) && l.vector_layer && l.visible && !l.locked)
-            .flat_map(|l| &l.vector_objects)
-            .filter(|o| o.visible && self.selected_vector_objects.contains(&o.id))
-        {
+        for object in self.selected_drawing_objects(true) {
             for p in vector_geometry_extrema(object, |p| p) {
                 bounds[0] = bounds[0].min(p.x);
                 bounds[1] = bounds[1].min(p.y);
@@ -5457,6 +5810,7 @@ impl Document {
         if !point.valid() || !tolerance.is_finite() || !(0.0..=256.0).contains(&tolerance) {
             return None;
         }
+        let previous = self.selected_vector_objects.clone();
         let hit = self.vector_at(point, tolerance);
         if let Some(id) = hit.as_ref() {
             if !additive {
@@ -5469,6 +5823,9 @@ impl Document {
             }
         } else if !additive {
             self.selected_vector_objects.clear();
+        }
+        if previous != self.selected_vector_objects && !previous.is_empty() {
+            self.previous_vector_selection = previous;
         }
         hit
     }
@@ -5565,6 +5922,9 @@ impl Document {
         Ok(true)
     }
 
+    pub fn translation_metrics(&self) -> TranslationMetrics {
+        self.translation_metrics
+    }
     pub fn move_selected_vectors(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
         if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
             return Err("Invalid vector translation".into());
@@ -5572,34 +5932,140 @@ impl Document {
         if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
             return Ok(false);
         }
-        let before = self.vector_history_state();
-        let selected = self.selected_vector_objects.clone();
-        let mut changed = false;
-        for layer in self
-            .svg_layers
-            .iter_mut()
-            .filter(|layer| layer.vector_layer && !layer.locked)
-        {
-            let mut layer_changed = false;
-            for object in &mut layer.vector_objects {
-                if selected.contains(&object.id) {
-                    object.transform[4] += dx;
-                    object.transform[5] += dy;
-                    object.validate()?;
-                    layer_changed = true;
-                    changed = true;
+        let started = std::time::Instant::now();
+        let mut metrics = TranslationMetrics::default();
+        // Saved-path editing still uses the complete-state transaction because
+        // its stored path is a second authoritative copy of the edited objects.
+        let use_complete_history = self.path_editing.is_some()
+            || self.svg_layers.iter().any(|layer| {
+                self.noncanonical_vector_sources.contains(&layer.id)
+                    && layer
+                        .vector_objects
+                        .iter()
+                        .any(|o| self.selected_vector_objects.contains(&o.id))
+            });
+        let previous = use_complete_history.then(|| self.vector_history_state());
+        let mut edits = Vec::new();
+        for (layer_index, layer) in self.svg_layers.iter().enumerate() {
+            if !layer.vector_layer || layer.locked {
+                continue;
+            }
+            let (positions, scanned) = self.scene_picking.lock().positions(
+                layer,
+                &self.scene_journal,
+                self.revision,
+                &self.selected_vector_objects,
+            );
+            metrics.scanned_objects += scanned;
+            for position in positions {
+                let object = &layer.vector_objects[position];
+                object.validate()?;
+                let mut transform = object.transform;
+                transform[4] += dx;
+                transform[5] += dy;
+                if transform.iter().any(|value| !value.is_finite()) {
+                    return Err("Invalid vector translation".into());
                 }
-            }
-            if layer_changed {
-                layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
-                validate_svg_layer(layer)?;
+                edits.push(ObjectHistoryEntry {
+                    layer: layer_index,
+                    position,
+                    transform,
+                    bounds: object.conservative_drawing_bounds(),
+                });
             }
         }
-        if changed {
-            self.record_vector_edit(before);
-            self.revision += 1;
+        if edits.is_empty() {
+            return Ok(false);
         }
-        Ok(changed)
+        // All coordinates validate before touching the document. Prepare every
+        // source patch before committing; size failure restores all transforms.
+        let touched: std::collections::BTreeSet<_> = edits.iter().map(|e| e.layer).collect();
+        for edit in &mut edits {
+            std::mem::swap(
+                &mut self.svg_layers[edit.layer].vector_objects[edit.position].transform,
+                &mut edit.transform,
+            );
+        }
+        let mut updates = Vec::new();
+        for &index in &touched {
+            let layer = &self.svg_layers[index];
+            let positions: Vec<_> = edits
+                .iter()
+                .filter(|e| e.layer == index)
+                .map(|e| e.position)
+                .collect();
+            let patches = (!self.noncanonical_vector_sources.contains(&layer.id))
+                .then(|| {
+                    self.transform_slots
+                        .patches(layer, &positions, &mut metrics)
+                })
+                .flatten();
+            let (patches, source) = match patches {
+                Some(patches) => (Some(patches), None),
+                None => (
+                    None,
+                    Some(vector_svg(self.width, self.height, &layer.vector_objects)),
+                ),
+            };
+            let length = source.as_ref().map_or_else(
+                || {
+                    let patches = patches.as_ref().unwrap();
+                    layer.source.len() - patches.iter().map(|(r, _)| r.len()).sum::<usize>()
+                        + patches.iter().map(|(_, s)| s.len()).sum::<usize>()
+                },
+                String::len,
+            );
+            if length > MAX_SVG_BYTES {
+                for edit in &mut edits {
+                    std::mem::swap(
+                        &mut self.svg_layers[edit.layer].vector_objects[edit.position].transform,
+                        &mut edit.transform,
+                    );
+                }
+                return Err("SVG must be no larger than 4 MiB".into());
+            }
+            updates.push((index, patches, source));
+        }
+        for (index, patches, source) in updates {
+            let layer = &mut self.svg_layers[index];
+            if let Some(source) = source {
+                metrics.svg_generations += 1;
+                layer.source = source;
+            } else {
+                let (patch, relocation) =
+                    apply_transform_patches(&mut layer.source, patches.unwrap());
+                metrics.svg_patch_bytes += patch;
+                metrics.estimated_source_relocation_bytes += relocation;
+            }
+        }
+        metrics.edited_objects = edits.len();
+        metrics.history_transform_bytes = edits.len() * std::mem::size_of::<ObjectHistoryEntry>();
+        let journal_started = std::time::Instant::now();
+        if let Some(previous) = previous {
+            metrics.full_layer_snapshots = previous.layers.len();
+            metrics.history_transform_bytes = 0;
+            self.record_vector_edit(previous);
+        } else {
+            self.notify_object_history(&edits);
+            self.vector_undo.push(VectorHistoryEntry::Objects {
+                edits,
+                selection: self.selected_vector_objects.clone(),
+                selected_layer: self.selected_layer.clone(),
+            });
+            self.vector_redo.clear();
+            self.redo.clear();
+            self.redo_order.clear();
+            self.undo_order.push(HistoryKind::Vector);
+        }
+        for index in touched {
+            self.noncanonical_vector_sources
+                .remove(&self.svg_layers[index].id);
+        }
+        metrics.journal_us = journal_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        metrics.elapsed_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        self.translation_metrics = metrics;
+        self.revision += 1;
+        Ok(true)
     }
     pub fn delete_selected_vector_objects(&mut self) -> Result<bool, String> {
         if !self.guides.selected.is_empty() {
@@ -6070,6 +6536,7 @@ impl Document {
                 o.fill_gradient = None;
                 o.stroke_gradient = None;
                 o.stroke = Some(crate::vector::VectorPaint {
+                    registration: false,
                     color: [70, 150, 255, 255],
                 });
                 o.stroke_width = 1.;
@@ -6226,8 +6693,100 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    fn notify_object_history(&mut self, edits: &[ObjectHistoryEntry]) {
+        for edit in edits {
+            let layer = &self.svg_layers[edit.layer];
+            let object = &layer.vector_objects[edit.position];
+            self.scene_journal.object_transformed(
+                &layer.id,
+                &object.id,
+                edit.bounds,
+                object.conservative_drawing_bounds(),
+            );
+        }
+    }
+    fn exchange_vector_history(&mut self, entry: VectorHistoryEntry) -> VectorHistoryEntry {
+        match entry {
+            VectorHistoryEntry::SavedSelections(previous) => VectorHistoryEntry::SavedSelections(
+                std::mem::replace(&mut self.saved_vector_selections, previous),
+            ),
+            VectorHistoryEntry::PixelSelection(previous) => {
+                VectorHistoryEntry::PixelSelection(std::mem::replace(&mut self.selection, previous))
+            }
+            VectorHistoryEntry::State(previous) => {
+                let mut current = self.vector_history_state();
+                if previous.crop_dimensions.is_some() {
+                    current.crop_dimensions = Some((self.width, self.height));
+                }
+                if previous.strokes.is_some() {
+                    current.strokes = Some(self.strokes.clone());
+                }
+                self.scene_journal
+                    .layers_changed(&current.layers, &previous.layers);
+                self.restore_vector_history(*previous);
+                VectorHistoryEntry::State(Box::new(current))
+            }
+            VectorHistoryEntry::Objects {
+                mut edits,
+                mut selection,
+                mut selected_layer,
+            } => {
+                let started = std::time::Instant::now();
+                let mut metrics = TranslationMetrics {
+                    edited_objects: edits.len(),
+                    history_transform_bytes: edits.len()
+                        * std::mem::size_of::<ObjectHistoryEntry>(),
+                    ..Default::default()
+                };
+                for edit in &mut edits {
+                    edit.bounds = self.svg_layers[edit.layer].vector_objects[edit.position]
+                        .conservative_drawing_bounds();
+                    std::mem::swap(
+                        &mut self.svg_layers[edit.layer].vector_objects[edit.position].transform,
+                        &mut edit.transform,
+                    );
+                }
+                let touched: std::collections::BTreeSet<_> =
+                    edits.iter().map(|e| e.layer).collect();
+                for index in touched {
+                    let layer = &mut self.svg_layers[index];
+                    let positions: Vec<_> = edits
+                        .iter()
+                        .filter(|e| e.layer == index)
+                        .map(|e| e.position)
+                        .collect();
+                    if let Some(patches) =
+                        self.transform_slots
+                            .patches(layer, &positions, &mut metrics)
+                    {
+                        let (patch, relocation) =
+                            apply_transform_patches(&mut layer.source, patches);
+                        metrics.svg_patch_bytes += patch;
+                        metrics.estimated_source_relocation_bytes += relocation;
+                    } else {
+                        metrics.svg_generations += 1;
+                        layer.source = vector_svg(self.width, self.height, &layer.vector_objects);
+                    }
+                }
+                let journal_started = std::time::Instant::now();
+                self.notify_object_history(&edits);
+                metrics.journal_us =
+                    journal_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                metrics.elapsed_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                self.translation_metrics = metrics;
+                std::mem::swap(&mut self.selected_vector_objects, &mut selection);
+                std::mem::swap(&mut self.selected_layer, &mut selected_layer);
+                VectorHistoryEntry::Objects {
+                    edits,
+                    selection,
+                    selected_layer,
+                }
+            }
+        }
+    }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            crop_dimensions: None,
             compound_shapes: self.compound_shapes.clone(),
             layer_groups: self.layer_groups.clone(),
             guides: self.guides.clone(),
@@ -6248,6 +6807,11 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        if let Some((width, height)) = state.crop_dimensions {
+            self.width = width;
+            self.height = height;
+        }
+        self.transform_slots.0.clear();
         self.compound_shapes = state.compound_shapes;
         self.layer_groups = state.layer_groups;
         self.guides = state.guides;
@@ -6268,6 +6832,14 @@ impl Document {
         }
         self.selected_layer = state.selected_layer;
         self.svg_layers = state.layers;
+        self.noncanonical_vector_sources = self
+            .svg_layers
+            .iter()
+            .filter(|l| {
+                l.vector_layer && l.source != vector_svg(self.width, self.height, &l.vector_objects)
+            })
+            .map(|l| l.id.clone())
+            .collect();
         self.selected_vector_objects = state.selection;
         // Undo changes path data, not which panel the user is editing.
         if self.path_editing.as_ref().map(|edit| &edit.id) != editing.as_ref() {
@@ -6278,6 +6850,7 @@ impl Document {
         }
     }
     fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        self.transform_slots.0.clear();
         let previous_objects: std::collections::HashMap<_, _> = previous
             .layers
             .iter()
@@ -6347,7 +6920,8 @@ impl Document {
         self.prune_compound_shapes();
         self.scene_journal
             .layers_changed(&previous.layers, &self.svg_layers);
-        self.vector_undo.push(previous);
+        self.vector_undo
+            .push(VectorHistoryEntry::State(Box::new(previous)));
         self.vector_redo.clear();
         self.redo.clear();
         self.redo_order.clear();
@@ -6543,6 +7117,8 @@ impl Document {
                 ];
                 if bounds[2] >= 1.0 && bounds[3] >= 1.0 {
                     let region = SelectionRegion {
+                        points: Vec::new(),
+                        radius: 0.,
                         shape: gesture.shape,
                         bounds,
                         operation: if gesture.mode == SelectionMode::Add {
@@ -6676,6 +7252,522 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn move_fixture(count: usize) -> Document {
+        let mut document = Document::default();
+        document.add_vector_layer().unwrap();
+        let prototype = VectorObject {
+            live_corners: None,
+            rectangle_radii: None,
+            opacity: 1.0,
+            blend_mode: "normal".into(),
+            text: None,
+            id: "rectangle-1".into(),
+            name: "Rectangle".into(),
+            group_path: Vec::new(),
+            clipping_group: None,
+            bounds_reset: false,
+            path: VectorPath {
+                data: "M 10 10 H 30 V 40 H 10 Z".into(),
+                fill_rule: crate::vector::FillRule::NonZero,
+            },
+            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            image_frame: None,
+            fill_gradient: None,
+            stroke_gradient: None,
+            fill: Some(VectorPaint {
+                registration: false,
+                color: [0, 0, 0, 255],
+            }),
+            stroke: None,
+            stroke_style: Default::default(),
+            stroke_width: 0.0,
+            visible: true,
+            kind: crate::vector::VectorObjectKind::Rectangle,
+            control_points: vec![[10.0, 10.0], [30.0, 40.0]],
+        };
+        let objects: Vec<_> = (0..count)
+            .map(|i| {
+                let mut object = prototype.clone();
+                object.id = format!("object-{i}");
+                object
+            })
+            .collect();
+        document.svg_layers[0].vector_objects = objects;
+        document.svg_layers[0].source = vector_svg(
+            document.width,
+            document.height,
+            &document.svg_layers[0].vector_objects,
+        );
+        document.selected_vector_objects = vec!["object-0".into()];
+        document
+    }
+    #[test]
+    fn translation_delta_history_is_constant_and_undo_restores_canonical_source() {
+        for count in [1_000, 4_096] {
+            let mut d = move_fixture(count);
+            let source = d.svg_layers[0].source.clone();
+            let untouched = d.svg_layers[0].vector_objects[1].clone();
+            let cursor = d.scene_journal.cursor();
+            assert!(d.move_selected_vectors(5., 7.).unwrap());
+            let Some(VectorHistoryEntry::Objects { edits, .. }) = d.vector_undo.last() else {
+                panic!("translation must use delta history");
+            };
+            assert_eq!(edits.len(), 1);
+            assert_eq!(d.translation_metrics().svg_generations, 0);
+            assert_eq!(
+                d.translation_metrics().history_transform_bytes,
+                std::mem::size_of::<ObjectHistoryEntry>()
+            );
+            assert_eq!(d.svg_layers[0].vector_objects[1], untouched);
+            assert_eq!(
+                d.svg_layers[0].source,
+                vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects)
+            );
+            let crate::scene::JournalRead::Incremental { changes, .. } =
+                d.scene_journal.read(cursor)
+            else {
+                panic!("unexpected journal gap");
+            };
+            assert_eq!(changes.len(), 2);
+            assert_eq!(changes[1].target.object.as_deref(), Some("object-0"));
+            assert!(changes[1].changes.transform && !changes[1].changes.geometry);
+            assert_ne!(changes[1].before_bounds, changes[1].after_bounds);
+            let moved = d.svg_layers[0].source.clone();
+            d.selected_vector_objects.clear();
+            d.undo();
+            assert_eq!(d.svg_layers[0].source, source);
+            assert_eq!(d.translation_metrics().svg_generations, 0);
+            assert_eq!(d.selected_vector_objects, ["object-0"]);
+            d.redo();
+            assert_eq!(d.svg_layers[0].source, moved);
+            d.undo();
+            assert_eq!(d.svg_layers[0].source, source);
+        }
+    }
+    #[test]
+    fn indexed_selection_bounds_preserve_order_and_follow_history() {
+        let mut d = move_fixture(4096);
+        d.select_vector_objects(vec!["object-4095".into(), "object-0".into()])
+            .unwrap();
+        let ids: Vec<_> = d
+            .selected_drawing_objects(false)
+            .iter()
+            .map(|o| o.id.as_str())
+            .collect();
+        assert_eq!(ids, ["object-0", "object-4095"]);
+        let bounds = d.selected_vector_box().unwrap();
+        d.move_selected_vectors(12., -8.).unwrap();
+        let moved = d.selected_vector_box().unwrap();
+        for (before, after) in bounds.into_iter().zip(moved) {
+            assert!((after[0] - before[0] - 12.).abs() < 0.001);
+            assert!((after[1] - before[1] + 8.).abs() < 0.001);
+        }
+        d.undo();
+        assert_eq!(d.selected_vector_box(), Some(bounds));
+        d.redo();
+        assert_eq!(d.selected_vector_box(), Some(moved));
+        d.svg_layers[0].locked = true;
+        assert!(d.selected_drawing_objects(false).is_empty());
+        assert_eq!(d.selected_vector_box(), None);
+        d.svg_layers[0].locked = false;
+        d.select_vector_objects(Vec::new()).unwrap();
+        assert_eq!(d.selected_vector_box(), None);
+    }
+    #[test]
+    fn trim_marks_are_registration_geometry_with_atomic_history() {
+        let mut d = move_fixture(1);
+        let before = d.svg_layers[0].source.clone();
+        d.create_trim_marks().unwrap();
+        let marks = d.svg_layers[0].vector_objects.last().unwrap();
+        assert!(marks.stroke.unwrap().registration);
+        assert_eq!(marks.path.data.matches('M').count(), 24);
+        assert_eq!(marks.stroke_width, 0.25);
+        let contours = crate::bezier::cubic_contours(&marks.path.data).unwrap();
+        assert_eq!(contours.len(), 24);
+        assert!((contours[0].0[0][0] - (10. - 8. * 72. / 25.4)).abs() < 0.001);
+        let mm = 72. / 25.4;
+        let near = |actual: f32, expected: f32| assert!((actual - expected).abs() < 0.001);
+        // Inner/outer corner pairs are separated by exactly 3 mm.
+        near(contours[0].0[0][1], 10.);
+        near(contours[4].0[0][1], 10. - 3. * mm);
+        near(contours[8].0[0][0], 10.);
+        near(contours[12].0[0][0], 10. - 3. * mm);
+        // Top/bottom and left/right crosses are centered and clear of the bleed.
+        near(contours[16].0[0][0], 20. - 2.5 * mm);
+        near(contours[16].0.last().unwrap()[0], 20. + 2.5 * mm);
+        near(contours[17].0.last().unwrap()[1], 10. - 4. * mm);
+        near(contours[19].0[0][1], 40. + 4. * mm);
+        near(contours[20].0[0][1], 25. - 2.5 * mm);
+        near(contours[21].0.last().unwrap()[0], 10. - 4. * mm);
+        near(contours[23].0[0][0], 30. + 4. * mm);
+        let after = d.svg_layers[0].source.clone();
+        let loaded = Document::decode(&d.encode().unwrap()).unwrap();
+        assert!(
+            loaded.svg_layers[0]
+                .vector_objects
+                .last()
+                .unwrap()
+                .stroke
+                .unwrap()
+                .registration
+        );
+        d.undo();
+        assert_eq!(d.svg_layers[0].source, before);
+        d.redo();
+        assert_eq!(d.svg_layers[0].source, after);
+        d.undo();
+        d.svg_layers[0].locked = true;
+        let revision = d.revision;
+        assert!(d.create_trim_marks().is_err());
+        assert_eq!(d.revision, revision);
+        assert_eq!(d.svg_layers[0].source, before);
+    }
+    #[test]
+    fn trim_marks_keep_physical_dimensions_at_print_resolution() {
+        let mut screen = move_fixture(1);
+        screen.create_trim_marks().unwrap();
+        let a = crate::bezier::cubic_contours(
+            &screen.svg_layers[0]
+                .vector_objects
+                .last()
+                .unwrap()
+                .path
+                .data,
+        )
+        .unwrap();
+        let mut print = move_fixture(1);
+        print.resolution = 300;
+        let scale = 300. / 72.;
+        print.svg_layers[0].vector_objects[0].transform = [scale, 0., 0., scale, 0., 0.];
+        print.create_trim_marks().unwrap();
+        let marks = print.svg_layers[0].vector_objects.last().unwrap();
+        assert!((marks.stroke_width / scale - 0.25).abs() < 0.0001);
+        let b = crate::bezier::cubic_contours(&marks.path.data).unwrap();
+        assert_eq!(a.len(), b.len());
+        for ((aa, ac), (bb, bc)) in a.iter().zip(&b) {
+            assert_eq!(ac, bc);
+            assert_eq!(aa.len(), bb.len());
+            for (ap, bp) in aa.iter().zip(bb) {
+                for axis in 0..2 {
+                    assert!((ap[axis] - bp[axis] / scale).abs() < 0.001);
+                }
+            }
+        }
+    }
+    #[test]
+    fn no_paint_keeps_geometry_selection_and_atomic_history() {
+        let mut d = move_fixture(1);
+        let id = d.selected_vector_objects[0].clone();
+        let bounds = d.selected_vector_bounds();
+        let before = d.svg_layers[0].source.clone();
+        d.set_selected_vector_paint(std::slice::from_ref(&id), "fill", None)
+            .unwrap();
+        let object = &d.svg_layers[0].vector_objects[0];
+        assert!(object.fill.is_none() && object.stroke.is_none());
+        assert_eq!(d.selected_vector_bounds(), bounds);
+        assert_eq!(d.selected_vector_objects, vec![id]);
+        let saved = d.encode().unwrap();
+        let restored = Document::decode(&saved).unwrap();
+        assert!(restored.svg_layers[0].vector_objects[0].fill.is_none());
+        assert!(restored.svg_layers[0].source.contains("fill=\"none\""));
+        d.undo();
+        assert_eq!(d.svg_layers[0].source, before);
+        d.redo();
+        assert!(d.svg_layers[0].vector_objects[0].fill.is_none());
+    }
+    #[test]
+    fn none_brush_does_not_edit_and_eraser_remains_independent() {
+        let mut d = Document::default();
+        let before = d.encode().unwrap();
+        let brush = Brush {
+            no_color: true,
+            ..Default::default()
+        };
+        assert!(!d.begin(Point { x: 10., y: 10. }, brush).unwrap());
+        assert_eq!(d.encode().unwrap(), before);
+        assert!(!d.has_active_stroke());
+        assert!(d.begin_eraser(Point { x: 10., y: 10. }, brush, 1.).unwrap());
+        let old: Brush =
+            serde_json::from_value(serde_json::json!({"size":16,"hardness":1,"color":[1,2,3]}))
+                .unwrap();
+        assert!(!old.no_color);
+    }
+    #[test]
+    fn text_none_is_local_and_preserves_measured_geometry() {
+        let mut text = VectorText {
+            content: "あ😀中".into(),
+            ..Default::default()
+        };
+        text.line_baselines = vec![48.];
+        text.character_origins = vec![vec![0., 48., 96.]];
+        let color = [10, 20, 30];
+        text.apply_style(
+            1,
+            3,
+            &crate::vector::TextStylePatch {
+                no_color: Some(true),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert!(!text.style_at(0, color).no_color);
+        assert!(text.style_at(1, color).no_color);
+        assert!(!text.style_at(3, color).no_color);
+        assert_eq!(text.character_origins, vec![vec![0., 48., 96.]]);
+        let mut d = Document::default();
+        d.set_text_object(TextSettings {
+            id: None,
+            text: text.clone(),
+            position: [10., 20.],
+            color,
+        })
+        .unwrap();
+        assert!(d.svg_layers[0].source.contains("fill=\"none\""));
+        let restored = Document::decode(&d.encode().unwrap()).unwrap();
+        assert!(
+            restored.svg_layers[0].vector_objects[0]
+                .text
+                .as_ref()
+                .unwrap()
+                .style_at(1, color)
+                .no_color
+        );
+        text.apply_style(
+            1,
+            3,
+            &crate::vector::TextStylePatch {
+                color: Some([200, 0, 0]),
+                ..Default::default()
+            },
+            color,
+        )
+        .unwrap();
+        assert!(!text.style_at(1, color).no_color);
+        assert_eq!(text.style_at(1, color).color, [200, 0, 0]);
+    }
+    #[test]
+    fn warm_translation_uses_index_and_constant_history_payload() {
+        let mut payload = None;
+        for count in [1000, 4096] {
+            let mut d = move_fixture(count);
+            d.move_selected_vectors(1., 1.).unwrap();
+            d.undo();
+            d.move_selected_vectors(1., 1.).unwrap();
+            let m = d.translation_metrics();
+            assert_eq!(m.scanned_objects, 0);
+            assert_eq!(m.full_layer_snapshots, 0);
+            assert_eq!(m.svg_generations, 0);
+            assert_eq!(m.edited_objects, 1);
+            assert_eq!(
+                m.svg_patch_bytes,
+                slot_matrix([1., 0., 0., 1., 1., 1.]).len()
+            );
+            assert_eq!(m.svg_source_search_bytes, 0);
+            assert_eq!(m.estimated_source_relocation_bytes, 0);
+            if let Some(bytes) = payload {
+                assert_eq!(m.history_transform_bytes, bytes);
+            }
+            payload = Some(m.history_transform_bytes);
+        }
+    }
+    #[test]
+    fn padded_translation_values_round_trip_f32_and_keep_slot_length() {
+        let baseline = slot_matrix([1., 0., 0., 1., 0., 0.]).len();
+        let mut bits = 1u32;
+        let special = [
+            0.,
+            -0.,
+            f32::MAX,
+            f32::MIN,
+            f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+        ];
+        for value in special.into_iter().chain((0..10_000).filter_map(|_| {
+            bits = bits.wrapping_mul(1664525).wrapping_add(1013904223);
+            let value = f32::from_bits(bits);
+            value.is_finite().then_some(value)
+        })) {
+            let matrix = slot_matrix([1., 0., 0., 1., value, -value]);
+            assert_eq!(matrix.len(), baseline);
+            let transform = format!("matrix({matrix})");
+            let token = svgtypes::TransformListParser::from(transform.as_str())
+                .next()
+                .unwrap()
+                .unwrap();
+            let svgtypes::TransformListToken::Matrix { e, f, .. } = token else {
+                panic!("expected matrix");
+            };
+            assert_eq!((e as f32).to_bits(), value.to_bits());
+            assert_eq!((f as f32).to_bits(), (-value).to_bits());
+        }
+    }
+    #[test]
+    fn last_object_moves_do_not_search_or_relocate_unrelated_source() {
+        for count in [1000, 4096] {
+            let mut d = move_fixture(count);
+            let id = format!("object-{}", count - 1);
+            d.select_vector_objects(vec![id]).unwrap();
+            d.move_selected_vectors(9., -9.).unwrap();
+            d.undo();
+            let pointer = d.svg_layers[0].source.as_ptr();
+            let capacity = d.svg_layers[0].source.capacity();
+            for (dx, dy) in [
+                (0.0001, -0.0001),
+                (99999., -99999.),
+                (-99999., 99999.),
+                (-123.25, 4.5),
+            ] {
+                d.move_selected_vectors(dx, dy).unwrap();
+                let m = d.translation_metrics();
+                assert_eq!(m.scanned_objects, 0);
+                assert_eq!(m.svg_source_search_bytes, 0);
+                assert_eq!(m.estimated_source_relocation_bytes, 0);
+                assert_eq!(m.svg_generations, 0);
+                assert_eq!(d.svg_layers[0].source.as_ptr(), pointer);
+                assert_eq!(d.svg_layers[0].source.capacity(), capacity);
+                assert_eq!(
+                    d.svg_layers[0].source,
+                    vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects)
+                );
+                d.undo();
+                assert_eq!(d.translation_metrics().svg_source_search_bytes, 0);
+                assert_eq!(d.translation_metrics().estimated_source_relocation_bytes, 0);
+                d.redo();
+                assert_eq!(d.translation_metrics().svg_source_search_bytes, 0);
+                assert_eq!(d.translation_metrics().estimated_source_relocation_bytes, 0);
+                d.undo();
+            }
+        }
+    }
+    #[test]
+    fn transform_slot_index_is_discarded_on_structure_changes_and_forks() {
+        let mut d = move_fixture(3);
+        d.move_selected_vectors(1., 1.).unwrap();
+        assert!(!d.transform_slots.0.is_empty());
+        let mut fork = d.clone();
+        assert!(fork.transform_slots.0.is_empty());
+        fork.move_selected_vectors(2., 2.).unwrap();
+        assert!(fork.translation_metrics().svg_source_search_bytes > 0);
+        assert_ne!(fork.svg_layers[0].source, d.svg_layers[0].source);
+        let layer_id = d.svg_layers[0].id.clone();
+        let mut object = d.svg_layers[0].vector_objects[1].clone();
+        object.name = "changed".into();
+        d.upsert_vector_object(&layer_id, object).unwrap();
+        assert!(d.transform_slots.0.is_empty());
+        d.move_selected_vectors(2., 2.).unwrap();
+        assert_eq!(
+            d.svg_layers[0].source,
+            vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects)
+        );
+        d.undo();
+        d.undo();
+        assert!(d.transform_slots.0.is_empty());
+        d.move_selected_vectors(3., 3.).unwrap();
+        assert_eq!(
+            d.svg_layers[0].source,
+            vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects)
+        );
+    }
+    #[test]
+    fn legacy_source_at_capacity_rejects_migration_without_partial_edit() {
+        let mut d = move_fixture(4);
+        for object in &mut d.svg_layers[0].vector_objects[..3] {
+            object
+                .path
+                .data
+                .push_str(&" ".repeat(1024 * 1024 - object.path.data.len()));
+        }
+        let len = vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects).len();
+        d.svg_layers[0].vector_objects[3]
+            .path
+            .data
+            .push_str(&" ".repeat(MAX_SVG_BYTES + 16 - len));
+        let canonical = vector_svg(d.width, d.height, &d.svg_layers[0].vector_objects);
+        assert_eq!(canonical.len(), MAX_SVG_BYTES + 16);
+        let legacy = canonical.replace(&slot_matrix([1., 0., 0., 1., 0., 0.]), "1 0 0 1 0 0");
+        assert!(legacy.len() < MAX_SVG_BYTES);
+        d.svg_layers[0].source = legacy;
+        let state = d.document_state();
+        let mut d = Document::from_document_state(state).unwrap();
+        d.select_vector_objects(vec!["object-0".into(), "object-3".into()])
+            .unwrap();
+        let source = d.svg_layers[0].source.clone();
+        let revision = d.revision;
+        let cursor = d.scene_journal.cursor();
+        let history = d.undo_order.len();
+        assert!(d.move_selected_vectors(5., 7.).is_err());
+        assert_eq!(d.svg_layers[0].source, source);
+        assert!(d.svg_layers[0]
+            .vector_objects
+            .iter()
+            .all(|o| o.transform == [1., 0., 0., 1., 0., 0.]));
+        assert_eq!(d.revision, revision);
+        assert_eq!(d.scene_journal.cursor(), cursor);
+        assert_eq!(d.undo_order.len(), history);
+    }
+    #[test]
+    fn noncanonical_loaded_svg_uses_safe_history_and_preserves_undo_source() {
+        let d = move_fixture(2);
+        let mut state = d.document_state();
+        // A marker in imported source is not proof that its structure matches LP.
+        state.svg_layers[0].source = state.svg_layers[0]
+            .source
+            .replace("opacity=\"1\"", "opacity=\"0.5\"");
+        let source = state.svg_layers[0].source.clone();
+        let mut d = Document::from_document_state(state).unwrap();
+        d.select_vector_objects(vec!["object-0".into()]).unwrap();
+        d.move_selected_vectors(10., 10.).unwrap();
+        assert_eq!(d.translation_metrics().svg_generations, 1);
+        assert!(matches!(
+            d.vector_undo.last(),
+            Some(VectorHistoryEntry::State(_))
+        ));
+        d.undo();
+        assert_eq!(d.svg_layers[0].source, source);
+    }
+    #[test]
+    fn failed_multi_object_translation_does_not_mutate_earlier_objects_or_history() {
+        let mut d = move_fixture(2);
+        d.selected_vector_objects.push("object-1".into());
+        // Simulate a rejected object after a valid candidate; no first-object
+        // mutation may leak before all selected candidates pass validation.
+        d.svg_layers[0].vector_objects[1].transform[4] = f32::NAN;
+        let source = d.svg_layers[0].source.clone();
+        let before = d.svg_layers[0].vector_objects[0].transform;
+        let revision = d.revision;
+        let cursor = d.scene_journal.cursor();
+        let history = d.undo_order.len();
+        assert!(d.move_selected_vectors(10., 20.).is_err());
+        assert_eq!(d.svg_layers[0].vector_objects[0].transform, before);
+        assert_eq!(d.svg_layers[0].source, source);
+        assert_eq!(d.revision, revision);
+        assert_eq!(d.scene_journal.cursor(), cursor);
+        assert_eq!(d.undo_order.len(), history);
+    }
+    #[test]
+    fn oversized_source_failure_rolls_back_translation_before_history_commit() {
+        let mut d = move_fixture(2);
+        let remaining = MAX_SVG_BYTES - d.svg_layers[0].source.len();
+        let at = d.svg_layers[0]
+            .source
+            .find("></svg>")
+            .unwrap_or(d.svg_layers[0].source.len() - 6);
+        d.svg_layers[0]
+            .source
+            .insert_str(at, &" ".repeat(remaining + 1));
+        let source = d.svg_layers[0].source.clone();
+        let transform = d.svg_layers[0].vector_objects[0].transform;
+        let cursor = d.scene_journal.cursor();
+        let history = d.undo_order.len();
+        assert!(d.move_selected_vectors(99999., 99999.).is_err());
+        assert_eq!(d.svg_layers[0].source, source);
+        assert_eq!(d.svg_layers[0].vector_objects[0].transform, transform);
+        assert_eq!(d.scene_journal.cursor(), cursor);
+        assert_eq!(d.undo_order.len(), history);
+    }
 
     #[test]
     fn ordinary_layer_effects_snapshot_history_and_saved_state() {
@@ -6942,6 +8034,7 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [40, 80, 160, 255],
             }),
             stroke: None,
@@ -7370,6 +8463,7 @@ mod tests {
     #[test]
     fn new_document_preset_validates_and_round_trips() {
         let preset = NewDocumentSettings {
+            guide_layout: None,
             pages: None,
             document: DocumentSettings {
                 name: "A4 print".into(),
@@ -7385,6 +8479,42 @@ mod tests {
             color_profile: ColorProfile::JapanColor2001Coated,
             bit_depth: 16,
         };
+        let mut print = preset.clone();
+        print.guide_layout = Some(NewDocumentGuideLayout::Print { bleed_mm: 3. });
+        let mut print = Document::from_preset(print).unwrap();
+        assert_eq!(print.guides.items.len(), 4);
+        assert!(print.guides.visible && print.guides.locked);
+        let bleed = 3. * 300. / 25.4;
+        assert!((print.guides.items[0].position + bleed).abs() < 0.001);
+        assert!((print.guides.items[1].position - 2480. - bleed).abs() < 0.001);
+        let loaded = Document::decode(&print.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.guides.items[0].position,
+            print.guides.items[0].position
+        );
+        let mut manga = preset.clone();
+        manga.guide_layout = Some(NewDocumentGuideLayout::Manga {
+            trim_width_mm: 148.,
+            trim_height_mm: 210.,
+        });
+        manga.pages = Some(PageSetup {
+            count: 2,
+            facing: true,
+            binding: PageBinding::RightToLeft,
+        });
+        let mut manga = Document::from_preset(manga.clone()).unwrap();
+        assert!((manga.guides.items[0].position - (2480. - 148. * 300. / 25.4) / 2.).abs() < 0.001);
+        let loaded = Document::decode(&manga.encode().unwrap()).unwrap();
+        assert_eq!(loaded.guides.items.len(), 4);
+        let mut invalid = preset.clone();
+        invalid.guide_layout = Some(NewDocumentGuideLayout::Manga {
+            trim_width_mm: 1000.,
+            trim_height_mm: 1000.,
+        });
+        assert!(Document::from_preset(invalid).is_err());
+        let mut invalid = preset.clone();
+        invalid.guide_layout = Some(NewDocumentGuideLayout::Print { bleed_mm: f32::NAN });
+        assert!(Document::from_preset(invalid).is_err());
         let mut doc = Document::from_preset(preset.clone()).unwrap();
         let loaded = Document::decode(&doc.encode().unwrap()).unwrap().snapshot();
         assert_eq!(
@@ -7498,6 +8628,7 @@ mod tests {
     #[test]
     fn brush_accepts_sizes_up_to_512_px() {
         assert!(Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 512.0,
@@ -7507,6 +8638,7 @@ mod tests {
         .validate()
         .is_ok());
         assert!(Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 513.0,
@@ -7516,6 +8648,7 @@ mod tests {
         .validate()
         .is_err());
         assert!(Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 16.0,
@@ -7532,6 +8665,10 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub saved_vector_selections: Vec<SavedVectorSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_selection: Option<Selection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compound_shapes: Vec<CompoundShape>,
     #[serde(default)]
@@ -7700,6 +8837,94 @@ fn validate_svg_layer(layer: &SvgLayer) -> Result<(), String> {
     Ok(())
 }
 
+type TransformPatch = (std::ops::Range<usize>, String);
+/// Derived indices are not copied with document forks or stored in history.
+#[derive(Default)]
+struct TransformSlotCache(std::collections::HashMap<String, TransformSlotIndex>);
+impl Clone for TransformSlotCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+struct TransformSlotIndex {
+    source_key: (usize, usize),
+    slots: std::collections::HashMap<usize, std::ops::Range<usize>>,
+}
+impl TransformSlotCache {
+    fn patches(
+        &mut self,
+        layer: &SvgLayer,
+        positions: &[usize],
+        metrics: &mut TranslationMetrics,
+    ) -> Option<Vec<TransformPatch>> {
+        let source_key = (layer.source.as_ptr() as usize, layer.source.len());
+        if self
+            .0
+            .get(&layer.id)
+            .is_none_or(|index| index.source_key != source_key)
+        {
+            metrics.svg_source_search_bytes += layer.source.len();
+            let mut slots = std::collections::HashMap::new();
+            const PREFIX: &str = "data-lp-transform=\"";
+            for (offset, _) in layer.source.match_indices(PREFIX) {
+                let tail = &layer.source[offset + PREFIX.len()..];
+                let identifier_end = tail.find('"')?;
+                let position: usize = tail[..identifier_end].parse().ok()?;
+                const MATRIX: &str = "\" transform=\"matrix(";
+                if !tail[identifier_end..].starts_with(MATRIX) {
+                    return None;
+                }
+                let start = offset + PREFIX.len() + identifier_end + MATRIX.len();
+                let end = start + layer.source[start..].find(')')?;
+                if slots.insert(position, start..end).is_some() {
+                    return None;
+                }
+            }
+            self.0
+                .insert(layer.id.clone(), TransformSlotIndex { source_key, slots });
+        }
+        let index = &self.0[&layer.id];
+        let mut patches = Vec::with_capacity(positions.len());
+        for &position in positions {
+            let object = &layer.vector_objects[position];
+            if !object.visible && object.clipping_group.is_none() {
+                continue;
+            }
+            let range = index.slots.get(&position)?.clone();
+            let replacement = slot_matrix(object.transform);
+            // Foreign/older slots use canonical regeneration, never shift a
+            // cached offset table after changing its layout.
+            if range.len() != replacement.len() {
+                return None;
+            }
+            patches.push((range, replacement));
+        }
+        patches.sort_by_key(|(range, _)| range.start);
+        Some(patches)
+    }
+}
+/// 10 significant decimal digits round-trip every finite f32. Padding only the
+/// two translation components keeps ordinary moves the same byte length even
+/// across zero, signs, decimal points and exponent changes.
+fn slot_matrix([a, b, c, d, e, f]: [f32; 6]) -> String {
+    format!("{a} {b} {c} {d} {e:18.9e} {f:18.9e}")
+}
+fn apply_transform_patches(source: &mut String, patches: Vec<TransformPatch>) -> (usize, usize) {
+    let mut patched = 0;
+    let mut relocated = 0;
+    for (range, replacement) in patches.into_iter().rev() {
+        patched += replacement.len();
+        if range.len() != replacement.len() {
+            relocated += source.len() - range.end;
+        }
+        if source.len() - range.len() + replacement.len() > source.capacity() {
+            relocated += source.len();
+        }
+        source.replace_range(range, &replacement);
+    }
+    (patched, relocated)
+}
+
 fn empty_vector_svg(width: u32, height: u32) -> String {
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"/>"#
@@ -7716,7 +8941,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
         .enumerate()
         .filter(|(_, o)| o.clipping_group.is_some())
     {
-        let [a, b, c, d, e, f] = mask.transform;
+        let matrix = slot_matrix(mask.transform);
         let rule = if mask.path.fill_rule == crate::vector::FillRule::EvenOdd {
             "evenodd"
         } else {
@@ -7724,7 +8949,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
         };
         let _ = write!(
             svg,
-            r#"<defs><clipPath id="clip-{i}" clipPathUnits="userSpaceOnUse"><path d="{}" transform="matrix({a} {b} {c} {d} {e} {f})" clip-rule="{rule}"/></clipPath></defs>"#,
+            r#"<defs><clipPath id="clip-{i}" clipPathUnits="userSpaceOnUse"><path data-lp-transform="{i}" transform="matrix({matrix})" d="{}" clip-rule="{rule}"/></clipPath></defs>"#,
             escape_xml(&mask.path.data)
         );
     }
@@ -7752,7 +8977,13 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 clips += 1;
             }
         }
-        let [a, b, c, d, e, f] = object.transform;
+        let matrix = slot_matrix(object.transform);
+        let _ = write!(
+            svg,
+            r#"<g data-lp-transform="{object_index}" transform="matrix({matrix})">"#
+        );
+        clips += 1;
+        let [a, b, c, d, e, f] = [1., 0., 0., 1., 0., 0.];
         let fill = object
             .fill
             .map_or_else(|| "none".into(), |paint| rgba_hex(paint.color));
@@ -8316,6 +9547,11 @@ fn write_text_segment(
         _ => "none",
     };
     let [r, g, b] = style.color;
+    let paint = if style.no_color {
+        "none".into()
+    } else {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
     let x_attribute = character_origins
         .filter(|origins| !origins.is_empty())
         .map_or_else(
@@ -8337,7 +9573,7 @@ fn write_text_segment(
         });
     let _ = write!(
         svg,
-        r##"<tspan{x_attribute}{width_attribute} fill="#{r:02x}{g:02x}{b:02x}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
+        r##"<tspan{x_attribute}{width_attribute} fill="{paint}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
         escape_xml(family),
         style.font_size,
         if style.bold { 700 } else { 400 },
@@ -8508,6 +9744,7 @@ mod persistence_tests {
             .begin(
                 Point { x: 20.0, y: 40.0 },
                 Brush {
+                    no_color: false,
                     simulation: Default::default(),
                     envelope: Default::default(),
                     size: 37.0,
@@ -8564,9 +9801,11 @@ mod persistence_tests {
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
+                        registration: false,
                         color: [10, 80, 220, 255],
                     }),
                     stroke: Some(VectorPaint {
+                        registration: false,
                         color: [0, 0, 0, 128],
                     }),
                     stroke_style: Default::default(),
@@ -8619,6 +9858,7 @@ mod persistence_tests {
                         fill_gradient: None,
                         stroke_gradient: None,
                         fill: Some(VectorPaint {
+                            registration: false,
                             color: [50, 80, 120, 255],
                         }),
                         stroke: None,
@@ -8687,6 +9927,7 @@ mod persistence_tests {
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
+                        registration: false,
                         color: [255, 0, 0, 255],
                     }),
                     stroke: None,
@@ -8772,6 +10013,7 @@ mod persistence_tests {
                     fill_gradient: None,
                     stroke_gradient: None,
                     fill: Some(VectorPaint {
+                        registration: false,
                         color: [0, 0, 0, 255],
                     }),
                     stroke: None,
@@ -8851,6 +10093,7 @@ mod persistence_tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [40, 80, 160, 255],
             }),
             stroke: None,
@@ -8999,6 +10242,24 @@ mod persistence_tests {
         assert!(doc.snapshot().revision > revision);
         assert!(!doc.snapshot().dirty);
         assert!(!doc.snapshot().can_redo);
+    }
+    #[test]
+    fn grayscale_and_lab_modes_round_trip_and_validate_profiles() {
+        for (mode, profile) in [
+            (ColorMode::Grayscale, ColorProfile::GrayD65),
+            (ColorMode::Lab, ColorProfile::LabD50),
+        ] {
+            let mut doc = Document::default();
+            doc.set_color_mode(mode);
+            assert_eq!(doc.color_mode(), mode);
+            assert_eq!(doc.snapshot().color_profile, profile);
+            assert!(doc.set_color_profile(ColorProfile::Srgb).is_err());
+            let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+            assert_eq!(loaded.color_mode(), mode);
+            assert_eq!(loaded.snapshot().color_profile, profile);
+            doc.set_color_mode(ColorMode::Rgb);
+            assert_eq!(doc.snapshot().color_profile, ColorProfile::Srgb);
+        }
     }
     #[test]
     fn color_mode_changes_revision_and_old_files_default_to_rgb() {
@@ -10187,6 +11448,7 @@ mod stroke_width_tests {
                     stroke_gradient: None,
                     fill: None,
                     stroke: Some(VectorPaint {
+                        registration: false,
                         color: [10, 20, 30, 255],
                     }),
                     stroke_width: 8.,
@@ -10319,6 +11581,7 @@ mod stroke_width_tests {
             stroke_gradient: None,
             fill: None,
             stroke: Some(VectorPaint {
+                registration: false,
                 color: [10, 20, 30, 255],
             }),
             stroke_style: Default::default(),
@@ -10505,6 +11768,7 @@ mod independent_saved_path_tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [255, 0, 0, 255],
             }),
             stroke: None,
@@ -10598,6 +11862,7 @@ mod independent_saved_path_tests {
         let mut object = open_curve("arrow", 0., 100.);
         object.fill = None;
         object.stroke = Some(VectorPaint {
+            registration: false,
             color: [0, 0, 0, 255],
         });
         object.stroke_width = 10.;
@@ -11059,5 +12324,110 @@ mod gradient_document_tests {
         let o = &doc.svg_layers().next().unwrap().vector_objects[0];
         assert_eq!(o.stroke_gradient, Some(g));
         assert_eq!(o.stroke_width, 1.);
+    }
+}
+
+impl Document {
+    pub fn set_path_selection(
+        &mut self,
+        points: Vec<Point>,
+        radius: f32,
+        mode: SelectionMode,
+    ) -> Result<(), String> {
+        if points.len() < if radius > 0. { 1 } else { 3 } {
+            return Ok(());
+        }
+        let padding = radius;
+        let minx = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - padding;
+        let miny = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min) - padding;
+        let maxx = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max) + padding;
+        let maxy = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max) + padding;
+        let mut region = SelectionRegion {
+            shape: if radius > 0. {
+                SelectionShape::Stroke
+            } else {
+                SelectionShape::Polygon
+            },
+            bounds: [
+                minx,
+                miny,
+                (maxx - minx).max(0.001),
+                (maxy - miny).max(0.001),
+            ],
+            points,
+            radius,
+            operation: SelectionOperation::Replace,
+        };
+        let mut result = match mode {
+            SelectionMode::Replace => Selection {
+                regions: Vec::new(),
+            },
+            SelectionMode::Add => self.selection.clone().unwrap_or(Selection {
+                regions: Vec::new(),
+            }),
+            SelectionMode::Subtract => self.selection.clone().unwrap_or_else(|| {
+                Selection::new(
+                    SelectionShape::Rectangle,
+                    [0., 0., self.width as f32, self.height as f32],
+                )
+            }),
+        };
+        result.ensure_capacity()?;
+        region.operation = if result.regions.is_empty() {
+            SelectionOperation::Replace
+        } else if mode == SelectionMode::Subtract {
+            SelectionOperation::Subtract
+        } else {
+            SelectionOperation::Add
+        };
+        result.regions.push(region);
+        result.validate()?;
+        self.selection = Some(result);
+        Ok(())
+    }
+}
+impl Document {
+    pub fn commit_path_selection(&mut self, selection: Option<Selection>) -> Result<bool, String> {
+        if let Some(s) = &selection {
+            s.validate()?;
+        }
+        if self.selection == selection {
+            return Ok(false);
+        }
+        self.finish();
+        let previous = std::mem::replace(&mut self.selection, selection);
+        self.vector_undo
+            .push(VectorHistoryEntry::PixelSelection(previous));
+        self.vector_redo.clear();
+        self.redo.clear();
+        self.redo_order.clear();
+        self.undo_order.push(HistoryKind::Vector);
+        self.revision += 1;
+        Ok(true)
+    }
+    pub fn set_tool_pixel_selection(&mut self, selection: Option<Selection>) -> Result<(), String> {
+        if let Some(s) = &selection {
+            s.validate()?;
+        }
+        self.selection = selection;
+        Ok(())
+    }
+}
+impl Document {
+    pub fn selection_sampling_document(&self, all_layers: bool) -> Self {
+        let mut result = self.clone();
+        result.finish();
+        result.selection = None;
+        if !all_layers {
+            if let Some(id) = &self.selected_layer {
+                result.paint_source = None;
+                result.strokes.clear();
+                result.point_count = 0;
+                result.svg_layers.retain(|l| &l.id == id);
+            } else {
+                result.svg_layers.clear();
+            }
+        }
+        result
     }
 }

@@ -495,3 +495,174 @@ fn pdf_vertical_cid_metrics_spacing_and_adjustments_preserve_pixels() {
         assert!(error < 8000, "vertical pixel error {error}: {actual}");
     }
 }
+
+#[test]
+fn pdf_print_marks_keep_bleed_artwork_and_clear_outer_paper() {
+    let mut document = lumapaint_formats::svg::import("Print".into(),
+        "<svg width=\"120\" height=\"80\"><rect x=\"-20\" y=\"-20\" width=\"160\" height=\"120\" fill=\"red\"/></svg>".into()).unwrap();
+    let layer = document.add_vector_layer().unwrap();
+    let rect = serde_json::from_value(serde_json::json!({
+        "id":"trim", "name":"Trim", "kind":"rectangle",
+        "path":{"data":"M0 0H120V80H0Z","fillRule":"nonZero"},
+        "transform":[1,0,0,1,0,0], "fill":{"color":[0,0,0,0]}, "stroke":null,
+        "strokeWidth":0, "visible":true, "controlPoints":[[0,0],[120,80]]
+    }))
+    .unwrap();
+    document.upsert_vector_object(&layer, rect).unwrap();
+    document.select_vector_objects(vec!["trim".into()]).unwrap();
+    document.create_trim_marks().unwrap();
+    let before = serde_json::to_value(document.document_state()).unwrap();
+    let output = export(
+        FormatId::Pdf,
+        &ExportSnapshot::capture(&document),
+        ExportOptions { allow_lossy: true },
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(document.document_state()).unwrap(),
+        before
+    );
+    let pdf = lopdf::Document::load_mem(&output.bytes).unwrap();
+    let page = pdf
+        .get_dictionary(*pdf.get_pages().values().next().unwrap())
+        .unwrap();
+    let numbers = |key: &[u8]| {
+        page.get(key)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| match o {
+                lopdf::Object::Real(v) => *v,
+                lopdf::Object::Integer(v) => *v as f32,
+                _ => panic!(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let trim = numbers(b"TrimBox");
+    let bleed = numbers(b"BleedBox");
+    let media = numbers(b"MediaBox");
+    assert!((trim[2] - trim[0] - 120.).abs() < 0.001);
+    assert!((trim[3] - trim[1] - 80.).abs() < 0.001);
+    assert!((trim[0] - bleed[0] - 3. * 72. / 25.4).abs() < 0.001);
+    for axis in 0..2 {
+        assert!(media[axis] < bleed[axis]);
+        assert!(media[axis + 2] > bleed[axis + 2]);
+    }
+    assert!(matches!(
+        read_document(
+            FormatId::Pdf,
+            "Print".into(),
+            &output.bytes,
+            ReadOptions::default()
+        ),
+        Err(lumapaint_formats::ImportError::LossyConversionRequiresConsent(_))
+    ));
+    let imported = read_document(
+        FormatId::Pdf,
+        "Print".into(),
+        &output.bytes,
+        ReadOptions {
+            raster_dpi: 72,
+            allow_lossy: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(imported
+        .report
+        .issues
+        .iter()
+        .any(|i| i.code == "pdf.registration_preview_only"));
+    let ReadContent::Vector(result) = imported.content else {
+        panic!()
+    };
+    let (w, h) = result.dimensions();
+    let svg = &result.svg_layers().next().unwrap().source;
+    let image = rasterize_svg(svg, w, h).unwrap();
+    let pixel = |x: f32, y: f32| {
+        let i = (y.round() as usize * w as usize + x.round() as usize) * 4;
+        &image.pixels[i..i + 4]
+    };
+    // Two mm beyond the trim must still contain artwork. Outside the 3 mm bleed is clear.
+    let top = media[3] - trim[3];
+    assert_eq!(
+        pixel(trim[0] - 2. * 72. / 25.4, top + 20.),
+        &[255, 0, 0, 255]
+    );
+    assert_eq!(pixel(trim[0] + 20., top + 20.), &[255, 0, 0, 255]);
+    assert_eq!(pixel(trim[0] - 5. * 72. / 25.4, top + 20.)[3], 0);
+    // A top inner corner mark lies beyond the bleed and remains visible.
+    let mark = pixel(trim[0] - 5.5 * 72. / 25.4, top);
+    assert!(
+        mark[0] < 50 && mark[3] > 0,
+        "missing registration mark {mark:?}"
+    );
+}
+
+#[test]
+fn text_none_hides_only_selected_characters_without_moving_neighbors() {
+    use lumapaint_core::document::{Document, TextSettings};
+    use lumapaint_core::vector::{TextStylePatch, VectorText};
+    let mut state = Document::default().document_state();
+    state.width = 120;
+    state.height = 60;
+    let mut d = Document::from_document_state(state).unwrap();
+    let mut text = VectorText {
+        content: "ABC".into(),
+        point_text: true,
+        font_size: 24.,
+        character_origins: vec![vec![0., 30., 60.]],
+        ..Default::default()
+    };
+    text.apply_style(
+        1,
+        2,
+        &TextStylePatch {
+            no_color: Some(true),
+            ..Default::default()
+        },
+        [0, 0, 0],
+    )
+    .unwrap();
+    d.set_text_object(TextSettings {
+        id: None,
+        text,
+        position: [10., 10.],
+        color: [0, 0, 0],
+    })
+    .unwrap();
+    let image = rasterize_svg(&d.svg_layers().next().unwrap().source, 120, 60).unwrap();
+    let pixels = &image.pixels;
+    let alpha = |left: usize, right: usize| {
+        (0..60)
+            .flat_map(|y| (left..right).map(move |x| pixels[(y * 120 + x) * 4 + 3] as u64))
+            .sum::<u64>()
+    };
+    assert!(alpha(10, 39) > 0);
+    assert_eq!(alpha(40, 69), 0);
+    assert!(alpha(70, 99) > 0);
+}
+
+#[test]
+fn crop_svg_pixels_match_original_region_and_undo_restores_image() {
+    use lumapaint_core::document::Document;
+    let mut doc = Document::default();
+    doc.import_svg("Crop pixels".into(), r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="20" y="30" width="180" height="130" fill="red"/><circle cx="100" cy="90" r="35" fill="blue"/></svg>"#.into()).unwrap();
+    let before = rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640).unwrap();
+    doc.crop_canvas([40., 50., 120., 80.]).unwrap();
+    let cropped = rasterize_svg(&doc.svg_layers().next().unwrap().source, 120, 80).unwrap();
+    for y in 0..80usize {
+        assert_eq!(
+            &cropped.pixels[y * 120 * 4..(y + 1) * 120 * 4],
+            &before.pixels[((y + 50) * 960 + 40) * 4..((y + 50) * 960 + 160) * 4]
+        );
+    }
+    doc.undo();
+    assert_eq!(
+        rasterize_svg(&doc.svg_layers().next().unwrap().source, 960, 640)
+            .unwrap()
+            .pixels,
+        before.pixels
+    );
+}

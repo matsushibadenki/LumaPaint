@@ -316,7 +316,10 @@ mod tests {
             image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
-            fill: Some(VectorPaint { color }),
+            fill: Some(VectorPaint {
+                registration: false,
+                color,
+            }),
             stroke: None,
             stroke_width: 0.,
             stroke_style: Default::default(),

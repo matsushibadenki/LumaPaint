@@ -12,14 +12,14 @@ export function ToneStudio({locale,open,onClose}:{locale:Locale;open:boolean;onC
       if(event.source!==frame.current?.contentWindow||!open)return;
       const data=event.data;
       if(data?.type==='lumapaint-tone-close'){if(!pending.current)onClose();return;}
-      if(data?.type!=='lumapaint-tone-export'||pending.current||!Number.isSafeInteger(data.requestId)||!Array.isArray(data.colors)||data.colors.length!==5||!data.colors.every((c:unknown)=>typeof c==='string'&&/^#[0-9a-f]{6}$/i.test(c)))return;
+      if(data?.type!=='lumapaint-tone-export'||pending.current||!Number.isSafeInteger(data.requestId)||!Array.isArray(data.colors)||data.colors.length!==5||!data.colors.every((c:unknown)=>c===null||(typeof c==='string'&&/^#[0-9a-f]{6}$/i.test(c))))return;
       const source=event.source as Window;const requestId=data.requestId;pending.current=true;
       try {
-        const palette=data.colors as string[];
+        const palette=data.colors as (string|null)[];
         const items=await swatchLibrary('get',undefined,undefined,swatchSeeds());
         if(items.length>507)throw new Error(toneStudioLabels[locale].limit);
         const tone=typeof data.tone==='string'?Array.from(data.tone).slice(0,40).join(''):'Tone';
-        await swatchLibrary('addMany',undefined,undefined,undefined,palette.map((hex,i)=>({name:`${tone} ${i+1} · ${hex.toUpperCase()}`,paint:{kind:'color',color:hex.slice(1).match(/../g)!.map(c=>parseInt(c,16)) as Brush['color']}})));
+        await swatchLibrary('addMany',undefined,undefined,undefined,palette.map((hex,i)=>hex===null?{name:locale==='ja'?'なし':locale==='zh-CN'?'无':'None',paint:{kind:'none'}}:({name:`${tone} ${i+1} · ${hex.toUpperCase()}`,paint:{kind:'color',color:hex.slice(1).match(/../g)!.map(c=>parseInt(c,16)) as Brush['color']}})));
         source.postMessage({type:'lumapaint-tone-result',requestId,ok:true},'*');
       }catch(error){source.postMessage({type:'lumapaint-tone-result',requestId,ok:false,error:String(error)},'*');}
       finally{pending.current=false;}

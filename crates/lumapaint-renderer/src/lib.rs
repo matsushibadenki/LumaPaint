@@ -14,11 +14,13 @@ mod frame_overlay;
 pub mod gradient_raster;
 #[cfg(feature = "skia")]
 mod native_bezier;
+mod object_cache_state;
 pub mod portable_paths;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
 mod workspace;
 pub use frame_overlay::FrameOverlay;
+pub mod clone_stamp;
 pub mod color_sampler;
 mod paint_cache;
 pub mod pixel_paint;
@@ -40,6 +42,10 @@ struct VectorDragMetrics {
     upload_bytes: usize,
     cache_setup_ms: f64,
     full_prepare_upload_ms: f64,
+    committed_journal_objects: usize,
+    committed_legacy_objects: usize,
+    committed_svg_copy_bytes: usize,
+    committed_uniform_bytes: usize,
 }
 
 pub const MIN_SCREEN_ZOOM: f32 = 0.0313;
@@ -52,6 +58,7 @@ pub struct Viewport {
     pub height: u32,
     pub scale: f32,
     pub zoom: f32,
+    pub pasteboard_color: Option<[u8; 3]>,
     pub dark: bool,
     pub pan_x: f32,
     pub pan_y: f32,
@@ -164,6 +171,7 @@ impl Viewport {
             height: height as u32,
             scale: scale as f32,
             zoom: zoom as f32,
+            pasteboard_color: None,
             dark,
             pan_x: 0.0,
             pan_y: 0.0,
@@ -205,6 +213,7 @@ struct Uniforms {
     viewport: [f32; 4],
     appearance: [f32; 4],
     document: [f32; 4],
+    pasteboard: [f32; 4],
 }
 
 #[repr(C)]
@@ -245,37 +254,68 @@ fn selection_bind_group(
     layout: &wgpu::BindGroupLayout,
     selection: Option<&Selection>,
 ) -> wgpu::BindGroup {
-    let regions: Vec<_> = selection
-        .map(|selection| {
-            selection
-                .regions
-                .iter()
-                .map(|region| SelectionGpuRegion {
+    let mut regions = Vec::new();
+    if let Some(selection) = selection {
+        for region in &selection.regions {
+            let op = match region.operation {
+                SelectionOperation::Replace => 0.,
+                SelectionOperation::Add => 1.,
+                SelectionOperation::Subtract => 2.,
+                SelectionOperation::Invert => 3.,
+            };
+            if matches!(
+                region.shape,
+                SelectionShape::Polygon | SelectionShape::Stroke
+            ) {
+                let count = if region.shape == SelectionShape::Polygon {
+                    region.points.len()
+                } else {
+                    region.points.len().saturating_sub(1).max(1)
+                };
+                for i in 0..count {
+                    let a = region.points[i];
+                    let b = region.points[(i + 1).min(region.points.len() - 1)];
+                    let b = if region.shape == SelectionShape::Polygon {
+                        region.points[(i + 1) % region.points.len()]
+                    } else {
+                        b
+                    };
+                    regions.push(SelectionGpuRegion {
+                        bounds: [a.x, a.y, b.x, b.y],
+                        info: [
+                            op,
+                            if region.shape == SelectionShape::Polygon {
+                                2.
+                            } else {
+                                3.
+                            },
+                            region.radius,
+                            if i + 1 == count { 1. } else { 0. },
+                        ],
+                    });
+                }
+            } else {
+                regions.push(SelectionGpuRegion {
                     bounds: region.bounds,
                     info: [
-                        match region.operation {
-                            SelectionOperation::Replace => 0.0,
-                            SelectionOperation::Add => 1.0,
-                            SelectionOperation::Subtract => 2.0,
-                            SelectionOperation::Invert => 3.0,
-                        },
+                        op,
                         if region.shape == SelectionShape::Ellipse {
-                            1.0
+                            1.
                         } else {
-                            0.0
+                            0.
                         },
-                        0.0,
-                        0.0,
+                        0.,
+                        0.,
                     ],
-                })
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            vec![SelectionGpuRegion {
-                bounds: [0.0; 4],
-                info: [4.0, 0.0, 0.0, 0.0],
-            }]
+                });
+            }
+        }
+    } else {
+        regions.push(SelectionGpuRegion {
+            bounds: [0.; 4],
+            info: [4., 0., 0., 0.],
         });
+    }
     let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Selection regions"),
         contents: bytemuck::cast_slice(&regions),
@@ -448,6 +488,11 @@ pub fn paint_stroke_into_tiles_at_scale(
     let selection = stroke.selection.as_ref().map(|selection| {
         let mut scaled = selection.clone();
         for region in &mut scaled.regions {
+            for p in &mut region.points {
+                p.x *= factor;
+                p.y *= factor;
+            }
+            region.radius *= factor;
             for value in &mut region.bounds {
                 *value *= factor;
             }
@@ -1552,6 +1597,7 @@ struct CachedSvg {
 }
 
 struct ObjectLayerCache {
+    state: object_cache_state::ObjectCacheState,
     objects: Vec<lumapaint_core::vector::VectorObject>,
     source: String,
     selected_ids: Vec<String>,
@@ -1570,10 +1616,48 @@ fn layer_selected_ids(document: &Document, layer: &SvgLayer) -> Vec<String> {
         .collect()
 }
 
+#[derive(Default)]
+struct ObjectCommitMetrics {
+    journal_objects: usize,
+    legacy_objects: usize,
+    svg_copy_bytes: usize,
+    uniform_bytes: usize,
+}
 impl ObjectLayerCache {
-    fn translation(&self, document: &Document, layer: &SvgLayer) -> Option<[f32; 2]> {
+    fn matches_content(&self, document: &Document, layer: &SvgLayer) -> bool {
+        if self.state.same_journal(document) {
+            self.state.matches(document, layer)
+        } else {
+            self.source == layer.source
+        }
+    }
+    fn journal_translation(
+        &self,
+        document: &Document,
+        layer: &SvgLayer,
+    ) -> Option<object_cache_state::TranslationDelta> {
         if self.runs.is_empty()
-            || self.source == layer.source
+            || self.matches_content(document, layer)
+            || self.selected_ids
+                != self
+                    .state
+                    .selection(document, layer)
+                    .unwrap_or_else(|| layer_selected_ids(document, layer))
+            || self.opacity != layer.effective_opacity()
+            || self.document_size != document.dimensions()
+        {
+            return None;
+        }
+        self.state
+            .translated(document, layer, &self.objects, &self.selected_ids)
+    }
+    fn translation(&self, document: &Document, layer: &SvgLayer) -> Option<[f32; 2]> {
+        if let Some(delta) = self.journal_translation(document, layer) {
+            return Some(delta.offset);
+        }
+        if (layer.vector_layer && !self.state.certified())
+            || self.runs.is_empty()
+            || self.matches_content(document, layer)
             || self.selected_ids != layer_selected_ids(document, layer)
             || self.opacity != layer.effective_opacity()
             || self.document_size != document.dimensions()
@@ -1591,11 +1675,44 @@ impl ObjectLayerCache {
             .flatten()?;
         (expected.source == layer.source).then_some(delta)
     }
+    fn apply_translation(
+        &mut self,
+        queue: &wgpu::Queue,
+        document: &Document,
+        layer: &SvgLayer,
+        offset: [f32; 2],
+        journal_delta: Option<object_cache_state::TranslationDelta>,
+    ) -> ObjectCommitMetrics {
+        let mut metrics = ObjectCommitMetrics::default();
+        for run in &mut self.runs {
+            if run.selected && offset != [0., 0.] {
+                run.rectangle[0] += offset[0];
+                run.rectangle[1] += offset[1];
+                queue.write_buffer(
+                    &run.geometry_buffer,
+                    0,
+                    bytemuck::cast_slice(&run.rectangle),
+                );
+                metrics.uniform_bytes += std::mem::size_of::<[f32; 4]>();
+            }
+        }
+        if let Some(delta) = journal_delta {
+            metrics.journal_objects = self.state.accept(document, layer, &mut self.objects, delta);
+        } else {
+            metrics.legacy_objects = layer.vector_objects.len();
+            metrics.svg_copy_bytes = layer.source.len();
+            self.source = layer.source.clone();
+            self.objects = layer.vector_objects.clone();
+            self.state = object_cache_state::ObjectCacheState::new(document, layer, true);
+        }
+        metrics
+    }
     fn ready(&self, document: &Document, layer: &SvgLayer) -> bool {
         !self.runs.is_empty()
             && self.opacity == layer.effective_opacity()
             && self.document_size == document.dimensions()
-            && (self.source == layer.source || self.translation(document, layer).is_some())
+            && (self.matches_content(document, layer)
+                || self.translation(document, layer).is_some())
     }
 }
 
@@ -2253,6 +2370,7 @@ impl Renderer {
             });
         }
         Ok(ObjectLayerCache {
+            state: object_cache_state::ObjectCacheState::new(document, layer, true),
             objects: layer.vector_objects.clone(),
             source: layer.source.clone(),
             selected_ids,
@@ -2602,6 +2720,17 @@ impl Renderer {
                 },
             ],
             document: [viewport.document_width, viewport.document_height, 0.0, 0.0],
+            pasteboard: viewport.pasteboard_color.map_or([0.0; 4], |[r, g, b]| {
+                let linear = |value: u8| {
+                    let value = f32::from(value) / 255.0;
+                    if value <= 0.04045 {
+                        value / 12.92
+                    } else {
+                        ((value + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                [linear(r), linear(g), linear(b), 1.0]
+            }),
         }
     }
 
@@ -2807,6 +2936,8 @@ impl Renderer {
         }
         let mut uniforms = Self::uniforms(background_viewport);
         uniforms.appearance[0] += self.channel as f32 * 2.0;
+        let grayscale = document.color_mode() == lumapaint_core::document::ColorMode::Grayscale;
+        uniforms.document[3] = f32::from(grayscale);
         if self.channel == 4 && background_viewport.canvas_color == CanvasColor::Transparent {
             uniforms.appearance[3] = 2.0;
         }
@@ -2845,7 +2976,7 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let surface_view = frame.texture.create_view(&Default::default());
-        if (self.channel != 0 || self.composite_format != self.config.format)
+        if (self.channel != 0 || grayscale || self.composite_format != self.config.format)
             && self.channel_target.as_ref().is_none_or(|(texture, _)| {
                 texture.width() != viewport.width || texture.height() != viewport.height
             })
@@ -2882,7 +3013,7 @@ impl Renderer {
             });
             self.channel_target = Some((texture, group));
         }
-        if self.channel == 0 && self.composite_format == self.config.format {
+        if self.channel == 0 && !grayscale && self.composite_format == self.config.format {
             self.channel_target = None;
         }
         let view = self.channel_target.as_ref().map_or_else(
@@ -2928,14 +3059,8 @@ impl Renderer {
         let native_layers = std::collections::HashSet::<String>::new();
         #[cfg(feature = "skia")]
         {
-            let live = document
-                .svg_layers()
-                .flat_map(|l| &l.vector_objects)
-                .map(|o| o.id.clone())
-                .collect();
             self.native_geometry.begin_frame();
-            let layers = document.svg_layers().map(|l| l.id.clone()).collect();
-            self.native_geometry.retain(&live, &layers);
+            self.native_geometry.synchronize(document);
             if !self.outline_view && viewport.screen_zoom() > 1.5 {
                 for layer in document.visible_svg_layers() {
                     if document.has_layer_effects(&layer.id) {
@@ -2946,7 +3071,7 @@ impl Renderer {
                         &self.queue,
                         layer,
                         viewport,
-                        document.selected_vector_ids(),
+                        (document.scene_journal(), document.selected_vector_ids()),
                         offset,
                     ) {
                         native_layers.insert(layer.id.clone());
@@ -2966,12 +3091,23 @@ impl Renderer {
             if (original.vector_layer || cfg!(all(feature = "skia", target_os = "macos")))
                 && !high_zoom
             {
-                let local_selection = layer_selected_ids(document, original);
+                let local_selection = self
+                    .object_cache
+                    .get(&original.id)
+                    .and_then(|cache| cache.state.selection(document, original))
+                    .unwrap_or_else(|| layer_selected_ids(document, original));
                 // Selecting/deselecting a complete layer only retags its retained
                 // image. Unrelated layers keep their caches when selection changes.
-                if local_selection.is_empty() || document.vector_layer_moves_as_unit(original) {
+                if local_selection.is_empty()
+                    || self
+                        .object_cache
+                        .get(&original.id)
+                        .and_then(|cache| cache.state.moves_as_unit(document, original))
+                        .unwrap_or_else(|| document.vector_layer_moves_as_unit(original))
+                {
                     if let Some(cache) = self.object_cache.get_mut(&original.id) {
-                        if cache.source == original.source && !cache.runs.is_empty() {
+                        if cache.matches_content(document, original) && !cache.runs.is_empty() {
+                            cache.state.observe(document, original);
                             for run in &mut cache.runs {
                                 run.selected = !local_selection.is_empty();
                             }
@@ -2981,29 +3117,36 @@ impl Renderer {
                 }
                 // Committing a translation (including undo/redo) keeps the image.
                 // Only its 16-byte rectangle changes; no text shaping or upload.
-                let committed_offset = self
+                let journal_delta = self
                     .object_cache
                     .get(&original.id)
-                    .and_then(|cache| cache.translation(document, original));
+                    .and_then(|cache| cache.journal_translation(document, original));
+                let committed_offset =
+                    journal_delta
+                        .as_ref()
+                        .map(|delta| delta.offset)
+                        .or_else(|| {
+                            self.object_cache
+                                .get(&original.id)
+                                .and_then(|cache| cache.translation(document, original))
+                        });
                 if let Some(delta) = committed_offset {
                     if let Some(cache) = self.object_cache.get_mut(&original.id) {
-                        for run in &mut cache.runs {
-                            if run.selected {
-                                run.rectangle[0] += delta[0];
-                                run.rectangle[1] += delta[1];
-                                self.queue.write_buffer(
-                                    &run.geometry_buffer,
-                                    0,
-                                    bytemuck::cast_slice(&run.rectangle),
-                                );
-                            }
-                        }
-                        cache.source = original.source.clone();
-                        cache.objects = original.vector_objects.clone();
+                        let committed = cache.apply_translation(
+                            &self.queue,
+                            document,
+                            original,
+                            delta,
+                            journal_delta,
+                        );
+                        drag_metrics.committed_journal_objects += committed.journal_objects;
+                        drag_metrics.committed_legacy_objects += committed.legacy_objects;
+                        drag_metrics.committed_svg_copy_bytes += committed.svg_copy_bytes;
+                        drag_metrics.committed_uniform_bytes += committed.uniform_bytes;
                     }
                 }
                 let valid = self.object_cache.get(&original.id).is_some_and(|cache| {
-                    cache.source == original.source
+                    cache.matches_content(document, original)
                         && cache.selected_ids == local_selection
                         && cache.opacity == original.effective_opacity()
                         && cache.document_size == (width, height)
@@ -3014,6 +3157,9 @@ impl Renderer {
                     let cache = self
                         .prepare_object_cache(document, original, !original.vector_layer)
                         .unwrap_or_else(|_| ObjectLayerCache {
+                            state: object_cache_state::ObjectCacheState::new(
+                                document, original, false,
+                            ),
                             objects: original.vector_objects.clone(),
                             source: original.source.clone(),
                             selected_ids: local_selection.clone(),
@@ -3487,9 +3633,20 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
-        if offset != [0.0, 0.0] && render_metrics_enabled() {
+        #[cfg(feature = "skia")]
+        if render_metrics_enabled() {
             eprintln!(
-                "LumaPaint vector-drag object_reuse={} unit_reuse={} partial_reuse={} cache_builds={} full_previews={} upload_bytes={} cache_setup_ms={:.2} full_prepare_upload_ms={:.2}",
+                "lumapaint-native-preparation {:?}",
+                self.native_geometry.metrics
+            );
+        }
+        if (offset != [0.0, 0.0]
+            || drag_metrics.committed_journal_objects > 0
+            || drag_metrics.committed_legacy_objects > 0)
+            && render_metrics_enabled()
+        {
+            eprintln!(
+                "LumaPaint vector-drag object_reuse={} unit_reuse={} partial_reuse={} cache_builds={} full_previews={} upload_bytes={} cache_setup_ms={:.2} full_prepare_upload_ms={:.2} committed_journal_objects={} committed_legacy_objects={} committed_svg_copy_bytes={} committed_uniform_bytes={}",
                 drag_metrics.object_reuse,
                 drag_metrics.unit_reuse,
                 drag_metrics.partial_reuse,
@@ -3498,6 +3655,10 @@ impl Renderer {
                 drag_metrics.upload_bytes,
                 drag_metrics.cache_setup_ms,
                 drag_metrics.full_prepare_upload_ms,
+                drag_metrics.committed_journal_objects,
+                drag_metrics.committed_legacy_objects,
+                drag_metrics.committed_svg_copy_bytes,
+                drag_metrics.committed_uniform_bytes,
             );
         }
         Ok(())
@@ -3507,6 +3668,25 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasteboard_color_has_independent_linear_uniforms_and_valid_shader() {
+        let mut viewport = Viewport::new(800.0, 600.0, 1.0, 1.0, true).unwrap();
+        assert_eq!(Renderer::uniforms(viewport).pasteboard, [0.0; 4]);
+        viewport.pasteboard_color = Some([255, 128, 0]);
+        let uniforms = Renderer::uniforms(viewport);
+        assert_eq!(uniforms.pasteboard[0], 1.0);
+        assert!((uniforms.pasteboard[1] - 0.21586).abs() < 0.00001);
+        assert_eq!(uniforms.pasteboard[2..], [0.0, 1.0]);
+        assert_eq!(uniforms.document[2..], [0.0, 0.0]);
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("preview.wgsl")).unwrap();
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
 
     #[test]
     fn simulation_shader_validates_without_a_gpu() {
@@ -3704,6 +3884,7 @@ mod tests {
             eraser: false,
             clear: false,
             brush: lumapaint_core::document::Brush {
+                no_color: false,
                 simulation: Default::default(),
                 envelope: Default::default(),
                 size: 32.0,
@@ -3804,6 +3985,7 @@ mod tests {
             .begin(
                 Point { x: 30.0, y: 30.0 },
                 Brush {
+                    no_color: false,
                     simulation: Default::default(),
                     envelope: Default::default(),
                     size: 20.0,
@@ -3855,6 +4037,7 @@ mod tests {
             .begin(
                 Point { x: 39.0, y: 30.0 },
                 Brush {
+                    no_color: false,
                     simulation: Default::default(),
                     envelope: Default::default(),
                     size: 24.0,
@@ -3877,6 +4060,7 @@ mod tests {
         use lumapaint_core::document::Brush;
         let mut source = Document::default();
         let brush = Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 32.0,
@@ -3915,6 +4099,7 @@ mod tests {
         use lumapaint_core::document::Brush;
         let mut source = Document::default();
         let brush = Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 24.0,
@@ -4081,7 +4266,10 @@ mod tests {
                         image_frame: None,
                         fill_gradient: None,
                         stroke_gradient: None,
-                        fill: Some(VectorPaint { color }),
+                        fill: Some(VectorPaint {
+                            registration: false,
+                            color,
+                        }),
                         stroke: None,
                         stroke_style: Default::default(),
                         stroke_width: 0.0,
@@ -4369,6 +4557,8 @@ mod clipboard_pixel_tests {
         };
         let mut selection = Selection::new(SelectionShape::Rectangle, [8., 8., 24., 24.]);
         selection.regions.push(SelectionRegion {
+            points: Vec::new(),
+            radius: 0.,
             shape: SelectionShape::Ellipse,
             bounds: [16., 16., 8., 8.],
             operation: SelectionOperation::Subtract,
@@ -4533,3 +4723,9 @@ pub fn apply_layer_effects(
         }
     }
 }
+
+pub mod paint_bucket;
+
+pub mod selection_tools;
+
+pub mod retouch;

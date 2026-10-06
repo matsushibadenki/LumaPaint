@@ -36,14 +36,14 @@ export function SelectionOptions({ document, locale, enabled, onAppearance, onPa
   const appearance = appearanceLabels[locale];
   const t = labels[locale], transforms = transformLabels[locale];
   const [busy, setBusy] = useState(false);
-  const pendingPaint = useRef<{ target: 'fill' | 'stroke'; color: Brush['color'] } | null>(null);
+  const pendingPaint = useRef<{ target: 'fill' | 'stroke'; color: Brush['color'] | null } | null>(null);
   const painting = useRef(false);
   const objects = document.layers.flatMap(layer => layer.objects.filter(o => document.selectedVectorObjects.includes(o.id)).map(object => ({ object, layer })));
   const first = objects[0]?.object;
   const editable = enabled && !busy;
   const paintable = enabled && !document.activeSavedPath && objects.length > 0 && objects.every(({object, layer}) => object.kind !== 'text' && object.visible && layer.visible && !layer.locked);
   const run = async (operation: () => Promise<void>) => { if (!editable) return; setBusy(true); try { await operation(); } catch (error) { onError(String(error)); } finally { setBusy(false); } };
-  const paintLive = (target: 'fill' | 'stroke', color: Brush['color']) => {
+  const paintLive = (target: 'fill' | 'stroke', color: Brush['color'] | null) => {
     if (!paintable) return;
     pendingPaint.current = { target, color };
     if (painting.current) return;
@@ -84,7 +84,7 @@ export function SelectionOptions({ document, locale, enabled, onAppearance, onPa
         const color = first?.[key];
         const rgb = (color?.slice(0, 3) ?? [0, 0, 0]) as Brush['color'];
         const mixed = objects.some(({object}) => JSON.stringify(object[key]) !== JSON.stringify(color));
-        return <div className="selection-paint" key={target}><span>{t[target]}</span><ColorPickerPopover locale={locale} color={rgb} disabled={!paintable} label={t[target]} onChange={color => paintLive(target, color)} />
+        return <div className="selection-paint" key={target}><span>{t[target]}</span><ColorPickerPopover locale={locale} color={rgb} disabled={!paintable} label={t[target]} noColor={!mixed && !color} onNone={() => paintLive(target, null)} onChange={color => paintLive(target, color)} />
           <button disabled={!paintable} title={`${t[target]}: ${t.none}`} onClick={() => void run(() => onPaint(target,null))}>∅</button>
           {(mixed || !color) && <small>{mixed ? t.mixed : t.none}</small>}</div>;
       })}

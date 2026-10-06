@@ -3,12 +3,16 @@ import { createPortal } from 'react-dom';
 import { messages, type Locale, type Theme } from '../i18n';
 import { settingsMessages } from '../settings-i18n';
 
+import { ColorPickerPopover } from './ColorPickerPopover';
+import { usePasteboardColor } from '../pasteboard-preference';
+
 type Tab = 'general' | 'appearance';
 const locales: { value: Locale; label: string }[] = [{ value: 'en', label: 'English' }, { value: 'ja', label: '日本語' }, { value: 'zh-CN', label: '简体中文' }];
 
 export function SettingsDialog({ locale, theme, onLocale, onTheme, onClose }: {
   locale: Locale; theme: Theme; onLocale: (locale: Locale) => void; onTheme: (theme: Theme) => void; onClose: () => void;
 }) {
+  const [pasteboardColor, changePasteboardColor] = usePasteboardColor();
   const [tab, setTab] = useState<Tab>('general');
   const closeButton = useRef<HTMLButtonElement>(null);
   const t = settingsMessages[locale];
@@ -34,6 +38,7 @@ export function SettingsDialog({ locale, theme, onLocale, onTheme, onClose }: {
           </> : <>
             <h3>{common.theme}</h3><p>{t.appearanceDescription}</p>
             <div className="appearance-options">{(['system', 'light', 'dark'] as const).map(value => <label key={value} className="appearance-choice"><input type="radio" name="appearance" value={value} checked={theme === value} onChange={() => onTheme(value)} /><span className={`appearance-preview ${value}`} aria-hidden="true"><i /><i /></span><strong>{common[value]}</strong></label>)}</div>
+            <div className="pasteboard-setting"><h3>{t.pasteboard}</h3><p>{t.pasteboardDescription}</p><ColorPickerPopover locale={locale} label={t.pasteboard} color={pasteboardColor ?? (theme === 'light' ? [170,170,170] : [31,31,31])} onChange={changePasteboardColor} /><label className="setting-choice"><input type="checkbox" checked={pasteboardColor === null} onChange={() => changePasteboardColor(pasteboardColor === null ? (theme === 'light' ? [170,170,170] : [31,31,31]) : null)} />{t.pasteboardTheme}</label></div>
           </>}
         </div>
       </div>

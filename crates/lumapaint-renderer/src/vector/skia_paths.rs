@@ -295,6 +295,7 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [255, 0, 0, 255],
             }),
             stroke: None,
@@ -407,9 +408,11 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [20, 40, 60, 255],
             }),
             stroke: Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             }),
             stroke_style: Default::default(),
@@ -481,6 +484,7 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [20, 90, 180, 255],
             }),
             stroke: None,
@@ -562,6 +566,7 @@ mod tests {
         let before = document.snapshot().revision;
         let mut incompatible = shape("front", 15.0);
         incompatible.fill = Some(VectorPaint {
+            registration: false,
             color: [200, 20, 20, 255],
         });
         document

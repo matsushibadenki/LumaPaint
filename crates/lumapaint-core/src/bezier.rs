@@ -797,6 +797,7 @@ mod anchor_tests {
             stroke_gradient: None,
             fill: None,
             stroke: Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             }),
             stroke_style: Default::default(),
@@ -1050,6 +1051,7 @@ mod direct_tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             }),
             stroke: None,
@@ -1315,6 +1317,7 @@ mod contour_edit_tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             }),
             stroke: None,

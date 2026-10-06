@@ -1773,7 +1773,10 @@ mod clipping_tests {
             image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
-            fill: Some(VectorPaint { color }),
+            fill: Some(VectorPaint {
+                registration: false,
+                color,
+            }),
             stroke: None,
             stroke_style: Default::default(),
             stroke_width: 0.,
@@ -1846,7 +1849,10 @@ mod clipping_tests {
             image_frame: None,
             fill_gradient: None,
             stroke_gradient: None,
-            fill: Some(VectorPaint { color }),
+            fill: Some(VectorPaint {
+                registration: false,
+                color,
+            }),
             stroke: None,
             stroke_style: Default::default(),
             stroke_width: 0.,
@@ -2793,6 +2799,7 @@ mod image_frame_tests {
         o.kind = lumapaint_core::vector::VectorObjectKind::Ellipse;
         o.control_points = vec![[0., 0.], [100., 100.]];
         o.fill = Some(lumapaint_core::vector::VectorPaint {
+            registration: false,
             color: [0, 0, 255, 255],
         });
         o.image_frame

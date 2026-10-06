@@ -721,3 +721,13 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .effect-curve-coordinates label { display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 4px; }
 .effect-curve-coordinates input { width: 100%; min-height: 24px; height: 24px; padding: 2px 4px; text-align: right; }
 .effect-curve-actions button { min-height: 24px; padding: 3px 6px; font-size: 10px; }
+
+.paint-none { background: linear-gradient(135deg, #fff 44%, #de3232 45%, #de3232 55%, #fff 56%) !important; }
+.color-none-control { display: flex; align-items: center; gap: 8px; }
+.color-none-control button { display: inline-flex; align-items: center; gap: 6px; }
+.color-none-control .paint-none { display: inline-block; width: 18px; height: 18px; border: 1px solid #777; border-radius: 2px; }
+.color-none-control button[aria-pressed='true'] { border-color: var(--color-focus); background: var(--color-selected); }
+
+.pasteboard-setting{margin-top:24px;padding-top:16px;border-top:1px solid var(--color-rule)}.pasteboard-setting .setting-choice{margin-top:12px}
+
+.native-slot[data-tool='crop']{cursor:crosshair}

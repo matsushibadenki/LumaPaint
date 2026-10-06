@@ -176,6 +176,38 @@ impl Interpreter<'_> {
             };
         }
         let array = object.as_array().map_err(|_| malformed())?;
+        if array.first().and_then(|v| v.as_name().ok()) == Some(b"Separation")
+            && array.len() == 4
+            && array[1].as_name().ok() == Some(b"All")
+            && array[2].as_name().ok() == Some(b"DeviceCMYK")
+        {
+            // Recognize the standard linear all-plate tint used by LP printer marks.
+            // Keep other spot functions unsupported rather than silently miscoloring them.
+            let function = resolve(self.doc, &array[3])?
+                .as_dict()
+                .map_err(|_| malformed())?;
+            let number = |key: &[u8]| num(function.get(key).map_err(|_| malformed())?);
+            let values = |key: &[u8], count| {
+                nums(
+                    function
+                        .get(key)
+                        .map_err(|_| malformed())?
+                        .as_array()
+                        .map_err(|_| malformed())?,
+                    count,
+                )
+            };
+            if number(b"FunctionType")? == 2.
+                && number(b"N")? == 1.
+                && values(b"Domain", 2)? == [0., 1.]
+                && values(b"C0", 4)? == [0., 0., 0., 0.]
+                && values(b"C1", 4)? == [1., 1., 1., 1.]
+            {
+                self.conversion("pdf.registration_preview_only", CompatibilityTier::C)?;
+                return Ok(2); // A one-component registration tint, distinct from DeviceGray.
+            }
+            return Err(ImportError::Unsupported("pdf.color_space"));
+        }
         if array.first().and_then(|v| v.as_name().ok()) != Some(b"ICCBased") {
             return Err(ImportError::Unsupported("pdf.color_space"));
         }
@@ -205,8 +237,9 @@ impl Interpreter<'_> {
         Ok(n)
     }
     fn color(&mut self, args: &[Object], channels: usize) -> Result<String, ImportError> {
-        let p = nums(args, channels)?;
+        let p = nums(args, if channels == 2 { 1 } else { channels })?;
         let rgb = match channels {
+            2 => [(1. - p[0].clamp(0., 1.)).powi(2); 3],
             1 => [p[0]; 3],
             3 => [p[0], p[1], p[2]],
             4 => {

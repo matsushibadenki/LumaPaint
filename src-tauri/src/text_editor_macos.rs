@@ -789,7 +789,11 @@ pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
     } else if create {
         TextSettings {
             id: None,
-            text: point_text(TOOL.with(|tool| tool.get()) == CanvasTool::TextVertical),
+            text: {
+                let mut text = point_text(TOOL.with(|tool| tool.get()) == CanvasTool::TextVertical);
+                text.no_color = BRUSH.with(|brush| brush.borrow().no_color);
+                text
+            },
             position: point,
             color: BRUSH.with(|brush| brush.borrow().color),
         }
@@ -1298,7 +1302,7 @@ fn attributes(
         r as f64 / 255.0,
         g as f64 / 255.0,
         b as f64 / 255.0,
-        1.0,
+        if style.no_color { 0.0 } else { 1.0 },
     );
     let paragraph = NSMutableParagraphStyle::new();
     paragraph.setAlignment(match text.alignment {

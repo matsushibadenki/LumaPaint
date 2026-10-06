@@ -2632,11 +2632,15 @@ mod tests {
         let selection = Selection {
             regions: vec![
                 SelectionRegion {
+                    points: Vec::new(),
+                    radius: 0.,
                     shape: SelectionShape::Rectangle,
                     bounds: [0.0, 0.0, 32.0, 32.0],
                     operation: SelectionOperation::Replace,
                 },
                 SelectionRegion {
+                    points: Vec::new(),
+                    radius: 0.,
                     shape: SelectionShape::Rectangle,
                     bounds: [16.0, 0.0, 16.0, 32.0],
                     operation: SelectionOperation::Subtract,

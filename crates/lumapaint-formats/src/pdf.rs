@@ -7,7 +7,9 @@ use crate::{
     CompatibilityTier, ConversionIssue, ConversionReport, ImportError,
 };
 use base64::Engine;
+mod print_layout;
 mod read;
+mod registration;
 pub use read::{inspect, read_all, PageInfo};
 pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
     read::read(bytes, options)
@@ -141,9 +143,17 @@ impl DocumentExporter for PdfExporter {
         snapshot: &ExportSnapshot,
         options: ExportOptions,
     ) -> Result<ExportedDocument, ExportError> {
+        let layout = print_layout::PrintLayout::capture(snapshot)?;
+        if layout.is_some() && snapshot.state().layer_effects.values().any(|e| e.enabled) {
+            return Err(ExportError::UnsupportedFeature(
+                "pdf.print_bleed_requires_vector_content",
+            ));
+        }
         let svg = crate::svg::SvgExporter.export(snapshot, ExportOptions { allow_lossy: true })?;
         let xml = std::str::from_utf8(&svg.bytes)
             .map_err(|e| ExportError::InvalidDocument(e.to_string()))?;
+        let print_xml = layout.as_ref().map(|l| l.svg(xml, snapshot)).transpose()?;
+        let xml = print_xml.as_deref().unwrap_or(xml);
         let doc = roxmltree::Document::parse(xml)
             .map_err(|e| ExportError::InvalidDocument(e.to_string()))?;
         let effects = doc.descendants().any(|n| {
@@ -155,6 +165,11 @@ impl DocumentExporter for PdfExporter {
             .retain(|i| i.code != "svg.text_requires_fonts");
         let outlined = doc.descendants().any(|n| n.has_tag_name("text"));
         let tree = if effects {
+            if layout.is_some() {
+                return Err(ExportError::UnsupportedFeature(
+                    "pdf.print_bleed_requires_vector_content",
+                ));
+            }
             let png = snapshot
                 .document_png()
                 .ok_or(ExportError::UnsupportedFeature(
@@ -196,7 +211,7 @@ impl DocumentExporter for PdfExporter {
         Ok(ExportedDocument {
             format: FormatId::Pdf,
             media_type: "application/pdf",
-            bytes,
+            bytes: registration::apply(bytes, snapshot, layout.as_ref())?,
             report,
         })
     }

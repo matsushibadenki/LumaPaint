@@ -1,6 +1,16 @@
-type Name = 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 type PanelIconName = 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
+  lasso:'M5 5c-5 3-4 10 4 12s14-6 10-10S8 2 5 5 M8 15c4 5-5 8-5 3',
+  polygonLasso:'M3 3l17 3-6 13-11-5z M4 14c-3 7 5 9 5 3',
+  magneticLasso:'M3 13V5h4v8a5 5 0 0 0 10 0V5h4v8a9 9 0 0 1-18 0 M3 9h4 M17 9h4',
+  selectionBrush:'M3 5h4 M10 5h4 M17 5h4v4 M21 12v4 M21 19h-4 M14 19h-4 M7 19H3v-4 M3 12V9 M10 12l8-8 3 3-8 8-5 1z',
+  blur: 'M12 2C10 6 5 11 5 16a7 7 0 0 0 14 0C19 11 14 6 12 2z',
+  sharpen: 'M12 3L2 21h20L12 3z M12 9l6 10H6z',
+  smudge: 'M7 13V7a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-5a2 2 0 0 1 4 0v8c0 4-3 7-7 7H9l-5-6a2 2 0 0 1 3-3l3 3',
+  paintBucket: 'M4 4l10 10 M5 7l7-5 8 8-10 10-8-8 3-5z M3 12h15 M19 15c0 0-3 4-3 5a3 3 0 0 0 6 0c0-1-3-5-3-5z',
+  cloneStamp: 'M4 17h16v4H4z M7 17v-4h10v4 M10 13V8a3 3 0 1 1 4 0v5',
+  crop: 'M6 2v16h16 M2 6h16v16 M6 6h12v12H6',
   effects: 'M4 5h16 M4 12h16 M4 19h16 M8 3v4 M16 10v4 M10 17v4',
   folder: 'M3 6h6l2 2h10v12H3Z',
   links:'M9 14l6-4M8 6H6a4 4 0 0 0 0 8h3M16 18h2a4 4 0 0 0 0-8h-3',

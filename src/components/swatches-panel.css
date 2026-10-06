@@ -3,3 +3,5 @@
 .swatches-items.list button{justify-content:flex-start}
 .swatches-items.list button>span:last-child{min-width:0;text-align:left}
 .swatches-panel{padding-bottom:64px}
+
+.swatches-chip.registration { color: white; display: flex; align-items: center; justify-content: center; font-size: 18px; line-height: 1; }

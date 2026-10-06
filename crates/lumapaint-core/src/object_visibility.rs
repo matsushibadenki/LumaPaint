@@ -295,6 +295,7 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [255, 0, 0, 255],
             }),
             stroke: None,

@@ -1011,6 +1011,7 @@ mod tests {
 
     fn preset(name: &str) -> NewDocumentSettings {
         NewDocumentSettings {
+            guide_layout: None,
             pages: None,
             document: DocumentSettings {
                 name: name.into(),

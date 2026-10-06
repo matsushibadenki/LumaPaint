@@ -14,3 +14,7 @@
 .tool-settings-dialog::backdrop{background:transparent}
 .tool-settings-dialog .tool-preview{display:flex;align-items:center;gap:8px;margin:14px 0}
 .tool-settings-dialog .tool-preview input{width:14px;height:14px;margin:0}
+.clone-stamp-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px}.clone-stamp-controls label{display:flex;align-items:center;gap:4px;white-space:nowrap}.clone-stamp-controls input[type=number]{width:54px;min-width:0}.clone-stamp-controls select{max-width:150px}.clone-stamp-details{display:grid;grid-template-columns:1fr 1fr;gap:12px}.clone-stamp-details label{justify-content:space-between}.clone-stamp-details p{grid-column:1/-1;white-space:normal}
+.clone-stamp-controls input[type=checkbox]{width:14px;height:14px;flex:none;margin:0}.clone-stamp-details{grid-template-columns:minmax(0,1fr)}.clone-stamp-details label:has(input[type=checkbox]){justify-content:flex-start}.clone-stamp-details select{max-width:210px;color:inherit;background:var(--color-field);border:1px solid var(--color-rule);padding:5px}.clone-stamp-details p{line-height:1.6;margin:0}
+.clone-stamp-details{gap:8px}.tool-settings-dialog .clone-stamp-details label{margin:0}.clone-stamp-value{display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;min-width:76px}
+.options-bar .paint-bucket-controls{flex:1;min-width:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin}.options-bar .paint-bucket-controls>label{flex:none}

@@ -13,11 +13,11 @@ export async function newEditorWindow(): Promise<string> {
 }
 
 
-export type CanvasTool = 'brush' | 'eraser' | 'gradient' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
-export type DocumentEditAction = 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'lockSelection' | 'lockArtworkAbove' | 'lockOtherLayers' | 'unlockAllObjects' | 'hideSelection' | 'hideArtworkAbove' | 'hideOtherLayers' | 'showAllObjects' | 'copy' | 'cut' | 'paste';
-export interface Selection { regions: { shape: 'rectangle' | 'ellipse'; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
+export type CanvasTool = 'blur' | 'sharpen' | 'smudge' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'eraser' | 'crop' | 'gradient' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
+export type DocumentEditAction = 'createTrimMarks' | 'registrationFill' | 'registrationStroke' | 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'lockSelection' | 'lockArtworkAbove' | 'lockOtherLayers' | 'unlockAllObjects' | 'hideSelection' | 'hideArtworkAbove' | 'hideOtherLayers' | 'showAllObjects' | 'copy' | 'cut' | 'paste';
+export interface Selection { regions: { shape: 'rectangle' | 'ellipse' | 'polygon' | 'stroke'; points?:{x:number;y:number}[]; radius?:number; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
-export interface Brush { size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
+export interface Brush { noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface TransformPanelInfo { corners: [number, number][]; width: number; height: number; rotation: number; shear: number; rectangle: boolean; radii: [number, number, number, number] }
 export interface TransformPanelEdit { field: 'x'|'y'|'width'|'height'|'rotation'|'shear'|'corners'; values: [number, number, number, number]; reference: [number, number]; proportional: boolean; scaleCorners: boolean; scaleStrokes: boolean; revision: number; ids: string[] }
 export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSnapshot> {
@@ -46,6 +46,8 @@ export interface DocumentSnapshot {
   hasHiddenObjects: boolean;
   transformPanel?: TransformPanelInfo | null;
   selectedBounds?: [number, number, number, number] | null;
+  savedVectorSelections:{name:string;count:number}[];
+  canReselectVectors:boolean;
   activeSavedPath: string | null;
   savedPaths: { guideColor?: [number, number, number, number]; id: string; name: string; components: number; clipping: boolean }[];
   selection: Selection | null;
@@ -90,11 +92,11 @@ export interface LayerSnapshot {
   effects?: LayerEffects;
   rasterBlendMode?: RasterBlendMode;
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
-export interface TextStyle { fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
+export interface TextStyle { noColor?: boolean; fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
-export interface VectorText {
+export interface VectorText { noColor?: boolean;
   pointText?: boolean;
   changeGeneration: number;
   updatedAtMs: number;
@@ -145,15 +147,16 @@ export interface VectorObject { rectangleRadii?: [number, number, number, number
 export interface LayerSettings { id: string; name: string; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number }
 export interface DocumentTabSnapshot { id: number; fileName: string | null; dirty: boolean; format: 'legacy' | 'tiled' }
 export interface DocumentWorkspaceSnapshot { activeId: number | null; active: DocumentSnapshot | null; documents: DocumentTabSnapshot[] }
-export type ColorMode = 'rgb' | 'cmyk';
-export type ColorProfile = 'srgb' | 'displayP3' | 'adobeRgb1998' | 'japanColor2001Coated';
+export type ColorMode = 'rgb' | 'cmyk' | 'grayscale' | 'lab';
+export type ColorProfile = 'srgb' | 'displayP3' | 'adobeRgb1998' | 'japanColor2001Coated' | 'grayD65' | 'labD50';
 export type BitDepth = 8 | 16 | 32;
 export type DocumentUnit = 'pixels' | 'inches' | 'centimeters' | 'millimeters' | 'points';
 export type CanvasColor = 'white' | 'transparent';
 export interface DocumentSettings { name: string; width: number; height: number; unit: DocumentUnit; resolution: number; artboards: boolean; canvasColor: CanvasColor; pixelAspectRatio: number }
-export interface NewDocumentSettings { pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
+export type NewDocumentGuideLayout = {kind: 'print'; bleedMm: number} | {kind: 'manga'; trimWidthMm: number; trimHeightMm: number};
+export interface NewDocumentSettings { guideLayout?: NewDocumentGuideLayout; pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
 export const emptyDocument: DocumentSnapshot = {
-  layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+  savedVectorSelections:[],canReselectVectors:false,layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -167,7 +170,7 @@ export interface CanvasRequest {
   overlay?: [number, number, number, number] | null;
   channel?: DisplayChannel;
   x: number; y: number; width: number; height: number;
-  zoom: number; absoluteZoom?: boolean; dark: boolean; visible: boolean;
+  zoom: number; absoluteZoom?: boolean; pasteboardColor?: Brush['color'] | null; dark: boolean; visible: boolean;
   zoomRevision?: number;
   brush?: Brush;
   tool?: CanvasTool;
@@ -544,7 +547,7 @@ export function applyGradient(ids: string[], target: 'fill' | 'stroke' | 'pixels
 
 
 
-export type SwatchPaint = {kind:'color';color:Brush['color']} | {kind:'gradient';gradient:Gradient};
+export type SwatchPaint = {kind:'none'} | {kind:'color';color:Brush['color'];registration?:boolean} | {kind:'gradient';gradient:Gradient};
 export type SwatchDraft = {name:string;paint:SwatchPaint};
 export type Swatch = SwatchDraft & {id:number};
 export async function swatchLibrary(action:'get'|'add'|'addMany'|'update'|'remove'|'import'|'export', draft?:SwatchDraft, id?:number, seeds?:SwatchDraft[], batch?:SwatchDraft[]):Promise<Swatch[]> {
@@ -592,3 +595,6 @@ export function subscribePlaceImage(handler:()=>void):Promise<()=>void>{return l
 export function manageImageLinks(ids:string[],action:"update"|"relink"|"embed"):Promise<DocumentSnapshot>{return textCommand("manage_image_links",{ids,action});}
 
 export function rulerOrigin(point:[number,number],phase:number):Promise<void>{return invoke('ruler_origin',{point,phase});}
+
+export type VectorSelectionRequest={action:string;criterion?:string;name?:string;newName?:string};
+export const vectorSelectionAction=(request:VectorSelectionRequest)=>invoke<DocumentSnapshot>('vector_selection_action',{request});

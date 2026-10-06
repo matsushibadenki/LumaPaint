@@ -1,7 +1,7 @@
 export const workspaceMessages = {
   en: {
     drawTools: 'Drawing tools', eraseTools: 'Erasing tools',
-    imageFrameRectangle:'Rectangle Frame',imageFrameEllipse:'Ellipse Frame',imageFrames:'Image frames',frameHint:'Draw an image frame, then choose File > Place',gradient: 'Gradient', gradientHint: 'Drag to set the gradient axis · Shift: constrain angle', eraser: 'Eraser',
+    imageFrameRectangle:'Rectangle Frame',imageFrameEllipse:'Ellipse Frame',imageFrames:'Image frames',frameHint:'Draw an image frame, then choose File > Place',crop:'Crop',cropHint:'Drag a crop area · handles: resize · inside: move · Enter: apply · Escape: cancel',cropApply:'Apply crop',cropCancel:'Cancel crop',gradient: 'Gradient', gradientHint: 'Drag to set the gradient axis · Shift: constrain angle', lasso:'Lasso',polygonLasso:'Polygonal Lasso',magneticLasso:'Magnetic Lasso',selectionBrush:'Selection Brush',paintBucket: 'Paint Bucket', cloneStamp: 'Clone Stamp', blur:'Blur',sharpen:'Sharpen',smudge:'Smudge',eraser: 'Eraser',
     showObject: 'Show object', hideObject: 'Hide object',
     expandLayer: 'Expand layer', collapseLayer: 'Collapse layer', vectorGroup: 'Group',
     addPixelLayer: 'Add pixel layer', addVectorLayer: 'Add vector layer',
@@ -30,7 +30,7 @@ export const workspaceMessages = {
   },
   ja: {
     drawTools: '描くツール', eraseTools: '消すツール',
-    imageFrameRectangle:'長方形フレーム',imageFrameEllipse:'楕円フレーム',imageFrames:'画像フレーム',frameHint:'画像フレームを描き、ファイル ＞ 配置で画像を配置',gradient: 'グラデーション', gradientHint: 'ドラッグで方向・長さを指定 · Shift：角度を固定', eraser: '消しゴム',
+    imageFrameRectangle:'長方形フレーム',imageFrameEllipse:'楕円フレーム',imageFrames:'画像フレーム',frameHint:'画像フレームを描き、ファイル ＞ 配置で画像を配置',crop:'切り抜き',cropHint:'範囲をドラッグ · ハンドルでサイズ変更 · 内側で移動 · Enter：確定 · Escape：取消',cropApply:'切り抜きを確定',cropCancel:'切り抜きを取消',gradient: 'グラデーション', gradientHint: 'ドラッグで方向・長さを指定 · Shift：角度を固定', lasso:'なげなわ',polygonLasso:'多角形選択',magneticLasso:'マグネット選択',selectionBrush:'選択ブラシ',paintBucket: '塗りつぶし', cloneStamp: 'コピースタンプ', blur:'ぼかし',sharpen:'シャープ',smudge:'指先',eraser: '消しゴム',
     showObject: 'オブジェクトを表示', hideObject: 'オブジェクトを非表示',
     expandLayer: 'レイヤーを展開', collapseLayer: 'レイヤーを折りたたむ', vectorGroup: 'グループ',
     addPixelLayer: 'ピクセルレイヤーを追加', addVectorLayer: 'ベクターレイヤーを追加',
@@ -59,7 +59,7 @@ export const workspaceMessages = {
   },
   'zh-CN': {
     drawTools: '绘画工具', eraseTools: '擦除工具',
-    imageFrameRectangle:'矩形框架',imageFrameEllipse:'椭圆框架',imageFrames:'图像框架',frameHint:'绘制图像框架，然后选择文件 > 置入',gradient: '渐变', gradientHint: '拖动设置渐变轴 · Shift：约束角度', eraser: '橡皮擦',
+    imageFrameRectangle:'矩形框架',imageFrameEllipse:'椭圆框架',imageFrames:'图像框架',frameHint:'绘制图像框架，然后选择文件 > 置入',crop:'裁剪',cropHint:'拖动裁剪区域 · 手柄：调整大小 · 内部：移动 · Enter：应用 · Escape：取消',cropApply:'应用裁剪',cropCancel:'取消裁剪',gradient: '渐变', gradientHint: '拖动设置渐变轴 · Shift：约束角度', lasso:'套索',polygonLasso:'多边形套索',magneticLasso:'磁性套索',selectionBrush:'选择画笔',paintBucket: '油漆桶', cloneStamp: '仿制图章', blur:'模糊',sharpen:'锐化',smudge:'涂抹',eraser: '橡皮擦',
     showObject: '显示对象', hideObject: '隐藏对象',
     expandLayer: '展开图层', collapseLayer: '折叠图层', vectorGroup: '组',
     addPixelLayer: '添加像素图层', addVectorLayer: '添加矢量图层',

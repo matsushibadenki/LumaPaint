@@ -2,6 +2,7 @@ struct Uniforms {
     viewport: vec4<f32>, // physical width, height, backing scale, relative zoom
     appearance: vec4<f32>,
     document: vec4<f32>,
+    pasteboard: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -17,7 +18,8 @@ struct Uniforms {
     let point = (pixel - size * 0.5 - u.appearance.yz) / (fit * u.viewport.w) + u.document.xy * 0.5;
     let dark = (u.appearance.x % 2.0) > 0.5;
     var color = select(vec3(0.40), vec3(0.014), dark);
-    if all(point >= vec2(0.0)) && all(point < u.document.xy) {
+    if u.pasteboard.w > 0.5 { color = u.pasteboard.xyz; }
+    if all(point >=  vec2(0.0)) && all(point < u.document.xy) {
         if u.appearance.w > 1.5 { return vec4(0.0); }
         if u.appearance.w > 0.5 {
             let cell = vec2<i32>(floor(point / 12.0));

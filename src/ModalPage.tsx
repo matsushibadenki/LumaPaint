@@ -1,3 +1,4 @@
+import {SavedSelectionsDialog} from './components/SavedSelectionsDialog';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { ToolSettingsDialog } from './components/ToolSettingsDialog';
@@ -14,7 +15,7 @@ import { ImportImageDialog } from './components/ImportImageDialog';
 import { changeColorProfile, createDocument, importRasterLayer, transformObjects, type DocumentSnapshot, type TransformAction } from './bridge';
 import { messages, type Locale, type Theme } from './i18n';
 import type { ModalKind } from './NativeModal';
-type Context = { kind: ModalKind; locale: Locale; theme: Theme; action: TransformAction | CanvasTool; document: DocumentSnapshot | null };
+type Context = { kind: ModalKind; locale: Locale; theme: Theme; action: string; document: DocumentSnapshot | null };
 export function ModalPage() {
   const [context, setContext] = useState<Context | null>(null);
   const [error, setError] = useState('');
@@ -70,6 +71,7 @@ export function ModalPage() {
   if (!context) return error ? <div role="alert">{error}<button onClick={close}>Close</button></div> : null;
   let content;
   switch (context.kind) {
+    case 'vectorSelections': content=context.document&&<SavedSelectionsDialog locale={context.locale} document={context.document} mode={context.action==='save'?'save':'edit'} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
     case 'toolSettings': content = context.document && <ToolSettingsDialog tool={context.action as CanvasTool} locale={context.locale} document={context.document} onClose={close} onUpdate={()=>{}}/>; break;
     case 'settings': content = <SettingsDialog locale={context.locale} theme={context.theme} onLocale={locale => preferences(locale, context.theme)} onTheme={theme => preferences(context.locale, theme)} onClose={close}/>; break;
     case 'newDocument': content = <NewDocumentDialog locale={context.locale} onClose={close} onCreate={settings => run(async () => { await createDocument(settings); await invoke('modal_change', { change: { type: 'createdDocument' } }); })}/>; break;

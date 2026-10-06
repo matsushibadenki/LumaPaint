@@ -440,9 +440,11 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [20, 30, 40, 255],
             }),
             stroke: Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             }),
             stroke_width: 4.,

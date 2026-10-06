@@ -1,3 +1,7 @@
+import {isRetouch,retouchLabels} from './components/RetouchControls';
+import {isPathSelection,selectionPathLabels} from './components/SelectionPathControls';
+import { paintBucketLabels } from './components/PaintBucketControls';
+import { cloneStampLabels } from './components/CloneStampControls';
 import { Rulers } from './components/Rulers';
 import { MIN_ZOOM, MAX_ZOOM, ZOOM_PERCENTAGES, stepZoom, zoomLabel } from './zoom';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -8,6 +12,8 @@ import { textPanelMessages } from './text-panel-i18n';
 import { Icon } from './components/Icon';
 import type { ColorPickerOcclusion } from './components/ColorPickerPopover';
 
+import { usePasteboardColor } from './pasteboard-preference';
+
 type Status = 'loading' | 'ready' | 'browser' | 'unsupported' | 'failed' | 'hidden';
 
 export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, channel = 0, visible = true, occlusion = null, hasDocument = true, resolution=72, verticalResolution=resolution, footerAccessory, onZoom, onDisplayZoom, onDocument, onReady }: {
@@ -17,6 +23,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
   channel?: DisplayChannel; visible?: boolean; occlusion?: ColorPickerOcclusion | null; hasDocument?: boolean; resolution?:number; verticalResolution?:number; footerAccessory?: ReactNode;
   onDocument: (value: DocumentSnapshot) => void; onReady: (ready: boolean) => void;
 }) {
+  const [pasteboardColor] = usePasteboardColor();
   const t = messages[locale];
   const selectedZoom = ZOOM_PERCENTAGES.find(percent => Math.abs(percent / 100 - zoom) < 0.000001 * Math.max(1, zoom));
   const slot = useRef<HTMLDivElement>(null);
@@ -26,7 +33,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const dark = theme === 'dark' || (theme === 'system' && systemDark);
-  const settings = useRef({ zoomCommand, dark, brush, tool, visible, channel, occlusion });
+  const settings = useRef({ zoomCommand, dark, brush, tool, visible, channel, occlusion, pasteboardColor });
   const schedule = useRef<() => void>(() => {});
   const retry = () => { setError(''); setStatus('loading'); setAttempt(value => value + 1); };
 
@@ -38,9 +45,9 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
   }, []);
 
   useEffect(() => {
-    settings.current = { zoomCommand, dark, brush, tool, visible, channel, occlusion };
+    settings.current = { zoomCommand, dark, brush, tool, visible, channel, occlusion, pasteboardColor };
     schedule.current();
-  }, [zoomCommand, dark, brush, tool, visible, channel, occlusion]);
+  }, [zoomCommand, dark, brush, tool, visible, channel, occlusion, pasteboardColor]);
 
   useEffect(() => {
     const finishOutside = (event: PointerEvent) => {
@@ -65,7 +72,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
     let unlisten = () => {};
     const requestSettings = () => ({
       zoom: settings.current.zoomCommand.zoom, absoluteZoom: true, zoomRevision: settings.current.zoomCommand.revision,
-      dark: settings.current.dark, brush: settings.current.brush,
+      pasteboardColor: settings.current.pasteboardColor, dark: settings.current.dark, brush: settings.current.brush,
       tool: settings.current.tool, visible: settings.current.visible, channel: settings.current.channel,
     });
 
@@ -149,7 +156,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
   return <section className="canvas-workspace" aria-label={t.canvas}>
     <div className="canvas-stage" data-document={hasDocument ? 'open' : 'empty'}>
     {hasDocument && <Rulers locale={locale} resolution={resolution} verticalResolution={verticalResolution} viewport={info?.rulerViewport ?? null} />}
-    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool.startsWith('imageFrame') ? workspaceMessages[locale].frameHint : tool === 'gradient' ? workspaceMessages[locale].gradientHint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
+    <div ref={slot} className="native-slot" data-document={hasDocument ? 'open' : 'empty'} data-tool={tool} role={hasDocument ? 'img' : undefined} aria-label={hasDocument ? (tool === 'text' || tool === 'textVertical') ? textPanelMessages[locale].hint : tool.startsWith('imageFrame') ? workspaceMessages[locale].frameHint : tool === 'crop' ? workspaceMessages[locale].cropHint : tool === 'gradient' ? workspaceMessages[locale].gradientHint : tool === 'eyedropper' ? workspaceMessages[locale].eyedropperHint : isRetouch(tool)?retouchLabels[locale].hint:isPathSelection(tool)?selectionPathLabels[locale].hint:tool === 'paintBucket' ? paintBucketLabels[locale].hint : tool === 'cloneStamp' ? cloneStampLabels[locale].hint : tool === 'brush' ? t.canvasNote : tool === 'hand' ? workspaceMessages[locale].handHint : tool === 'zoomIn' || tool === 'zoomOut' ? workspaceMessages[locale].zoomClickHint : tool.startsWith('vector') ? workspaceMessages[locale].vectorHint : `${workspaceMessages[locale][tool]} · ${workspaceMessages[locale].selectionHint}` : undefined}>
       {hasDocument && (status === 'browser' || status === 'unsupported') && <div className="paper-preview" aria-hidden="true" />}
       {status === 'failed' ? <div className="canvas-notice canvas-failure" role="alert">
         <p>{t.canvasStatus.failed}</p>

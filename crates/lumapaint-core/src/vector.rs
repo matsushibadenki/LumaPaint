@@ -23,6 +23,8 @@ pub type PortablePathGeometry = (VectorPath, Vec<[f32; 2]>);
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VectorPaint {
+    #[serde(default)]
+    pub registration: bool,
     pub color: [u8; 4],
 }
 
@@ -42,6 +44,8 @@ pub enum VectorObjectKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextStyle {
+    #[serde(default)]
+    pub no_color: bool,
     pub font_family: String,
     pub font_size: f32,
     #[serde(default = "default_object_opacity")]
@@ -61,6 +65,7 @@ pub struct TextStyle {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextStylePatch {
+    pub no_color: Option<bool>,
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
     pub scale_x: Option<f32>,
@@ -111,6 +116,10 @@ impl TextStyle {
         }
         if let Some(value) = patch.color {
             self.color = value;
+            self.no_color = false;
+        }
+        if let Some(value) = patch.no_color {
+            self.no_color = value;
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -160,6 +169,8 @@ pub enum WritingMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    #[serde(default)]
+    pub no_color: bool,
     /// Point text grows with its content instead of wrapping inside an area frame.
     #[serde(default)]
     pub point_text: bool,
@@ -265,6 +276,7 @@ pub enum MojikumiMode {
 impl Default for VectorText {
     fn default() -> Self {
         Self {
+            no_color: false,
             change_generation: 0,
             updated_at_ms: 0,
             writing_mode: WritingMode::Horizontal,
@@ -496,6 +508,7 @@ impl VectorText {
     }
     pub fn base_style(&self, color: [u8; 3]) -> TextStyle {
         TextStyle {
+            no_color: self.no_color,
             font_family: self.font_family.clone(),
             font_size: self.font_size,
             scale_x: 1.0,
@@ -878,6 +891,13 @@ impl VectorObject {
                 return Err("Image frames cannot contain text".into());
             }
         }
+        if [self.fill, self.stroke]
+            .into_iter()
+            .flatten()
+            .any(|p| p.registration && p.color != [0, 0, 0, 255])
+        {
+            return Err("Registration color must be opaque black".into());
+        }
         self.stroke_style.validate()?;
         for gradient in [&self.fill_gradient, &self.stroke_gradient]
             .into_iter()
@@ -930,7 +950,6 @@ impl VectorObject {
             || self.transform.iter().any(|value| !value.is_finite())
             || !self.stroke_width.is_finite()
             || !(0.0..=4096.0).contains(&self.stroke_width)
-            || (self.fill.is_none() && self.stroke.is_none() && self.image_frame.is_none())
             || self.control_points.len() > 65_536
             || self
                 .control_points
@@ -1779,6 +1798,7 @@ mod path_hit_tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(VectorPaint {
+                registration: false,
                 color: [30, 60, 90, 255],
             }),
             stroke: None,
@@ -1819,6 +1839,7 @@ mod path_hit_tests {
         object.kind = VectorObjectKind::Bezier;
         object.fill = None;
         object.stroke = Some(VectorPaint {
+            registration: false,
             color: [0, 0, 0, 255],
         });
         object.stroke_width = 1.;
@@ -1852,6 +1873,7 @@ mod path_hit_tests {
         object.fill = None;
         assert!(!object.intersects_selection([40., 40., 20., 20.], true));
         object.stroke = Some(VectorPaint {
+            registration: false,
             color: [0, 0, 0, 255],
         });
         object.stroke_width = 20.;
@@ -1909,6 +1931,7 @@ mod path_hit_tests {
             assert!(!object.hit_test([25., 75.], 1.));
             object.fill = None;
             object.stroke = Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             });
             object.stroke_width = 4.;

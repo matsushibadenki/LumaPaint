@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 pub mod bezier;
+pub mod clone_stamp;
 pub mod document;
 pub mod gradient;
 pub mod graph;
@@ -30,3 +31,9 @@ pub fn runtime_info() -> RuntimeInfo {
 }
 
 pub mod image_frame;
+
+pub mod paint_bucket;
+
+pub mod selection_tools;
+
+pub mod retouch;

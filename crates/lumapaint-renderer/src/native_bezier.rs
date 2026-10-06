@@ -21,18 +21,95 @@ pub(crate) struct Geometry {
     last_uniform: Option<[f32; 20]>,
     last_indirect: Option<[u32; 4]>,
 }
+#[derive(Default, Debug)]
+pub(crate) struct PreparationMetrics {
+    pub live_id_scans: usize,
+    pub svg_generations: usize,
+    pub bvh_builds: usize,
+    pub bvh_refits: usize,
+    pub geometry_builds: usize,
+    pub geometry_upload_bytes: u64,
+    pub uniform_upload_bytes: usize,
+}
 pub(crate) struct Cache {
     pub pipeline: wgpu::RenderPipeline,
+    pub metrics: PreparationMetrics,
     layout: wgpu::BindGroupLayout,
     pub shapes: HashMap<String, Geometry>,
-    ready: HashMap<String, String>,
+    ready: HashSet<String>,
+    live_cursor: Option<u64>,
+    journal_id: Option<u64>,
+    layer_sources: Vec<(String, usize, usize)>,
     verified: HashMap<String, VerifiedLayer>,
     draw_lists: HashMap<String, Vec<usize>>,
 }
 struct VerifiedLayer {
-    source: String,
+    source_key: (usize, usize),
     compatible: bool,
     spatial: lumapaint_core::scene::spatial::SpatialIndex,
+    positions: HashMap<String, usize>,
+    cursor: u64,
+    last_refits: usize,
+    journal_id: u64,
+}
+impl VerifiedLayer {
+    /// Only a certified transform-only change can reuse SVG compatibility and
+    /// geometry. All other changes return to the complete compatibility check.
+    fn refresh(&mut self, layer: &SvgLayer, journal: &lumapaint_core::scene::Journal) -> bool {
+        self.last_refits = 0;
+        if self.journal_id != journal.instance_id() {
+            return false;
+        }
+        let source_key = (layer.source.as_ptr() as usize, layer.source.len());
+        if self.source_key == source_key && self.cursor == journal.cursor() {
+            return true;
+        }
+        if !self.compatible || self.positions.len() != layer.vector_objects.len() {
+            return false;
+        }
+        let lumapaint_core::scene::JournalRead::Incremental { changes, cursor } =
+            journal.read(self.cursor)
+        else {
+            return false;
+        };
+        let changes: Vec<_> = changes
+            .iter()
+            .filter(|c| c.target.layer == layer.id)
+            .collect();
+        let objects: Vec<_> = changes
+            .iter()
+            .filter(|c| c.target.object.is_some())
+            .collect();
+        if changes.is_empty() && self.source_key == source_key {
+            self.cursor = cursor;
+            return true;
+        }
+        if objects.is_empty()
+            || changes.iter().any(|c| {
+                c.removed || c.changes.structure || c.changes.style || c.changes.visibility
+            })
+            || objects
+                .iter()
+                .any(|c| c.changes.geometry || !c.changes.transform)
+        {
+            return false;
+        }
+        for change in objects {
+            let Some(&position) = self.positions.get(change.target.object.as_ref().unwrap()) else {
+                return false;
+            };
+            let object = &layer.vector_objects[position];
+            self.last_refits += 1;
+            if object.id != *change.target.object.as_ref().unwrap()
+                || !self.spatial.refit(position, native_drawing_bounds(object))
+            {
+                return false;
+            }
+        }
+        self.source_key = source_key;
+        self.cursor = cursor;
+        true
+    }
 }
 impl Cache {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -70,27 +147,64 @@ impl Cache {
         );
         Self {
             pipeline,
+            metrics: PreparationMetrics::default(),
             layout,
             shapes: HashMap::new(),
-            ready: HashMap::new(),
+            ready: HashSet::new(),
+            live_cursor: None,
+            journal_id: None,
+            layer_sources: Vec::new(),
             verified: HashMap::new(),
             draw_lists: HashMap::new(),
         }
     }
     pub fn begin_frame(&mut self) {
+        self.metrics = PreparationMetrics::default();
         self.ready.clear();
         self.draw_lists.clear();
     }
     pub fn ready(&self, layer: &SvgLayer) -> bool {
-        layer.effective_opacity() == 1.
-            && self
-                .ready
-                .get(&layer.id)
-                .is_some_and(|source| source == &layer.source)
+        layer.effective_opacity() == 1. && self.ready.contains(&layer.id)
     }
-    pub fn retain(&mut self, live: &HashSet<String>, layers: &HashSet<String>) {
-        self.shapes.retain(|id, _| live.contains(id));
-        self.verified.retain(|id, _| layers.contains(id));
+    pub fn synchronize(&mut self, document: &lumapaint_core::document::Document) {
+        use lumapaint_core::scene::JournalRead;
+        let journal_id = document.scene_journal().instance_id();
+        if self.journal_id != Some(journal_id) {
+            self.verified.clear();
+            self.live_cursor = None;
+            self.journal_id = Some(journal_id);
+        }
+        let sources: Vec<_> = document
+            .svg_layers()
+            .map(|l| (l.id.clone(), l.source.as_ptr() as usize, l.source.len()))
+            .collect();
+        let cursor = document.scene_journal().cursor();
+        if self.live_cursor == Some(cursor) && self.layer_sources == sources {
+            return;
+        }
+        let rebuild = match self.live_cursor {
+            None => true,
+            Some(previous) => match document.scene_journal().read(previous) {
+                JournalRead::Rebuild { .. } => true,
+                JournalRead::Incremental { changes, .. } => {
+                    changes.iter().any(|c| c.removed || c.changes.structure)
+                        || (changes.is_empty() && sources != self.layer_sources)
+                }
+            },
+        };
+        if rebuild {
+            let live: HashSet<_> = document
+                .svg_layers()
+                .flat_map(|l| &l.vector_objects)
+                .map(|o| o.id.clone())
+                .collect();
+            self.metrics.live_id_scans += live.len();
+            let layers: HashSet<_> = document.svg_layers().map(|l| l.id.clone()).collect();
+            self.shapes.retain(|id, _| live.contains(id));
+            self.verified.retain(|id, _| layers.contains(id));
+        }
+        self.live_cursor = Some(cursor);
+        self.layer_sources = sources;
     }
     pub fn prepare(
         &mut self,
@@ -98,18 +212,19 @@ impl Cache {
         queue: &wgpu::Queue,
         layer: &SvgLayer,
         viewport: Viewport,
-        selected: &[String],
+        scene: (&lumapaint_core::scene::Journal, &[String]),
         offset: [f32; 2],
     ) -> bool {
+        let (journal, selected) = scene;
         if !layer.vector_layer || layer.effective_opacity() != 1. || layer.vector_objects.is_empty()
         {
             return false;
         }
-        if self
-            .verified
-            .get(&layer.id)
-            .is_none_or(|entry| entry.source != layer.source)
-        {
+        let current = self.verified.get_mut(&layer.id);
+        let rebuild = current.is_none_or(|entry| !entry.refresh(layer, journal));
+        if rebuild {
+            self.metrics.svg_generations += 1;
+            self.metrics.bvh_builds += 1;
             let expected = lumapaint_core::document::vector_svg(
                 viewport.document_width as u32,
                 viewport.document_height as u32,
@@ -118,7 +233,7 @@ impl Cache {
             self.verified.insert(
                 layer.id.clone(),
                 VerifiedLayer {
-                    source: layer.source.clone(),
+                    source_key: (layer.source.as_ptr() as usize, layer.source.len()),
                     compatible: expected == layer.source
                         && layer.vector_objects.iter().all(supported),
                     spatial: lumapaint_core::scene::spatial::SpatialIndex::build(
@@ -126,11 +241,21 @@ impl Cache {
                             .vector_objects
                             .iter()
                             .enumerate()
-                            .map(|(i, object)| (i, native_drawing_bounds(object))),
+                            .map(|(i, o)| (i, native_drawing_bounds(o))),
                     ),
+                    positions: layer
+                        .vector_objects
+                        .iter()
+                        .enumerate()
+                        .map(|(i, o)| (o.id.clone(), i))
+                        .collect(),
+                    cursor: journal.cursor(),
+                    last_refits: 0,
+                    journal_id: journal.instance_id(),
                 },
             );
         }
+        self.metrics.bvh_refits += self.verified[&layer.id].last_refits;
         if !self.verified[&layer.id].compatible {
             return false;
         }
@@ -160,6 +285,8 @@ impl Cache {
                 let Some(g) = Geometry::new(device, &self.layout, o) else {
                     return false;
                 };
+                self.metrics.geometry_builds += 1;
+                self.metrics.geometry_upload_bytes += g._curves.size();
                 self.shapes.insert(o.id.clone(), g);
             }
             let g = self.shapes.get_mut(&o.id).unwrap();
@@ -179,6 +306,8 @@ impl Cache {
             if !precision.is_finite() || precision > 0.25 {
                 return false;
             }
+            let previous_uniform = g.last_uniform;
+            let previous_indirect = g.last_indirect;
             work = work.saturating_add(g.update(
                 queue,
                 o,
@@ -189,12 +318,18 @@ impl Cache {
                     [0., 0.]
                 },
             ));
+            if previous_uniform != g.last_uniform {
+                self.metrics.uniform_upload_bytes += std::mem::size_of::<[f32; 20]>();
+            }
+            if previous_indirect != g.last_indirect {
+                self.metrics.uniform_upload_bytes += std::mem::size_of::<[u32; 4]>();
+            }
             if work > 32_000_000 {
                 return false;
             }
         }
         self.draw_lists.insert(layer.id.clone(), candidates);
-        self.ready.insert(layer.id.clone(), layer.source.clone());
+        self.ready.insert(layer.id.clone());
         true
     }
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, layer: &SvgLayer) {
@@ -539,6 +674,54 @@ impl Geometry {
 mod tests {
     use super::*;
     #[test]
+    fn transform_journal_refits_native_bounds_and_undo_restores_pixels() {
+        let mut d = lumapaint_core::document::Document::default();
+        let id = d.add_vector_layer().unwrap();
+        d.upsert_vector_object(&id, object("M0 0H20V20H0Z"))
+            .unwrap();
+        d.select_vector_objects(vec!["curve".into()]).unwrap();
+        let layer = d.svg_layers().next().unwrap();
+        let mut verified = VerifiedLayer {
+            source_key: (layer.source.as_ptr() as usize, layer.source.len()),
+            compatible: true,
+            spatial: lumapaint_core::scene::spatial::SpatialIndex::build([(
+                0,
+                native_drawing_bounds(&layer.vector_objects[0]),
+            )]),
+            positions: [("curve".into(), 0)].into(),
+            cursor: d.scene_journal().cursor(),
+            last_refits: 0,
+            journal_id: d.scene_journal().instance_id(),
+        };
+        let original = crate::vector::rasterize_svg(&layer.source, 64, 64).unwrap();
+        assert!(d.move_selected_vectors(30., 0.).unwrap());
+        let layer = d.svg_layers().next().unwrap();
+        assert!(verified.refresh(layer, d.scene_journal()));
+        assert!(verified.spatial.query([0., 0., 20., 20.]).items.is_empty());
+        assert_eq!(verified.spatial.query([30., 0., 50., 20.]).items, [0]);
+        let (width, height) = d.dimensions();
+        let full = lumapaint_core::document::vector_svg(width, height, &layer.vector_objects);
+        assert_eq!(
+            crate::vector::rasterize_svg(&layer.source, 64, 64)
+                .unwrap()
+                .pixels,
+            crate::vector::rasterize_svg(&full, 64, 64).unwrap().pixels
+        );
+        d.undo();
+        let layer = d.svg_layers().next().unwrap();
+        assert!(verified.refresh(layer, d.scene_journal()));
+        assert_eq!(verified.spatial.query([0., 0., 20., 20.]).items, [0]);
+        assert_eq!(
+            crate::vector::rasterize_svg(&layer.source, 64, 64)
+                .unwrap()
+                .pixels,
+            original.pixels
+        );
+        d.redo();
+        assert!(verified.refresh(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert_eq!(verified.spatial.query([30., 0., 50., 20.]).items, [0]);
+    }
+    #[test]
     fn viewport_query_preserves_order_unknown_bounds_and_edge_coverage() {
         let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
         let index = lumapaint_core::scene::spatial::SpatialIndex::build([
@@ -570,6 +753,7 @@ mod tests {
             fill_gradient: None,
             stroke_gradient: None,
             fill: Some(lumapaint_core::vector::VectorPaint {
+                registration: false,
                 color: [30, 80, 255, 255],
             }),
             stroke: None,
@@ -604,6 +788,7 @@ mod tests {
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let mut cache = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
         let v = Viewport {
+            pasteboard_color: None,
             width: 128,
             height: 128,
             scale: 1.,
@@ -696,7 +881,14 @@ mod tests {
             buffer.unmap();
             pixels
         };
-        assert!(cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            v,
+            (&lumapaint_core::scene::Journal::default(), &[]),
+            [0., 0.]
+        ));
         let geometry = &cache.shapes["curve"]._curves as *const _ as usize;
         let pixels = render(&cache, &layer);
         let path = Path::from_svg(&o.path.data)
@@ -734,7 +926,14 @@ mod tests {
         layer.vector_objects.push(outside);
         layer.source = lumapaint_core::document::vector_svg(128, 128, &layer.vector_objects);
         cache.begin_frame();
-        assert!(cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            v,
+            (&lumapaint_core::scene::Journal::default(), &[]),
+            [0., 0.]
+        ));
         assert_eq!(cache.draw_lists[&layer.id], vec![0]);
         assert!(!cache.shapes.contains_key("outside"));
         assert_eq!(render(&cache, &layer), pixels);
@@ -744,7 +943,10 @@ mod tests {
             &queue,
             &layer,
             v,
-            &["outside".into()],
+            (
+                &lumapaint_core::scene::Journal::default(),
+                &["outside".into()]
+            ),
             [-10_000., 0.]
         ));
         assert_eq!(cache.draw_lists[&layer.id], vec![0, 1]);
@@ -754,20 +956,144 @@ mod tests {
         // Pan and extremely high zoom alter display uniforms, never curve allocation.
         let mut high = v.with_screen_zoom(640.);
         high.pan_x = 100.;
-        assert!(cache.prepare(&device, &queue, &layer, high, &[], [0., 0.]));
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            high,
+            (&lumapaint_core::scene::Journal::default(), &[]),
+            [0., 0.]
+        ));
         assert_eq!(
             &cache.shapes["curve"]._curves as *const _ as usize,
             geometry
         );
+        // A real document transaction must update only one BVH leaf and reuse
+        // resident geometry. Compare incremental output to a fresh full cache.
+        let mut state = lumapaint_core::document::Document::default().document_state();
+        state.width = 128;
+        state.height = 128;
+        state.svg_layers = vec![layer.clone()];
+        let mut document = lumapaint_core::document::Document::from_document_state(state).unwrap();
+        document
+            .select_vector_objects(vec!["curve".into()])
+            .unwrap();
+        cache.begin_frame();
+        cache.synchronize(&document);
+        let original_layer = document.svg_layers().next().unwrap();
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            original_layer,
+            v,
+            (document.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        let original_pixels = render(&cache, original_layer);
+        let retained_geometry = &cache.shapes["curve"]._curves as *const _ as usize;
+        for _ in 0..2 {
+            cache.begin_frame();
+            cache.synchronize(&document);
+            assert!(cache.prepare(
+                &device,
+                &queue,
+                document.svg_layers().next().unwrap(),
+                v,
+                (document.scene_journal(), &[]),
+                [0., 0.]
+            ));
+            assert_eq!(cache.metrics.live_id_scans, 0);
+            assert_eq!(cache.metrics.svg_generations, 0);
+            assert_eq!(cache.metrics.bvh_builds, 0);
+            assert_eq!(cache.metrics.bvh_refits, 0);
+            assert_eq!(cache.metrics.geometry_builds, 0);
+            assert_eq!(cache.metrics.geometry_upload_bytes, 0);
+            assert_eq!(cache.metrics.uniform_upload_bytes, 0);
+        }
+        document.move_selected_vectors(10., 5.).unwrap();
+        cache.begin_frame();
+        cache.synchronize(&document);
+        let moved_layer = document.svg_layers().next().unwrap();
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            moved_layer,
+            v,
+            (document.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        assert_eq!(cache.metrics.live_id_scans, 0);
+        assert_eq!(cache.metrics.svg_generations, 0);
+        assert_eq!(cache.metrics.bvh_builds, 0);
+        assert_eq!(cache.metrics.bvh_refits, 1);
+        assert_eq!(
+            &cache.shapes["curve"]._curves as *const _ as usize,
+            retained_geometry
+        );
+        let moved_pixels = render(&cache, moved_layer);
+        let mut full_cache = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        assert!(full_cache.prepare(
+            &device,
+            &queue,
+            moved_layer,
+            v,
+            (document.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        assert_eq!(moved_pixels, render(&full_cache, moved_layer));
+        document.undo();
+        cache.begin_frame();
+        cache.synchronize(&document);
+        let restored = document.svg_layers().next().unwrap();
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            restored,
+            v,
+            (document.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        assert_eq!(render(&cache, restored), original_pixels);
+        assert_eq!(cache.metrics.bvh_refits, 1);
+        assert_eq!(cache.metrics.svg_generations, 0);
+        document.redo();
+        cache.begin_frame();
+        cache.synchronize(&document);
+        let restored = document.svg_layers().next().unwrap();
+        assert!(cache.prepare(
+            &device,
+            &queue,
+            restored,
+            v,
+            (document.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        assert_eq!(render(&cache, restored), moved_pixels);
+        assert_eq!(cache.metrics.bvh_refits, 1);
+        assert_eq!(cache.metrics.svg_generations, 0);
         let canonical = layer.source.clone();
         layer.source = layer
             .source
             .replace("</svg>", "<style>path { display:none }</style></svg>");
         cache.begin_frame();
-        assert!(!cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert!(!cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            v,
+            (&lumapaint_core::scene::Journal::default(), &[]),
+            [0., 0.]
+        ));
         assert!(!cache.ready(&layer));
         layer.source = canonical;
         layer.vector_objects[0].stroke = layer.vector_objects[0].fill;
-        assert!(!cache.prepare(&device, &queue, &layer, v, &[], [0., 0.]));
+        assert!(!cache.prepare(
+            &device,
+            &queue,
+            &layer,
+            v,
+            (&lumapaint_core::scene::Journal::default(), &[]),
+            [0., 0.]
+        ));
     }
 }

@@ -7,7 +7,11 @@ struct Uniforms { viewport: vec4<f32>, appearance: vec4<f32>, document: vec4<f32
     return vec4(p[i], 0.0, 1.0);
 }
 @fragment fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let color = textureLoad(source, vec2<i32>(p.xy), 0);
+    var color = textureLoad(source, vec2<i32>(p.xy), 0);
+    if u.document.w > 0.5 {
+        let gray = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        color = vec4(vec3(gray), color.a);
+    }
     let size = u.viewport.xy / u.viewport.z;
     let fit = max(0.01, min((size.x-48.0)/u.document.x, (size.y-48.0)/u.document.y));
     let point = (p.xy/u.viewport.z-size*0.5-u.appearance.yz)/(fit*u.viewport.w)+u.document.xy*0.5;

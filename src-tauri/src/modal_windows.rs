@@ -21,6 +21,7 @@ pub(crate) enum Kind {
     ImportImage,
     PdfImport,
     ToolSettings,
+    VectorSelections,
 }
 impl Kind {
     fn geometry(self) -> (f64, f64) {
@@ -33,6 +34,7 @@ impl Kind {
             Self::ImportImage => (480., 360.),
             Self::PdfImport => (480., 400.),
             Self::ToolSettings => (440., 580.),
+            Self::VectorSelections => (400., 320.),
         }
     }
     fn title(self, locale: &str) -> &str {
@@ -49,6 +51,7 @@ impl Kind {
             Self::ImportImage => ["Import", "読み込み", "导入"],
             Self::PdfImport => ["PDF Page", "PDFページ", "PDF页面"],
             Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
+            Self::VectorSelections => ["Saved Selections", "選択範囲の保存・編集", "已保存的选择"],
         };
         titles[match locale {
             "ja" => 1,

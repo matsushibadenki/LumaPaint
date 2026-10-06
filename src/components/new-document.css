@@ -40,3 +40,5 @@
 .new-document-dialog .preset-create { background: #1874cf; border-color: #318bea; color: white; min-width: 84px; }
 @media (max-width: 760px) { .new-document-body { grid-template-columns: minmax(0, 1fr) 250px; } .paper-preset-grid { grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); padding: 12px; } .preset-details { padding: 16px; } }
 @media (max-width: 540px) { .new-document-dialog { width: calc(100vw - 20px); height: calc(100dvh - 20px); } .new-document-body { display: block; overflow-y: auto; } .paper-preset-grid { max-height: 240px; } .preset-details { overflow: visible; } }
+
+.preset-guide-info { font-size: 12px; line-height: 1.5; color: #b7d5f5; margin: 4px 0 12px; }

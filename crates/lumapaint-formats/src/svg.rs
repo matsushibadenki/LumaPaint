@@ -7,6 +7,15 @@ use base64::Engine;
 use lumapaint_core::document::{vector_svg, CanvasColor, Document};
 use std::sync::{Arc, OnceLock};
 
+fn mode_svg(source: String, mode: lumapaint_core::document::ColorMode) -> String {
+    if mode != lumapaint_core::document::ColorMode::Grayscale {
+        return source;
+    }
+    let end = source.find('>').unwrap() + 1;
+    let close = source.rfind("</svg>").unwrap();
+    format!("{}<defs><filter id=\"lp-gray-mode\" x=\"-100%\" y=\"-100%\" width=\"300%\" height=\"300%\" color-interpolation-filters=\"linearRGB\"><feColorMatrix type=\"matrix\" values=\".2126 .7152 .0722 0 0 .2126 .7152 .0722 0 0 .2126 .7152 .0722 0 0 0 0 0 1 0\"/></filter></defs><g filter=\"url(#lp-gray-mode)\">{}</g></svg>", &source[..end], &source[end..close])
+}
+
 pub fn import(name: String, source: String) -> Result<Document, String> {
     let tree = tree(&source).map_err(|e| e.to_string())?;
     let mut state = Document::default().document_state();
@@ -69,6 +78,40 @@ fn layer_xml(source: &str, index: usize, width: u32, height: u32) -> Result<Stri
     ))
 }
 
+/// Preserve unpainted geometry/text that the appearance parser intentionally omits.
+fn unpainted_body(source: &str, index: usize) -> Result<String, ExportError> {
+    let xml = roxmltree::Document::parse(source)
+        .map_err(|e| ExportError::InvalidDocument(e.to_string()))?;
+    let ids: Vec<_> = xml
+        .descendants()
+        .filter_map(|n| n.attribute("id"))
+        .collect();
+    let mut edits = Vec::new();
+    for node in xml.descendants().filter(|n| n.is_element()) {
+        for attribute in node.attributes() {
+            let mut value = attribute.value().to_string();
+            if attribute.name() == "id" {
+                value = format!("lp-none-{index}-{value}");
+            } else if ["clip-path", "mask", "fill", "stroke", "href"].contains(&attribute.name()) {
+                for id in &ids {
+                    value = value.replace(
+                        &format!("url(#{id})"),
+                        &format!("url(#lp-none-{index}-{id})"),
+                    );
+                }
+            }
+            if value != attribute.value() {
+                edits.push((attribute.range_value(), value));
+            }
+        }
+    }
+    let mut preserved = source.to_string();
+    for (range, value) in edits.into_iter().rev() {
+        preserved.replace_range(range, &value);
+    }
+    Ok(preserved[preserved.find('>').unwrap() + 1..preserved.rfind("</svg>").unwrap()].into())
+}
+
 pub struct SvgExporter;
 impl DocumentExporter for SvgExporter {
     fn format(&self) -> FormatId {
@@ -104,7 +147,7 @@ impl DocumentExporter for SvgExporter {
                     "svg.layer_effects_require_raster_fallback",
                 ))?;
             let data = base64::engine::general_purpose::STANDARD.encode(png);
-            return Ok(ExportedDocument { format: self.format(), media_type:"image/svg+xml", bytes: format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\"><image width=\"100%\" height=\"100%\" href=\"data:image/png;base64,{data}\"/></svg>", state.width,state.height).into_bytes(), report });
+            return Ok(ExportedDocument { format: self.format(), media_type:"image/svg+xml", bytes: mode_svg(format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\"><image width=\"100%\" height=\"100%\" href=\"data:image/png;base64,{data}\"/></svg>", state.width,state.height), state.color_mode).into_bytes(), report });
         }
         let brush = state.layer_visible && !state.strokes.is_empty();
         if brush {
@@ -143,7 +186,10 @@ impl DocumentExporter for SvgExporter {
                 document.paint_layer_opacity()
             ));
             if state.canvas_color.unwrap_or_default() == CanvasColor::White {
-                source.push_str("<rect width=\"100%\" height=\"100%\" fill=\"white\"/>");
+                source.push_str(&format!(
+                    "<rect width=\"{}\" height=\"{}\" fill=\"white\"/>",
+                    state.width, state.height
+                ));
             }
             if brush {
                 let data =
@@ -166,11 +212,42 @@ impl DocumentExporter for SvgExporter {
             } else {
                 layer.source.clone()
             };
+            // usvg discards unpainted paths. Keep their editable geometry in SVG output.
+            let no_paint: Vec<_> = layer
+                .vector_objects
+                .iter()
+                .filter(|o| {
+                    let empty_text = o.text.as_ref().is_some_and(|t| {
+                        t.runs.iter().all(|r| r.style.no_color)
+                            && (t.no_color
+                                || t.runs.iter().map(|r| r.end - r.start).sum::<usize>()
+                                    == t.content.encode_utf16().count())
+                    });
+                    layer.vector_layer
+                        && o.visible
+                        && (o.fill.is_none() || empty_text)
+                        && o.stroke.is_none()
+                        && o.fill_gradient.is_none()
+                        && o.stroke_gradient.is_none()
+                        && (o.text.is_none() || empty_text)
+                        && o.image_frame.is_none()
+                        && o.group_path.is_empty()
+                        && o.clipping_group.is_none()
+                })
+                .cloned()
+                .collect();
+            let unpainted =
+                unpainted_body(&vector_svg(state.width, state.height, &no_paint), index + 1)?;
+            let layer_body = format!(
+                "{}{}",
+                layer_xml(&xml, index + 1, state.width, state.height)?,
+                unpainted
+            );
             source.push_str(&format!(
                 "<g id=\"lp-layer-{}\" opacity=\"{}\">{}</g>",
                 index + 1,
                 layer.effective_opacity(),
-                layer_xml(&xml, index + 1, state.width, state.height)?
+                layer_body
             ));
         }
         if state.clipping_path_id.is_some() {
@@ -180,7 +257,7 @@ impl DocumentExporter for SvgExporter {
         Ok(ExportedDocument {
             format: self.format(),
             media_type: "image/svg+xml",
-            bytes: source.into_bytes(),
+            bytes: mode_svg(source, state.color_mode).into_bytes(),
             report,
         })
     }
@@ -190,6 +267,31 @@ impl DocumentExporter for SvgExporter {
 mod tests {
     use super::*;
     use crate::export::export;
+    #[test]
+    fn svg_keeps_unpainted_editable_geometry() {
+        let mut d = Document::default();
+        let layer = d.add_vector_layer().unwrap();
+        let object = serde_json::from_value(serde_json::json!({"id":"empty-paint","name":"None", "path":{"data":"M10 10H30V40H10Z","fillRule":"nonZero"}, "transform":[1,0,0,1,0,0], "fill":null,"stroke":null,"strokeWidth":0,"visible":true})).unwrap();
+        d.upsert_vector_object(&layer, object).unwrap();
+        let exported = SvgExporter
+            .export(&ExportSnapshot::capture(&d), ExportOptions::default())
+            .unwrap();
+        let xml = std::str::from_utf8(&exported.bytes).unwrap();
+        let parsed = roxmltree::Document::parse(xml).unwrap();
+        let path = parsed
+            .descendants()
+            .find(|n| n.has_tag_name("path"))
+            .unwrap();
+        assert_eq!(path.attribute("fill"), Some("none"));
+        assert_eq!(path.attribute("stroke"), Some("none"));
+        let data = path.attribute("d").unwrap();
+        assert_eq!(
+            lumapaint_core::bezier::cubic_contours(data).unwrap(),
+            lumapaint_core::bezier::cubic_contours("M10 10H30V40H10Z").unwrap()
+        );
+        let imported = import("None".into(), xml.into()).unwrap();
+        assert!(imported.svg_layers().next().unwrap().source.contains(data));
+    }
     #[test]
     fn ordinary_effects_require_explicit_raster_fallback_and_consent() {
         let mut d = Document::default();
@@ -268,5 +370,24 @@ mod tests {
         ));
         assert!(document.has_active_stroke());
         assert_eq!(document.snapshot().revision, before.revision);
+    }
+}
+
+#[cfg(test)]
+mod color_mode_tests {
+    #[test]
+    fn grayscale_export_applies_linear_luminance_after_compositing() {
+        let source = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\" fill=\"red\"/></svg>";
+        let gray = super::mode_svg(
+            source.into(),
+            lumapaint_core::document::ColorMode::Grayscale,
+        );
+        assert!(gray.contains("color-interpolation-filters=\"linearRGB\""));
+        assert!(gray.contains(".2126 .7152 .0722"));
+        assert!(super::tree(&gray).is_ok());
+        assert_eq!(
+            super::mode_svg(source.into(), lumapaint_core::document::ColorMode::Lab),
+            source
+        );
     }
 }

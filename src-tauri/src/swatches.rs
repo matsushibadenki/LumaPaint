@@ -6,8 +6,15 @@ use tauri::{Emitter, Manager};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Paint {
-    Color { color: [u8; 3] },
-    Gradient { gradient: Gradient },
+    None,
+    Color {
+        color: [u8; 3],
+        #[serde(default)]
+        registration: bool,
+    },
+    Gradient {
+        gradient: Gradient,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +36,8 @@ struct Library {
     next_id: u32,
     #[serde(default)]
     basic_samples_added: bool,
+    #[serde(default)]
+    registration_sample_added: bool,
     swatches: Vec<Swatch>,
 }
 // Run once, so deleting a built-in sample never causes it to reappear.
@@ -57,6 +66,9 @@ fn validate(library: &Library) -> Result<(), String> {
             || s.name.trim().is_empty()
             || s.name.chars().count() > 80
         {
+            return Err(INVALID.into());
+        }
+        if matches!(s.paint,Paint::Color{color,registration:true} if color != [0,0,0]) {
             return Err(INVALID.into());
         }
         if let Paint::Gradient { gradient } = &s.paint {
@@ -89,6 +101,7 @@ fn import_library(path: &std::path::Path) -> Result<Library, String> {
                 version: 1,
                 next_id: 1,
                 basic_samples_added: false,
+                registration_sample_added: false,
                 swatches: vec![],
             };
             for p in patterns {
@@ -174,6 +187,7 @@ pub fn swatch_library(
             version: 1,
             next_id: 1,
             basic_samples_added: false,
+            registration_sample_added: false,
             swatches: vec![],
         };
         for seed in seeds.clone().unwrap_or_default() {
@@ -209,6 +223,30 @@ pub fn swatch_library(
                 write(&path, &library)?;
             }
         }
+    }
+    if !library.registration_sample_added && library.swatches.len() < 512 {
+        if !library.swatches.iter().any(|s| {
+            matches!(
+                s.paint,
+                Paint::Color {
+                    registration: true,
+                    ..
+                }
+            )
+        }) {
+            add(
+                &mut library,
+                Draft {
+                    name: "[Registration]".into(),
+                    paint: Paint::Color {
+                        color: [0, 0, 0],
+                        registration: true,
+                    },
+                },
+            )?;
+        }
+        library.registration_sample_added = true;
+        write(&path, &library)?;
     }
     match action.as_str() {
         "get" => {}
@@ -273,6 +311,7 @@ mod tests {
         Draft {
             name: name.into(),
             paint: Paint::Color {
+                registration: false,
                 color: [12, 34, 56],
             },
         }
@@ -297,6 +336,7 @@ mod tests {
             version: 1,
             next_id: 1,
             basic_samples_added: false,
+            registration_sample_added: false,
             swatches: vec![],
         };
         add(&mut l, draft("A")).unwrap();
@@ -322,6 +362,7 @@ mod tests {
             version: 1,
             next_id: 1,
             basic_samples_added: false,
+            registration_sample_added: false,
             swatches: vec![],
         };
         add_many(
@@ -367,6 +408,7 @@ mod tests {
             version: 1,
             next_id: 1,
             basic_samples_added: false,
+            registration_sample_added: false,
             swatches: vec![],
         };
         add(&mut l, draft("A")).unwrap();
@@ -380,5 +422,32 @@ mod tests {
             add(&mut l, draft("C")).unwrap();
         }
         assert!(add(&mut l, draft("Too many")).is_err());
+    }
+    #[test]
+    fn none_sample_is_distinct_from_black_and_round_trips() {
+        let mut library = Library {
+            version: 1,
+            next_id: 1,
+            basic_samples_added: true,
+            registration_sample_added: true,
+            swatches: vec![],
+        };
+        add(
+            &mut library,
+            Draft {
+                name: "None / なし / 无".into(),
+                paint: Paint::None,
+            },
+        )
+        .unwrap();
+        add(&mut library, draft("Black")).unwrap();
+        assert_ne!(library.swatches[0].paint, library.swatches[1].paint);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("none.json");
+        write(&path, &library).unwrap();
+        let loaded = read(&path).unwrap();
+        assert_eq!(loaded.swatches[0].paint, Paint::None);
+        let imported = import_library(&path).unwrap();
+        assert_eq!(imported.swatches[0].paint, Paint::None);
     }
 }

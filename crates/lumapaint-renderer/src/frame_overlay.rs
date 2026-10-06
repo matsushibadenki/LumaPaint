@@ -289,6 +289,7 @@ mod tests {
             baseline: None,
         };
         let viewport = Viewport {
+            pasteboard_color: None,
             width: 1008,
             height: 688,
             scale: 1.0,
@@ -304,6 +305,7 @@ mod tests {
         let zoomed = vertices(
             overlay,
             Viewport {
+                pasteboard_color: None,
                 zoom: 2.0,
                 ..viewport
             },

@@ -32,6 +32,36 @@ fn validate(point: Point) -> Result<(), String> {
     }
     Ok(())
 }
+pub(crate) fn grayscale_rgb(color: [u8; 3]) -> u8 {
+    let linear = color.map(|c| {
+        let v = c as f32 / 255.;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let y = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+    let v = if y <= 0.0031308 {
+        y * 12.92
+    } else {
+        1.055 * y.powf(1. / 2.4) - 0.055
+    };
+    (v * 255.).round().clamp(0., 255.) as u8
+}
+pub(crate) fn grayscale_pixels(pixels: &mut [u8]) {
+    for p in pixels.as_chunks_mut::<4>().0 {
+        if p[3] == 0 {
+            p[..3].fill(0);
+            continue;
+        }
+        let rgb = std::array::from_fn(|i| {
+            (p[i] as f32 * 255. / p[3] as f32).round().clamp(0., 255.) as u8
+        });
+        let gray = (u16::from(grayscale_rgb(rgb)) * u16::from(p[3]) / 255) as u8;
+        p[..3].fill(gray);
+    }
+}
 impl ColorSampler {
     /// One document pixel at native resolution. Selection overlays and zoom are excluded.
     /// SVG uses the existing GPU-first rasterizer with its automatic CPU fallback.
@@ -77,7 +107,13 @@ impl ColorSampler {
                 *value *= pixel[3] as f32 / 255.;
             }
         }
-        Ok(straight(result))
+        Ok(straight(result).map(|color| {
+            if document.color_mode() == lumapaint_core::document::ColorMode::Grayscale {
+                [grayscale_rgb(color); 3]
+            } else {
+                color
+            }
+        }))
     }
 }
 
@@ -189,5 +225,18 @@ mod tests {
             sample_tiled(&doc, Point { x: 300., y: 270. }).unwrap(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    #[test]
+    fn grayscale_uses_linear_luminance_and_preserves_alpha() {
+        assert_eq!(super::grayscale_rgb([255, 0, 0]), 127);
+        assert_eq!(super::grayscale_rgb([0, 255, 0]), 220);
+        assert_eq!(super::grayscale_rgb([0, 0, 255]), 76);
+        let mut p = [128, 0, 0, 128, 255, 12, 90, 0];
+        super::grayscale_pixels(&mut p);
+        assert_eq!(p, [63, 63, 63, 128, 0, 0, 0, 0]);
     }
 }

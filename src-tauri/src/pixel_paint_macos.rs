@@ -17,6 +17,8 @@ pub(super) struct PixelPaint {
     token: u64,
     document_id: u64,
     layer: String,
+    image_id: String,
+    clone_stamp: bool,
     revision: u64,
     sender: mpsc::Sender<Sample>,
     latest: Option<PreparedPixelTiles>,
@@ -67,6 +69,8 @@ pub(super) fn pointer(
             *slot.borrow_mut() = Some(PixelPaint {
                 token,
                 document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                image_id: snapshot.layer_id.clone(),
+                clone_stamp: false,
                 layer: snapshot.layer_id,
                 revision: snapshot.revision,
                 sender,
@@ -118,8 +122,19 @@ pub(super) fn pointer(
                 .completed
                 .recv()
                 .map_err(|_| "Paint worker stopped")??;
-            let source = frame.source.ok_or("Missing committed paint image")?;
-            doc.replace_selected_image(source.clone())?;
+            let Some(source) = frame.source else {
+                *slot = None;
+                return Ok(true);
+            };
+            if draft.clone_stamp {
+                doc.replace_moved_pixels(source.clone(), doc.selection().cloned())?;
+            } else {
+                doc.replace_selected_image(source.clone())?;
+            }
+            if draft.layer == "layer-1" {
+                *slot = None;
+                return Ok(true);
+            }
             let layer = doc
                 .svg_layers()
                 .find(|layer| layer.id == draft.layer)
@@ -136,6 +151,347 @@ pub(super) fn pointer(
         }
         Ok(true)
     })
+}
+
+pub(super) fn clone_pointer(
+    doc: &mut Document,
+    point: Point,
+    phase: u8,
+    pressure: f32,
+    offset: [f32; 2],
+    settings: lumapaint_core::clone_stamp::Settings,
+) -> Result<bool, String> {
+    if phase != 0 {
+        return pointer(doc, point, phase, pressure, false);
+    }
+    PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
+    doc.finish();
+    let workspace = doc.clone_stamp_workspace()?;
+    let sample_doc = doc.clone_stamp_sampling_document(settings.sample)?;
+    let brush = BRUSH.with(|brush| *brush.borrow());
+    let snapshot = doc.snapshot();
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let (w, h) = doc.dimensions();
+    let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
+    let image_id = if snapshot.layer_id == "layer-1" {
+        "clone-stamp-preview-base".into()
+    } else {
+        snapshot.layer_id.clone()
+    };
+    let (sender, receiver) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    PIXEL_PAINT.with(|slot| {
+        *slot.borrow_mut() = Some(PixelPaint {
+            token,
+            document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            image_id,
+            clone_stamp: true,
+            layer: snapshot.layer_id,
+            revision: snapshot.revision,
+            sender,
+            latest: None,
+            preview_document,
+            completed,
+        })
+    });
+    let label = current_label();
+    std::thread::spawn(move || {
+        let pending = Arc::new(Mutex::new(None));
+        let result = (|| -> Result<(), String> {
+            let mut destination = PixelPaintPreview::new((w, h))?;
+            destination.update(&workspace)?;
+            let source = if settings.sample == lumapaint_core::clone_stamp::Sample::CurrentLayer {
+                destination.pixels().to_vec()
+            } else {
+                lumapaint_renderer::thumbnails::document_pixels(&sample_doc)?
+            };
+            let mut preview = lumapaint_renderer::clone_stamp::Preview::new(
+                (w, h),
+                destination.pixels().to_vec(),
+                source,
+                offset,
+                brush,
+                settings,
+                workspace.selection().cloned(),
+            )?;
+            let mut uploads = destination.take_uploads();
+            preview.sample(point, pressure)?;
+            loop {
+                uploads = merge_uploads(uploads, preview.take_uploads());
+                publish(
+                    label.clone(),
+                    token,
+                    &pending,
+                    Ok(PaintFrame {
+                        uploads: std::mem::take(&mut uploads),
+                        pixels: Vec::new(),
+                        source: None,
+                    }),
+                );
+                let Ok(mut sample) = receiver.recv() else {
+                    return Ok(());
+                };
+                preview.sample(sample.point, sample.pressure)?;
+                while !sample.finish {
+                    match receiver.try_recv() {
+                        Ok(next) => {
+                            sample = next;
+                            preview.sample(sample.point, sample.pressure)?;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                    }
+                }
+                if sample.finish {
+                    let pixels = preview.pixels_after_update();
+                    let png = lumapaint_renderer::vector::document_png(w, h, pixels.clone())?;
+                    let _ = done.send(Ok(PaintFrame {
+                        uploads: Vec::new(),
+                        pixels,
+                        source: Some(clipboard::image_svg(w, h, &png)),
+                    }));
+                    return Ok(());
+                }
+            }
+        })();
+        if let Err(error) = result {
+            let _ = done.send(Err(error.clone()));
+            publish(label, token, &pending, Err(error));
+        }
+    });
+    Ok(true)
+}
+
+pub(super) fn retouch_pointer(
+    doc: &mut Document,
+    point: Point,
+    phase: u8,
+    pressure: f32,
+    kind: lumapaint_core::retouch::Kind,
+    settings: lumapaint_core::retouch::Settings,
+) -> Result<bool, String> {
+    if phase != 0 {
+        return pointer(doc, point, phase, pressure, false);
+    }
+    if settings.strength == 0. {
+        return Ok(true);
+    }
+    PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
+    doc.finish();
+    let workspace = doc.clone_stamp_workspace()?;
+    let sample_doc = doc.clone_stamp_sampling_document(if settings.sample_all_layers {
+        lumapaint_core::clone_stamp::Sample::AllLayers
+    } else {
+        lumapaint_core::clone_stamp::Sample::CurrentLayer
+    })?;
+    let brush = BRUSH.with(|brush| *brush.borrow());
+    let snapshot = doc.snapshot();
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let (w, h) = doc.dimensions();
+    let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
+    let image_id = if snapshot.layer_id == "layer-1" {
+        "clone-stamp-preview-base".into()
+    } else {
+        snapshot.layer_id.clone()
+    };
+    let (sender, receiver) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    PIXEL_PAINT.with(|slot| {
+        *slot.borrow_mut() = Some(PixelPaint {
+            token,
+            document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            image_id,
+            clone_stamp: true,
+            layer: snapshot.layer_id,
+            revision: snapshot.revision,
+            sender,
+            latest: None,
+            preview_document,
+            completed,
+        })
+    });
+    let label = current_label();
+    std::thread::spawn(move || {
+        let pending = Arc::new(Mutex::new(None));
+        let result = (|| -> Result<(), String> {
+            let mut destination = PixelPaintPreview::new((w, h))?;
+            destination.update(&workspace)?;
+            let source = if !settings.sample_all_layers {
+                destination.pixels().to_vec()
+            } else {
+                lumapaint_renderer::thumbnails::document_pixels(&sample_doc)?
+            };
+            let original = destination.pixels().to_vec();
+            let mut preview = lumapaint_renderer::retouch::Preview::new(
+                (w, h),
+                destination.pixels().to_vec(),
+                source,
+                brush,
+                settings,
+                kind,
+                workspace.selection().cloned(),
+            )?;
+            let mut uploads = destination.take_uploads();
+            preview.sample(point, pressure)?;
+            loop {
+                uploads = merge_uploads(uploads, preview.take_uploads());
+                publish(
+                    label.clone(),
+                    token,
+                    &pending,
+                    Ok(PaintFrame {
+                        uploads: std::mem::take(&mut uploads),
+                        pixels: Vec::new(),
+                        source: None,
+                    }),
+                );
+                let Ok(mut sample) = receiver.recv() else {
+                    return Ok(());
+                };
+                preview.sample(sample.point, sample.pressure)?;
+                while !sample.finish {
+                    match receiver.try_recv() {
+                        Ok(next) => {
+                            sample = next;
+                            preview.sample(sample.point, sample.pressure)?;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                    }
+                }
+                if sample.finish {
+                    let pixels = preview.pixels_after_update();
+                    if pixels == original {
+                        let _ = done.send(Ok(PaintFrame {
+                            uploads: Vec::new(),
+                            pixels,
+                            source: None,
+                        }));
+                        return Ok(());
+                    }
+                    let png = lumapaint_renderer::vector::document_png(w, h, pixels.clone())?;
+                    let _ = done.send(Ok(PaintFrame {
+                        uploads: Vec::new(),
+                        pixels,
+                        source: Some(clipboard::image_svg(w, h, &png)),
+                    }));
+                    return Ok(());
+                }
+            }
+        })();
+        if let Err(error) = result {
+            let _ = done.send(Err(error.clone()));
+            publish(label, token, &pending, Err(error));
+        }
+    });
+    Ok(true)
+}
+
+pub(super) fn fill_pointer(
+    doc: &mut Document,
+    point: Point,
+    phase: u8,
+    settings: lumapaint_core::paint_bucket::Settings,
+) -> Result<bool, String> {
+    if phase == 1 {
+        return Ok(true);
+    }
+    if phase == 2 {
+        return pointer(doc, point, phase, 1., false);
+    }
+    if BRUSH.with(|brush| brush.borrow().no_color) {
+        return Ok(true);
+    }
+    PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
+    doc.finish();
+    let workspace = doc.clone_stamp_workspace()?;
+    let sample_doc = if settings.all_layers {
+        Some(doc.clone_stamp_sampling_document(lumapaint_core::clone_stamp::Sample::AllLayers)?)
+    } else {
+        None
+    };
+    let brush = BRUSH.with(|brush| *brush.borrow());
+    let snapshot = doc.snapshot();
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let (w, h) = doc.dimensions();
+    let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
+    let image_id = if snapshot.layer_id == "layer-1" {
+        "clone-stamp-preview-base".into()
+    } else {
+        snapshot.layer_id.clone()
+    };
+    let (sender, receiver) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    PIXEL_PAINT.with(|slot| {
+        *slot.borrow_mut() = Some(PixelPaint {
+            token,
+            document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            image_id,
+            clone_stamp: true,
+            layer: snapshot.layer_id,
+            revision: snapshot.revision,
+            sender,
+            latest: None,
+            preview_document,
+            completed,
+        })
+    });
+
+    let label = current_label();
+    std::thread::spawn(move || {
+        let pending = Arc::new(Mutex::new(None));
+        let result = (|| -> Result<(), String> {
+            let mut destination = PixelPaintPreview::new((w, h))?;
+            destination.update(&workspace)?;
+            let source = if let Some(doc) = sample_doc {
+                lumapaint_renderer::thumbnails::document_pixels(&doc)?
+            } else {
+                destination.pixels().to_vec()
+            };
+            let result = lumapaint_renderer::paint_bucket::fill(
+                (w, h),
+                destination.pixels().to_vec(),
+                &source,
+                point,
+                brush.color,
+                settings,
+                workspace.selection(),
+            )?;
+            let uploads = merge_uploads(destination.take_uploads(), result.uploads);
+            publish(
+                label.clone(),
+                token,
+                &pending,
+                Ok(PaintFrame {
+                    uploads,
+                    pixels: Vec::new(),
+                    source: None,
+                }),
+            );
+            let source = if result.changed {
+                let png = lumapaint_renderer::vector::document_png(w, h, result.pixels.clone())?;
+                Some(clipboard::image_svg(w, h, &png))
+            } else {
+                None
+            };
+            while let Ok(sample) = receiver.recv() {
+                if sample.finish {
+                    let _ = done.send(Ok(PaintFrame {
+                        uploads: Vec::new(),
+                        pixels: result.pixels,
+                        source,
+                    }));
+                    return Ok(());
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = done.send(Err(error.clone()));
+            publish(label, token, &pending, Err(error));
+        }
+    });
+    Ok(true)
 }
 
 fn paint_worker(
@@ -269,13 +625,14 @@ fn receive_frame(token: u64, result: Result<PaintFrame, String>) {
             let doc = doc.borrow();
             let (w, h) = doc.dimensions();
             let source = preview_source(w, h, token);
-            let opacity = doc
+            let opacity = draft
+                .preview_document
                 .svg_layers()
-                .find(|layer| layer.id == draft.layer)
+                .find(|layer| layer.id == draft.image_id)
                 .ok_or("Paint layer missing")?
                 .effective_opacity();
             Ok(PreparedPixelTiles {
-                id: draft.layer.clone(),
+                id: draft.image_id.clone(),
                 source,
                 size: (w, h),
                 opacity,
@@ -587,6 +944,58 @@ mod tests {
         assert_eq!(erased.pixels[(70 * 960 + 40) * 4 + 3], 0);
         doc.undo();
         assert_eq!(clipboard::raw_selected_pixels(&doc).unwrap().2, painted);
+    }
+
+    #[test]
+    fn retouch_pointer_commits_each_tool_once_and_preserves_noop_history() {
+        use lumapaint_core::retouch::{Kind, Settings};
+        for kind in [Kind::Blur, Kind::Sharpen, Kind::Smudge] {
+            let mut doc = Document::default();
+            let id = doc.add_paint_layer().unwrap();
+            doc.select_layer(id).unwrap();
+            let (w, h) = doc.dimensions();
+            let pixels: Vec<u8> = (0..w * h)
+                .flat_map(|i| {
+                    let value = if i % w < 32 { 64 } else { 192 };
+                    [value, value, value, 255]
+                })
+                .collect();
+            let png = lumapaint_renderer::vector::document_png(w, h, pixels.clone()).unwrap();
+            doc.replace_selected_image(clipboard::image_svg(w, h, &png))
+                .unwrap();
+            BRUSH.with(|b| {
+                *b.borrow_mut() = Brush {
+                    size: 12.,
+                    hardness: 1.,
+                    ..Brush::default()
+                }
+            });
+            let settings = Settings {
+                strength: 1.,
+                pressure_strength: false,
+                ..Settings::default()
+            };
+            let source = doc.svg_layers().next().unwrap().source.clone();
+            retouch_pointer(&mut doc, Point { x: 30., y: 30. }, 0, 1., kind, settings).unwrap();
+            retouch_pointer(&mut doc, Point { x: 34., y: 30. }, 1, 1., kind, settings).unwrap();
+            assert_eq!(doc.svg_layers().next().unwrap().source, source);
+            retouch_pointer(&mut doc, Point { x: 38., y: 30. }, 2, 1., kind, settings).unwrap();
+            let after = clipboard::raw_selected_pixels(&doc).unwrap().2;
+            assert_ne!(after, pixels);
+            PIXEL_PAINT_COMMIT.with(|s| s.borrow_mut().take());
+            doc.undo();
+            assert_eq!(clipboard::raw_selected_pixels(&doc).unwrap().2, pixels);
+            doc.redo();
+            assert_eq!(clipboard::raw_selected_pixels(&doc).unwrap().2, after);
+            let revision = doc.revision();
+            let no_op = Settings {
+                strength: 0.,
+                ..settings
+            };
+            retouch_pointer(&mut doc, Point { x: 32., y: 30. }, 0, 1., kind, no_op).unwrap();
+            retouch_pointer(&mut doc, Point { x: 32., y: 30. }, 2, 1., kind, no_op).unwrap();
+            assert_eq!(doc.revision(), revision);
+        }
     }
 
     #[test]

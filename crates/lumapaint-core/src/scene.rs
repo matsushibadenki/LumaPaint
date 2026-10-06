@@ -46,29 +46,60 @@ impl Changes {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Change {
     pub sequence: u64,
     pub target: Target,
     pub changes: Changes,
     pub generations: Generations,
     pub removed: bool,
+    pub before_bounds: Option<spatial::Bounds>,
+    pub after_bounds: Option<spatial::Bounds>,
 }
 
 /// Consumers own their cursor. A missing range requires a complete rebuild.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum JournalRead {
     Incremental { cursor: u64, changes: Vec<Change> },
     Rebuild { cursor: u64 },
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct Journal {
+    instance_id: u64,
     sequence: u64,
     generations: BTreeMap<Target, Generations>,
     events: VecDeque<Change>,
 }
+fn next_journal_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+impl Default for Journal {
+    fn default() -> Self {
+        Self {
+            instance_id: next_journal_id(),
+            sequence: 0,
+            generations: BTreeMap::new(),
+            events: VecDeque::new(),
+        }
+    }
+}
+impl Clone for Journal {
+    fn clone(&self) -> Self {
+        Self {
+            instance_id: next_journal_id(),
+            sequence: self.sequence,
+            generations: self.generations.clone(),
+            events: self.events.clone(),
+        }
+    }
+}
 impl Journal {
+    /// Separate documents and mutable forks must not share renderer cursors.
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
     pub fn cursor(&self) -> u64 {
         self.sequence
     }
@@ -83,12 +114,15 @@ impl Journal {
         }
         JournalRead::Incremental {
             cursor: self.sequence,
-            changes: self
-                .events
-                .iter()
-                .filter(|c| c.sequence > cursor)
-                .cloned()
-                .collect(),
+            changes: {
+                let start = self.events.front().map_or(0, |first| {
+                    cursor.saturating_add(1).saturating_sub(first.sequence) as usize
+                });
+                self.events
+                    .range(start.min(self.events.len())..)
+                    .cloned()
+                    .collect()
+            },
         }
     }
     fn push(&mut self, target: Target, changes: Changes, removed: bool) {
@@ -122,6 +156,8 @@ impl Journal {
             changes,
             generations: *generations,
             removed,
+            before_bounds: None,
+            after_bounds: None,
         });
         if removed {
             // Sequence values are globally monotonic, so a later recreation
@@ -178,6 +214,40 @@ impl Journal {
                 true,
             );
         }
+    }
+    /// Targeted edits do not need to compare unrelated layers or objects.
+    pub(crate) fn object_transformed(
+        &mut self,
+        layer: &str,
+        object: &str,
+        before_bounds: Option<spatial::Bounds>,
+        after_bounds: Option<spatial::Bounds>,
+    ) {
+        self.push(
+            Target {
+                layer: layer.into(),
+                object: None,
+            },
+            Changes {
+                geometry: true,
+                ..Changes::default()
+            },
+            false,
+        );
+        self.push(
+            Target {
+                layer: layer.into(),
+                object: Some(object.into()),
+            },
+            Changes {
+                transform: true,
+                ..Changes::default()
+            },
+            false,
+        );
+        let change = self.events.back_mut().unwrap();
+        change.before_bounds = before_bounds;
+        change.after_bounds = after_bounds;
     }
     fn objects_changed(&mut self, layer: &str, before: &[VectorObject], after: &[VectorObject]) {
         let old: BTreeMap<_, _> = before

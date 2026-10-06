@@ -1,3 +1,4 @@
+import {colorProfiles} from '../document-color-modes';
 import { LayerEffectsPanel, effectLabels } from './LayerEffectsPanel';
 import { LayerOpacityControl } from './LayerOpacityControl';
 import { rasterBlendModes, rasterBlendLabels } from './raster-blend-labels';
@@ -64,7 +65,7 @@ function initialPanelOrder(): PanelId[] {
 
 const panelIcons = { effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
-export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   onLayerEffects: (id: string, effects: import('../bridge').LayerEffects) => void;
   rasterEnabled: boolean;
   onRasterBlendMode: (id: string, mode: import('../bridge').RasterBlendMode) => void;
@@ -82,6 +83,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
   textPanelRequest: number; textSettings: TextSettings | null; textEditing: boolean; textEnabled: boolean;
   onTextChange: (settings: TextSettings) => Promise<void>; onTextBegin: () => void; onTextFinish: (commit: boolean) => void;
   locale: Locale; brush: Brush; onBrush: (brush: Brush) => void; document: DocumentSnapshot; onToggleLayer: (id: string) => void; enabled: boolean;
+  foregroundNone?: boolean; backgroundNone?: boolean; onForegroundNone?: () => void; onBackgroundNone?: () => void;
   onForegroundChange: (color: Brush['color']) => void;
   backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; colorPanelRequest: number; onBackgroundChange: (color: Brush['color']) => void; onSwapColors: () => void;
   onSelectObject: (layerId: string, objectId: string) => void;
@@ -202,7 +204,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
       ><Icon name={panelIcons[panel]} /></button>{panel === 'color' && <span className="inspector-tab-separator" aria-hidden="true" />}</Fragment>)}
     </div>
 
-    {panelView('swatches',<section className="inspector-panel" role="tabpanel" id="inspector-panel-swatches" aria-labelledby="inspector-tab-swatches"><SwatchesPanel initialDraft={swatchDraft} locale={locale} document={document} enabled={enabled && !textEditing} brush={brush} backgroundColor={backgroundColor} onForegroundChange={onForegroundChange} onBackgroundChange={onBackgroundChange} vectorColors={vectorColors} onUpdate={onTransformUpdate}/></section>)}
+    {panelView('swatches',<section className="inspector-panel" role="tabpanel" id="inspector-panel-swatches" aria-labelledby="inspector-tab-swatches"><SwatchesPanel initialDraft={swatchDraft} locale={locale} document={document} enabled={enabled && !textEditing} brush={brush} backgroundColor={backgroundColor} onForegroundChange={onForegroundChange} onBackgroundChange={onBackgroundChange} foregroundNone={foregroundNone} backgroundNone={backgroundNone} onForegroundNone={onForegroundNone} onBackgroundNone={onBackgroundNone} vectorColors={vectorColors} onUpdate={onTransformUpdate}/></section>)}
     {panelView('pages',<section className="inspector-panel" role="tabpanel" id="inspector-panel-pages" aria-labelledby="inspector-tab-pages"><PagesPanel key={thumbnailDocumentKey} locale={locale} document={document} enabled={enabled} onUpdate={onTransformUpdate}/></section>)}
     {panelView('links',<section className="inspector-panel" role="tabpanel" id="inspector-panel-links" aria-labelledby="inspector-tab-links"><LinksPanel key={thumbnailDocumentKey} locale={locale} document={document} enabled={enabled} onUpdate={onTransformUpdate}/></section>)}
     {panelView('gradient',<section className="inspector-panel" role="tabpanel" id="inspector-panel-gradient" aria-labelledby="inspector-tab-gradient"><GradientPanel toolActive={gradientTool} onOpenSwatches={openSwatches} onRegister={gradient=>{setSwatchDraft({name:swatchLabels[locale].newGradient,paint:{kind:'gradient',gradient}});setActivePanel('swatches');}} locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
@@ -215,14 +217,14 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
 
     {panelView('color',<section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">
       <button onClick={openSwatches}>{swatchLink}</button>
-      <ColorPanel vectorColors={vectorColors} locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} />
+      <ColorPanel vectorColors={vectorColors} locale={locale} color={brush.color} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={onSelectColor} onChange={onForegroundChange} onBackgroundChange={onBackgroundChange} onSwap={onSwapColors} foregroundNone={foregroundNone} backgroundNone={backgroundNone} onNone={activeColor === 'foreground' ? onForegroundNone : onBackgroundNone} />
     </section>)}
     {panelView('brush',<section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-brush" aria-labelledby="inspector-tab-brush">
       <button onClick={openSwatches}>{swatchLink}</button>
       <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><CompactSlider id="brush-size" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput resolution={document.resolution} label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
       <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><CompactSlider id="brush-hardness" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
       <BrushPresets locale={locale} brush={brush} enabled={enabled} onChange={onBrush} />
-      <HexInput label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={onForegroundChange} />
+      <HexInput noColor={foregroundNone} onNone={onForegroundNone} noneLabel={locale === 'ja' ? 'なし' : locale === 'en' ? 'None' : '无'} label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={onForegroundChange} />
     </section>)}
 
     {panelView('document',<section className="inspector-panel document-settings-panel" role="tabpanel" id="inspector-panel-document" aria-labelledby="inspector-tab-document">
@@ -238,7 +240,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
         <label><span>{t.resolution}</span><div className="field-with-unit"><input disabled={!enabled} type="number" min="1" max="1200" value={settings.resolution} onChange={event => setSettings(value => ({ ...value, resolution: Number(event.target.value) }))} /><span>{t.pixelsPerInch}</span></div></label>
         <div className="document-size-grid"><label><span>{t.colorMode}</span><select disabled={!enabled} value={document.colorMode} onChange={event => onColorMode(event.target.value as ColorMode)}><option value="rgb">RGB {t.color}</option><option value="cmyk">CMYK {t.color}</option></select></label><label><span>{t.bitDepth}</span><select disabled={!enabled} value={document.bitDepth} onChange={event => onBitDepth(Number(event.target.value) as BitDepth)}><option value="8">8 bit</option><option value="16">16 bit</option><option value="32">32 bit</option></select></label></div>
         <label><span>{t.canvasColor}</span><select disabled={!enabled} value={settings.canvasColor} onChange={event => setSettings(value => ({ ...value, canvasColor: event.target.value as DocumentSettings['canvasColor'] }))}><option value="white">{t.white}</option><option value="transparent">{t.transparent}</option></select></label>
-        <details open><summary>{t.advancedOptions}</summary><label><span>{t.colorProfile}</span><select disabled={!enabled} value={document.colorProfile} onChange={event => onColorProfile(event.target.value as ColorProfile)}>{document.colorMode === 'rgb' ? <><option value="srgb">sRGB</option><option value="displayP3">Display P3</option><option value="adobeRgb1998">Adobe RGB (1998)</option></> : <option value="japanColor2001Coated">Japan Color 2001 Coated</option>}</select></label><label><span>{t.pixelAspectRatio}</span><select disabled={!enabled} value={settings.pixelAspectRatio} onChange={event => setSettings(value => ({ ...value, pixelAspectRatio: Number(event.target.value) }))}><option value="1">{t.squarePixels}</option><option value="1.2">1.2</option><option value="0.9">0.9</option></select></label></details>
+        <details open><summary>{t.advancedOptions}</summary><label><span>{t.colorProfile}</span><select disabled={!enabled} value={document.colorProfile} onChange={event => onColorProfile(event.target.value as ColorProfile)}>{colorProfiles.filter(p=>p.mode===document.colorMode).map(p=><option key={p.value} value={p.value}>{p.label}</option>)}</select></label><label><span>{t.pixelAspectRatio}</span><select disabled={!enabled} value={settings.pixelAspectRatio} onChange={event => setSettings(value => ({ ...value, pixelAspectRatio: Number(event.target.value) }))}><option value="1">{t.squarePixels}</option><option value="1.2">1.2</option><option value="0.9">0.9</option></select></label></details>
         <button className="document-apply" disabled={!enabled} type="submit">{t.applyDocumentSettings}</button>
       </form>
     </section>)}

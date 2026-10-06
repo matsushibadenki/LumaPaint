@@ -326,6 +326,7 @@ pub fn targets(source: &str, layer_id: &str, size: [f32; 2]) -> Vec<Target> {
                 .find(|n| n.is_element() && n.range().start == provenance.element.start)?;
             let transform = mul(fitting, rendered_transform);
             let paint = Some(VectorPaint {
+                registration: false,
                 color: [0, 0, 0, 255],
             });
             let object = VectorObject {

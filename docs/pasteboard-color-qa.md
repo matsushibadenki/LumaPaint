@@ -1,0 +1,7 @@
+# Pasteboard color QA — 2026-10-06
+
+[Done] Settings → Appearance → Outside artboard color uses the shared color picker. Theme default resets custom color. Preference is shared through the existing WebView preference storage; storage events synchronize separate windows, and a local event updates the same window. Canvas sync sends only RGB state. Rust Viewport owns the current rendering value; preview GPU uniforms use a separate linear RGBA field, independent of document dimensions, channel selection and translation. Artwork and file exports do not consume this preference.
+
+Browser plugin unavailable; bundled Playwright/Chrome fallback exercised the actual SettingsDialog in a temporary local fixture. Color selection, reload persistence, second-window synchronization, theme reset and Japanese/English/Simplified Chinese labels passed. No page errors or Vite overlay. Desktop screenshot `/private/tmp/lp-pasteboard-settings.png` inspected: all settings fit with readable margins. Fixtures removed. Live native window interaction was not automated.
+
+Rust regression checks default/custom uniform encoding, sRGB-to-linear conversion, independent translation fields and production preview WGSL validation. Workspace tests, TypeScript, architecture checks, formatting, Clippy and macOS debug app build checked. Normal GPU-dependent tests remain ignored; native GPU pixel comparison was not performed.

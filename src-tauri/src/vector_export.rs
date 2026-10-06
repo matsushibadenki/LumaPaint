@@ -19,11 +19,11 @@ pub fn pdf(document: &Document) -> Result<ExportedDocument, String> {
             .ok_or("Publication page is missing")?;
         publication
             .push(build(&page, FormatId::Pdf)?)
-            .map_err(|e| e.to_string())?;
+            .map_err(export_error)?;
     }
     publication
         .finish(ExportOptions { allow_lossy: true })
-        .map_err(|e| e.to_string())
+        .map_err(export_error)
 }
 fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, String> {
     let mut copy = document.clone();
@@ -32,9 +32,9 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
     if snapshot.state().layer_effects.values().any(|e| e.enabled) {
         snapshot = snapshot
             .with_document_png(lumapaint_renderer::thumbnails::document_png(&copy)?)
-            .map_err(|e| e.to_string())?;
+            .map_err(export_error)?;
         return export(format, &snapshot, ExportOptions { allow_lossy: true })
-            .map_err(|e| e.to_string());
+            .map_err(export_error);
     }
     if snapshot.state().layer_visible && !snapshot.state().strokes.is_empty() {
         let (w, h) = copy.dimensions();
@@ -50,7 +50,7 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
             copy_paint_tile(&mut pixels, w, &upload);
         }
         let png = lumapaint_renderer::vector::clipboard_png(w, h, pixels)?;
-        snapshot = snapshot.with_paint_png(png).map_err(|e| e.to_string())?;
+        snapshot = snapshot.with_paint_png(png).map_err(export_error)?;
     }
     let options = ExportOptions { allow_lossy: true };
     let result = export(format, &snapshot, options);
@@ -62,12 +62,19 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
     ) {
         snapshot = snapshot
             .with_document_png(lumapaint_renderer::thumbnails::document_png(&copy)?)
-            .map_err(|e| e.to_string())?;
-        return export(format, &snapshot, options).map_err(|e| e.to_string());
+            .map_err(export_error)?;
+        return export(format, &snapshot, options).map_err(export_error);
     }
-    result.map_err(|e| e.to_string())
+    result.map_err(export_error)
 }
 
+fn export_error(error: lumapaint_formats::export::ExportError) -> String {
+    match error {
+        lumapaint_formats::export::ExportError::UnsupportedFeature("pdf.print_bleed_requires_vector_content") =>
+            "トンボ付きPDFでは、用紙外のレイヤー効果・フィルターの書き出しはまだ対応していません。\nPDF export with printer marks does not yet support layer effects or filters outside the page.\n带印刷标记的PDF导出暂不支持页面外的图层效果或滤镜。".into(),
+        other => other.to_string(),
+    }
+}
 fn copy_paint_tile(pixels: &mut [u8], width: u32, upload: &lumapaint_core::tiles::TileUpload) {
     let [x, y] = upload.origin;
     for row in 0..upload.extent[1] {
@@ -82,6 +89,7 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
     report.issues.iter().map(|issue| match issue.code {
         "svg.brush_rasterized" => "ブラシは画像として保持されます。ベクターは編集可能です。\nBrushes are preserved as an image; vectors remain editable.\n笔刷保存为图像，矢量仍可编辑。",
         "pdf.effects_rasterized" => "PDFの効果はページ画像として保持されます。\nPDF effects are preserved as a page image.\nPDF效果保存为页面图像。",
+        "pdf.registration_preview_only" => "PDFのレジストレーションカラーはプレビュー色へ変換され、全版属性は保持されません。\nPDF registration colors are converted to preview colors; all-plate attributes are not retained.\nPDF套版色转换为预览色，不保留全色版属性。",
         "pdf.text_outlined" => "PDFの文字は輪郭パスに変換されます。\nPDF text is converted to vector outlines.\nPDF文字转换为矢量轮廓。",
         "svg.text_requires_fonts" => "文字は編集可能ですが、表示には同じフォントが必要です。\nText remains editable and requires the same fonts.\n文字仍可编辑，显示需要相同字体。",
         "pdf.selected_page_only" => "選んだページだけを読み込みます。\nOnly the selected page is opened.\n仅打开所选页面。",

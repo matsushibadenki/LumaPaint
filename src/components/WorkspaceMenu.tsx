@@ -1,3 +1,6 @@
+import {vectorSelectionLabels,sameCriteria,objectCriteria} from '../vector-selection-i18n';
+import type {VectorSelectionRequest} from '../bridge';
+import {colorModes as documentModes, modeLabels} from '../document-color-modes';
 import {layerGroupLabels} from './layer-group-labels';
 import { MIN_ZOOM, MAX_ZOOM, stepZoom } from '../zoom';
 import { transformLabels } from './TransformDialog';
@@ -19,9 +22,11 @@ type EntryItem = { label: string; action?: () => void; enabled?: boolean; checke
 type Entry = EntryItem | null;
 type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | PredefinedMenuItemOptions;
 // New modes are registered here; both native and browser submenus derive from this list.
-const colorModes: { value: ColorMode; label: string }[] = [{ value: 'rgb', label: 'RGB' }, { value: 'cmyk', label: 'CMYK' }];
+
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onVectorSelection:(request:VectorSelectionRequest)=>void;
+  onSavedSelections:(mode:'save'|'edit')=>void;
   onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
   onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear'|'snap'|'selectAll'|'invertSelection'|'deselect'|'thirds'|'quarters'|'margins'|'saveLayout'|'loadLayout')=>void;
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
@@ -65,6 +70,29 @@ export function WorkspaceMenu(props: Props) {
   const canGroup = canEdit && selectedEntities.size >= 2 && new Set(selectedObjects.map(item => item.layer.id)).size === 1;
   const canUngroup = canEdit && selectedObjects.some(item => item.object.groupPath.length > 0);
   const future = (label: string): Entry => ({ label, planned: true });
+  const vs=vectorSelectionLabels[locale];
+  const vectorReady=canEdit&&!doc.activeSavedPath;
+  const hasVectors=doc.layers.some(l=>l.kind==='vector'&&l.visible&&!l.locked&&l.objects.some(o=>o.visible&&!o.locked));
+  const vectorAction=(action:string,criterion?:string,name?:string)=>()=>props.onVectorSelection({action,criterion,name});
+  const sameEntry=(index:number):Entry=>({label:vs.sameNames[index],enabled:index<9||selectedTexts.length>0,action:vectorAction('same',sameCriteria[index])});
+  const sameEntries:Entry[]=[sameEntry(0),sameEntry(1),future(vs.unavailable[3]),...sameCriteria.slice(2,8).map((_,i)=>sameEntry(i+2)),future(vs.unavailable[4]),sameEntry(8),future(vs.unavailable[5]),future(vs.unavailable[6]),null,{label:{ja:'テキスト',en:'Text','zh-CN':'文本'}[locale],enabled:false},...sameCriteria.slice(9).map((_,i)=>sameEntry(i+9))];
+  const vectorMenus:Entry[]=[
+    {label:t.selectAll,enabled:vectorReady&&hasVectors,shortcut:'CmdOrCtrl+A',action:vectorAction('all')},
+    {label:vs.artboard,enabled:vectorReady&&hasVectors,shortcut:'CmdOrCtrl+Alt+A',action:vectorAction('artboard')},
+    {label:t.deselect,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Shift+A',action:vectorAction('deselect')},
+    {label:vs.reselect,enabled:vectorReady&&doc.canReselectVectors,shortcut:'CmdOrCtrl+6',action:vectorAction('reselect')},
+    {label:t.invert,enabled:vectorReady&&hasVectors,action:vectorAction('invert')},null,
+    {label:vs.above,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+]',action:vectorAction('above')},
+    {label:vs.below,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+[',action:vectorAction('below')},null,
+    {label:vs.same,enabled:vectorReady&&selectedObjects.length>0,children:sameEntries},
+    {label:vs.object,enabled:vectorReady&&hasVectors,children:[{label:vs.objectNames[0],enabled:selectedObjects.length>0,action:vectorAction('object','sameLayers')},future(vs.unavailable[0]),null,future(vs.unavailable[1]),future(vs.unavailable[2]),...objectCriteria.slice(1,3).map((criterion,i)=>({label:vs.objectNames[i+1],action:vectorAction('object',criterion)})),null,...objectCriteria.slice(3).map((criterion,i)=>({label:vs.objectNames[i+3],action:vectorAction('object',criterion)}))]},
+    future(vs.unavailable[7]),null,
+    {label:vs.save,enabled:vectorReady&&selectedObjects.length>0,action:()=>props.onSavedSelections('save')},
+    {label:vs.edit,enabled:vectorReady&&doc.savedVectorSelections.length>0,action:()=>props.onSavedSelections('edit')},
+    {label:vs.update,enabled:vectorReady&&selectedObjects.length>0&&doc.savedVectorSelections.length>0,children:doc.savedVectorSelections.map(item=>({label:item.name,action:vectorAction('update',undefined,item.name)}))},
+    ...(doc.savedVectorSelections.length?[null,...doc.savedVectorSelections.map(item=>({label:item.name,enabled:vectorReady,action:vectorAction('load',undefined,item.name)}))]:[]),
+  ];
+  const names=[...t.names.slice(0,6),vs.title,...t.names.slice(6)];
   const menus: Entry[][] = [
     [{ label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
       { label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
@@ -76,7 +104,7 @@ export function WorkspaceMenu(props: Props) {
       { label: w.redo, enabled: canHistory && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
       { label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, { label: t.cut, enabled: canEdit, shortcut: 'CmdOrCtrl+X', action: () => onEdit('cut') }, { label: t.copy, enabled: canEdit, shortcut: 'CmdOrCtrl+C', action: () => onEdit('copy') }, { label: t.paste, enabled: canEdit, shortcut: 'CmdOrCtrl+V', action: () => onEdit('paste') }, null,
       { label: t.clearLayer, enabled: canEdit && !doc.layers.find(layer => layer.id === doc.layerId)?.locked, action: () => onEdit('clearLayer') }],
-    [{ label: t.colorMode, children: colorModes.map(mode => ({ label: mode.label, checked: doc.colorMode === mode.value, enabled: canEdit, action: () => onColorMode(mode.value) })) },
+    [{ label: t.colorMode, children: documentModes.map(mode => ({ label: modeLabels[locale][mode], checked: doc.colorMode === mode, enabled: canEdit, action: () => onColorMode(mode) })) },
       { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
     [{ label: t.lock, enabled: canEdit && !doc.activeSavedPath, children: [
@@ -89,6 +117,7 @@ export function WorkspaceMenu(props: Props) {
       { label: t.hideArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('hideArtworkAbove') },
       { label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
     ]}, { label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
+    {label:{ja:'トリムマークを作成',en:'Create Trim Marks','zh-CN':'创建裁切标记'}[locale],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.length===1&&selectedObjects[0].object.kind==='rectangle'&&!selectedObjects[0].object.locked,action:()=>onEdit('createTrimMarks')}, null,
     { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
       label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
     })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
@@ -152,6 +181,7 @@ export function WorkspaceMenu(props: Props) {
     [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
     [{ label: 'LumaPaint 0.1.0' }, null, { label: t.guide }, { label: t.drawHint }, { label: t.saveHint }, { label: t.recoveryHint }],
   ];
+  menus.splice(6,0,vectorMenus);
   const [open, setOpen] = useState<number | null>(null);
   const [focused, setFocused] = useState(0);
   const [position, setPosition] = useState({ left: 0, top: 0 });
@@ -218,6 +248,17 @@ export function WorkspaceMenu(props: Props) {
     const items = panel.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]');
     (lastItem.current ? items[items.length - 1] : items[0])?.focus();
   }, [open, native]);
+  useLayoutEffect(()=>{
+    if(native||submenuOpen===null)return;
+    const panel=popup.current?.querySelector<HTMLElement>('.workspace-submenu');
+    if(!panel)return;
+    panel.style.maxHeight=`${innerHeight-16}px`;panel.style.overflowY='auto';
+    const parent=panel.parentElement!.getBoundingClientRect();
+    const top=Math.max(8,Math.min(parent.top-5,innerHeight-panel.offsetHeight-8));
+    panel.style.position='fixed';
+    panel.style.top=`${top}px`;
+    panel.style.left=`${Math.max(8,parent.right+panel.offsetWidth>innerWidth-8?parent.left-panel.offsetWidth+2:parent.right-2)}px`;
+  },[submenuOpen,open,native]);
   useEffect(() => {
     if (open === null || native) return;
     const dismiss = (event: PointerEvent) => {
@@ -253,10 +294,10 @@ export function WorkspaceMenu(props: Props) {
   };
   return <>
     <div ref={bar} role="menubar" aria-label={t.bar} className="workspace-menubar">
-      {t.names.map((name, index) => <button key={index} ref={node => { triggers.current[index] = node; }} id={`menu-trigger-${index}`} role="menuitem" aria-haspopup="menu" aria-expanded={open === index} aria-controls={!native && open === index ? 'workspace-dropdown' : undefined} tabIndex={focused === index ? 0 : -1}
+      {names.map((name, index) => <button key={index} ref={node => { triggers.current[index] = node; }} id={`menu-trigger-${index}`} role="menuitem" aria-haspopup="menu" aria-expanded={open === index} aria-controls={!native && open === index ? 'workspace-dropdown' : undefined} tabIndex={focused === index ? 0 : -1}
         onFocus={() => setFocused(index)} onKeyDown={event => triggerKey(event, index)} onClick={() => open === index ? close() : void show(index)} onPointerEnter={() => { if (!native && open !== null && open !== index) void show(index); }}>{name}</button>)}
     </div>
-    {!native && open !== null && createPortal(<div ref={popup} id="workspace-dropdown" role="menu" aria-labelledby={`menu-trigger-${open}`} className="workspace-dropdown" style={position} onKeyDown={popupKey}>
+    {!native && open !== null && createPortal(<div ref={popup} id="workspace-dropdown" role="menu" aria-labelledby={`menu-trigger-${open}`} className="workspace-dropdown" style={{...position,maxHeight:'calc(100vh - 16px)',overflowY:'auto'}} onScroll={()=>setSubmenuOpen(null)} onKeyDown={popupKey}>
       {menus[open].map((entry, index) => entry === null ? <div role="separator" key={index} /> : entry.children ? <div className="menu-nested" key={index} onPointerLeave={() => setSubmenuOpen(null)}>
         <button role="menuitem" aria-haspopup="menu" aria-expanded={submenuOpen === index} tabIndex={-1} onPointerEnter={() => setSubmenuOpen(index)} onClick={() => setSubmenuOpen(index)} onKeyDown={event => {
           if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); setSubmenuOpen(index); }

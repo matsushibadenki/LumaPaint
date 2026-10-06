@@ -265,6 +265,7 @@ impl Gpu {
                 label: None,
                 // The default case has fit = 1 and translation = (32,64).
                 contents: bytemuck::bytes_of(&Uniforms {
+                    pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, scale, zoom],
                     appearance: [0.0; 4],
                     document: [960.0, 640.0, 0.0, 0.0],
@@ -301,6 +302,7 @@ impl Gpu {
                 selection_layout,
                 outline,
                 tile_nearest: Viewport {
+                    pasteboard_color: None,
                     width: W,
                     height: H,
                     scale,
@@ -711,6 +713,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 24.0,
@@ -725,6 +728,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 48.0,
@@ -743,6 +747,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 32.0,
@@ -785,6 +790,7 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 24.0,
@@ -799,6 +805,7 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
         eraser: false,
         clear: false,
         brush: Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 48.0,
@@ -984,6 +991,7 @@ fn gpu_tile_preview_uses_document_coordinates_and_premultiplied_blending() {
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::bytes_of(&Uniforms {
+                pasteboard: [0.0; 4],
                 viewport: [305.0, 51.0, 1.0, 1.0],
                 appearance: [0.0; 4],
                 document: [257.0, 3.0, 0.0, 0.0],
@@ -1101,16 +1109,22 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
     let mut selection = Selection::new(SelectionShape::Rectangle, [200.0, 180.0, 220.0, 220.0]);
     selection.regions.extend([
         SelectionRegion {
+            points: Vec::new(),
+            radius: 0.,
             shape: SelectionShape::Ellipse,
             bounds: [340.0, 140.0, 240.0, 260.0],
             operation: SelectionOperation::Add,
         },
         SelectionRegion {
+            points: Vec::new(),
+            radius: 0.,
             shape: SelectionShape::Rectangle,
             bounds: [280.0, 240.0, 100.0, 60.0],
             operation: SelectionOperation::Subtract,
         },
         SelectionRegion {
+            points: Vec::new(),
+            radius: 0.,
             shape: SelectionShape::Rectangle,
             bounds: [400.0, 0.0, 40.0, 640.0],
             operation: SelectionOperation::Subtract,
@@ -1122,6 +1136,7 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
                 eraser: false,
                 clear: false,
                 brush: Brush {
+                    no_color: false,
                     simulation: Default::default(),
                     envelope: Default::default(),
                     size: 512.0,
@@ -1132,9 +1147,9 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
                 pressures: vec![],
                 selection: None,
             };
-            let baseline = gpu.render(&[stroke.clone()]);
+            let baseline = gpu.render(std::slice::from_ref(&stroke));
             stroke.selection = Some(selection.clone());
-            let pixels = gpu.render(&[stroke.clone()]);
+            let pixels = gpu.render(std::slice::from_ref(&stroke));
             for y in (150..440).step_by(3) {
                 for x in (180..700).step_by(3) {
                     let offset = (((y + 64) * W + x + 32) * 4) as usize;
@@ -1179,6 +1194,8 @@ fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
     };
     let mut selection = Selection::new(SelectionShape::Rectangle, [100.5, 100.5, 100.0, 200.0]);
     selection.regions.push(SelectionRegion {
+        points: Vec::new(),
+        radius: 0.,
         shape: SelectionShape::Rectangle,
         bounds: [200.5, 100.5, 100.0, 200.0],
         operation: SelectionOperation::Add,
@@ -1198,6 +1215,8 @@ fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
         "Visible outline is missing"
     );
     selection.regions.push(SelectionRegion {
+        points: Vec::new(),
+        radius: 0.,
         shape: SelectionShape::Rectangle,
         bounds: [0.0, 0.0, 960.0, 640.0],
         operation: SelectionOperation::Subtract,
@@ -1226,6 +1245,7 @@ fn gpu_selection_clips_brush_footprint_and_survives_reload() {
                 doc.begin(
                     Point { x: 80.0, y: 300.0 },
                     Brush {
+                        no_color: false,
                         simulation: Default::default(),
                         envelope: Default::default(),
                         size: 512.0,
@@ -1281,6 +1301,7 @@ fn gpu_brush_self_crossing_matches_separate_strokes() {
     for size in [8.0, 48.0, 128.0] {
         for hardness in [0.0, 0.5, 1.0] {
             let brush = Brush {
+                no_color: false,
                 size,
                 simulation: Default::default(),
                 envelope: Default::default(),
@@ -1316,6 +1337,7 @@ fn gpu_brush_sampling_density_does_not_change_width() {
     let gpu = Gpu::new();
     for hardness in [0.0, 0.5, 1.0] {
         let brush = Brush {
+            no_color: false,
             simulation: Default::default(),
             envelope: Default::default(),
             size: 32.0,
@@ -1369,6 +1391,7 @@ fn gpu_brush_sampling_density_does_not_change_width() {
 fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
     let gpu = Gpu::new();
     let brush = Brush {
+        no_color: false,
         simulation: Default::default(),
         envelope: Default::default(),
         size: 64.0,
@@ -1503,6 +1526,7 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
                     appearance: [0.0; 4],
                     document: [960.0, 640.0, offset[0], offset[1]],
@@ -1628,6 +1652,7 @@ fn gpu_text_frame_overlay_pipeline_is_valid() {
         view_formats: &[],
     });
     let viewport = Viewport {
+        pasteboard_color: None,
         width: W,
         height: H,
         scale: 1.0,
@@ -1737,6 +1762,7 @@ fn gpu_channel_components_and_alpha() {
         ],
     });
     for (mode, expected) in [
+        (0, 127),
         (1, 255),
         (2, 0),
         (3, 0),
@@ -1751,9 +1777,10 @@ fn gpu_channel_components_and_alpha() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    pasteboard: [0.0; 4],
                     viewport: [1., 1., 1., 1.],
                     appearance: [(mode * 2) as f32, 0., 0., 0.],
-                    document: [1., 1., 0., 0.],
+                    document: [1., 1., 0., if mode == 0 { 1. } else { 0. }],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -1819,7 +1846,7 @@ fn gpu_channel_components_and_alpha() {
                 "mode {mode}: {bytes:?}"
             );
         }
-        assert_eq!(bytes[3], 255);
+        assert_eq!(bytes[3], if mode == 0 { 128 } else { 255 });
     }
 }
 
@@ -2179,6 +2206,7 @@ fn gpu_artboard_exterior_masks_page_pixels() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    pasteboard: [0.0; 4],
                     viewport: [100., 100., 1., zoom],
                     appearance: [0., pan, 0., 0.],
                     document: [4., 4., 0., 0.],
@@ -2284,8 +2312,47 @@ fn verify_object_texture_moves(shared: bool) {
         include_str!("object.wgsl"),
         "Object translation regression",
     );
-    let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><rect x="-20" y="10" width="60" height="30" fill="red" fill-opacity="0.5"/></svg>"#;
-    let (pixels, rectangle) = vector::rasterize_svg_object(source, (960, 640)).unwrap();
+    let mut document = Document::default();
+    let id = document.add_vector_layer().unwrap();
+    document
+        .upsert_vector_object(
+            &id,
+            lumapaint_core::vector::VectorObject {
+                id: "rect".into(),
+                name: "Rectangle".into(),
+                path: lumapaint_core::vector::VectorPath {
+                    data: "M-20 10H40V40H-20Z".into(),
+                    fill_rule: Default::default(),
+                },
+                transform: [1., 0., 0., 1., 0., 0.],
+                fill: Some(lumapaint_core::vector::VectorPaint {
+                    registration: false,
+                    color: [255, 0, 0, 128],
+                }),
+                stroke: None,
+                stroke_width: 0.,
+                stroke_style: Default::default(),
+                fill_gradient: None,
+                stroke_gradient: None,
+                image_frame: None,
+                live_corners: None,
+                rectangle_radii: None,
+                opacity: 1.,
+                blend_mode: "normal".into(),
+                group_path: vec![],
+                clipping_group: None,
+                bounds_reset: false,
+                visible: true,
+                kind: lumapaint_core::vector::VectorObjectKind::Path,
+                control_points: vec![],
+                text: None,
+            },
+        )
+        .unwrap();
+    document.select_vector_objects(vec!["rect".into()]).unwrap();
+    assert_eq!(document.dimensions(), (960, 640));
+    let source = document.svg_layers().next().unwrap().source.clone();
+    let (pixels, rectangle) = vector::rasterize_svg_object(&source, (960, 640)).unwrap();
     // This upload and the object rectangle are reused for every drag frame.
     let texture = gpu.device.create_texture_with_data(
         &gpu.queue,
@@ -2309,7 +2376,7 @@ fn verify_object_texture_moves(shared: bool) {
     #[cfg(all(feature = "skia", target_os = "macos"))]
     let texture = if shared {
         let (shared_texture, bounds) =
-            vector::rasterize_svg_object_shared(&gpu.device, &gpu.queue, source, (960, 640), 1.0)
+            vector::rasterize_svg_object_shared(&gpu.device, &gpu.queue, &source, (960, 640), 1.0)
                 .unwrap();
         assert_eq!(bounds, rectangle);
         shared_texture
@@ -2342,7 +2409,7 @@ fn verify_object_texture_moves(shared: bool) {
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&rectangle),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
     let geometry = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -2352,6 +2419,34 @@ fn verify_object_texture_moves(shared: bool) {
             resource: bounds_buffer.as_entire_binding(),
         }],
     });
+    let layer = document.svg_layers().next().unwrap();
+    let mut cache = ObjectLayerCache {
+        state: object_cache_state::ObjectCacheState::new(&document, layer, true),
+        objects: layer.vector_objects.clone(),
+        source: layer.source.clone(),
+        selected_ids: vec!["rect".into()],
+        opacity: 1.,
+        document_size: (960, 640),
+        bytes: pixels.len(),
+        upload_bytes: 0,
+        runs: vec![ObjectRun {
+            selected: true,
+            rectangle,
+            geometry_buffer: bounds_buffer,
+            geometry,
+            cached: CachedSvg {
+                comparison_pixels: vec![],
+                fully_contained: true,
+                source: String::new(),
+                opacity: 1.,
+                size: (rectangle[2] as u32, rectangle[3] as u32),
+                _texture: texture,
+                bind_group: image,
+            },
+        }],
+    };
+    let retained_source = cache.source.as_ptr();
+    let retained_path = cache.objects[0].path.data.as_ptr();
     let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -2367,15 +2462,39 @@ fn verify_object_texture_moves(shared: bool) {
         view_formats: &[],
     });
     let view = output.create_view(&Default::default());
-    for offset in [-10.0, 40.0, 960.0] {
+    let mut previous_offset = 0.;
+    for (action, offset) in [(0, -10.), (0, 40.), (0, 960.), (1, 40.), (2, 960.)] {
+        match action {
+            0 => {
+                document
+                    .move_selected_vectors(offset - previous_offset, 0.)
+                    .unwrap();
+            }
+            1 => document.undo(),
+            _ => document.redo(),
+        }
+        let layer = document.svg_layers().next().unwrap();
+        let delta = cache.journal_translation(&document, layer).unwrap();
+        assert_eq!(delta.offset, [offset - previous_offset, 0.]);
+        let metrics =
+            cache.apply_translation(&gpu.queue, &document, layer, delta.offset, Some(delta));
+        assert_eq!(metrics.journal_objects, 1);
+        assert_eq!(metrics.legacy_objects, 0);
+        assert_eq!(metrics.svg_copy_bytes, 0);
+        assert_eq!(metrics.uniform_bytes, 16);
+        assert!(cache.matches_content(&document, layer));
+        assert_eq!(cache.source.as_ptr(), retained_source);
+        assert_eq!(cache.objects[0].path.data.as_ptr(), retained_path);
+        previous_offset = offset;
         let uniforms_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1., 960. / 976.],
                     appearance: [0.; 4],
-                    document: [960., 640., offset, 0.],
+                    document: [960., 640., 0., 0.],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -2410,8 +2529,8 @@ fn verify_object_texture_moves(shared: bool) {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &uniforms, &[]);
-            pass.set_bind_group(1, &image, &[]);
-            pass.set_bind_group(2, &geometry, &[]);
+            pass.set_bind_group(1, &cache.runs[0].cached.bind_group, &[]);
+            pass.set_bind_group(2, &cache.runs[0].geometry, &[]);
             pass.draw(0..6, 0..1);
         }
         encoder.copy_texture_to_buffer(
@@ -2445,5 +2564,73 @@ fn verify_object_texture_moves(shared: bool) {
         assert_eq!(data[pixel + 3], 128, "offset {offset}");
         assert!(data[pixel] > 0 && data[pixel + 1] == 0);
         assert_eq!(data[(89 * W as usize + 500) * 4 + 3], 0);
+    }
+}
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
+    let gpu = Gpu::new();
+    let mut doc = Document::default();
+    doc.set_path_selection(
+        vec![
+            Point { x: 200., y: 180. },
+            Point { x: 520., y: 180. },
+            Point { x: 520., y: 240. },
+            Point { x: 300., y: 240. },
+            Point { x: 300., y: 420. },
+            Point { x: 200., y: 420. },
+        ],
+        0.,
+        lumapaint_core::selection::SelectionMode::Replace,
+    )
+    .unwrap();
+    doc.set_path_selection(
+        vec![Point { x: 240., y: 280. }, Point { x: 560., y: 360. }],
+        25.,
+        lumapaint_core::selection::SelectionMode::Add,
+    )
+    .unwrap();
+    doc.set_path_selection(
+        vec![Point { x: 260., y: 300. }],
+        12.,
+        lumapaint_core::selection::SelectionMode::Subtract,
+    )
+    .unwrap();
+    let selection = doc.selection().unwrap().clone();
+    let stroke = Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush {
+            size: 512.,
+            hardness: 1.,
+            color: [0; 3],
+            ..Default::default()
+        },
+        points: vec![Point { x: 80., y: 300. }, Point { x: 880., y: 300. }],
+        pressures: vec![],
+        selection: None,
+    };
+    let baseline = gpu.render(std::slice::from_ref(&stroke));
+    for selection in [selection.clone(), selection.translated(60., 20.)] {
+        let mut clipped = stroke.clone();
+        clipped.selection = Some(selection.clone());
+        let pixels = gpu.render(&[clipped]);
+        for y in (150..470).step_by(3) {
+            for x in (180..700).step_by(3) {
+                let offset = (((y + 64) * W + x + 32) * 4) as usize;
+                let expected = if selection.contains(Point {
+                    x: x as f32 + 0.5,
+                    y: y as f32 + 0.5,
+                }) {
+                    baseline[offset]
+                } else {
+                    255
+                };
+                assert!(
+                    pixels[offset].abs_diff(expected) <= 1,
+                    "Path selection mismatch at {x},{y}"
+                );
+            }
+        }
     }
 }

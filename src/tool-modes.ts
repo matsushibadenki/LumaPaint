@@ -2,10 +2,10 @@ import type { CanvasTool } from './bridge';
 
 export const toolModes = ['paint', 'vector', 'layout', 'animation'] as const;
 export type ToolMode = typeof toolModes[number];
-export type ModeTool = Exclude<CanvasTool, 'gradient' | 'eyedropper' | 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
+export type ModeTool = Exclude<CanvasTool, 'crop' | 'gradient' | 'eyedropper' | 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
 
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
-  paint: ['brush', 'eraser'],
+  paint: ['blur', 'sharpen', 'smudge', 'brush', 'eraser', 'cloneStamp', 'paintBucket', 'lasso', 'polygonLasso', 'magneticLasso', 'selectionBrush'],
   vector: ['vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
   layout: ['imageFrameRectangle', 'imageFrameEllipse', 'text', 'textVertical', 'textFrame', 'textFrameVertical'],
   animation: ['brush'],

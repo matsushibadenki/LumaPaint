@@ -6,18 +6,20 @@ import { toHex } from './BrushControls';
 import { ColorPanel, colorPanelLabels, type ColorTarget } from './ColorPanel';
 
 const labels = {
-  ja: { close: 'カラージェネレーターを閉じる' },
-  en: { close: 'Close color generator' },
-  'zh-CN': { close: '关闭颜色生成器' },
+  ja: { none: 'なし', close: 'カラージェネレーターを閉じる' },
+  en: { none: 'None', close: 'Close color generator' },
+  'zh-CN': { none: '无', close: '关闭颜色生成器' },
 };
 
 export const colorPickerVisibilityEvent = 'lumapaint-color-picker-visibility';
 export type ColorPickerOcclusion = { left: number; top: number; right: number; bottom: number };
 
-export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', onChange, onOpen, onClose, children }: {
+export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', noColor = false, onNone, onChange, onOpen, onClose, children }: {
   locale: Locale;
   color: Brush['color'];
   disabled?: boolean;
+  noColor?: boolean;
+  onNone?: () => void;
   label: string;
   target?: ColorTarget;
   onChange: (color: Brush['color']) => void;
@@ -105,21 +107,21 @@ export function ColorPickerPopover({ locale, color, disabled = false, label, tar
 
   return <span className="color-picker-anchor">
     <button ref={trigger} type="button" className="color-picker-trigger" disabled={disabled}
-      aria-label={label} title={`${label}: ${toHex(color).toUpperCase()}`} aria-expanded={open} aria-controls={id}
+      aria-label={label} title={`${label}: ${noColor ? labels[locale].none : toHex(color).toUpperCase()}`} aria-expanded={open} aria-controls={id}
       style={{ backgroundColor: toHex(color) }}
       onClick={() => setOpen(value => {
         const next = !value;
         if (next) onOpen?.();
         return next;
       })}>
-      <span className="color-picker-chip" style={{ backgroundColor: toHex(color) }} aria-hidden="true" />
+      <span className={`color-picker-chip${noColor ? ' paint-none' : ''}`} style={noColor ? undefined : { backgroundColor: toHex(color) }} aria-hidden="true" />
       {children}
     </button>
     {open && createPortal(<div ref={popup} id={id} role="dialog" aria-label={`${label} · ${colorPanelLabels[locale].color}`}
       className="color-picker-popover" style={{ left: position.left, top: position.top }}>
       <header onPointerDown={beginDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}><strong>{label}</strong><button type="button" aria-label={labels[locale].close} onClick={() => { setOpen(false); trigger.current?.focus(); }}>×</button></header>
       <ColorPanel locale={locale} color={color} backgroundColor={color} activeColor={target}
-        onSelectColor={() => {}} onChange={onChange} onBackgroundChange={onChange} onSwap={() => {}} singleColor />
+        onSelectColor={() => {}} onChange={onChange} onBackgroundChange={onChange} onSwap={() => {}} noColor={noColor} onNone={onNone} singleColor />
     </div>, document.body)}
   </span>;
 }
