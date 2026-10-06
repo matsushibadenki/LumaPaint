@@ -19,6 +19,7 @@ pub(super) struct PixelPaint {
     layer: String,
     image_id: String,
     clone_stamp: bool,
+    retouch: bool,
     revision: u64,
     sender: mpsc::Sender<Sample>,
     latest: Option<PreparedPixelTiles>,
@@ -71,6 +72,7 @@ pub(super) fn pointer(
                 document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
                 image_id: snapshot.layer_id.clone(),
                 clone_stamp: false,
+                retouch: false,
                 layer: snapshot.layer_id,
                 revision: snapshot.revision,
                 sender,
@@ -126,7 +128,9 @@ pub(super) fn pointer(
                 *slot = None;
                 return Ok(true);
             };
-            if draft.clone_stamp {
+            if draft.retouch {
+                doc.replace_retouch_pixels(source.clone(), doc.selection().cloned())?;
+            } else if draft.clone_stamp {
                 doc.replace_moved_pixels(source.clone(), doc.selection().cloned())?;
             } else {
                 doc.replace_selected_image(source.clone())?;
@@ -186,6 +190,7 @@ pub(super) fn clone_pointer(
             document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
             image_id,
             clone_stamp: true,
+            retouch: false,
             layer: snapshot.layer_id,
             revision: snapshot.revision,
             sender,
@@ -278,17 +283,22 @@ pub(super) fn retouch_pointer(
     }
     PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
     doc.finish();
-    let workspace = doc.clone_stamp_workspace()?;
-    let sample_doc = doc.clone_stamp_sampling_document(if settings.sample_all_layers {
-        lumapaint_core::clone_stamp::Sample::AllLayers
+    let workspace = doc.retouch_workspace()?;
+    let sample_doc = if settings.sample_all_layers {
+        doc.clone_stamp_sampling_document(lumapaint_core::clone_stamp::Sample::AllLayers)?
     } else {
-        lumapaint_core::clone_stamp::Sample::CurrentLayer
-    })?;
+        workspace.clone()
+    };
     let brush = BRUSH.with(|brush| *brush.borrow());
     let snapshot = doc.snapshot();
+    let alpha_locked = snapshot
+        .layers
+        .iter()
+        .find(|l| l.id == snapshot.layer_id)
+        .is_some_and(|l| l.alpha_locked);
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let (w, h) = doc.dimensions();
-    let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
+    let preview_document = doc.retouch_preview_document(preview_source(w, h, token))?;
     let image_id = if snapshot.layer_id == "layer-1" {
         "clone-stamp-preview-base".into()
     } else {
@@ -302,6 +312,7 @@ pub(super) fn retouch_pointer(
             document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
             image_id,
             clone_stamp: true,
+            retouch: true,
             layer: snapshot.layer_id,
             revision: snapshot.revision,
             sender,
@@ -330,7 +341,8 @@ pub(super) fn retouch_pointer(
                 settings,
                 kind,
                 workspace.selection().cloned(),
-            )?;
+            )?
+            .with_alpha_lock(alpha_locked);
             let mut uploads = destination.take_uploads();
             preview.sample(point, pressure)?;
             loop {
@@ -428,6 +440,7 @@ pub(super) fn fill_pointer(
             document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
             image_id,
             clone_stamp: true,
+            retouch: false,
             layer: snapshot.layer_id,
             revision: snapshot.revision,
             sender,
@@ -995,6 +1008,98 @@ mod tests {
             retouch_pointer(&mut doc, Point { x: 32., y: 30. }, 0, 1., kind, no_op).unwrap();
             retouch_pointer(&mut doc, Point { x: 32., y: 30. }, 2, 1., kind, no_op).unwrap();
             assert_eq!(doc.revision(), revision);
+        }
+    }
+
+    #[test]
+    fn retouch_alpha_locked_base_and_image_targets_keep_alpha_and_one_undo() {
+        use lumapaint_core::retouch::{Kind, Settings};
+        for base in [true, false] {
+            for kind in [Kind::Blur, Kind::Sharpen, Kind::Smudge] {
+                let mut doc = Document::default();
+                if !base {
+                    let id = doc.add_paint_layer().unwrap();
+                    doc.select_layer(id).unwrap();
+                }
+                let (w, h) = doc.dimensions();
+                let pixels: Vec<u8> = (0..w * h)
+                    .flat_map(|i| {
+                        let a = [0u8, 64, 128, 255][(i % w % 4) as usize];
+                        let value = if i % w < 34 { 64u16 } else { 192 };
+                        let v = (value * u16::from(a) / 255) as u8;
+                        [v, v, v, a]
+                    })
+                    .collect();
+                let png = lumapaint_renderer::vector::document_png(w, h, pixels).unwrap();
+                doc.replace_moved_pixels(clipboard::image_svg(w, h, &png), None)
+                    .unwrap();
+                let id = doc.snapshot().layer_id;
+                doc.set_layer_settings(LayerSettings {
+                    id: id.clone(),
+                    name: "Alpha locked".into(),
+                    opacity: 1.,
+                    locked: false,
+                    alpha_locked: true,
+                    mask_enabled: false,
+                    mask_inverted: false,
+                    mask_density: 1.,
+                })
+                .unwrap();
+                let before = clipboard::raw_selected_pixels(&doc).unwrap().2;
+                BRUSH.with(|b| {
+                    *b.borrow_mut() = Brush {
+                        size: 12.,
+                        hardness: 1.,
+                        ..Brush::default()
+                    }
+                });
+                let settings = Settings {
+                    strength: 1.,
+                    pressure_strength: false,
+                    finger_painting: true,
+                    ..Settings::default()
+                };
+                retouch_pointer(&mut doc, Point { x: 30., y: 30. }, 0, 1., kind, settings).unwrap();
+                retouch_pointer(&mut doc, Point { x: 38., y: 30. }, 2, 1., kind, settings).unwrap();
+                PIXEL_PAINT_COMMIT.with(|slot| slot.borrow_mut().take());
+                let after = clipboard::raw_selected_pixels(&doc).unwrap().2;
+                assert!(after != before, "base={base}, kind={kind:?}");
+                for (a, b) in after
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(before.as_chunks::<4>().0)
+                {
+                    assert_eq!(a[3], b[3]);
+                    if b[3] == 0 {
+                        assert_eq!(a, b);
+                    }
+                }
+                assert!(
+                    doc.snapshot()
+                        .layers
+                        .iter()
+                        .find(|l| l.id == id)
+                        .unwrap()
+                        .alpha_locked
+                );
+                doc.undo();
+                assert!(clipboard::raw_selected_pixels(&doc).unwrap().2 == before);
+                doc.redo();
+                assert!(clipboard::raw_selected_pixels(&doc).unwrap().2 == after);
+                let mut decoded = Document::decode(&doc.encode().unwrap()).unwrap();
+                decoded.select_layer(id.clone()).unwrap();
+                assert!(
+                    decoded
+                        .snapshot()
+                        .layers
+                        .iter()
+                        .find(|l| l.id == id)
+                        .unwrap()
+                        .alpha_locked
+                );
+                assert_eq!(clipboard::raw_selected_pixels(&decoded).unwrap().2, after);
+            }
         }
     }
 

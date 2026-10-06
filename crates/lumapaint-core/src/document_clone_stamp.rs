@@ -1,9 +1,15 @@
 use super::*;
 impl Document {
     pub fn clone_stamp_preview_document(&self, source: String) -> Result<Self, String> {
+        self.pixel_preview_document(source, false)
+    }
+    pub fn retouch_preview_document(&self, source: String) -> Result<Self, String> {
+        self.pixel_preview_document(source, true)
+    }
+    fn pixel_preview_document(&self, source: String, preserve_alpha: bool) -> Result<Self, String> {
         let mut result = self.clone();
         if self.selected_layer.is_some() {
-            result.replace_selected_image(source)?;
+            result.replace_image_source(source, preserve_alpha)?;
         } else {
             result.paint_source = None;
             result.strokes.clear();
@@ -34,10 +40,16 @@ impl Document {
         Ok(result)
     }
     pub fn clone_stamp_workspace(&self) -> Result<Self, String> {
-        if let Some(workspace) = self.selected_pixel_paint_workspace()? {
+        self.pixel_filter_workspace(false)
+    }
+    pub fn retouch_workspace(&self) -> Result<Self, String> {
+        self.pixel_filter_workspace(true)
+    }
+    fn pixel_filter_workspace(&self, preserve_alpha: bool) -> Result<Self, String> {
+        if let Some(workspace) = self.pixel_paint_workspace(preserve_alpha)? {
             return Ok(workspace);
         }
-        if self.layer_locked || self.layer_alpha_locked || !self.visible {
+        if self.layer_locked || (self.layer_alpha_locked && !preserve_alpha) || !self.visible {
             return Err("Unlock and show the pixel layer / ピクセルレイヤーを表示しロックを解除してください / 请显示并解锁像素图层".into());
         }
         Ok(Self {
@@ -81,6 +93,62 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retouch_accepts_alpha_lock_but_preserves_layer_guards_and_history() {
+        for base in [true, false] {
+            let mut doc = Document::default();
+            if !base {
+                let id = doc.add_paint_layer().unwrap();
+                doc.select_layer(id).unwrap();
+            }
+            let id = doc.snapshot().layer_id;
+            doc.set_layer_settings(LayerSettings {
+                id: id.clone(),
+                name: "Protected".into(),
+                opacity: 1.,
+                locked: false,
+                alpha_locked: true,
+                mask_enabled: false,
+                mask_inverted: false,
+                mask_density: 1.,
+            })
+            .unwrap();
+            assert!(doc.clone_stamp_workspace().is_err());
+            assert!(doc.retouch_workspace().is_ok());
+            let before = serde_json::to_value(doc.document_state()).unwrap();
+            assert!(doc.retouch_preview_document("<svg/>".into()).is_ok());
+            assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+            doc.replace_retouch_pixels("<svg/>".into(), None).unwrap();
+            assert!(
+                doc.snapshot()
+                    .layers
+                    .iter()
+                    .find(|l| l.id == id)
+                    .unwrap()
+                    .alpha_locked
+            );
+            let after = serde_json::to_value(doc.document_state()).unwrap();
+            doc.undo();
+            assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+            doc.redo();
+            assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), after);
+            doc.set_layer_settings(LayerSettings {
+                id,
+                name: "Protected".into(),
+                opacity: 1.,
+                locked: true,
+                alpha_locked: true,
+                mask_enabled: false,
+                mask_inverted: false,
+                mask_density: 1.,
+            })
+            .unwrap();
+            let locked = serde_json::to_value(doc.document_state()).unwrap();
+            assert!(doc.retouch_workspace().is_err());
+            assert!(doc.replace_retouch_pixels("<svg/>".into(), None).is_err());
+            assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), locked);
+        }
+    }
     #[test]
     fn cloning_pixels_is_one_atomic_history_entry() {
         let mut doc = Document::default();

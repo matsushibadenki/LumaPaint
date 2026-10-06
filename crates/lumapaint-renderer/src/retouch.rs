@@ -17,6 +17,7 @@ pub struct Preview {
     kind: Kind,
     selection: Option<Selection>,
     dirty: BTreeSet<TileCoord>,
+    preserve_alpha: bool,
     last: Option<Point>,
 }
 impl Preview {
@@ -44,8 +45,13 @@ impl Preview {
             kind,
             selection,
             dirty: BTreeSet::new(),
+            preserve_alpha: false,
             last: None,
         })
+    }
+    pub fn with_alpha_lock(mut self, locked: bool) -> Self {
+        self.preserve_alpha = locked;
+        self
     }
     pub fn sample(&mut self, p: Point, pressure: f32) -> Result<(), String> {
         if !p.x.is_finite() || !p.y.is_finite() || !pressure.is_finite() {
@@ -141,6 +147,9 @@ impl Preview {
                     continue;
                 }
                 let at = ((y * self.size.0 + x) * 4) as usize;
+                if self.preserve_alpha && self.pixels[at + 3] == 0 {
+                    continue;
+                }
                 let mut v = [0.; 8];
                 for (c, value) in v[..4].iter_mut().enumerate() {
                     *value = self.pixels[at + c] as f32 / 255.;
@@ -164,6 +173,7 @@ impl Preview {
         params[4] = dx;
         params[5] = dy;
         params[6] = f32::from(first && self.settings.finger_painting && !self.brush.no_color);
+        params[7] = f32::from(self.preserve_alpha);
         for c in 0..3 {
             params[8 + c] = self.brush.color[c] as f32 / 255.;
         }
@@ -275,6 +285,16 @@ fn kernel(v: [f32; 8], source: &[[f32; 4]], params: [f32; 12]) -> [u8; 4] {
                 desired[c] += s[c] * weight;
             }
         }
+    }
+    if params[7] > 0.5 {
+        for c in 0..3 {
+            desired[c] = if desired[3] > 0. {
+                (desired[c] / desired[3]).clamp(0., 1.) * v[3]
+            } else {
+                v[c]
+            };
+        }
+        desired[3] = v[3];
     }
     std::array::from_fn(|c| {
         ((v[c] + (desired[c] - v[c]) * v[6]).clamp(0., 1.) * 255.).round() as u8
@@ -405,6 +425,58 @@ mod tests {
         assert_eq!(zero.pixels, before);
     }
     #[test]
+    fn alpha_lock_preserves_transparency_with_composite_samples_for_all_tools() {
+        for kind in [Kind::Blur, Kind::Sharpen, Kind::Smudge] {
+            for sample_all in [false, true] {
+                let pixels: Vec<u8> = (0..128)
+                    .flat_map(|i| {
+                        let a = [0u8, 64, 128, 255][i % 4];
+                        let v = if i % 16 < 10 {
+                            a / 4
+                        } else {
+                            (u16::from(a) * 3 / 4) as u8
+                        };
+                        [v, v, v, a]
+                    })
+                    .collect();
+                let source = if sample_all { edge() } else { pixels.clone() };
+                let mut p = Preview::new(
+                    (16, 8),
+                    pixels.clone(),
+                    source,
+                    brush(),
+                    Settings {
+                        strength: 1.,
+                        pressure_strength: false,
+                        finger_painting: true,
+                        sample_all_layers: sample_all,
+                        ..Settings::default()
+                    },
+                    kind,
+                    None,
+                )
+                .unwrap()
+                .with_alpha_lock(true);
+                p.sample(Point { x: 8., y: 4. }, 1.).unwrap();
+                p.sample(Point { x: 11., y: 4. }, 1.).unwrap();
+                assert!(p.pixels != pixels, "kind={kind:?}, all={sample_all}");
+                for (after, before) in p
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(pixels.as_chunks::<4>().0)
+                {
+                    assert_eq!(after[3], before[3]);
+                    assert!(after[..3].iter().all(|c| *c <= after[3]));
+                    if before[3] == 0 {
+                        assert_eq!(after, before);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     #[ignore = "requires hardware GPU"]
     fn gpu_retouch_kernel_matches_cpu_for_filters_alpha_and_finger_painting() {
         let source: Vec<[f32; 4]> = (0..64)
@@ -429,7 +501,7 @@ mod tests {
             })
             .collect();
         for kind in 0..3 {
-            for finger in [0., 1.] {
+            for (finger, alpha_lock) in [(0., 0.), (1., 0.), (0., 1.), (1., 1.)] {
                 let params = [
                     8.,
                     8.,
@@ -438,7 +510,7 @@ mod tests {
                     -1.2,
                     0.4,
                     finger,
-                    0.,
+                    alpha_lock,
                     0.7,
                     0.2,
                     0.1,
@@ -449,6 +521,11 @@ mod tests {
                     .iter()
                     .flat_map(|v| kernel(*v, &source, params))
                     .collect();
+                if alpha_lock > 0.5 {
+                    for (pixel, input) in actual.as_chunks::<4>().0.iter().zip(&inputs) {
+                        assert_eq!(pixel[3], (input[3] * 255.).round() as u8);
+                    }
+                }
                 for (a, b) in actual.iter().zip(expected) {
                     assert!(a.abs_diff(b) <= 1, "{a} vs {b}");
                 }

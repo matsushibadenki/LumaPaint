@@ -28,6 +28,8 @@ pub struct CanvasRequest {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[serde(default)]
     pub zoom_revision: Option<u64>,
+    // Shared IPC setting consumed by the macOS native canvas renderer.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[serde(default)]
     pub pasteboard_color: Option<[u8; 3]>,
     pub dark: bool,

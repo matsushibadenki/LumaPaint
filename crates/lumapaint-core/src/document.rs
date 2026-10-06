@@ -1750,6 +1750,9 @@ impl Document {
     /// Isolated paint workspace for an additional pixel layer. The caller commits
     /// the resulting image atomically, so previews never alter project history.
     pub fn selected_pixel_paint_workspace(&self) -> Result<Option<Self>, String> {
+        self.pixel_paint_workspace(false)
+    }
+    fn pixel_paint_workspace(&self, preserve_alpha: bool) -> Result<Option<Self>, String> {
         let id = self.selected_layer.as_deref().unwrap_or("layer-1");
         if id == "layer-1" {
             return Ok(None);
@@ -1765,7 +1768,7 @@ impl Document {
                     .into(),
             );
         }
-        if layer.locked || !layer.visible || layer.alpha_locked {
+        if layer.locked || !layer.visible || (layer.alpha_locked && !preserve_alpha) {
             return Err("ピクセルレイヤーを表示し、ロックと透明ピクセル保護を解除してください。\nShow the pixel layer and disable layer and alpha locks.\n请显示像素图层并关闭图层锁定和透明像素锁定。".into());
         }
         Ok(Some(Self {
@@ -1847,6 +1850,25 @@ impl Document {
         source: String,
         selection: Option<Selection>,
     ) -> Result<(), String> {
+        self.replace_pixel_source(source, selection, false)
+    }
+
+    /// Retouch workers must preserve every destination alpha byte before commit.
+    /// This entry point permits the alpha lock, while retaining all other guards.
+    pub fn replace_retouch_pixels(
+        &mut self,
+        source: String,
+        selection: Option<Selection>,
+    ) -> Result<(), String> {
+        self.replace_pixel_source(source, selection, true)
+    }
+
+    fn replace_pixel_source(
+        &mut self,
+        source: String,
+        selection: Option<Selection>,
+        preserve_alpha: bool,
+    ) -> Result<(), String> {
         if source.len() > MAX_SVG_BYTES || !source.contains("<svg") {
             return Err("Pixel image exceeds project limit".into());
         }
@@ -1855,7 +1877,7 @@ impl Document {
         }
         self.finish();
         if self.selected_layer.as_deref().unwrap_or("layer-1") == "layer-1" {
-            if self.layer_locked || self.layer_alpha_locked || !self.visible {
+            if self.layer_locked || (self.layer_alpha_locked && !preserve_alpha) || !self.visible {
                 return Err("Unlock and show the pixel layer / ピクセルレイヤーのロックを解除してください / 请解锁并显示像素图层".into());
             }
             let mut before = self.vector_history_state();
@@ -1866,13 +1888,16 @@ impl Document {
             self.record_vector_edit(before);
             self.revision += 1;
         } else {
-            self.replace_selected_image(source)?;
+            self.replace_image_source(source, preserve_alpha)?;
             self.selection = selection;
         }
         Ok(())
     }
 
     pub fn replace_selected_image(&mut self, source: String) -> Result<(), String> {
+        self.replace_image_source(source, false)
+    }
+    fn replace_image_source(&mut self, source: String, preserve_alpha: bool) -> Result<(), String> {
         let id = self
             .selected_layer
             .as_ref()
@@ -1883,7 +1908,11 @@ impl Document {
             .position(|layer| &layer.id == id)
             .ok_or("Image layer not found")?;
         let mut layer = self.svg_layers[index].clone();
-        if layer.locked || layer.alpha_locked || !layer.visible || layer.vector_layer {
+        if layer.locked
+            || (layer.alpha_locked && !preserve_alpha)
+            || !layer.visible
+            || layer.vector_layer
+        {
             return Err("Select an unlocked image layer / ロックされていない画像レイヤーを選択してください / 请选择未锁定的图像图层".into());
         }
         layer.source = source;

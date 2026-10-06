@@ -13,5 +13,9 @@ fn main(@builtin(global_invocation_id) id:vec3<u32>){
    if params.image.z>0.5 {var delta=(center.rgb-desired.rgb)*1.5;if params.image.w>0.5{delta=clamp(delta,vec3(-0.15*center.a),vec3(0.15*center.a));}desired=vec4(clamp(center.rgb+delta,vec3(0.),vec3(center.a)),center.a);}
  }else if params.movement.z>0.5 {desired=vec4(params.color.rgb*params.color.a,params.color.a);}
  else{let q=p.options.xy+params.movement.xy;let base=vec2<i32>(floor(q));let f=fract(q);desired=pixel(base.x,base.y)*(1.-f.x)*(1.-f.y)+pixel(base.x+1,base.y)*f.x*(1.-f.y)+pixel(base.x,base.y+1)*(1.-f.x)*f.y+pixel(base.x+1,base.y+1)*f.x*f.y;}
+ if params.movement.w>0.5 {
+   if desired.a>0. {desired=vec4(clamp(desired.rgb/desired.a,vec3(0.),vec3(1.))*p.dst.a,p.dst.a);}
+   else {desired=p.dst;}
+ }
  let rgba=vec4<u32>(floor(clamp(p.dst+(desired-p.dst)*p.options.z,vec4(0.),vec4(1.))*255.+0.5));output[i]=rgba.x|rgba.y<<8u|rgba.z<<16u|rgba.w<<24u;
 }

@@ -653,10 +653,22 @@ fn crop_svg_pixels_match_original_region_and_undo_restores_image() {
     doc.crop_canvas([40., 50., 120., 80.]).unwrap();
     let cropped = rasterize_svg(&doc.svg_layers().next().unwrap().source, 120, 80).unwrap();
     for y in 0..80usize {
-        assert_eq!(
-            &cropped.pixels[y * 120 * 4..(y + 1) * 120 * 4],
-            &before.pixels[((y + 50) * 960 + 40) * 4..((y + 50) * 960 + 160) * 4]
-        );
+        for x in 0..120usize {
+            let actual = &cropped.pixels[(y * 120 + x) * 4..(y * 120 + x + 1) * 4];
+            let expected =
+                &before.pixels[((y + 50) * 960 + x + 40) * 4..((y + 50) * 960 + x + 41) * 4];
+            // Translating the SVG changes floating-point curve coverage rounding.
+            // Permit one RGB level only on mixed red/blue edge pixels; solid
+            // regions and alpha must still match exactly.
+            let curve_edge = expected[0] > 0 && expected[2] > 0;
+            for channel in 0..4 {
+                let tolerance = u8::from(curve_edge && channel != 3);
+                assert!(
+                    actual[channel].abs_diff(expected[channel]) <= tolerance,
+                    "crop pixel ({x}, {y}), channel {channel}: {actual:?} != {expected:?}"
+                );
+            }
+        }
     }
     doc.undo();
     assert_eq!(
