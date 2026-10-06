@@ -7,6 +7,8 @@ struct RetainedLayer {
     effects: lumapaint_core::layer_effects::LayerEffects,
     size: [u32; 2],
     pixels: Vec<u8>,
+    source_pixels: Vec<u8>,
+    source_revision: u64,
 }
 
 #[derive(Default)]
@@ -20,6 +22,8 @@ pub(super) struct WorkspaceCache {
         lumapaint_core::layer_effects::LayerEffects,
     )>,
     retained: std::collections::HashMap<String, RetainedLayer>,
+    #[cfg(test)]
+    rasterizations: usize,
 }
 
 impl WorkspaceCache {
@@ -101,7 +105,7 @@ impl WorkspaceCache {
             return Ok(None);
         }
         let rect = world_rect(viewport);
-        // Bound each retained image set to 32 MiB across visible layers.
+        // Bound raw and adjusted retained images to 32 MiB each (64 MiB total).
         let max_pixels = 32 * 1024 * 1024 / 4 / layers.len().max(1);
         let area = viewport.width as usize * viewport.height as usize;
         let ratio = (max_pixels as f64 / area as f64).sqrt().min(1.0);
@@ -115,6 +119,8 @@ impl WorkspaceCache {
             lumapaint_core::scene::JournalRead::Rebuild { cursor } => (cursor, false),
         };
         let same_view = self.key == Some(key) && complete_history;
+        // A failed raster must not leave a valid key after moving old payloads.
+        self.key = None;
         let mut retained = std::collections::HashMap::new();
         let mut prepared = Vec::with_capacity(layers.len());
         for layer in &layers {
@@ -122,10 +128,12 @@ impl WorkspaceCache {
             let opacity = layer.effective_opacity();
             let old = self
                 .retained
-                .get(&layer.id)
-                .filter(|old| same_view && old.size == size && old.effects == effects);
-            if let Some(old) = old.filter(|old| {
-                old.layer.source == layer.source && old.layer.effective_opacity() == opacity
+                .remove(&layer.id)
+                .filter(|old| same_view && old.size == size);
+            if old.as_ref().is_some_and(|old| {
+                old.layer.source == layer.source
+                    && old.layer.effective_opacity() == opacity
+                    && old.effects == effects
             }) {
                 prepared.push(PreparedSvgLayer {
                     id: layer.id.clone(),
@@ -135,19 +143,36 @@ impl WorkspaceCache {
                     fully_contained: true,
                     pixels: Vec::new(),
                 });
-                // Move unchanged payloads after traversal, without copying them.
-                let _ = old;
+                retained.insert(layer.id.clone(), old.unwrap());
                 continue;
             }
-            let mut pixels = if let Some((old, tiles)) = old.and_then(|old| {
-                dirty_tiles(&old.layer, layer, document.dimensions(), size, rect)
-                    .map(|tiles| (old, tiles))
-            }) {
-                let mut pixels = old.pixels.clone();
+            let same_source = old
+                .as_ref()
+                .is_some_and(|old| old.layer.source == layer.source);
+            let tiles = old
+                .as_ref()
+                .filter(|old| old.effects == effects && old.layer.effective_opacity() == opacity)
+                .and_then(|old| dirty_tiles(&old.layer, layer, document.dimensions(), size, rect));
+            let source_revision = if same_source {
+                old.as_ref().unwrap().source_revision
+            } else {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            };
+            let (source_pixels, mut pixels) = if same_source {
+                // Effects/opacity changes never feed adjusted pixels back into the filter.
+                let old = old.unwrap();
+                let source_pixels = old.source_pixels;
+                let mut pixels = old.pixels;
+                pixels.copy_from_slice(&source_pixels);
+                crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                apply_opacity(&mut pixels, opacity);
+                (source_pixels, pixels)
+            } else if let Some(tiles) = tiles {
+                let old = old.unwrap();
+                let mut source_pixels = old.source_pixels;
+                let mut pixels = old.pixels;
                 for [x, y, width, height] in tiles {
-                    // Render every contributor in its original order, including
-                    // group masks and transparency, rather than drawing only the edit.
-                    // A two-pixel gutter keeps antialiasing independent of tile edges.
                     let left = x.saturating_sub(2);
                     let top = y.saturating_sub(2);
                     let right = (x + width + 2).min(size[0]);
@@ -158,12 +183,22 @@ impl WorkspaceCache {
                         (right - left) as f32 * rect[2] / size[0] as f32,
                         (bottom - top) as f32 * rect[3] / size[1] as f32,
                     ];
+                    #[cfg(test)]
+                    {
+                        self.rasterizations += 1;
+                    }
                     let mut tile = vector::rasterize_svg_workspace(
                         &layer.source,
                         [document.dimensions().0, document.dimensions().1],
                         [right - left, bottom - top],
                         tile_rect,
                     )?;
+                    for row in y..y + height {
+                        let from = ((row - top) * (right - left) + x - left) as usize * 4;
+                        let to = (row * size[0] + x) as usize * 4;
+                        source_pixels[to..to + width as usize * 4]
+                            .copy_from_slice(&tile[from..from + width as usize * 4]);
+                    }
                     crate::apply_layer_effects(&mut tile, &effects);
                     apply_opacity(&mut tile, opacity);
                     for row in y..y + height {
@@ -173,17 +208,22 @@ impl WorkspaceCache {
                             .copy_from_slice(&tile[from..from + width as usize * 4]);
                     }
                 }
-                pixels
+                (source_pixels, pixels)
             } else {
-                let mut pixels = vector::rasterize_svg_workspace(
+                #[cfg(test)]
+                {
+                    self.rasterizations += 1;
+                }
+                let source_pixels = vector::rasterize_svg_workspace(
                     &layer.source,
                     [document.dimensions().0, document.dimensions().1],
                     size,
                     rect,
                 )?;
-                crate::apply_layer_effects(&mut pixels, &effects);
+                let mut pixels = source_pixels.clone();
+                crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
                 apply_opacity(&mut pixels, opacity);
-                pixels
+                (source_pixels, pixels)
             };
             retained.insert(
                 layer.id.clone(),
@@ -191,6 +231,8 @@ impl WorkspaceCache {
                     layer: (*layer).clone(),
                     effects,
                     size,
+                    source_pixels,
+                    source_revision,
                     pixels: pixels.clone(),
                 },
             );
@@ -202,13 +244,6 @@ impl WorkspaceCache {
                 fully_contained: true,
                 pixels: std::mem::take(&mut pixels),
             });
-        }
-        for image in &prepared {
-            if image.pixels.is_empty() {
-                if let Some(old) = self.retained.remove(&image.id) {
-                    retained.insert(image.id.clone(), old);
-                }
-            }
         }
         self.retained = retained;
         self.layers = layers
@@ -353,6 +388,8 @@ mod tests {
         let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
         let mut cache = WorkspaceCache::default();
         let before = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        let rasters = cache.rasterizations;
+        let revision = cache.retained[&id].source_revision;
         assert!(cache.prepare(&d, viewport, [0., 0.]).unwrap().is_none());
         let mut e = lumapaint_core::layer_effects::LayerEffects {
             enabled: true,
@@ -361,6 +398,7 @@ mod tests {
         e.values[0] = 1.;
         d.set_layer_effects(&id, e).unwrap();
         let after = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert_eq!(cache.rasterizations, rasters);
         let index = before[0]
             .pixels
             .as_chunks::<4>()
@@ -375,18 +413,44 @@ mod tests {
         assert!(cache.prepare(&d, viewport, [0., 0.]).unwrap().is_none());
         d.undo();
         let undone = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert_eq!(cache.rasterizations, rasters);
         assert_eq!(undone[0].pixels, before[0].pixels);
         let sampled = crate::color_sampler::ColorSampler::default()
             .sample(&d, lumapaint_core::document::Point { x: 100., y: 100. })
             .unwrap();
         assert_eq!(sampled, Some([64, 64, 64]));
         d.redo();
+        let redone = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert_eq!(cache.rasterizations, rasters);
+        assert!(redone[0].pixels == after[0].pixels);
         assert_eq!(
             crate::color_sampler::ColorSampler::default()
                 .sample(&d, lumapaint_core::document::Point { x: 100., y: 100. })
                 .unwrap(),
             Some([90, 90, 90])
         );
+        d.set_layer_settings(lumapaint_core::document::LayerSettings {
+            id: id.clone(),
+            name: "image".into(),
+            opacity: 0.5,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        })
+        .unwrap();
+        let translucent = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        assert_eq!(cache.rasterizations, rasters);
+        let full = WorkspaceCache::default()
+            .prepare(&d, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert!(translucent[0].pixels == full[0].pixels);
+        assert_eq!(cache.retained[&id].source_revision, revision);
+        cache.clear();
+        cache.prepare(&d, viewport, [0., 0.]).unwrap();
+        assert_ne!(cache.retained[&id].source_revision, revision);
     }
     #[test]
     fn dirty_tiles_match_full_transparent_composition_across_tile_edges() {
@@ -525,6 +589,33 @@ mod tests {
             .max()
             .unwrap();
         assert!(max_error <= 1, "clipped tile seam error: {max_error}");
+        let rasters = cache.rasterizations;
+        let mut effects = lumapaint_core::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        effects.values[9] = -20.;
+        document.set_layer_effects(&layer, effects).unwrap();
+        let adjusted = cache
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cache.rasterizations, rasters);
+        let full = WorkspaceCache::default()
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        let max_error = adjusted[0]
+            .pixels
+            .iter()
+            .zip(&full[0].pixels)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(
+            max_error <= 1,
+            "raw cache after clipped tile edit: {max_error}"
+        );
     }
 
     #[test]

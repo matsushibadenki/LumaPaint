@@ -1199,6 +1199,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "freetype-rs"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d228d6de56c90dd7585341f341849441b3490180c62d27133e525eb726809b4"
+dependencies = [
+ "bitflags 2.13.2",
+ "freetype-sys",
+ "libc",
+]
+
+[[package]]
+name = "freetype-sys"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eab537ce43cab850c64b4cdc390ce7e4f47f877485ddc323208e268280c308ae"
+dependencies = [
+ "cc",
+ "libz-sys",
+ "pkg-config",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2369,6 +2391,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-sys"
+version = "1.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2434,6 +2468,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "lumapaint-core",
+ "lumapaint-fonts",
  "lumapaint-formats",
  "lumapaint-renderer",
  "lumapaint-svg",
@@ -2448,6 +2483,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2462,15 +2498,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumapaint-fonts"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
+ "tempfile",
+]
+
+[[package]]
 name = "lumapaint-formats"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "crc32fast",
  "flate2",
+ "freetype-rs",
  "image",
  "lopdf",
  "lumapaint-core",
+ "lumapaint-fonts",
  "png 0.18.1",
  "roxmltree",
  "serde",
@@ -2500,6 +2546,7 @@ dependencies = [
  "image",
  "lopdf",
  "lumapaint-core",
+ "lumapaint-fonts",
  "lumapaint-formats",
  "lumapaint-svg",
  "metal",
@@ -2507,6 +2554,7 @@ dependencies = [
  "pollster",
  "resvg",
  "rustybuzz",
+ "serde",
  "serde_json",
  "skia-safe",
  "ttf-parser",
@@ -2519,6 +2567,7 @@ name = "lumapaint-svg"
 version = "0.1.0"
 dependencies = [
  "lumapaint-core",
+ "lumapaint-fonts",
  "lumapaint-formats",
  "roxmltree",
  "serde_json",
@@ -5046,6 +5095,12 @@ dependencies = [
  "serde_core",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version-compare"

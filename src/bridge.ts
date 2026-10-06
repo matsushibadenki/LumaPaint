@@ -92,7 +92,7 @@ export interface LayerSnapshot {
   effects?: LayerEffects;
   rasterBlendMode?: RasterBlendMode;
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
-export interface TextStyle { noColor?: boolean; fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
+export interface TextStyle { noColor?: boolean; fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; rotateLatin?: boolean; tateChuYoko?: boolean; kerning: 'metrics' | 'optical' | 'japaneseMonospaced'; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
@@ -103,7 +103,7 @@ export interface VectorText { noColor?: boolean;
   writingMode?: 'horizontal' | 'vertical';
   runs?: TextRun[]; softBreaks?: number[]; lineBaselines?: number[]; lineWidths?: number[]; lineOrigins?: number[]; styleSegmentOrigins?: number[][]; characterOrigins?: number[][]; glyphClusters?: TextGlyphCluster[][]; layoutBounds?: [number, number, number, number];
   content: string; fontFamily: string; fontSize: number; lineHeight: number; bold: boolean;
-  italic: boolean; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
+  italic: boolean; rotateLatin?: boolean; tateChuYoko?: boolean; kerning: 'metrics' | 'optical' | 'japaneseMonospaced'; tracking: number; scaleX: number; scaleY: number; baselineShift: number;
   rotation: number; underline: boolean; strikethrough: boolean; alignment: 'left' | 'center' | 'right' | 'justify';
   boxWidth: number; boxHeight?: number | null; indentLeft: number; indentRight: number; indentFirst: number; spaceBefore: number; spaceAfter: number;
   listStyle: 'none' | 'bullets' | 'numbers'; kinsoku: 'none' | 'standard' | 'strict'; mojikumi: 'none' | 'japanese'; hyphenation: boolean;
@@ -111,7 +111,7 @@ export interface VectorText { noColor?: boolean;
 export const defaultVectorText: VectorText = {
   changeGeneration: 0, updatedAtMs: 0,
   content: 'Text', runs: [], softBreaks: [], fontFamily: 'sans-serif', fontSize: 48, lineHeight: 1.4, bold: false,
-  italic: false, tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
+  italic: false, rotateLatin: true, tateChuYoko: false, kerning: 'metrics', tracking: 0, scaleX: 1, scaleY: 1, baselineShift: 0, rotation: 0,
   underline: false, strikethrough: false, alignment: 'left', boxWidth: 480,
   indentLeft: 0, indentRight: 0, indentFirst: 0, spaceBefore: 0, spaceAfter: 0,
   listStyle: 'none', kinsoku: 'none', mojikumi: 'none', hyphenation: false,

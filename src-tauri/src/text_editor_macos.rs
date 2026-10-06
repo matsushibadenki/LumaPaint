@@ -10,11 +10,12 @@ use objc2::{runtime::AnyObject, AnyThread, DefinedClass};
 use objc2_app_kit::{
     NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSColor, NSCompositingOperation,
     NSFont, NSFontAttributeName, NSFontManager, NSFontTraitMask, NSForegroundColorAttributeName,
-    NSKernAttributeName, NSLayoutManager, NSLineBreakMode, NSLineBreakStrategy,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSRectFillUsingOperation,
-    NSSelectionAffinity, NSStrikethroughStyleAttributeName, NSTextAlignment, NSTextInputClient,
-    NSTextLayoutOrientation, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc,
-    NSTextListOptions, NSTextView, NSUnderlineStyleAttributeName,
+    NSKernAttributeName, NSLayoutManager, NSLigatureAttributeName, NSLineBreakMode,
+    NSLineBreakStrategy, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSRectFillUsingOperation, NSSelectionAffinity, NSStrikethroughStyleAttributeName,
+    NSTextAlignment, NSTextInputClient, NSTextLayoutOrientation, NSTextList,
+    NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextListOptions, NSTextView,
+    NSTrackingAttributeName, NSUnderlineStyleAttributeName,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSRange, NSString, NSUndoManager};
 
@@ -44,6 +45,9 @@ define_class!(
             TEXT_FRAME_PENDING.with(|pending| pending.set(true));
             unsafe { msg_send![super(self), didChangeText] }
             SESSION.with(|slot| { if let Ok(slot) = slot.try_borrow() { if let Some(session) = slot.as_ref() { session.edited.set(true); } } });
+            let typing_custom = decode_style(self.typingAttributes().objectForKey(&NSString::from_str(STYLE_KEY))).is_some_and(|style|style.kerning!=lumapaint_core::vector::KerningMode::Metrics || style.tate_chu_yoko || !style.rotate_latin || style.scale_x!=1. || style.scale_y!=1.);
+            let settings = SESSION.with(|slot| slot.try_borrow().ok().and_then(|slot| slot.as_ref().filter(|session|typing_custom || session.settings.text.has_vertical_character_options() || session.settings.text.runs.iter().any(|r|r.style.scale_x!=1. || r.style.scale_y!=1.) || session.settings.text.kerning!=lumapaint_core::vector::KerningMode::Metrics || session.settings.text.runs.iter().any(|run|run.style.kerning!=lumapaint_core::vector::KerningMode::Metrics)).map(current_text)));
+            if let Some(settings) = settings { apply_kerning_to_view(self, &settings); apply_character_advances_to_view(self, &settings); }
             hide_native_glyphs(self);
             invalidate_current_cache();
             TEXT_FRAME_PENDING.with(|pending| pending.set(true));
@@ -100,25 +104,16 @@ define_class!(
     impl PreviewLayoutManager {
         #[unsafe(method(drawGlyphsForGlyphRange:atPoint:))]
         unsafe fn draw_glyphs(&self, range: NSRange, origin: NSPoint) {
-            let selection = MainThreadMarker::new()
-                .and_then(|mtm| unsafe { self.firstTextView(mtm) })
-                .map(|view| view.selectedRange());
-            if let Some(selection) = selection.filter(|range| range.length > 0) {
-                // Temporary paint attributes preserve the document color and glyph cache.
-                unsafe { self.addTemporaryAttribute_value_forCharacterRange(
-                    NSForegroundColorAttributeName, &NSColor::whiteColor(), selection); }
-                let _: () = unsafe { msg_send![super(self), drawGlyphsForGlyphRange: range, atPoint: origin] };
-                unsafe { self.removeTemporaryAttribute_forCharacterRange(NSForegroundColorAttributeName, selection); }
-            } else {
-                let _: () = unsafe { msg_send![super(self), drawGlyphsForGlyphRange: range, atPoint: origin] };
-            }
+            // Metal owns glyph painting, including selected text. AppKit may choose
+            // different vertical substitutions; never paint a second set of glyphs.
+            let _ = (range, origin);
         }
 
         #[unsafe(method(fillBackgroundRectArray:count:forCharacterRange:color:))]
         unsafe fn fill_background(&self, rects: NonNull<NSRect>, count: usize, _range: NSRange, _color: &NSColor) {
-            let highlight = NSColor::blackColor();
+            let highlight = NSColor::colorWithCalibratedRed_green_blue_alpha(0.25, 0.5, 0.9, 0.25);
             highlight.setFill();
-            // Preserve black selection even when focus moves to a numeric field.
+            // Keep the same translucent highlight when focus moves to a numeric field.
             for rect in unsafe { std::slice::from_raw_parts(rects.as_ptr(), count) } {
                 NSRectFillUsingOperation(*rect, NSCompositingOperation::SourceOver);
             }
@@ -155,6 +150,7 @@ thread_local! {
 }
 
 pub fn font_families() -> Result<Vec<String>, String> {
+    lumapaint_fonts::register_native_fonts();
     let mtm = MainThreadMarker::new().ok_or("Text editing requires the main thread")?;
     let mut names: Vec<_> = NSFontManager::sharedFontManager(mtm)
         .availableFontFamilies()
@@ -215,7 +211,7 @@ fn decode_style(value: Option<Retained<AnyObject>>) -> Option<TextStyle> {
     let value = value?.downcast::<NSString>().ok()?;
     serde_json::from_str(&value.to_string()).ok()
 }
-fn current(session: &Session) -> TextSettings {
+fn current_text(session: &Session) -> TextSettings {
     let mut settings = session.settings.clone();
     settings.text.content = session.view.string().to_string();
     settings.text.runs.clear();
@@ -248,6 +244,10 @@ fn current(session: &Session) -> TextSettings {
             at = end;
         }
     }
+    settings
+}
+fn current(session: &Session) -> TextSettings {
+    let mut settings = current_text(session);
     let (breaks, baselines, widths, origins, segments, characters, clusters, bounds) =
         measured_layout(&session.view, &settings.text, settings.color);
     settings.text.soft_breaks = breaks;
@@ -258,6 +258,9 @@ fn current(session: &Session) -> TextSettings {
     settings.text.character_origins = characters;
     settings.text.glyph_clusters = clusters;
     settings.text.layout_bounds = bounds;
+    settings
+        .text
+        .normalize_vertical_group_positions(settings.color);
     settings
 }
 
@@ -627,6 +630,9 @@ pub fn reflow(settings: &mut TextSettings) -> Result<(), String> {
     settings.text.character_origins = characters;
     settings.text.glyph_clusters = clusters;
     settings.text.layout_bounds = bounds;
+    settings
+        .text
+        .normalize_vertical_group_positions(settings.color);
     settings.text.validate()
 }
 
@@ -804,6 +810,7 @@ pub fn begin_at(point: [f32; 2], create: bool) -> Result<(), String> {
 }
 
 pub fn begin(mut settings: TextSettings) -> Result<(), String> {
+    lumapaint_fonts::register_native_fonts();
     finish(true)?;
     if settings.text.point_text && settings.text.layout_bounds.is_none() {
         reflow(&mut settings)?;
@@ -1243,6 +1250,8 @@ pub fn select_all() {
     }
 }
 
+// This editor explicitly uses NSLayoutManager/TextKit 1, which supports vertical glyph forms.
+#[allow(deprecated)]
 fn attributes(
     text: &VectorText,
     style: &TextStyle,
@@ -1282,17 +1291,16 @@ fn attributes(
             )
         })
         .unwrap_or_else(|| NSFont::systemFontOfSize(style.font_size.into()));
-    let font = if style.scale_x != 1.0 || style.scale_y != 1.0 || style.rotation != 0.0 {
-        let (sin, cos) = (-style.rotation.to_radians()).sin_cos();
-        let mut matrix = [
-            f64::from(style.font_size * style.scale_x * cos),
-            f64::from(style.font_size * style.scale_x * sin),
-            f64::from(-style.font_size * style.scale_y * sin),
-            f64::from(style.font_size * style.scale_y * cos),
-            0.0,
-            0.0,
-        ];
-        unsafe { NSFont::fontWithName_matrix(&font.fontName(), NonNull::from(&mut matrix[0])) }
+    // TextKit cannot safely lay out nonuniform NSFont matrices (vertical
+    // advances can jump to the frame width). Use a uniformly sized font for
+    // cross-axis metrics; GPU glyph transforms own the nonuniform shape.
+    let cross_scale = if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
+        style.scale_x
+    } else {
+        style.scale_y
+    };
+    let font = if cross_scale != 1. {
+        NSFont::fontWithName_size(&font.fontName(), (style.font_size * cross_scale).into())
             .unwrap_or(font)
     } else {
         font
@@ -1312,7 +1320,10 @@ fn attributes(
         TextAlignment::Justify => NSTextAlignment::Justified,
     });
     paragraph.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
-    paragraph.setMinimumLineHeight((text.font_size * text.line_height).into());
+    // Character size is stored in runs when changed from the Character panel.
+    // The object's original size must not keep enlarged line/column spacing
+    // after a whole selection is reduced.
+    paragraph.setMinimumLineHeight((style.font_size * cross_scale * text.line_height).into());
     // Keep the requested spacing as a minimum, but let larger runs expand
     // their line/column. A fixed maximum causes overlapping mixed-size text.
     paragraph.setMaximumLineHeight(0.0);
@@ -1344,8 +1355,12 @@ fn attributes(
         );
         paragraph.setTextLists(&NSArray::from_slice(&[&*list]));
     }
+    let vertical_form = NSNumber::new_i32(1);
     let kern = NSNumber::new_f64((style.tracking * style.font_size / 1000.0).into());
-    let baseline = NSNumber::new_f64(style.baseline_shift.into());
+    // A baseline shift is a glyph-only displacement. Let Metal/SVG apply it
+    // from STYLE_KEY; giving it to TextKit also expands line/column metrics
+    // and moves subsequent, unselected text (and can apply the shift twice).
+    let baseline = NSNumber::new_f64(0.0);
     let underline = NSNumber::new_i32(i32::from(style.underline));
     let strike = NSNumber::new_i32(i32::from(style.strikethrough));
     let metadata =
@@ -1353,19 +1368,28 @@ fn attributes(
     let metadata_key = NSString::from_str(STYLE_KEY);
     // SAFETY: AppKit attribute names map to their documented font, color, style and number values.
     unsafe {
-        let values: [&AnyObject; 8] = [
-            &font, &color, &paragraph, &kern, &baseline, &underline, &strike, &metadata,
+        let values: [&AnyObject; 9] = [
+            &font,
+            &color,
+            &paragraph,
+            &kern,
+            &baseline,
+            &underline,
+            &strike,
+            &metadata,
+            &vertical_form,
         ];
         let attributes = NSDictionary::from_slices(
             &[
                 NSFontAttributeName,
                 NSForegroundColorAttributeName,
                 NSParagraphStyleAttributeName,
-                NSKernAttributeName,
+                NSTrackingAttributeName,
                 NSBaselineOffsetAttributeName,
                 NSUnderlineStyleAttributeName,
                 NSStrikethroughStyleAttributeName,
                 &metadata_key,
+                objc2_app_kit::NSVerticalGlyphFormAttributeName,
             ],
             &values,
         );
@@ -1378,8 +1402,8 @@ fn attributes(
 fn hide_native_glyphs(view: &NSTextView) {
     let clear = NSColor::clearColor();
     view.setTextColor(Some(&clear));
-    let background = NSColor::blackColor();
-    let selected = NSColor::whiteColor();
+    let background = NSColor::colorWithCalibratedRed_green_blue_alpha(0.25, 0.5, 0.9, 0.25);
+    let selected = NSColor::clearColor();
     unsafe {
         let values: [&AnyObject; 2] = [&selected, &background];
         let attributes = NSDictionary::from_slices(
@@ -1438,11 +1462,194 @@ fn apply_attributes_to_view(view: &NSTextView, settings: &TextSettings) -> Resul
             }
         }
         storage.endEditing();
+        apply_kerning_to_view(view, settings);
+        apply_character_advances_to_view(view, settings);
         unsafe {
             view.setTypingAttributes(&base);
         }
     }
     Ok(())
+}
+
+// Match native caret/selection advances to GPU character transforms, without
+// asking TextKit to interpret an anisotropic font matrix.
+fn apply_character_advances_to_view(view: &NSTextView, settings: &TextSettings) {
+    use lumapaint_core::vector::{KerningMode, WritingMode};
+    use unicode_segmentation::UnicodeSegmentation;
+    let text = &settings.text;
+    let vertical = text.writing_mode == WritingMode::Vertical;
+    let scaled = text
+        .runs
+        .iter()
+        .any(|r| r.style.scale_x != 1. || r.style.scale_y != 1.);
+    if !(vertical && text.has_vertical_character_options() || scaled) {
+        return;
+    }
+    let (Some(storage), Some(manager), Some(container)) = (
+        unsafe { view.textStorage() },
+        unsafe { view.layoutManager() },
+        unsafe { view.textContainer() },
+    ) else {
+        return;
+    };
+    let units = text.vertical_units(settings.color);
+    storage.beginEditing();
+    unsafe {
+        storage.removeAttribute_range(NSKernAttributeName, NSRange::new(0, storage.length()));
+    }
+    let zero = NSNumber::new_i32(0);
+    for (start, content, style) in &units {
+        let transformed = style.scale_x != 1. || style.scale_y != 1.;
+        let group = vertical && style.tate_chu_yoko;
+        let upright = vertical && style.upright_latin(content);
+        if !(transformed || group || upright) || content.contains(['\n', '\r']) {
+            continue;
+        }
+        let range = NSRange::new(*start, content.encode_utf16().count());
+        if range.location + range.length <= storage.length() {
+            let tracking = NSNumber::new_f64((style.tracking * style.font_size / 1000.).into());
+            unsafe {
+                storage.addAttribute_value_range(NSTrackingAttributeName, &tracking, range);
+                storage.addAttribute_value_range(NSLigatureAttributeName, &zero, range);
+            }
+        }
+    }
+    storage.endEditing();
+    apply_kerning_to_view(view, settings);
+    manager.ensureLayoutForTextContainer(&container);
+    let mut changes = Vec::new();
+    for (start, content, style) in units {
+        let transformed = style.scale_x != 1. || style.scale_y != 1.;
+        let group = vertical && style.tate_chu_yoko;
+        let upright = vertical && style.upright_latin(content);
+        if !(transformed || group || upright) || content.contains(['\n', '\r']) {
+            continue;
+        }
+        let count = content.graphemes(true).count().max(1);
+        let (inline, cross) = if vertical {
+            (style.scale_y, style.scale_x)
+        } else {
+            (style.scale_x, style.scale_y)
+        };
+        let tracking = f64::from(style.tracking * style.font_size / 1000.);
+        let mut at = start;
+        for grapheme in content.graphemes(true) {
+            let next_at = at + grapheme.encode_utf16().count();
+            let glyph = manager.glyphIndexForCharacterAtIndex(at);
+            if glyph >= manager.numberOfGlyphs() {
+                at = next_at;
+                continue;
+            }
+            let pen = manager.locationForGlyphAtIndex(glyph).x;
+            let mut line_range = NSRange::new(0, 0);
+            let used = unsafe {
+                manager.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(glyph, &mut line_range)
+            };
+            let next_glyph = if next_at < storage.length() {
+                manager.glyphIndexForCharacterAtIndex(next_at)
+            } else {
+                manager.numberOfGlyphs()
+            };
+            let advance = if next_glyph < line_range.location + line_range.length {
+                manager.locationForGlyphAtIndex(next_glyph).x - pen
+            } else {
+                used.size.width - pen
+            };
+            let kern = unsafe {
+                storage.attribute_atIndex_effectiveRange(
+                    NSKernAttributeName,
+                    at,
+                    std::ptr::null_mut(),
+                )
+            }
+            .and_then(|v| v.downcast::<NSNumber>().ok())
+            .map_or(0., |n| n.doubleValue());
+            let desired = if group {
+                f64::from(style.font_size * style.scale_y) / count as f64
+            } else if upright {
+                f64::from(style.font_size * style.scale_y * (1. + style.tracking / 1000.).max(1.))
+            } else {
+                ((advance - kern - tracking) * f64::from(inline / cross) + kern + tracking).max(0.1)
+            };
+            let use_kern = group || upright || style.kerning != KerningMode::Metrics;
+            let value = if use_kern {
+                kern + desired - advance
+            } else {
+                tracking + desired - advance
+            };
+            changes.push((
+                NSRange::new(at, grapheme.encode_utf16().count()),
+                value,
+                use_kern,
+            ));
+            at = next_at;
+        }
+    }
+    storage.beginEditing();
+    for (range, value, use_kern) in changes {
+        if range.location + range.length <= storage.length() {
+            let value = NSNumber::new_f64(value);
+            unsafe {
+                storage.addAttribute_value_range(
+                    if use_kern {
+                        NSKernAttributeName
+                    } else {
+                        NSTrackingAttributeName
+                    },
+                    &value,
+                    range,
+                );
+            }
+        }
+    }
+    storage.endEditing();
+}
+
+fn apply_kerning_to_view(view: &NSTextView, settings: &TextSettings) {
+    use lumapaint_core::vector::KerningMode;
+    let Some(storage) = (unsafe { view.textStorage() }) else {
+        return;
+    };
+    let text = &settings.text;
+    let has_custom = text.kerning != KerningMode::Metrics
+        || text
+            .runs
+            .iter()
+            .any(|r| r.style.kerning != KerningMode::Metrics);
+    if !has_custom {
+        return;
+    }
+    let adjustments = lumapaint_renderer::vector::kerning::adjustments(text, settings.color);
+    storage.beginEditing();
+    unsafe {
+        storage.removeAttribute_range(NSKernAttributeName, NSRange::new(0, storage.length()));
+        storage.removeAttribute_range(NSLigatureAttributeName, NSRange::new(0, storage.length()));
+    }
+    let zero = NSNumber::new_i32(0);
+    let mut offset = 0;
+    for c in text.content.chars() {
+        let range = NSRange::new(offset, c.len_utf16());
+        if text.style_at(offset, settings.color).kerning != KerningMode::Metrics
+            && range.location + range.length <= storage.length()
+        {
+            unsafe {
+                storage.addAttribute_value_range(NSLigatureAttributeName, &zero, range);
+            }
+        }
+        offset += c.len_utf16();
+    }
+    for adjustment in adjustments {
+        let range = NSRange::new(adjustment.start, adjustment.length);
+        if range.location + range.length <= storage.length()
+            && !(adjustment.native_delta.abs() < 0.000001 && adjustment.amount.abs() > 0.000001)
+        {
+            let value = NSNumber::new_f64(adjustment.native_delta.into());
+            unsafe {
+                storage.addAttribute_value_range(NSKernAttributeName, &value, range);
+            }
+        }
+    }
+    storage.endEditing();
 }
 
 pub fn clipboard(action: super::DocumentAction) {

@@ -32,7 +32,7 @@ impl Kind {
             Self::DirectControls => (440., 600.),
             Self::Transform => (400., 360.),
             Self::ImportImage => (480., 360.),
-            Self::PdfImport => (480., 400.),
+            Self::PdfImport => (740., 680.),
             Self::ToolSettings => (440., 580.),
             Self::VectorSelections => (400., 320.),
         }

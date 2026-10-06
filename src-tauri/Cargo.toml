@@ -12,6 +12,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+unicode-segmentation = "1.13"
+lumapaint-fonts = { path = "../crates/lumapaint-fonts" }
 base64 = "0.22"
 lumapaint-renderer = { path = "../crates/lumapaint-renderer" }
 lumapaint-formats = { path = "../crates/lumapaint-formats" }

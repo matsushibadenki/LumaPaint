@@ -1,4 +1,4 @@
-//! Bounded embedded TrueType / CID OpenType CFF fonts and Identity-H / Identity-V CID fonts.
+//! Bounded embedded TrueType / CID OpenType CFF fonts and Encoding CMaps.
 use super::*;
 use std::{
     collections::HashMap,
@@ -8,7 +8,9 @@ use std::{
 pub(super) struct Font {
     pub data: Arc<[u8]>,
     pub index: u32,
-    pub cid: bool,
+    pub outlines: Option<font_program::Outlines>,
+    pub type3: Option<type3::Type3>,
+    pub encoding: Option<cmap::CMap>,
     pub gids: Vec<Option<u16>>,
     pub widths: HashMap<u16, f32>,
     pub default_width: f32,
@@ -104,6 +106,75 @@ fn code(object: &Object) -> Result<u16, ImportError> {
     }
     Ok(n as u16)
 }
+/// Adapt a standalone CID CFF to the outline parser's sfnt container.
+/// PDF widths still come from W/DW, never from the synthetic metrics tables.
+fn wrap_cid_cff(cff: Vec<u8>) -> Result<Vec<u8>, ImportError> {
+    let table =
+        ttf_parser::cff::Table::parse(&cff).ok_or(ImportError::Unsupported("pdf.font_program"))?;
+    let m = table.matrix();
+    if m.sx != 0.001 || m.sy != 0.001 || m.kx != 0. || m.ky != 0. || m.tx != 0. || m.ty != 0. {
+        return Err(ImportError::Unsupported("pdf.font_matrix"));
+    }
+    let count = table.number_of_glyphs();
+    for gid in 0..count {
+        if table.glyph_cid(ttf_parser::GlyphId(gid)).is_none() {
+            return Err(ImportError::Unsupported("pdf.font_program"));
+        }
+    }
+    let mut head = vec![0u8; 54];
+    head[..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    head[12..16].copy_from_slice(&0x5f0f3cf5u32.to_be_bytes());
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    let mut hhea = vec![0u8; 36];
+    hhea[..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    hhea[34..36].copy_from_slice(&1u16.to_be_bytes());
+    let mut maxp = 0x00005000u32.to_be_bytes().to_vec();
+    maxp.extend_from_slice(&count.to_be_bytes());
+    let mut out = vec![0u8; 76];
+    out[..4].copy_from_slice(b"OTTO");
+    out[4..6].copy_from_slice(&4u16.to_be_bytes());
+    out[6..8].copy_from_slice(&64u16.to_be_bytes());
+    out[8..10].copy_from_slice(&2u16.to_be_bytes());
+    let mut head_offset = 0;
+    for (i, (tag, mut data)) in [
+        (b"CFF ", cff),
+        (b"head", head),
+        (b"hhea", hhea),
+        (b"maxp", maxp),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offset = out.len();
+        let len = data.len();
+        if tag == b"head" {
+            head_offset = offset;
+        }
+        while !data.len().is_multiple_of(4) {
+            data.push(0);
+        }
+        let sum = data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .fold(0u32, |sum, b| sum.wrapping_add(u32::from_be_bytes(*b)));
+        let r = 12 + i * 16;
+        out[r..r + 4].copy_from_slice(tag);
+        out[r + 4..r + 8].copy_from_slice(&sum.to_be_bytes());
+        out[r + 8..r + 12].copy_from_slice(&(offset as u32).to_be_bytes());
+        out[r + 12..r + 16].copy_from_slice(&(len as u32).to_be_bytes());
+        out.extend(data);
+    }
+    let sum = out
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .fold(0u32, |sum, b| sum.wrapping_add(u32::from_be_bytes(*b)));
+    out[head_offset + 8..head_offset + 12]
+        .copy_from_slice(&0xB1B0_AFBAu32.wrapping_sub(sum).to_be_bytes());
+    Ok(out)
+}
+
 impl Interpreter<'_> {
     pub(super) fn font(
         &mut self,
@@ -113,6 +184,12 @@ impl Interpreter<'_> {
         let dict = resource(self.doc, resources, b"Font", name)?
             .as_dict()
             .map_err(|_| malformed())?;
+        self.font_dictionary(dict)
+    }
+    pub(super) fn font_dictionary(
+        &mut self,
+        dict: &Dictionary,
+    ) -> Result<Option<Arc<Font>>, ImportError> {
         let key = dict as *const _ as usize;
         if let Some(font) = self.font_cache.get(&key) {
             return Ok(font.clone());
@@ -136,15 +213,58 @@ impl Interpreter<'_> {
             .get(b"Subtype")
             .and_then(Object::as_name)
             .map_err(|_| malformed())?;
+        if subtype == b"Type3" {
+            return self.type3_font(root);
+        }
         let cid = subtype == b"Type0";
+        let encoding = if cid {
+            let object = resolve(self.doc, root.get(b"Encoding").map_err(|_| malformed())?)?;
+            Some(if let Ok(name) = object.as_name() {
+                match name {
+                    b"Identity-H" => cmap::CMap::identity(false),
+                    b"Identity-V" => cmap::CMap::identity(true),
+                    _ => return Err(ImportError::Unsupported("pdf.font_encoding")),
+                }
+            } else {
+                let stream = object.as_stream().map_err(|_| malformed())?;
+                let bytes = stream
+                    .get_plain_content_with_limit(1024 * 1024)
+                    .map_err(|_| ImportError::LimitExceeded("pdf.font_mapping"))?;
+                if bytes.len() > self.remaining {
+                    return Err(ImportError::LimitExceeded("pdf.content_budget"));
+                }
+                self.remaining -= bytes.len();
+                let parent = stream
+                    .dict
+                    .get(b"UseCMap")
+                    .ok()
+                    .map(|v| resolve(self.doc, v))
+                    .transpose()?;
+                let parent = parent
+                    .map(|v| {
+                        v.as_name()
+                            .map_err(|_| ImportError::Unsupported("pdf.font_encoding"))
+                    })
+                    .transpose()?;
+                let mut map = cmap::parse(&bytes, parent)?;
+                let retained = map.memory_bytes();
+                if retained > self.remaining {
+                    return Err(ImportError::LimitExceeded("pdf.content_budget"));
+                }
+                self.remaining -= retained;
+                if let Ok(mode) = stream.dict.get(b"WMode") {
+                    let mode = num(resolve(self.doc, mode)?)?;
+                    if ![0., 1.].contains(&mode) {
+                        return Err(malformed());
+                    }
+                    map.vertical = mode == 1.;
+                }
+                map
+            })
+        } else {
+            None
+        };
         let dict = if cid {
-            if ![b"Identity-H".as_slice(), b"Identity-V"].contains(
-                &resolve(self.doc, root.get(b"Encoding").map_err(|_| malformed())?)?
-                    .as_name()
-                    .map_err(|_| ImportError::Unsupported("pdf.font_encoding"))?,
-            ) {
-                return Err(ImportError::Unsupported("pdf.font_encoding"));
-            }
             let descendants = resolve(
                 self.doc,
                 root.get(b"DescendantFonts").map_err(|_| malformed())?,
@@ -167,17 +287,12 @@ impl Interpreter<'_> {
             }
             dict
         } else {
-            if ![b"TrueType".as_slice(), b"Type1"].contains(&subtype) {
+            if ![b"TrueType".as_slice(), b"Type1", b"MMType1"].contains(&subtype) {
                 return Err(ImportError::Unsupported("pdf.font_program"));
             }
             root
         };
-        let vertical = if cid
-            && resolve(self.doc, root.get(b"Encoding").map_err(|_| malformed())?)?
-                .as_name()
-                .ok()
-                == Some(b"Identity-V")
-        {
+        let vertical = if encoding.as_ref().is_some_and(|m| m.vertical) {
             Some(vertical_metrics(self.doc, dict)?)
         } else {
             None
@@ -193,20 +308,50 @@ impl Interpreter<'_> {
             d.get(b"FontFile2")
                 .ok()
                 .or_else(|| d.get(b"FontFile3").ok())
+                .or_else(|| d.get(b"FontFile").ok())
         });
         let (data, index, substituted) = if let Some(program) = embedded {
             let program = resolve(self.doc, program)?
                 .as_stream()
                 .map_err(|_| malformed())?;
-            if let Ok(kind) = program.dict.get(b"Subtype") {
-                if kind.as_name().ok() != Some(b"OpenType") {
-                    return Err(ImportError::Unsupported("pdf.font_program"));
-                }
+            let kind = program
+                .dict
+                .get(b"Subtype")
+                .ok()
+                .map(|v| v.as_name().map_err(|_| malformed()))
+                .transpose()?;
+            let raw_cid = kind == Some(b"CIDFontType0C")
+                && cid
+                && dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"CIDFontType0");
+            if kind.is_some() && kind != Some(b"OpenType") && kind != Some(b"Type1C") && !raw_cid {
+                return Err(ImportError::Unsupported("pdf.font_program"));
             }
             let data = program
                 .get_plain_content_with_limit(4 * 1024 * 1024)
                 .map_err(|_| ImportError::LimitExceeded("pdf.font_program"))?;
-            (data, 0, false)
+            let data = if raw_cid {
+                match wrap_cid_cff(data.clone()) {
+                    Ok(wrapped) => wrapped,
+                    Err(ImportError::Unsupported(_)) => data,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                data
+            };
+            let names: Vec<_> = [
+                root.get(b"BaseFont").ok(),
+                dict.get(b"BaseFont").ok(),
+                descriptor.and_then(|d| d.get(b"FontName").ok()),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|o| resolve(self.doc, o))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|o| o.as_name().ok())
+            .collect();
+            let index = font_collection::face_index(&data, &names)?;
+            (data, index, false)
         } else {
             if cid || descriptor.is_some_and(|d| d.get(b"FontFile").is_ok()) {
                 return Err(ImportError::Unsupported("pdf.font_program"));
@@ -234,30 +379,35 @@ impl Interpreter<'_> {
             static DB: OnceLock<usvg::fontdb::Database> = OnceLock::new();
             let db = DB.get_or_init(|| {
                 let mut db = usvg::fontdb::Database::new();
-                db.load_system_fonts();
+                lumapaint_fonts::load_system_fonts(&mut db);
                 db
             });
             use usvg::fontdb::{Family, Query, Style, Weight};
             let families = [Family::Name(family), Family::SansSerif];
             let id = db
-                .query(&Query {
-                    families: &families,
-                    weight: if base.contains("Bold") {
-                        Weight::BOLD
-                    } else {
-                        Weight::NORMAL
-                    },
-                    style: if base.contains("Italic") || base.contains("Oblique") {
-                        Style::Italic
-                    } else {
-                        Style::Normal
-                    },
-                    ..Default::default()
+                .faces()
+                .find(|face| face.post_script_name == base)
+                .map(|face| face.id)
+                .or_else(|| {
+                    db.query(&Query {
+                        families: &families,
+                        weight: if base.contains("Bold") {
+                            Weight::BOLD
+                        } else {
+                            Weight::NORMAL
+                        },
+                        style: if base.contains("Italic") || base.contains("Oblique") {
+                            Style::Italic
+                        } else {
+                            Style::Normal
+                        },
+                        ..Default::default()
+                    })
                 })
                 .ok_or(ImportError::Unsupported("pdf.font_program"))?;
             let (data, index) = db
                 .with_face_data(id, |data, index| {
-                    if data.len() <= 4 * 1024 * 1024 {
+                    if data.len() <= 64 * 1024 * 1024 {
                         Some((data.to_vec(), index))
                     } else {
                         None
@@ -271,19 +421,7 @@ impl Interpreter<'_> {
             return Err(ImportError::LimitExceeded("pdf.content_budget"));
         }
         self.remaining -= data.len();
-        let face = ttf_parser::Face::parse(&data, index)
-            .map_err(|_| ImportError::Unsupported("pdf.font_program"))?;
-        let tables = face.tables();
-        if face.is_variable()
-            || tables.colr.is_some()
-            || tables.svg.is_some()
-            || tables.sbix.is_some()
-            || tables.cbdt.is_some()
-            || tables.bdat.is_some()
-            || tables.ebdt.is_some()
-        {
-            return Err(ImportError::Unsupported("pdf.font_program"));
-        }
+        let face = font_program::Program::parse(&data, index)?;
         let mut widths = HashMap::new();
         let default_width = if cid {
             dict.get(b"DW").ok().map(num).transpose()?.unwrap_or(1000.)
@@ -294,6 +432,30 @@ impl Interpreter<'_> {
                 .transpose()?
                 .unwrap_or(0.)
         };
+        if !cid && !substituted && face.native().is_some_and(|f| f.tables().glyf.is_some()) {
+            let symbolic = descriptor
+                .and_then(|d| d.get(b"Flags").ok())
+                .map(|o| resolve(self.doc, o))
+                .transpose()?
+                .map(|o| o.as_i64().map_err(|_| malformed()))
+                .transpose()?
+                .is_some_and(|f| f & 4 != 0);
+            if symbolic || root.get(b"Encoding").is_err() {
+                let gids = face.truetype_builtin_mapping()?;
+                self.simple_widths(dict, &face, &gids, false, &mut widths)?;
+                return Ok(Font {
+                    data: data.into(),
+                    index,
+                    outlines: None,
+                    type3: None,
+                    encoding: None,
+                    gids,
+                    widths,
+                    default_width,
+                    vertical,
+                });
+            }
+        }
         let gids = if cid {
             if let Ok(w) = dict.get(b"W") {
                 let w = resolve(self.doc, w)?.as_array().map_err(|_| malformed())?;
@@ -342,17 +504,15 @@ impl Interpreter<'_> {
                 if dict.get(b"CIDToGIDMap").is_ok() {
                     return Err(ImportError::Unsupported("pdf.font_mapping"));
                 }
-                let cff = face
-                    .tables()
-                    .cff
-                    .as_ref()
-                    .ok_or(ImportError::Unsupported("pdf.font_program"))?;
                 let mut pairs = Vec::new();
                 let mut max = 0u16;
                 for gid in 0..face.number_of_glyphs() {
-                    let cid = cff
-                        .glyph_cid(ttf_parser::GlyphId(gid))
-                        .ok_or(ImportError::Unsupported("pdf.font_program"))?;
+                    let Some(cid) = face.cid(gid) else {
+                        if face.native().is_none() {
+                            continue;
+                        }
+                        return Err(ImportError::Unsupported("pdf.font_mapping"));
+                    };
                     max = max.max(cid);
                     pairs.push((cid, gid));
                 }
@@ -364,7 +524,7 @@ impl Interpreter<'_> {
                 }
                 mapping
             } else {
-                if face.tables().glyf.is_none() {
+                if face.native().is_none_or(|f| f.tables().glyf.is_none()) {
                     return Err(ImportError::Unsupported("pdf.font_program"));
                 }
                 let map = dict
@@ -438,18 +598,37 @@ impl Interpreter<'_> {
                     }
                 }
                 self.simple_widths(dict, &face, &gids, substituted, &mut widths)?;
+                let outlines = face.collect(&gids, &mut self.remaining)?;
                 return Ok(Font {
                     data: data.into(),
                     index,
-                    cid,
+                    outlines,
+                    type3: None,
+                    encoding: None,
                     gids,
                     widths,
                     default_width,
                     vertical,
                 });
             }
-            if !substituted {
+            if !substituted && face.native().is_some_and(|f| f.tables().cff.is_none()) {
                 return Err(ImportError::Unsupported("pdf.font_encoding"));
+            }
+            if !substituted {
+                let gids: Vec<_> = (0..256).map(|c| face.builtin_index(c)).collect();
+                self.simple_widths(dict, &face, &gids, false, &mut widths)?;
+                let outlines = face.collect(&gids, &mut self.remaining)?;
+                return Ok(Font {
+                    data: data.into(),
+                    index,
+                    outlines,
+                    type3: None,
+                    encoding: None,
+                    gids,
+                    widths,
+                    default_width,
+                    vertical,
+                });
             }
             let gids: Vec<_> = mapping
                 .iter()
@@ -458,10 +637,13 @@ impl Interpreter<'_> {
             self.simple_widths(dict, &face, &gids, substituted, &mut widths)?;
             gids
         };
+        let outlines = face.collect(&gids, &mut self.remaining)?;
         Ok(Font {
             data: data.into(),
             index,
-            cid,
+            outlines,
+            type3: None,
+            encoding,
             gids,
             widths,
             default_width,
@@ -471,7 +653,7 @@ impl Interpreter<'_> {
     fn simple_widths(
         &self,
         dict: &Dictionary,
-        face: &ttf_parser::Face<'_>,
+        face: &font_program::Program<'_>,
         gids: &[Option<u16>],
         substituted: bool,
         widths: &mut HashMap<u16, f32>,
@@ -581,9 +763,346 @@ mod tests {
             page_bounds: [0., 0., 100., 80.],
             font_cache: Default::default(),
             text_glyphs: 0,
+            glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
         }
+    }
+    fn builtin_truetype(platform: u16, prefix: u16, ambiguous: bool) -> Vec<u8> {
+        let mut data = include_bytes!("../../../tests/fixtures/lp-pdf-test.ttf").to_vec();
+        let mut segments = vec![(prefix + 65, prefix + 66, 1u16.wrapping_sub(prefix + 65))];
+        if ambiguous {
+            segments.insert(0, (65, 66, 2u16.wrapping_sub(65)));
+        }
+        segments.push((65535, 65535, 1));
+        let n = segments.len() as u16;
+        let mut sub = Vec::new();
+        let power = 2;
+        for v in [4u16, 16 + 8 * n, 0, 2 * n, 2 * power, 1, 2 * n - 2 * power] {
+            sub.extend(v.to_be_bytes());
+        }
+        for (_, end, _) in &segments {
+            sub.extend(end.to_be_bytes());
+        }
+        sub.extend([0, 0]);
+        for (start, _, _) in &segments {
+            sub.extend(start.to_be_bytes());
+        }
+        for (_, _, delta) in &segments {
+            sub.extend(delta.to_be_bytes());
+        }
+        sub.resize(sub.len() + segments.len() * 2, 0);
+        let mut cmap = vec![0, 0, 0, 1];
+        cmap.extend(platform.to_be_bytes());
+        cmap.extend([0, 0]);
+        cmap.extend(12u32.to_be_bytes());
+        cmap.extend(sub);
+        let count = u16::from_be_bytes(data[4..6].try_into().unwrap());
+        for i in 0..usize::from(count) {
+            let r = 12 + i * 16;
+            if &data[r..r + 4] == b"cmap" {
+                let offset = u32::from_be_bytes(data[r + 8..r + 12].try_into().unwrap()) as usize;
+                let length = u32::from_be_bytes(data[r + 12..r + 16].try_into().unwrap()) as usize;
+                assert!(cmap.len() <= length);
+                data[offset..offset + length].fill(0);
+                data[offset..offset + cmap.len()].copy_from_slice(&cmap);
+                data[r + 12..r + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
+            }
+        }
+        data
+    }
+    #[test]
+    fn symbolic_and_missing_encoding_truetype_keep_builtin_glyphs() {
+        fn render(data: Vec<u8>, encoding: Option<Object>, symbolic: bool) -> String {
+            let mut doc = lopdf::Document::new();
+            let mut resources =
+                fixture_resources(&mut doc, Object::Name(b"WinAnsiEncoding".to_vec()));
+            let font = resources
+                .get_mut(b"Font")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .get_mut(b"F")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+            match encoding {
+                Some(v) => font.set("Encoding", v),
+                None => {
+                    font.remove(b"Encoding");
+                }
+            }
+            let descriptor = font.get(b"FontDescriptor").unwrap().as_reference().unwrap();
+            let desc = doc
+                .get_object_mut(descriptor)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+            desc.set("Flags", if symbolic { 4 } else { 32 });
+            let program = desc.get(b"FontFile2").unwrap().as_reference().unwrap();
+            *doc.get_object_mut(program).unwrap() =
+                Object::Stream(lopdf::Stream::new(Dictionary::new(), data));
+            let mut parser = parser(&doc);
+            parser
+                .content(
+                    b"BT /F 20 Tf 1 0 0 1 10 30 Tm (AB) Tj ET",
+                    &resources,
+                    State::default(),
+                    0,
+                )
+                .unwrap();
+            assert!(!parser
+                .issues
+                .iter()
+                .any(|i| i.code == "pdf.font_encoding" || i.code == "pdf.glyph_missing"));
+            parser.body
+        }
+        let expected = render(
+            include_bytes!("../../../tests/fixtures/lp-pdf-test.ttf").to_vec(),
+            Some(Object::Name(b"WinAnsiEncoding".to_vec())),
+            false,
+        );
+        for prefix in [0, 0xf000, 0xf100, 0xf200] {
+            let data = builtin_truetype(3, prefix, false);
+            assert_eq!(render(data.clone(), None, false), expected);
+            // Symbolic fonts must use their built-in cmap even if an
+            // unrelated PDF Encoding is present (ISO §9.6.6.4).
+            assert_eq!(
+                render(data, Some(Object::Name(b"Ignored".to_vec())), true),
+                expected
+            );
+        }
+        assert_eq!(render(builtin_truetype(1, 0, false), None, false), expected);
+        let data = builtin_truetype(3, 0xf000, true);
+        let program = font_program::Program::parse(&data, 0).unwrap();
+        assert!(matches!(
+            program.truetype_builtin_mapping(),
+            Err(ImportError::Unsupported("pdf.font_mapping"))
+        ));
+    }
+    #[test]
+    fn embedded_ttc_selected_face_matches_its_standalone_outlines() {
+        let original = include_bytes!("../../../tests/fixtures/lp-pdf-test.ttf");
+        let second = font_collection::rename_and_scale(original, "LPPDFBest", 2000);
+        fn render(data: Vec<u8>) -> (String, u32) {
+            let mut doc = lopdf::Document::new();
+            let mut resources =
+                fixture_resources(&mut doc, Object::Name(b"WinAnsiEncoding".to_vec()));
+            let font = resources
+                .get_mut(b"Font")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .get_mut(b"F")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+            font.set("BaseFont", Object::Name(b"ABCDEF+LPPDFBest".to_vec()));
+            let descriptor = font.get(b"FontDescriptor").unwrap().as_reference().unwrap();
+            let program = doc
+                .get_object(descriptor)
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get(b"FontFile2")
+                .unwrap()
+                .as_reference()
+                .unwrap();
+            *doc.get_object_mut(program).unwrap() =
+                Object::Stream(lopdf::Stream::new(Dictionary::new(), data));
+            let mut parser = parser(&doc);
+            let index = parser.font(b"F", &resources).unwrap().unwrap().index;
+            parser
+                .content(
+                    b"BT /F 20 Tf 1 0 0 1 10 30 Tm (ABC) Tj ET",
+                    &resources,
+                    State::default(),
+                    0,
+                )
+                .unwrap();
+            assert!(!parser.body.is_empty());
+            (parser.body, index)
+        }
+        let (expected, index) = render(second.clone());
+        assert_eq!(index, 0);
+        let (actual, index) = render(font_collection::collection(&[original.to_vec(), second]));
+        assert_eq!(index, 1);
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn embedded_otc_selected_cid_face_matches_standalone_pdf() {
+        let original = include_bytes!("../../../tests/fixtures/lp-japanese-cid.otf");
+        let second = font_collection::rename_and_scale(original, "LPJapaneseCIDBest", 2000);
+        fn render(program: Vec<u8>) -> String {
+            let mut pdf = lopdf::Document::load_mem(include_bytes!(
+                "../../../tests/fixtures/lp-japanese-cid-horizontal.pdf"
+            ))
+            .unwrap();
+            for object in pdf.objects.values_mut() {
+                if let Ok(dict) = object.as_dict_mut() {
+                    if dict.get(b"BaseFont").is_ok() {
+                        dict.set(
+                            "BaseFont",
+                            Object::Name(b"ABCDEF+LPJapaneseCIDBest".to_vec()),
+                        );
+                    }
+                    if dict.get(b"FontName").is_ok() {
+                        dict.set("FontName", Object::Name(b"LPJapaneseCIDBest".to_vec()));
+                    }
+                }
+                if let Ok(stream) = object.as_stream_mut() {
+                    if stream
+                        .dict
+                        .get(b"Subtype")
+                        .ok()
+                        .and_then(|o| o.as_name().ok())
+                        == Some(b"OpenType")
+                    {
+                        stream.content = program.clone();
+                        stream.dict.set("Length", program.len() as i64);
+                        stream.dict.remove(b"Filter");
+                    }
+                }
+            }
+            let mut bytes = vec![];
+            pdf.save_to(&mut bytes).unwrap();
+            let result = crate::pdf::read(
+                &bytes,
+                crate::io::ReadOptions {
+                    allow_lossy: true,
+                    raster_dpi: 72,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(!result
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "pdf.font_collection_face"
+                    || i.code == "pdf.font_program"
+                    || i.code == "pdf.glyph_missing"));
+            let ReadContent::Vector(document) = result.content else {
+                panic!()
+            };
+            let source = document.svg_layers().next().unwrap().source.to_string();
+            source
+        }
+        assert_eq!(
+            render(second.clone()),
+            render(font_collection::collection(&[original.to_vec(), second]))
+        );
+    }
+    #[test]
+    fn type1c_pdf_embedded_program_preserves_differences_and_widths() {
+        let mut doc = lopdf::Document::new();
+        let program = doc.add_object(lopdf::Stream::new(
+            lopdf::dictionary! {"Subtype"=>"Type1C"},
+            font_program::test_cff(),
+        ));
+        let descriptor = doc.add_object(lopdf::dictionary! {"FontFile3"=>program});
+        let font = lopdf::dictionary! {"Subtype"=>"Type1","FontDescriptor"=>descriptor,"Encoding"=>lopdf::dictionary! {"Differences"=>vec![66.into(),Object::Name(b"A".to_vec())]},"FirstChar"=>66,"LastChar"=>66,"Widths"=>vec![900.into()]};
+        let resources = lopdf::dictionary! {"Font"=>lopdf::dictionary! {"F"=>font}};
+        let mut p = parser(&doc);
+        p.content(
+            b"BT /F 20 Tf 1 0 0 1 10 30 Tm (BB) Tj ET",
+            &resources,
+            State::default(),
+            0,
+        )
+        .unwrap();
+        assert!(p.body.contains("M12 32"));
+        assert!(p.body.contains("M30 32"));
+        assert!(!p
+            .issues
+            .iter()
+            .any(|i| i.code == "pdf.font_program" || i.code == "pdf.glyph_missing"));
+    }
+    #[test]
+    fn legacy_type1_pdf_differences_and_pdf_widths_control_positions() {
+        let mut doc = lopdf::Document::new();
+        let program = doc.add_object(lopdf::Stream::new(
+            Dictionary::new(),
+            font_program::test_type1(),
+        ));
+        let descriptor = doc.add_object(lopdf::dictionary! {"FontFile"=>program});
+        let font = lopdf::dictionary! {"Subtype"=>"Type1","FontDescriptor"=>descriptor,"Encoding"=>lopdf::dictionary! {"Differences"=>vec![66.into(),Object::Name(b"A".to_vec())]},"FirstChar"=>66,"LastChar"=>66,"Widths"=>vec![900.into()]};
+        let resources = lopdf::dictionary! {"Font"=>lopdf::dictionary! {"F"=>font}};
+        let mut p = parser(&doc);
+        p.content(
+            b"BT /F 20 Tf 1 0 0 1 10 30 Tm (BB) Tj ET",
+            &resources,
+            State::default(),
+            0,
+        )
+        .unwrap();
+        assert!(p.body.contains("M12 32"), "{}", p.body);
+        assert!(p.body.contains("M30 32"), "{}", p.body);
+        assert!(!p.issues.iter().any(|i| i.code == "pdf.font_program"
+            || i.code == "pdf.font_substitution"
+            || i.code == "pdf.glyph_missing"));
+    }
+    #[test]
+    fn type3_graphics_use_font_matrix_and_pdf_widths_without_substitution() {
+        let mut doc = lopdf::Document::new();
+        let glyph = doc.add_object(lopdf::Stream::new(
+            Dictionary::new(),
+            b"600 0 0 0 300 500 d1 100 100 200 400 re f".to_vec(),
+        ));
+        let font = lopdf::dictionary! {"Subtype"=>"Type3","FontMatrix"=>vec![0.001.into(),0.into(),0.into(),0.001.into(),0.into(),0.into()],"CharProcs"=>lopdf::dictionary! {"A"=>glyph},"Encoding"=>lopdf::dictionary! {"Differences"=>vec![65.into(),Object::Name(b"A".to_vec())]},"FirstChar"=>65,"LastChar"=>65,"Widths"=>vec![900.into()]};
+        let resources = lopdf::dictionary! {"Font"=>lopdf::dictionary! {"F"=>font}};
+        let mut limited = parser(&doc);
+        limited.remaining = 1;
+        assert!(matches!(
+            limited.font(b"F", &resources),
+            Err(ImportError::LimitExceeded("pdf.content_budget"))
+        ));
+        let mut p = parser(&doc);
+        p.content(
+            b"BT /F 20 Tf 1 0 0 1 10 30 Tm (AA) Tj ET",
+            &resources,
+            State::default(),
+            0,
+        )
+        .unwrap();
+        assert!(
+            p.body.contains("matrix(0.020000001 0 0 0.020000001 10 30)"),
+            "{}",
+            p.body
+        );
+        assert!(p.body.contains(" 28 30)"), "{}", p.body);
+        assert!(!p
+            .issues
+            .iter()
+            .any(|i| i.code == "pdf.font_program" || i.code == "pdf.font_substitution"));
+        let mut p = parser(&doc);
+        p.content(
+            b"BT /F 20 Tf 7 Tr (A) Tj ET 1 1 10 10 re f",
+            &resources,
+            State::default(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(p.body.matches("<path").count(), 2);
+        assert!(p.defs.is_empty());
+        let mut p = parser(&doc);
+        p.content(
+            b"BT /F 20 Tf 3 Tr (A) Tj ET",
+            &resources,
+            State::default(),
+            0,
+        )
+        .unwrap();
+        assert!(p.body.is_empty());
+        *doc.get_object_mut(glyph).unwrap() = Object::Stream(lopdf::Stream::new(
+            Dictionary::new(),
+            b"600 0 d0 BT /F 20 Tf (A) Tj ET".to_vec(),
+        ));
+        let mut p = parser(&doc);
+        assert!(matches!(
+            p.content(b"BT /F 20 Tf (A) Tj ET", &resources, State::default(), 0),
+            Err(ImportError::LimitExceeded("pdf.glyph_depth"))
+        ));
     }
     #[test]
     fn embedded_font_cache_avoids_repeat_decode_and_differences_select_actual_glyphs() {

@@ -10,7 +10,7 @@ use base64::Engine;
 mod print_layout;
 mod read;
 mod registration;
-pub use read::{inspect, read_all, PageInfo};
+pub use read::{inspect, read_all, read_selected, PageInfo};
 pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
     read::read(bytes, options)
 }
@@ -221,6 +221,130 @@ impl DocumentExporter for PdfExporter {
 mod tests {
     use super::*;
     #[test]
+    fn standalone_cid_cff_preserves_horizontal_and_vertical_outlines() {
+        for bytes in [
+            include_bytes!("../tests/fixtures/lp-japanese-cid-horizontal.pdf").as_slice(),
+            include_bytes!("../tests/fixtures/lp-japanese-cid-vertical.pdf").as_slice(),
+        ] {
+            let options = ReadOptions {
+                allow_lossy: true,
+                raster_dpi: 72,
+                ..Default::default()
+            };
+            let original = read(bytes, options).unwrap();
+            let crate::io::ReadContent::Vector(original) = original.content else {
+                panic!()
+            };
+            let mut pdf = lopdf::Document::load_mem(bytes).unwrap();
+            let (id, program) = pdf
+                .objects
+                .iter()
+                .find_map(|(id, o)| {
+                    o.as_stream()
+                        .ok()
+                        .filter(|s| {
+                            s.dict.get(b"Subtype").ok().and_then(|v| v.as_name().ok())
+                                == Some(b"OpenType")
+                        })
+                        .map(|s| (*id, s.get_plain_content().unwrap()))
+                })
+                .unwrap();
+            let face = ttf_parser::Face::parse(&program, 0).unwrap();
+            let cff = face
+                .raw_face()
+                .table(ttf_parser::Tag::from_bytes(b"CFF "))
+                .unwrap()
+                .to_vec();
+            *pdf.get_object_mut(id).unwrap() = lopdf::Object::Stream(lopdf::Stream::new(
+                lopdf::dictionary! {"Subtype"=>"CIDFontType0C"},
+                cff,
+            ));
+            let mut encoded = vec![];
+            pdf.save_to(&mut encoded).unwrap();
+            let converted = read(&encoded, options).unwrap();
+            assert!(!converted
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "pdf.font_program" || i.code == "pdf.text_conversion"));
+            let crate::io::ReadContent::Vector(converted) = converted.content else {
+                panic!()
+            };
+            assert_eq!(
+                original.svg_layers().next().unwrap().source,
+                converted.svg_layers().next().unwrap().source
+            );
+        }
+    }
+    #[test]
+    fn embedded_mixed_length_japanese_cmaps_match_identity_outlines() {
+        for bytes in [
+            include_bytes!("../tests/fixtures/lp-japanese-cid-horizontal.pdf").as_slice(),
+            include_bytes!("../tests/fixtures/lp-japanese-cid-vertical.pdf").as_slice(),
+        ] {
+            let options = ReadOptions {
+                allow_lossy: true,
+                raster_dpi: 72,
+                ..Default::default()
+            };
+            let original = read(bytes, options).unwrap();
+            let crate::io::ReadContent::Vector(original) = original.content else {
+                panic!()
+            };
+            let mut pdf = lopdf::Document::load_mem(bytes).unwrap();
+            let font = pdf
+                .objects
+                .iter()
+                .find_map(|(id, o)| {
+                    o.as_dict()
+                        .ok()
+                        .filter(|d| {
+                            d.get(b"Subtype").ok().and_then(|v| v.as_name().ok()) == Some(b"Type0")
+                        })
+                        .map(|_| *id)
+                })
+                .unwrap();
+            let vertical = pdf
+                .get_dictionary(font)
+                .unwrap()
+                .get(b"Encoding")
+                .unwrap()
+                .as_name()
+                .unwrap()
+                == b"Identity-V";
+            let cmap=pdf.add_object(lopdf::Stream::new(lopdf::dictionary! {"WMode"=>i64::from(vertical)},b"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def 2 begincodespacerange <00> <7f> <8140> <9ffc> endcodespacerange 2 begincidchar <41> 42 <8140> 7 endcidchar".to_vec()));
+            pdf.get_object_mut(font)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .set("Encoding", cmap);
+            let contents = pdf.get_page_content(*pdf.get_pages().values().next().unwrap());
+            let changed = String::from_utf8(contents)
+                .unwrap()
+                .replace("<002A0007>", "<418140>");
+            let page = *pdf.get_pages().values().next().unwrap();
+            let stream = pdf.add_object(lopdf::Stream::new(
+                lopdf::dictionary! {},
+                changed.into_bytes(),
+            ));
+            pdf.get_object_mut(page)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .set("Contents", stream);
+            let mut encoded = vec![];
+            pdf.save_to(&mut encoded).unwrap();
+            let converted = read(&encoded, options).unwrap();
+            let crate::io::ReadContent::Vector(converted) = converted.content else {
+                panic!()
+            };
+            assert_eq!(
+                original.svg_layers().next().unwrap().source,
+                converted.svg_layers().next().unwrap().source
+            );
+        }
+    }
+    #[test]
     fn publication_preserves_page_order_dimensions_and_individual_dpi() {
         let mut publication = PdfPublication::default();
         for (width, height, dpi, color) in [
@@ -299,6 +423,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(120., 80.), (120., 80.), (60., 100.)]
         );
+        let subset = read_selected(
+            &result.bytes,
+            ReadOptions {
+                allow_lossy: true,
+                raster_dpi: 72,
+                ..Default::default()
+            },
+            &[2, 0, 2],
+        )
+        .unwrap();
+        let crate::io::ReadContent::Vector(subset) = subset.content else {
+            panic!()
+        };
+        assert_eq!(subset.dimensions(), (120, 80));
+        assert_eq!(subset.detached_page(1).unwrap().dimensions(), (60, 100));
         for index in 0..3 {
             let result = read(
                 &result.bytes,
@@ -362,6 +501,16 @@ mod tests {
             read_all(&fixture(513, false), ReadOptions::default()),
             Err(ImportError::LimitExceeded("pdf.publication_pages"))
         ));
+        let selected =
+            read_selected(&fixture(3, false), ReadOptions::default(), &[2, 0, 2]).unwrap();
+        let crate::io::ReadContent::Vector(selected) = selected.content else {
+            panic!()
+        };
+        assert_eq!(selected.document_state().pages.unwrap().pages.len(), 2);
+        assert!(read_selected(&bytes, ReadOptions::default(), &[]).is_err());
+        assert!(read_selected(&bytes, ReadOptions::default(), &[2]).is_err());
+        // Unselected annotations must not prevent an otherwise lossless import.
+        assert!(read_selected(&bytes, ReadOptions::default(), &[0]).is_ok());
         let decoded = read_all(&fixture(1, false), ReadOptions::default()).unwrap();
         let crate::io::ReadContent::Vector(doc) = decoded.content else {
             panic!()

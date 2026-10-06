@@ -37,6 +37,58 @@ impl Default for LayerEffects {
         }
     }
 }
+/// Immutable execution plan for a batch of pixels. Lookup entries are f32
+/// intermediate values, not quantized colors; the reference rounding is retained.
+pub struct PreparedEffects<'a> {
+    effects: &'a LayerEffects,
+    tone: [[f32; 256]; 3],
+    values: [f32; 10],
+    tangents: [Vec<f32>; 4],
+    mixer: bool,
+    grading: bool,
+    tints: [[f32; 3]; 3],
+}
+impl PreparedEffects<'_> {
+    /// Read-only execution tables for alternate batch backends; not document state.
+    pub fn tone_tables(&self) -> &[[f32; 256]; 3] {
+        &self.tone
+    }
+    pub fn curve_tangents(&self) -> &[Vec<f32>; 4] {
+        &self.tangents
+    }
+    pub fn grading_tints(&self) -> &[[f32; 3]; 3] {
+        &self.tints
+    }
+    pub fn apply(&self, pixel: [u8; 4]) -> [u8; 4] {
+        self.effects.apply_impl(pixel, Some(self))
+    }
+}
+fn tone_channel(c: u8, i: usize, values: &[f32; 10], v: &[f32; 10]) -> f32 {
+    let mut c = f32::from(c) / 255.;
+    let gain = match i {
+        0 => 1. + v[6] * 0.2 + v[7] * 0.1,
+        1 => 1. - v[7] * 0.2,
+        _ => 1. - v[6] * 0.2 + v[7] * 0.1,
+    };
+    if values[0] != 0. || gain != 1. {
+        let linear = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        };
+        let linear = linear * values[0].exp2() * gain;
+        c = if linear <= 0.0031308 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1. / 2.4) - 0.055
+        };
+    }
+    let t = c.clamp(0., 1.);
+    c = (c - 0.5) * (1. + v[1] * 0.8) + 0.5;
+    c += 0.25 * (v[2] * t * t + v[3] * (1. - t).powi(2))
+        + 0.2 * (v[4] * t.powi(4) + v[5] * (1. - t).powi(4));
+    c
+}
 impl LayerEffects {
     pub fn validate(&self) -> Result<(), String> {
         if !self.grading_blend.is_finite()
@@ -79,52 +131,62 @@ impl LayerEffects {
         }
         Ok(())
     }
+    pub fn prepare(&self) -> PreparedEffects<'_> {
+        let values = self.values.map(|x| x / 100.);
+        PreparedEffects {
+            effects: self,
+            tone: std::array::from_fn(|i| {
+                std::array::from_fn(|c| tone_channel(c as u8, i, &self.values, &values))
+            }),
+            values,
+            tangents: std::array::from_fn(|i| {
+                (0..self.curves[i].len())
+                    .map(|j| curve_tangent(&self.curves[i], j))
+                    .collect()
+            }),
+            mixer: self.mixer.iter().flatten().any(|v| *v != 0.),
+            grading: self.grading.iter().any(|z| z[1] != 0. || z[2] != 0.),
+            tints: self
+                .grading
+                .map(|z| from_hsl(z[0].rem_euclid(360.), 1., 0.5)),
+        }
+    }
     pub fn apply(&self, pixel: [u8; 4]) -> [u8; 4] {
+        self.apply_impl(pixel, None)
+    }
+    fn apply_impl(&self, pixel: [u8; 4], prepared: Option<&PreparedEffects<'_>>) -> [u8; 4] {
         if !self.enabled || pixel[3] == 0 {
             return pixel;
         }
-        let v = self.values.map(|x| x / 100.);
-        let mut rgb = [pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.);
-        for (i, c) in rgb.iter_mut().enumerate() {
-            let gain = match i {
-                0 => 1. + v[6] * 0.2 + v[7] * 0.1,
-                1 => 1. - v[7] * 0.2,
-                _ => 1. - v[6] * 0.2 + v[7] * 0.1,
-            };
-            if self.values[0] != 0. || gain != 1. {
-                let linear = if *c <= 0.04045 {
-                    *c / 12.92
-                } else {
-                    ((*c + 0.055) / 1.055).powf(2.4)
-                };
-                let linear = linear * self.values[0].exp2() * gain;
-                *c = if linear <= 0.0031308 {
-                    linear * 12.92
-                } else {
-                    1.055 * linear.powf(1. / 2.4) - 0.055
-                };
-            }
-            let t = c.clamp(0., 1.);
-            *c = (*c - 0.5) * (1. + v[1] * 0.8) + 0.5;
-            *c += 0.25 * (v[2] * t * t + v[3] * (1. - t).powi(2))
-                + 0.2 * (v[4] * t.powi(4) + v[5] * (1. - t).powi(4));
-        }
+        let v = prepared.map_or_else(|| self.values.map(|x| x / 100.), |p| p.values);
+        let mut rgb = std::array::from_fn(|i| {
+            prepared.map_or_else(
+                || tone_channel(pixel[i], i, &self.values, &v),
+                |p| p.tone[i][pixel[i] as usize],
+            )
+        });
         let gray = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
         let chroma = rgb.iter().copied().fold(f32::NEG_INFINITY, f32::max)
             - rgb.iter().copied().fold(f32::INFINITY, f32::min);
         let saturation = (1. + v[9] + v[8] * (1. - chroma.clamp(0., 1.))).max(0.);
         for (i, c) in rgb.iter_mut().enumerate() {
-            *c = curve_sample(
-                &self.curves[i + 1],
-                curve_sample(
-                    &self.curves[0],
-                    (gray + (*c - gray) * saturation).clamp(0., 1.),
-                    self.curve_smooth[0],
-                ),
-                self.curve_smooth[i + 1],
+            let sample = |index: usize, x| {
+                curve_sample_impl(
+                    &self.curves[index],
+                    x,
+                    self.curve_smooth[index],
+                    prepared.map(|p| p.tangents[index].as_slice()),
+                )
+            };
+            *c = sample(
+                i + 1,
+                sample(0, (gray + (*c - gray) * saturation).clamp(0., 1.)),
             );
         }
-        if self.mixer.iter().flatten().any(|v| *v != 0.) {
+        if prepared.map_or_else(
+            || self.mixer.iter().flatten().any(|v| *v != 0.),
+            |p| p.mixer,
+        ) {
             let [h, s, l] = to_hsl(rgb);
             if s > 0. {
                 let centers = [0., 30., 60., 120., 180., 240., 270., 300., 360.];
@@ -140,12 +202,18 @@ impl LayerEffects {
                 );
             }
         }
-        if self.grading.iter().any(|z| z[1] != 0. || z[2] != 0.) {
+        if prepared.map_or_else(
+            || self.grading.iter().any(|z| z[1] != 0. || z[2] != 0.),
+            |p| p.grading,
+        ) {
             let l = (rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722).clamp(0., 1.);
             let weights = grading_weights(l, self.grading_blend, self.grading_balance);
             let original = rgb;
-            for (zone, weight) in self.grading.iter().zip(weights) {
-                let tint = from_hsl(zone[0].rem_euclid(360.), 1., 0.5);
+            for (index, (zone, weight)) in self.grading.iter().zip(weights).enumerate() {
+                let tint = prepared.map_or_else(
+                    || from_hsl(zone[0].rem_euclid(360.), 1., 0.5),
+                    |p| p.tints[index],
+                );
                 for i in 0..3 {
                     rgb[i] += weight * (zone[1] / 100. * (tint[i] - original[i]) + zone[2] / 100.);
                 }
@@ -208,6 +276,9 @@ fn from_hsl(h: f32, s: f32, l: f32) -> [f32; 3] {
 /// Shape-preserving cubic Hermite interpolation, equivalent to cubic Bezier
 /// segments with x handles at one third of the interval. Extrema do not overshoot.
 pub fn curve_sample(curve: &[[f32; 2]], x: f32, smooth: bool) -> f32 {
+    curve_sample_impl(curve, x, smooth, None)
+}
+fn curve_sample_impl(curve: &[[f32; 2]], x: f32, smooth: bool, tangents: Option<&[f32]>) -> f32 {
     if x <= curve[0][0] {
         return curve[0][1];
     }
@@ -222,8 +293,8 @@ pub fn curve_sample(curve: &[[f32; 2]], x: f32, smooth: bool) -> f32 {
     if !smooth || curve.len() == 2 {
         return y0 + t * (y1 - y0);
     }
-    let m0 = curve_tangent(curve, i);
-    let m1 = curve_tangent(curve, i + 1);
+    let m0 = tangents.map_or_else(|| curve_tangent(curve, i), |t| t[i]);
+    let m1 = tangents.map_or_else(|| curve_tangent(curve, i + 1), |t| t[i + 1]);
     let t2 = t * t;
     let t3 = t2 * t;
     ((2. * t3 - 3. * t2 + 1.) * y0
@@ -254,6 +325,64 @@ fn curve_tangent(curve: &[[f32; 2]], i: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prepared_effects_match_reference_bytes_for_tones_curves_mixer_and_grading() {
+        for case in 0..12 {
+            let mut e = LayerEffects {
+                enabled: true,
+                ..Default::default()
+            };
+            for (i, v) in e.values.iter_mut().enumerate() {
+                *v = if case == 0 {
+                    0.
+                } else if i == 0 {
+                    case as f32 - 6.
+                } else {
+                    ((case * 37 + i * 19) % 201) as f32 - 100.
+                };
+            }
+            e.values[0] = e.values[0].clamp(-5., 5.);
+            if case > 3 {
+                e.curves = std::array::from_fn(|i| {
+                    vec![
+                        [0., i as f32 / 10.],
+                        [0.03, 0.9],
+                        [0.18, 0.1],
+                        [0.74, 1.],
+                        [1., 0.2],
+                    ]
+                });
+                e.curve_smooth = std::array::from_fn(|i| (case + i) % 2 == 0);
+            }
+            if case > 6 {
+                e.mixer = std::array::from_fn(|i| [i as f32 * 9. - 30., 40., -20.]);
+            }
+            if case > 8 {
+                e.grading = [[15., 60., -15.], [230., 40., 12.], [330., 20., -8.]];
+                e.grading_blend = (case - 8) as f32 * 20.;
+                e.grading_balance = -45.;
+            }
+            e.validate().unwrap();
+            let prepared = e.prepare();
+            for n in 0..8192u32 {
+                let seed = n.wrapping_mul(2654435761);
+                let pixel = [
+                    seed as u8,
+                    (seed >> 8) as u8,
+                    (seed >> 16) as u8,
+                    [0, 1, 64, 128, 255][n as usize % 5],
+                ];
+                assert_eq!(
+                    prepared.apply(pixel),
+                    e.apply(pixel),
+                    "case={case}, pixel={pixel:?}"
+                );
+            }
+            for c in 0..=255 {
+                assert_eq!(prepared.apply([c, c, c, 127]), e.apply([c, c, c, 127]));
+            }
+        }
+    }
     #[test]
     fn cubic_curves_preserve_knots_extrema_and_legacy_linear_values() {
         let curve = [[0., 0.], [0.25, 0.6], [0.7, 0.8], [1., 1.]];

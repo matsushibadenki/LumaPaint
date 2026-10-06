@@ -158,6 +158,7 @@ fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> 
     sources.peek()?;
     let mut result = vec![0u8; TILE_BYTES];
     for source in sources {
+        let effects = source.effects.enabled.then(|| source.effects.prepare());
         for (index, (target, pixel)) in result
             .as_chunks_mut::<4>()
             .0
@@ -165,7 +166,7 @@ fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> 
             .zip(source.pixels.as_chunks::<4>().0.iter())
             .enumerate()
         {
-            let adjusted = source.effects.apply(*pixel);
+            let adjusted = effects.as_ref().map_or(*pixel, |e| e.apply(*pixel));
             let pixel = &adjusted;
             let mask_value = source.mask.map_or(255, |tile| tile[index]);
             let coverage = source.mask_density * f32::from(mask_value) / 255.0;

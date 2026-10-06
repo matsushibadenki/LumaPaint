@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+lumapaint-fonts = { path = "../lumapaint-fonts" }
 lumapaint-core = { path = "../lumapaint-core" }
 usvg = { version = "0.45.1", features = ["text", "system-fonts"] }
 tiny-skia-path = "0.11.4"

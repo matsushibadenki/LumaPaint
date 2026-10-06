@@ -29,7 +29,7 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
     FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
-            db.load_system_fonts();
+            lumapaint_fonts::load_system_fonts(&mut db);
             Arc::new(db)
         })
         .clone()

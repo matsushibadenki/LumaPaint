@@ -41,12 +41,12 @@ export function ModalPage() {
         const element=document.querySelector('dialog form, .settings-dialog');
         if(!element)return;
         // Viewport-based layouts must not be measured to resize their own viewport.
-        const fixedHeight=context.kind==='newDocument'?760:context.kind==='settings'?520:context.kind==='colorSettings'?480:null;
+        const fixedHeight=context.kind==='newDocument'?760:context.kind==='settings'?520:context.kind==='colorSettings'?480:context.kind==='pdfImport'?680:null;
         const height=Math.min(screen.availHeight-80,fixedHeight??Math.max(180,Math.ceil(element.scrollHeight+64)));
         if(height===last)return;
         const initial=last===0;
         last=height;
-        const width=context.kind==='newDocument'?1000:context.kind==='settings'?760:context.kind==='colorSettings'?620:context.kind==='directControls'?440:context.kind==='pdfImport'?480:400;
+        const width=context.kind==='newDocument'?1000:context.kind==='settings'?760:context.kind==='colorSettings'?620:context.kind==='directControls'?440:context.kind==='pdfImport'?740:400;
         const nativeWindow=getCurrentWebviewWindow();
         void nativeWindow.setSize(new LogicalSize(Math.min(screen.availWidth-64,width),height)).then(()=>{if(initial)return nativeWindow.center();}).catch(()=>{});
       };
@@ -75,7 +75,7 @@ export function ModalPage() {
     case 'toolSettings': content = context.document && <ToolSettingsDialog tool={context.action as CanvasTool} locale={context.locale} document={context.document} onClose={close} onUpdate={()=>{}}/>; break;
     case 'settings': content = <SettingsDialog locale={context.locale} theme={context.theme} onLocale={locale => preferences(locale, context.theme)} onTheme={theme => preferences(context.locale, theme)} onClose={close}/>; break;
     case 'newDocument': content = <NewDocumentDialog locale={context.locale} onClose={close} onCreate={settings => run(async () => { await createDocument(settings); await invoke('modal_change', { change: { type: 'createdDocument' } }); })}/>; break;
-    case 'pdfImport': content = <PdfImportDialog locale={context.locale} onClose={close} onApply={(token, pageIndex, dpi, allPages) => run(() => invoke<boolean>('pdf_import_apply', { token, pageIndex, dpi, allPages }))}/>; break;
+    case 'pdfImport': content = <PdfImportDialog locale={context.locale} onClose={close} onApply={(token, pageIndex, dpi, allPages, selectedPages) => run(() => invoke<boolean>('pdf_import_apply', { token, pageIndex, dpi, allPages, selectedPages }))}/>; break;
     case 'importImage': content = <ImportImageDialog locale={context.locale} onClose={close} onImport={format => run(async () => { await importRasterLayer(format); })}/>; break;
     case 'transform': content = <TransformDialog resolution={context.document?.resolution ?? 72} locale={context.locale} action={context.action as TransformAction} onClose={close} onApply={values => run(async () => { await transformObjects(context.action as TransformAction, values); })}/>; break;
     case 'directControls': content = context.document && <DirectControlDialog locale={context.locale} doc={context.document} onApply={() => {}} onBusyChange={busy => invoke('modal_busy', { busy })} onClose={close}/>; break;

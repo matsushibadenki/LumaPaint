@@ -218,7 +218,13 @@ pub(crate) fn layout_text(
             TextFlow::Path(_) => (0.0, 0.0),
         };
 
-        let mut clusters = process_chunk(chunk, text_node.writing_mode, &fonts_cache, resolver, fontdb);
+        let mut clusters = process_chunk(
+            chunk,
+            text_node.writing_mode,
+            &fonts_cache,
+            resolver,
+            fontdb,
+        );
         if clusters.is_empty() {
             char_offset += chunk.text.chars().count();
             continue;
@@ -1023,8 +1029,12 @@ fn apply_writing_mode(writing_mode: WritingMode, clusters: &mut [GlyphCluster]) 
 
     for cluster in clusters {
         let orientation = unicode_vo::char_orientation(cluster.codepoint);
-        if matches!(orientation, unicode_vo::Orientation::Upright | unicode_vo::Orientation::TransformedOrUpright)
-            || (orientation == unicode_vo::Orientation::TransformedOrRotated && cluster.vertical_alternate) {
+        if matches!(
+            orientation,
+            unicode_vo::Orientation::Upright | unicode_vo::Orientation::TransformedOrUpright
+        ) || (orientation == unicode_vo::Orientation::TransformedOrRotated
+            && cluster.vertical_alternate)
+        {
             let mut ts = Transform::default();
             // Position glyph in the center of vertical axis.
             ts = ts.pre_translate(0.0, (cluster.ascent + cluster.descent) / 2.0);
@@ -1277,8 +1287,15 @@ pub(crate) fn shape_text(
     resolver: &FontResolver,
     fontdb: &mut Arc<fontdb::Database>,
 ) -> Vec<Glyph> {
-    let mut glyphs = shape_text_with_font(text, font.clone(), small_caps, apply_kerning, vertical, fontdb)
-        .unwrap_or_default();
+    let mut glyphs = shape_text_with_font(
+        text,
+        font.clone(),
+        small_caps,
+        apply_kerning,
+        vertical,
+        fontdb,
+    )
+    .unwrap_or_default();
 
     // Remember all fonts used for shaping.
     let mut used_fonts = vec![font.id];
@@ -1404,8 +1421,16 @@ fn shape_text_with_font(
                 for (start, ch) in sub_text.char_indices() {
                     if unicode_vo::char_orientation(ch) != unicode_vo::Orientation::Rotated {
                         let end = start + ch.len_utf8();
-                        features.push(rustybuzz::Feature::new(Tag::from_bytes(b"vert"), 1, start..end));
-                        features.push(rustybuzz::Feature::new(Tag::from_bytes(b"vrt2"), 1, start..end));
+                        features.push(rustybuzz::Feature::new(
+                            Tag::from_bytes(b"vert"),
+                            1,
+                            start..end,
+                        ));
+                        features.push(rustybuzz::Feature::new(
+                            Tag::from_bytes(b"vrt2"),
+                            1,
+                            start..end,
+                        ));
                     }
                 }
             }
@@ -1442,8 +1467,12 @@ fn shape_text_with_font(
                     cluster_len: end.checked_sub(start).unwrap_or(0), // TODO: can fail?
                     text: sub_text[start..end].to_string(),
                     id: GlyphId(info.glyph_id as u16),
-                    vertical_alternate: vertical && sub_text[start..end].chars().next()
-                        .and_then(|c| rb_font.glyph_index(c)).is_some_and(|id| u32::from(id.0) != info.glyph_id),
+                    vertical_alternate: vertical
+                        && sub_text[start..end]
+                            .chars()
+                            .next()
+                            .and_then(|c| rb_font.glyph_index(c))
+                            .is_some_and(|id| u32::from(id.0) != info.glyph_id),
                     dx: pos.x_offset,
                     dy: pos.y_offset,
                     width: pos.x_advance,

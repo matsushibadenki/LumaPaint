@@ -3,11 +3,15 @@ use super::*;
 use crate::io::ReadContent;
 use lopdf::{Dictionary, Object, ObjectId};
 use std::fmt::Write;
+mod cmap;
+mod font_collection;
+mod font_program;
 mod fonts;
 mod gradients;
 mod images;
 mod masks;
 mod text;
+mod type3;
 const LIMIT: usize = 16 * 1024 * 1024;
 fn malformed() -> ImportError {
     ImportError::Malformed("pdf.graphics")
@@ -140,6 +144,7 @@ struct Interpreter<'a> {
     page_bounds: [f32; 4],
     font_cache: std::collections::HashMap<usize, Option<std::sync::Arc<fonts::Font>>>,
     text_glyphs: usize,
+    glyph_depth: usize,
     image_remaining: usize,
     image_cache: std::collections::HashMap<(usize, usize), String>,
 }
@@ -559,9 +564,18 @@ impl Interpreter<'_> {
                         }
                         .into();
                     }
-                    if gs.get(b"Font").is_ok() {
-                        self.unsupported("pdf.font_state")?;
-                        state.text = Default::default();
+                    if let Ok(font) = gs.get(b"Font") {
+                        let font = resolve(self.doc, font)?
+                            .as_array()
+                            .map_err(|_| malformed())?;
+                        if font.len() != 2 {
+                            return Err(malformed());
+                        }
+                        let dict = resolve(self.doc, &font[0])?
+                            .as_dict()
+                            .map_err(|_| malformed())?;
+                        let size = num(resolve(self.doc, &font[1])?)?;
+                        state.text.set_font(self.font_dictionary(dict)?, size);
                     }
                     for key in [b"TR".as_slice(), b"TR2", b"HT", b"BG", b"UCR", b"OP", b"op"] {
                         if gs.get(key).is_ok() {
@@ -813,24 +827,46 @@ pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportEr
 }
 /// Decode the shared PDF object graph once and construct an atomic publication.
 pub fn read_all(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
+    read_publication(bytes, options, None)
+}
+/// Decode selected pages once, in source order, without duplicates.
+pub fn read_selected(
+    bytes: &[u8],
+    options: ReadOptions,
+    selected: &[u32],
+) -> Result<ReadDocument, ImportError> {
+    read_publication(bytes, options, Some(selected))
+}
+fn read_publication(
+    bytes: &[u8],
+    options: ReadOptions,
+    selected: Option<&[u32]>,
+) -> Result<ReadDocument, ImportError> {
     options.validate(FormatId::Pdf)?;
     if options.raster_dpi > 1200 {
         return Err(ImportError::Unsupported("pdf.document_resolution"));
     }
     let doc = load(bytes)?;
     let pages = doc.get_pages();
-    if pages.is_empty() || pages.len() > 512 {
+    let indices: std::collections::BTreeSet<u32> = selected.map_or_else(
+        || (0..pages.len() as u32).collect(),
+        |s| s.iter().copied().collect(),
+    );
+    if indices.is_empty()
+        || indices.len() > 512
+        || indices.iter().any(|i| *i as usize >= pages.len())
+    {
         return Err(ImportError::LimitExceeded("pdf.publication_pages"));
     }
-    let mut states = Vec::with_capacity(pages.len());
+    let mut states = Vec::with_capacity(indices.len());
     let mut report = ConversionReport::default();
     let mut total = 0usize;
-    for index in 0..pages.len() {
+    for index in indices {
         let decoded = read_page(
             &doc,
             &pages,
             ReadOptions {
-                page_index: index as u32,
+                page_index: index,
                 ..options
             },
             false,
@@ -950,6 +986,7 @@ fn read_page(
         page_bounds: p.clone().try_into().unwrap(),
         font_cache: Default::default(),
         text_glyphs: 0,
+        glyph_depth: 0,
         image_remaining: 64 * 1024 * 1024,
         image_cache: Default::default(),
     };
@@ -1011,6 +1048,7 @@ mod transparency_tests {
             page_bounds: [0., 0., 10., 10.],
             font_cache: Default::default(),
             text_glyphs: 0,
+            glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
         };

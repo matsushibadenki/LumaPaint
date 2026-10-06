@@ -9099,6 +9099,19 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 r#"<g transform="matrix({a} {b} {c} {d} {e} {f}) rotate({}) scale({} {})">"#,
                 text.rotation, text.scale_x, text.scale_y
             );
+            if text.writing_mode == crate::vector::WritingMode::Vertical
+                && text.has_vertical_character_options()
+            {
+                let color = object
+                    .fill
+                    .map_or([0, 0, 0], |p| [p.color[0], p.color[1], p.color[2]]);
+                write_vertical_character_options(&mut svg, text, color, object_index);
+                svg.push_str("</g>");
+                for _ in 0..clips {
+                    svg.push_str("</g>");
+                }
+                continue;
+            }
             if text.runs.iter().any(|run| {
                 run.style.scale_x != 1.0 || run.style.scale_y != 1.0 || run.style.rotation != 0.0
             }) {
@@ -9444,6 +9457,118 @@ fn utf16_slice(value: &str, start: usize, end: usize) -> Option<&str> {
     Some(&value[start_byte?..end_byte?])
 }
 
+fn write_vertical_character_options(
+    svg: &mut String,
+    original: &crate::vector::VectorText,
+    color: [u8; 3],
+    object_index: usize,
+) {
+    use std::fmt::Write;
+    let mut text = original.clone();
+    if text.line_baselines.is_empty() {
+        text.reflow_vertical();
+    }
+    text.normalize_vertical_group_positions(color);
+    if let Some(height) = text.box_height {
+        let _ = write!(
+            svg,
+            r#"<clipPath id="vc-{object_index}"><rect width="{}" height="{height}"/></clipPath><g clip-path="url(#vc-{object_index})">"#,
+            text.box_width
+        );
+    }
+    let lines = text.visual_lines();
+    let units = text.vertical_units(color);
+    let breaks: std::collections::HashSet<_> = text.soft_breaks.iter().copied().collect();
+    let mut column = 0usize;
+    let mut cursor = text.indent_left + text.indent_first + text.space_before;
+    for (start, content, style) in units {
+        if content.contains('\n') {
+            column += 1;
+            cursor = text.indent_left + text.indent_first + text.space_before;
+            continue;
+        }
+        if breaks.contains(&start) {
+            column += 1;
+            cursor = text.indent_left;
+        }
+        let native_column = lines
+            .iter()
+            .position(|(line_start, line, _)| {
+                start >= *line_start && start < *line_start + line.encode_utf16().count()
+            })
+            .unwrap_or(column);
+        let x = text.line_baselines.get(native_column).map_or(
+            text.box_width
+                - text.font_size * 0.5
+                - column as f32 * text.font_size * text.line_height,
+            |baseline| text.box_width - baseline,
+        );
+        let size = style.font_size;
+        let char_index = lines
+            .get(native_column)
+            .and_then(|(line_start, line, _)| utf16_slice(line, 0, start - line_start))
+            .map_or(0, |prefix| prefix.chars().count());
+        let y = text
+            .character_origins
+            .get(native_column)
+            .and_then(|positions| positions.get(char_index))
+            .copied()
+            .unwrap_or(cursor);
+        let horizontal = style.tate_chu_yoko || style.upright_latin(content);
+        let _ = write!(
+            svg,
+            r#"<g transform="translate({x} {y}) rotate({}) scale({} {})"><text xml:space="preserve"{}{}>"#,
+            style.rotation,
+            style.scale_x,
+            style.scale_y,
+            if horizontal {
+                r#" text-anchor="middle" y="0""#
+            } else {
+                r#" writing-mode="tb" x="0" y="0""#
+            },
+            if horizontal {
+                format!(r#" transform="translate(0 {})""#, size * 0.85)
+            } else {
+                String::new()
+            }
+        );
+        // A horizontal group is fitted into the em square, centered on its column.
+        let mut span = String::new();
+        write_text_segment(
+            &mut span,
+            &style,
+            content,
+            Some(0.),
+            if style.tate_chu_yoko && content.chars().count() > 1 {
+                Some(size)
+            } else {
+                None
+            },
+            None,
+        );
+        if style.tate_chu_yoko {
+            span = span.replace(
+                "lengthAdjust=\"spacing\"",
+                "lengthAdjust=\"spacingAndGlyphs\"",
+            );
+        }
+        svg.push_str(&span);
+        svg.push_str("</text></g>");
+        cursor += size
+            * style.scale_y
+            * if style.tate_chu_yoko {
+                1.
+            } else if style.upright_latin(content) {
+                (1. + style.tracking / 1000.).max(1.)
+            } else {
+                1. + style.tracking / 1000.
+            };
+    }
+    if text.box_height.is_some() {
+        svg.push_str("</g>");
+    }
+}
+
 fn write_transformed_text(
     svg: &mut String,
     text: &crate::vector::VectorText,
@@ -9463,7 +9588,11 @@ fn write_transformed_text(
     let mut paragraph_number = 0;
     for (index, (start, line, hard_break_before)) in text.visual_lines().into_iter().enumerate() {
         let cross = text.line_baselines.get(index).copied().unwrap_or(
-            text.font_size + text.space_before + index as f32 * text.font_size * text.line_height,
+            (if vertical {
+                text.font_size * 0.5
+            } else {
+                text.font_size + text.space_before
+            }) + index as f32 * text.font_size * text.line_height,
         );
         let mut offset = 0;
         let mut character_index = 0;
@@ -9602,11 +9731,16 @@ fn write_text_segment(
         });
     let _ = write!(
         svg,
-        r##"<tspan{x_attribute}{width_attribute} fill="{paint}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
+        r##"<tspan{x_attribute}{width_attribute} fill="{paint}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" font-kerning="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
         escape_xml(family),
         style.font_size,
         if style.bold { 700 } else { 400 },
         if style.italic { "italic" } else { "normal" },
+        if style.kerning == crate::vector::KerningMode::Metrics {
+            "auto"
+        } else {
+            "none"
+        },
         style.tracking * style.font_size / 1000.0,
         style.baseline_shift,
         escape_xml(content)
@@ -11152,6 +11286,97 @@ mod text_tests {
         assert!(!legacy.hyphenation);
     }
 
+    #[test]
+    fn vertical_options_preserve_native_positions_and_unselected_content() {
+        let mut edit = settings();
+        edit.text.content = "あAい12う".into();
+        edit.text.font_size = 48.;
+        edit.text.writing_mode = crate::vector::WritingMode::Vertical;
+        edit.text
+            .apply_style(
+                1,
+                2,
+                &crate::vector::TextStylePatch {
+                    rotate_latin: Some(false),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        edit.text
+            .apply_style(
+                3,
+                5,
+                &crate::vector::TextStylePatch {
+                    tate_chu_yoko: Some(true),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        edit.text.line_baselines = vec![13.];
+        edit.text.line_origins = vec![7.];
+        edit.text.character_origins = vec![vec![7., 60., 110., 160., 180., 208.]];
+        let mut doc = Document::default();
+        doc.set_text_object(edit.clone()).unwrap();
+        let svg = &doc.svg_layers[0].source;
+        let x = edit.text.box_width - 13.;
+        for y in [7., 60., 110., 160., 208.] {
+            assert!(
+                svg.contains(&format!("translate({x} {y})")),
+                "missing native pen position {y}"
+            );
+        }
+        assert_eq!(doc.snapshot().text_objects[0].text.content, "あAい12う");
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            loaded.snapshot().text_objects[0].text.character_origins,
+            edit.text.character_origins
+        );
+    }
+    #[test]
+    fn vertical_character_options_render_and_survive_history_and_save() {
+        let mut edit = settings();
+        edit.text.content = "あ12ABC".into();
+        edit.text.writing_mode = crate::vector::WritingMode::Vertical;
+        edit.text
+            .apply_style(
+                1,
+                3,
+                &crate::vector::TextStylePatch {
+                    tate_chu_yoko: Some(true),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        edit.text
+            .apply_style(
+                3,
+                6,
+                &crate::vector::TextStylePatch {
+                    rotate_latin: Some(false),
+                    ..Default::default()
+                },
+                edit.color,
+            )
+            .unwrap();
+        let mut doc = Document::default();
+        doc.set_text_object(edit).unwrap();
+        let svg = doc.svg_layers[0].source.clone();
+        assert!(svg.contains("lengthAdjust=\"spacingAndGlyphs\""));
+        assert!(svg.contains(">12</tspan>"));
+        assert!(svg.contains("text-anchor=\"middle\""));
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.svg_layers[0].source, svg);
+        let text = &loaded.snapshot().text_objects[0].text;
+        assert!(text.style_at(1, [0, 0, 0]).tate_chu_yoko);
+        assert!(!text.style_at(3, [0, 0, 0]).rotate_latin);
+        doc.undo();
+        assert!(doc.snapshot().text_objects.is_empty());
+        doc.redo();
+        assert_eq!(doc.svg_layers[0].source, svg);
+    }
     #[test]
     fn text_round_trip_edit_move_and_atomic_history() {
         let mut doc = Document::default();

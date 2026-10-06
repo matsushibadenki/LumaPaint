@@ -1,7 +1,9 @@
+import { FontViewer } from './FontViewer';
+import { fontViewerMessages } from '../font-viewer';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useEffect, useRef, useState } from 'react';
 import { defaultVectorText, textFonts, type TextSettings, type TextStyle, type VectorText } from '../bridge';
-import type { Locale } from '../i18n';
+import { readPreference, savePreference, type Locale } from '../i18n';
 import { textPanelMessages } from '../text-panel-i18n';
 import { textMessages } from '../text-i18n';
 import { fromHex, toHex } from './BrushControls';
@@ -25,10 +27,14 @@ function NumberField({ label, value, placeholder, min, max, step, unit, onValidC
     const next = event.currentTarget.value;
     const shouldCommit = changed.current;
     changed.current = false;
-    if (next === '' || !event.currentTarget.validity.valid) {
+    // `step` controls spinner increments, not which typed values are allowed.
+    // Converted units have a fractional min (e.g. 1 px in mm), so native
+    // stepMismatch would otherwise reject ordinary integer font sizes.
+    const number = Number(next);
+    if (next === '' || event.currentTarget.validity.badInput || !Number.isFinite(number) || number < min || number > max) {
       setInput(display);
-    } else if (shouldCommit && (value === null || Number(next) !== value)) {
-      onValidChange(Number(next));
+    } else if (shouldCommit && (value === null || number !== value)) {
+      onValidChange(number);
     }
   }} onKeyDown={event => {
     if (event.key === 'Enter') {
@@ -54,11 +60,17 @@ function HexColorField({ label, value, onValidChange }: { label: string; value: 
   }} onBlur={() => { setFocused(false); if (!/^#[0-9a-fA-F]{6}$/.test(input)) setInput(value); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
 }
 
-export function TextPanel({ locale, settings, resolution, enabled, editing, onChange, onBegin, onFinish }: {
-  locale: Locale; settings: TextSettings | null; resolution: number; enabled: boolean; editing: boolean;
+export function TextPanel({ locale, settings, resolution, enabled, editing, usedFonts = [], onChange, onBegin, onFinish }: {
+  usedFonts?: string[]; locale: Locale; settings: TextSettings | null; resolution: number; enabled: boolean; editing: boolean;
   onChange: (value: TextSettings) => Promise<void>; onBegin: () => void; onFinish: (commit: boolean) => void;
 }) {
   const t = textPanelMessages[locale];
+  const viewerText=fontViewerMessages[locale];
+  const [viewer,setViewer]=useState(()=>readPreference('text-panel-view')==='viewer');
+  const [menu,setMenu]=useState(false);
+  const menuRoot=useRef<HTMLDivElement>(null);
+  useEffect(()=>{if(menu)menuRoot.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.focus();},[menu]);
+  useEffect(()=>{if(!menu)return;const dismiss=(e:PointerEvent)=>{if(!menuRoot.current?.contains(e.target as Node))setMenu(false);};window.addEventListener("pointerdown",dismiss);return()=>window.removeEventListener("pointerdown",dismiss);},[menu]);
   const [fonts, setFonts] = useState<string[]>([]);
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState('');
@@ -77,8 +89,8 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
   const inherited = { ...base, scaleX: 1, scaleY: 1, rotation: 0, color: draft?.color ?? [32, 32, 32] };
   const wholeStyles = [base.runs?.[0]?.start === 0 ? base.runs[0].style : inherited, ...(base.runs ?? []).map(run => run.style)];
   if ((base.runs ?? []).reduce((length, run) => length + run.end - run.start, 0) < base.content.length) wholeStyles.push(inherited);
-  const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
-  const characterKeys = ['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
+  const mixed = draft?.selection?.mixed ?? (['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'rotateLatin', 'tateChuYoko', 'kerning', 'tracking', 'baselineShift', 'underline', 'strikethrough', 'color'] as (keyof TextStyle)[]).filter(key => wholeStyles.some(value => JSON.stringify(value[key]) !== JSON.stringify(wholeStyles[0][key])));
+  const characterKeys = ['fontFamily', 'fontSize', 'scaleX', 'scaleY', 'rotation', 'bold', 'italic', 'rotateLatin', 'tateChuYoko', 'kerning', 'tracking', 'baselineShift', 'underline', 'strikethrough'] as const;
   const color = draft?.stylePatch?.color ?? style?.color ?? draft?.color ?? [32, 32, 32];
   const disabled = !enabled || !draft;
   const measurementUnit=useMeasurementUnit(); const lengthUnit=unitSymbols[measurementUnit];
@@ -88,6 +100,7 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
     const task = changeQueue.current.then(() => onChange(next));
     changeQueue.current = task.then(() => undefined, cause => { setError(String(cause)); });
     void task.finally(() => { pending.current -= 1; }).catch(() => {});
+    return task;
   }
   function change(patch: Partial<VectorText>) {
     if (!draft) return;
@@ -106,6 +119,9 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
     return <label className="type-field" title={label}><span className="type-symbol" aria-hidden="true">{icon}</span><NumberField key={lengthUnit} label={label} value={isMixed ? null : Number(text[key]) * factor} min={min} max={max} step={unit === 'pt' ? 'any' : step} unit={unit} placeholder={isMixed ? t.mixed : undefined} onValidChange={value => change({ [key]: value / factor })} /></label>;
   }
   return <div className="text-panel">
+    <div className="font-panel-heading" ref={menuRoot} onKeyDown={e=>{if(e.key==='Escape'){setMenu(false);menuRoot.current?.querySelector<HTMLButtonElement>('[aria-haspopup=menu]')?.focus();e.stopPropagation();}else if(menu&&(e.key==='ArrowDown'||e.key==='ArrowUp')){e.preventDefault();const items=Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitemradio]'));const index=items.indexOf(document.activeElement as HTMLButtonElement);items[(index+(e.key==='ArrowDown'?1:items.length-1))%items.length]?.focus();}}}><strong>{viewer?viewerText.title:t.title}</strong><button aria-label={viewerText.menu} aria-haspopup="menu" aria-expanded={menu} onClick={()=>setMenu(v=>!v)}>☰</button>{menu&&<div className="font-panel-menu" role="menu" aria-label={viewerText.menu}>{[{label:viewerText.character,value:false},{label:viewerText.title,value:true}].map(item=><button key={item.label} role="menuitemradio" aria-checked={viewer===item.value} onClick={()=>{setViewer(item.value);savePreference('text-panel-view',item.value?'viewer':'character');setMenu(false);}}>{item.label}</button>)}</div>}</div>
+    {viewer ? <FontViewer locale={locale} currentFont={text.fontFamily} currentBold={text.bold} currentItalic={text.italic} usedFonts={usedFonts} enabled={!disabled} onApply={font=>draft?apply({...draft,stylePatch:{...draft.stylePatch,fontFamily:font.postscript,bold:font.weight>=600,italic:font.italic}}):Promise.resolve()} /> : <>
+
     <div className="type-panel-status">
       {editing && <p>{t.editing}</p>}
       {settings && <p>{editing ? (draft?.selection?.length ? `${t.selection}: ${draft.selection.characters}` : t.insertion) : t.whole}{mixed.length > 0 ? ` · ${t.mixed}` : ''}</p>}
@@ -116,7 +132,7 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
     </div>
     <fieldset disabled={disabled}>
       <section className="type-section">
-        <h3>{t.title}<span aria-hidden="true">☰</span></h3>
+
         <div className="type-section-body">
           <select aria-label={t.font} value={mixed.includes('fontFamily') && !draft?.stylePatch?.fontFamily ? '' : text.fontFamily} onChange={event => change({ fontFamily: event.target.value })}>
             <option value="" disabled>{t.mixed}</option><option value="sans-serif">{textMessages[locale].sans}</option><option value="serif">{textMessages[locale].serif}</option><option value="monospace">{textMessages[locale].mono}</option>
@@ -126,6 +142,8 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
           <select aria-label={t.style} value={mixed.includes('bold') || mixed.includes('italic') ? '' : `${Number(text.bold)}${Number(text.italic)}`} onChange={event => change({ bold: event.target.value[0] === '1', italic: event.target.value[1] === '1' })}>
             <option value="" disabled>{t.mixed}</option><option value="00">{t.regular}</option><option value="10">{t.bold}</option><option value="01">{t.italic}</option><option value="11">{t.boldItalic}</option>
           </select>
+            <label className="type-select-row"><span>{t.kerning}</span><select aria-label={t.kerning} value={mixed.includes('kerning') && !draft?.stylePatch?.kerning ? '' : (text.kerning ?? 'metrics')} onChange={event => change({ kerning: event.target.value as TextStyle['kerning'] })}><option value="" disabled>{t.mixed}</option><option value="metrics">{t.metrics}</option><option value="optical">{t.optical}</option><option value="japaneseMonospaced">{t.japaneseMonospaced}</option></select></label>
+          {base.writingMode === 'vertical' && <div className="type-vertical-options">{(['rotateLatin', 'tateChuYoko'] as const).map(key => <label className="type-check" key={key}><input type="checkbox" aria-label={t[key]} checked={key === 'rotateLatin' ? text[key] !== false : !!text[key]} ref={node => { if (node) node.indeterminate = mixed.includes(key) && draft?.stylePatch?.[key] === undefined; }} onChange={event => change({ [key]: event.target.checked })} />{t[key]}</label>)}</div>}
           <div className="type-grid">
             {numeric('fontSize', t.size, 'T↕', lengthUnit, pt, pt, 512 * pt)}
             <label className="type-field" title={t.leading}><span className="type-symbol" aria-hidden="true">A↕</span><NumberField key={lengthUnit} label={t.leading} value={base.fontSize * base.lineHeight * pt} min={Number((0.1 * pt).toFixed(4))} max={Number((4096 * pt).toFixed(2))} step="any" unit={lengthUnit} onValidChange={value => change({ lineHeight: value / (base.fontSize * pt) })} /></label>
@@ -169,5 +187,6 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, onCh
       <h3>OpenType<span aria-hidden="true">☰</span></h3>
       <div className="type-section-body"><div className="type-toggles"><button disabled title={t.ligatures}>fi</button><button disabled title={t.alternates}>Aα</button><button disabled title={t.smallCaps}>Tᴛ</button></div><p className="type-hint">{t.advanced}</p></div>
     </section>
+    </>}
   </div>;
 }

@@ -1539,6 +1539,28 @@
       "repository": "https://github.com/servo/rust-url"
     },
     {
+      "name": "freetype-rs",
+      "version": "0.38.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/PistonDevelopers/freetype-rs.git"
+    },
+    {
+      "name": "freetype-sys",
+      "version": "0.23.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/PistonDevelopers/freetype-sys.git"
+    },
+    {
       "name": "futures-channel",
       "version": "0.3.34",
       "license": "MIT OR Apache-2.0",
@@ -2771,6 +2793,18 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://gitlab.redox-os.org/redox-os/libredox.git"
+    },
+    {
+      "name": "libz-sys",
+      "version": "1.1.29",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-lang/libz-sys"
     },
     {
       "name": "linux-raw-sys",
@@ -5510,6 +5544,18 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/uuid-rs/uuid"
+    },
+    {
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "license": "MIT/Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/mcgoo/vcpkg-rs"
     },
     {
       "name": "version-compare",

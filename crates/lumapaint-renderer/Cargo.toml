@@ -8,6 +8,8 @@ default = []
 skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]
+serde.workspace = true
+lumapaint-fonts = { path = "../lumapaint-fonts" }
 pollster = "0.4"
 i_overlay = "=9.0.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

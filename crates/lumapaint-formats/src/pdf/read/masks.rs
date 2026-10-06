@@ -152,6 +152,7 @@ mod tests {
             page_bounds: [0., 0., 100., 80.],
             font_cache: Default::default(),
             text_glyphs: 0,
+            glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
         }

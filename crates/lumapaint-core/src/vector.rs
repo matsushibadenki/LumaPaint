@@ -40,6 +40,16 @@ pub enum VectorObjectKind {
     Text,
 }
 
+/// Automatic pair spacing; tracking remains an independent additive setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KerningMode {
+    #[default]
+    Metrics,
+    Optical,
+    JapaneseMonospaced,
+}
+
 /// Character formatting, independent of paragraph and text-frame layout.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,6 +66,12 @@ pub struct TextStyle {
     pub rotation: f32,
     pub bold: bool,
     pub italic: bool,
+    #[serde(default)]
+    pub kerning: KerningMode,
+    #[serde(default = "default_rotate_latin")]
+    pub rotate_latin: bool,
+    #[serde(default)]
+    pub tate_chu_yoko: bool,
     pub tracking: f32,
     pub baseline_shift: f32,
     pub underline: bool,
@@ -73,13 +89,28 @@ pub struct TextStylePatch {
     pub rotation: Option<f32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
+    pub kerning: Option<KerningMode>,
+    pub rotate_latin: Option<bool>,
+    pub tate_chu_yoko: Option<bool>,
     pub tracking: Option<f32>,
     pub baseline_shift: Option<f32>,
     pub underline: Option<bool>,
     pub strikethrough: Option<bool>,
     pub color: Option<[u8; 3]>,
 }
+fn default_rotate_latin() -> bool {
+    true
+}
+
 impl TextStyle {
+    pub fn upright_latin(&self, content: &str) -> bool {
+        !self.rotate_latin
+            && content.chars().next().is_some_and(|c| {
+                !c.is_whitespace()
+                    && !c.is_control()
+                    && (c.is_ascii() || ('\u{00a0}'..='\u{024f}').contains(&c))
+            })
+    }
     pub fn apply(&mut self, patch: &TextStylePatch) {
         if let Some(value) = patch.scale_x {
             self.scale_x = value;
@@ -101,6 +132,15 @@ impl TextStyle {
         }
         if let Some(value) = patch.italic {
             self.italic = value;
+        }
+        if let Some(value) = patch.rotate_latin {
+            self.rotate_latin = value;
+        }
+        if let Some(value) = patch.tate_chu_yoko {
+            self.tate_chu_yoko = value;
+        }
+        if let Some(value) = patch.kerning {
+            self.kerning = value;
         }
         if let Some(value) = patch.tracking {
             self.tracking = value;
@@ -214,6 +254,12 @@ pub struct VectorText {
     pub line_height: f32,
     pub bold: bool,
     pub italic: bool,
+    #[serde(default)]
+    pub kerning: KerningMode,
+    #[serde(default = "default_rotate_latin")]
+    pub rotate_latin: bool,
+    #[serde(default)]
+    pub tate_chu_yoko: bool,
     pub tracking: f32,
     pub scale_x: f32,
     pub scale_y: f32,
@@ -295,6 +341,9 @@ impl Default for VectorText {
             line_height: 1.4,
             bold: false,
             italic: false,
+            kerning: KerningMode::Metrics,
+            rotate_latin: true,
+            tate_chu_yoko: false,
             tracking: 0.0,
             scale_x: 1.0,
             scale_y: 1.0,
@@ -319,6 +368,17 @@ impl Default for VectorText {
     }
 }
 
+fn vertical_utf16_prefix(value: &str, end: usize) -> Option<&str> {
+    let mut at = 0;
+    for (byte, character) in value.char_indices() {
+        if at == end {
+            return Some(&value[..byte]);
+        }
+        at += character.len_utf16();
+    }
+    (at == end).then_some(value)
+}
+
 fn utf16_boundary_in(value: &str, offset: usize) -> bool {
     let mut at = 0;
     for character in value.chars() {
@@ -331,35 +391,196 @@ fn utf16_boundary_in(value: &str, offset: usize) -> bool {
 }
 
 impl VectorText {
-    pub fn reflow_vertical(&mut self) {
+    pub fn has_vertical_character_options(&self) -> bool {
+        !self.rotate_latin
+            || self.tate_chu_yoko
+            || self
+                .runs
+                .iter()
+                .any(|r| !r.style.rotate_latin || r.style.tate_chu_yoko)
+    }
+    /// Indivisible vertical layout units. A contiguous identically styled tate-chu-yoko
+    /// selection occupies one em; hard breaks always terminate the horizontal group.
+    pub fn vertical_units(&self, color: [u8; 3]) -> Vec<(usize, &str, TextStyle)> {
         use unicode_segmentation::UnicodeSegmentation;
+        let mut result: Vec<(usize, &str, TextStyle)> = Vec::new();
+        let mut offset = 0;
+        let mut group_byte = 0;
+        for (byte, content) in self.content.grapheme_indices(true) {
+            let style = self.style_at(offset, color);
+            if style.tate_chu_yoko
+                && !content.contains(['\n', '\r'])
+                && result
+                    .last()
+                    .is_some_and(|(_, prev, old)| old == &style && !prev.contains(['\n', '\r']))
+            {
+                result.last_mut().unwrap().1 = &self.content[group_byte..byte + content.len()];
+            } else {
+                group_byte = byte;
+                result.push((offset, content, style));
+            }
+            offset += content.encode_utf16().count();
+        }
+        result
+    }
+    /// Repair stale tate-chu-yoko spans and insufficient upright Latin advances.
+    /// Previous characters and other columns stay fixed; valid positions are unchanged.
+    pub fn normalize_vertical_group_positions(&mut self, color: [u8; 3]) {
+        if self.writing_mode != WritingMode::Vertical || self.character_origins.is_empty() {
+            return;
+        }
+        let mut corrections = Vec::new();
+        let units = self.vertical_units(color);
+        for (column, (line_start, line, _)) in self.visual_lines().into_iter().enumerate() {
+            let Some(positions) = self.character_origins.get(column) else {
+                continue;
+            };
+            for (start, content, style) in &units {
+                let end = start + content.encode_utf16().count();
+                if !(style.tate_chu_yoko || style.upright_latin(content))
+                    || content.contains(['\n', '\r'])
+                    || *start < line_start
+                    || end > line_start + line.encode_utf16().count()
+                {
+                    continue;
+                }
+                let Some(prefix) = vertical_utf16_prefix(line, start - line_start) else {
+                    continue;
+                };
+                let first = prefix.chars().count();
+                let after = first + content.chars().count();
+                let (Some(&begin), Some(&following)) = (positions.get(first), positions.get(after))
+                else {
+                    continue;
+                };
+                let target = style.font_size
+                    * style.scale_y
+                    * if style.tate_chu_yoko {
+                        1.
+                    } else {
+                        (1. + style.tracking / 1000.).max(1.)
+                    };
+                let delta = following - begin - target;
+                if style.tate_chu_yoko && delta > 0.01 || !style.tate_chu_yoko && delta < -0.01 {
+                    corrections.push((
+                        column,
+                        first,
+                        after,
+                        *start - line_start,
+                        end - line_start,
+                        target,
+                    ));
+                }
+            }
+        }
+        for (column, first, after, start, end, target) in corrections {
+            let positions = &mut self.character_origins[column];
+            let begin = positions[first];
+            let following = positions[after];
+            let span = following - begin;
+            let delta = span - target;
+            if span < 0. {
+                continue;
+            }
+            if span == 0. {
+                for position in &mut positions[after..] {
+                    *position += target;
+                }
+                if let Some(clusters) = self.glyph_clusters.get_mut(column) {
+                    for cluster in clusters {
+                        if cluster.start >= end {
+                            cluster.x += target;
+                        }
+                    }
+                }
+                if let Some(origins) = self.style_segment_origins.get_mut(column) {
+                    for origin in origins {
+                        if *origin > begin {
+                            *origin += target;
+                        }
+                    }
+                }
+                if let Some(width) = self.line_widths.get_mut(column) {
+                    *width += target;
+                }
+                continue;
+            }
+            let map = |x: f32| {
+                if x >= following {
+                    x - delta
+                } else if x > begin {
+                    begin + (x - begin) * target / span
+                } else {
+                    x
+                }
+            };
+            for position in &mut positions[first..] {
+                *position = map(*position);
+            }
+            if let Some(clusters) = self.glyph_clusters.get_mut(column) {
+                for cluster in clusters {
+                    if cluster.start >= start && cluster.end <= end || cluster.start >= end {
+                        cluster.x = map(cluster.x);
+                    }
+                }
+            }
+            if let Some(origins) = self.style_segment_origins.get_mut(column) {
+                for origin in origins {
+                    *origin = map(*origin);
+                }
+            }
+            if let Some(width) = self.line_widths.get_mut(column) {
+                *width = (*width - delta).max(0.);
+            }
+        }
+    }
+    pub fn reflow_vertical(&mut self) {
+        self.reflow_vertical_with(|_, _, style| {
+            style.font_size * style.scale_y * (1. + style.tracking / 1000.)
+        });
+    }
+    pub fn reflow_vertical_with(
+        &mut self,
+        mut measure: impl FnMut(&str, usize, &TextStyle) -> f32,
+    ) {
         self.clear_measured_layout();
         let limit = if self.point_text {
             100_000.0
         } else {
             self.box_height.unwrap_or(self.box_width)
         };
-        let mut offset = 0;
         let mut advance = self.indent_left + self.indent_first;
         let mut longest: f32 = 0.;
-        for grapheme in self.content.graphemes(true) {
+        let mut breaks = Vec::new();
+        for (unit_offset, grapheme, style) in self.vertical_units([0, 0, 0]) {
+            let offset = unit_offset;
             if grapheme.contains('\n') {
                 advance = self.indent_left + self.indent_first;
             } else {
-                let style = self.style_at(offset, [0, 0, 0]);
-                let step =
-                    (style.font_size * style.scale_y * (1. + style.tracking / 1000.)).max(0.1);
+                let step = if style.tate_chu_yoko {
+                    style.font_size * style.scale_y
+                } else {
+                    let measured = measure(grapheme, offset, &style);
+                    if style.upright_latin(grapheme) {
+                        measured.max(
+                            style.font_size * style.scale_y * (1. + style.tracking / 1000.).max(1.),
+                        )
+                    } else {
+                        measured
+                    }
+                }
+                .max(0.1);
                 if advance + step > limit - self.indent_right
                     && advance > self.indent_left + self.indent_first
                 {
-                    self.soft_breaks.push(offset);
+                    breaks.push(offset);
                     advance = self.indent_left;
                 }
                 advance += step;
                 longest = longest.max(advance);
             }
-            offset += grapheme.encode_utf16().count();
         }
+        self.soft_breaks = breaks;
         let columns = self.visual_lines().len() as f32;
         let span = columns * self.font_size * self.line_height;
         self.layout_bounds = Some([
@@ -516,6 +737,9 @@ impl VectorText {
             rotation: 0.0,
             bold: self.bold,
             italic: self.italic,
+            kerning: self.kerning,
+            rotate_latin: self.rotate_latin,
+            tate_chu_yoko: self.tate_chu_yoko,
             tracking: self.tracking,
             baseline_shift: self.baseline_shift,
             underline: self.underline,
@@ -597,6 +821,9 @@ impl VectorText {
                 || patch.rotation.is_some()
                 || patch.bold.is_some()
                 || patch.italic.is_some()
+                || patch.kerning.is_some()
+                || patch.rotate_latin.is_some()
+                || patch.tate_chu_yoko.is_some()
                 || patch.tracking.is_some()
                 || patch.baseline_shift.is_some()
                 || patch.underline.is_some()
@@ -1727,6 +1954,158 @@ mod text_style_tests {
             },
         }];
         assert!(text.validate().is_err());
+    }
+    #[test]
+    fn upright_latin_gets_full_height_and_does_not_change_other_columns() {
+        let mut text = VectorText {
+            content: "696件\n日本".into(),
+            font_size: 40.,
+            writing_mode: WritingMode::Vertical,
+            ..Default::default()
+        };
+        text.apply_style(
+            0,
+            3,
+            &TextStylePatch {
+                rotate_latin: Some(false),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        text.character_origins = vec![vec![0., 20., 40., 60.], vec![7., 47.]];
+        text.normalize_vertical_group_positions([0, 0, 0]);
+        assert_eq!(text.character_origins[0], vec![0., 40., 80., 120.]);
+        assert_eq!(text.character_origins[1], vec![7., 47.]);
+        let fixed = text.clone();
+        text.normalize_vertical_group_positions([0, 0, 0]);
+        assert_eq!(text, fixed);
+        text.character_origins[0] = vec![0., 0., 0., 0.];
+        text.normalize_vertical_group_positions([0, 0, 0]);
+        assert_eq!(text.character_origins[0], vec![0., 40., 80., 120.]);
+        text.reflow_vertical_with(|_, _, _| 20.);
+        assert!(text.layout_bounds.is_some());
+        assert_eq!(text.content, "696件\n日本");
+    }
+    #[test]
+    fn stale_three_letter_vertical_group_does_not_reserve_three_advances() {
+        let mut text = VectorText {
+            content: "あGPUい\nう".into(),
+            font_size: 40.,
+            writing_mode: WritingMode::Vertical,
+            ..Default::default()
+        };
+        text.apply_style(
+            1,
+            4,
+            &TextStylePatch {
+                tate_chu_yoko: Some(true),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        text.line_baselines = vec![20., 60.];
+        text.character_origins = vec![vec![0., 40., 70.16, 96.64, 127.56], vec![7.]];
+        text.normalize_vertical_group_positions([0, 0, 0]);
+        assert_eq!(text.character_origins[0][0], 0.);
+        assert_eq!(text.character_origins[0][1], 40.);
+        assert!((text.character_origins[0][4] - 80.).abs() < 0.001);
+        assert_eq!(text.character_origins[1], vec![7.]);
+        let corrected = text.clone();
+        text.normalize_vertical_group_positions([0, 0, 0]);
+        assert_eq!(text, corrected);
+        assert_eq!(text.content, "あGPUい\nう");
+    }
+    #[test]
+    fn vertical_horizontal_groups_keep_utf16_ranges_and_wrap_as_one_em() {
+        let mut text = VectorText {
+            content: "あ12い😀34\n56".into(),
+            writing_mode: WritingMode::Vertical,
+            font_size: 20.,
+            box_height: Some(40.),
+            ..Default::default()
+        };
+        text.apply_style(
+            1,
+            3,
+            &TextStylePatch {
+                tate_chu_yoko: Some(true),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        let units = text.vertical_units([0, 0, 0]);
+        assert_eq!(units[1].1, "12");
+        assert_eq!(units[1].0, 1);
+        assert_eq!(units[4].0, 6); // emoji occupies two UTF-16 code units
+        text.reflow_vertical();
+        assert_eq!(text.soft_breaks[0], 3);
+        assert!(!text.soft_breaks.contains(&2));
+        let loaded: VectorText =
+            serde_json::from_str(&serde_json::to_string(&text).unwrap()).unwrap();
+        assert_eq!(loaded, text);
+        assert!(loaded.style_at(1, [0, 0, 0]).tate_chu_yoko);
+        assert!(!loaded.style_at(3, [0, 0, 0]).tate_chu_yoko);
+        assert!(
+            serde_json::from_str::<VectorText>("{}")
+                .unwrap()
+                .rotate_latin
+        );
+    }
+    #[test]
+    fn vertical_groups_stop_at_hard_breaks_and_style_boundaries() {
+        let mut text = VectorText {
+            content: "12\n34".into(),
+            tate_chu_yoko: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            text.vertical_units([0, 0, 0])
+                .iter()
+                .map(|u| u.1)
+                .collect::<Vec<_>>(),
+            vec!["12", "\n", "34"]
+        );
+        text.apply_style(
+            1,
+            2,
+            &TextStylePatch {
+                rotate_latin: Some(false),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        assert_eq!(text.vertical_units([0, 0, 0])[0].1, "1");
+        assert!(!text.style_at(1, [0, 0, 0]).rotate_latin);
+    }
+    #[test]
+    fn kerning_selection_is_saved_and_invalidates_measured_layout() {
+        let mut text: VectorText = serde_json::from_str(r#"{"content":"AV日本語"}"#).unwrap();
+        assert_eq!(text.kerning, KerningMode::Metrics);
+        text.line_widths = vec![123.];
+        text.apply_style(
+            2,
+            4,
+            &TextStylePatch {
+                kerning: Some(KerningMode::JapaneseMonospaced),
+                ..Default::default()
+            },
+            [0, 0, 0],
+        )
+        .unwrap();
+        assert_eq!(text.style_at(1, [0, 0, 0]).kerning, KerningMode::Metrics);
+        assert_eq!(
+            text.style_at(2, [0, 0, 0]).kerning,
+            KerningMode::JapaneseMonospaced
+        );
+        assert_eq!(text.style_at(4, [0, 0, 0]).kerning, KerningMode::Metrics);
+        assert!(text.line_widths.is_empty());
+        let saved = serde_json::to_string(&text).unwrap();
+        assert_eq!(serde_json::from_str::<VectorText>(&saved).unwrap(), text);
+        assert!(serde_json::from_str::<VectorText>(r#"{"kerning":"unknown"}"#).is_err());
     }
     #[test]
     fn equal_adjacent_styles_merge_and_legacy_text_defaults_to_no_runs() {

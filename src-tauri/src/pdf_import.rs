@@ -102,6 +102,53 @@ pub(crate) fn pdf_import_context(window: WebviewWindow) -> Result<Info, String> 
         .map(|p| p.info.clone())
         .ok_or("PDF import is no longer pending".into())
 }
+/// Small page previews only; the PDF bytes remain in the owner session.
+#[tauri::command]
+pub(crate) async fn pdf_import_thumbnail(
+    window: WebviewWindow,
+    token: u64,
+    page_index: u32,
+) -> Result<String, String> {
+    let owner = crate::modal_windows::owner(&window)?;
+    let bytes = window
+        .app_handle()
+        .state::<Imports>()
+        .0
+        .lock()
+        .unwrap()
+        .get(&owner)
+        .filter(|p| {
+            p.info.token == token && !p.applying && (page_index as usize) < p.info.pages.len()
+        })
+        .map(|p| p.bytes.clone())
+        .ok_or("PDF import is no longer pending")?;
+    tauri::async_runtime::spawn_blocking(move || thumbnail(&bytes, page_index))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn thumbnail(bytes: &[u8], page_index: u32) -> Result<String, String> {
+    use base64::Engine;
+    let decoded = lumapaint_formats::pdf::read(
+        bytes,
+        lumapaint_formats::io::ReadOptions {
+            page_index,
+            raster_dpi: 36,
+            allow_lossy: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let lumapaint_formats::io::ReadContent::Vector(document) = decoded.content else {
+        return Err("PDF preview unavailable".into());
+    };
+    let png = lumapaint_renderer::thumbnails::page_preview(&document, 160)?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    ))
+}
+
 #[tauri::command]
 pub(crate) async fn pdf_import_apply(
     window: WebviewWindow,
@@ -109,6 +156,7 @@ pub(crate) async fn pdf_import_apply(
     page_index: u32,
     dpi: u32,
     all_pages: bool,
+    selected_pages: Option<Vec<u32>>,
 ) -> Result<bool, String> {
     let owner = crate::modal_windows::owner(&window)?;
     let app = window.app_handle().clone();
@@ -118,6 +166,18 @@ pub(crate) async fn pdf_import_apply(
     if all_pages && pending.target.is_some() {
         app.state::<Imports>().release(&owner, token);
         return Err("All pages must be opened as a document / 全ページは文書として開いてください / 所有页面必须作为文档打开".into());
+    }
+    let selected = selected_pages.unwrap_or_else(|| vec![page_index]);
+    if !all_pages
+        && (selected.is_empty()
+            || selected.len() > 512
+            || selected
+                .iter()
+                .any(|i| *i as usize >= pending.info.pages.len())
+            || (pending.target.is_some() && selected.len() != 1))
+    {
+        app.state::<Imports>().release(&owner, token);
+        return Err("Invalid PDF page selection".into());
     }
     #[cfg(target_os = "macos")]
     let result = async {
@@ -141,12 +201,30 @@ pub(crate) async fn pdf_import_apply(
                     }
                     decoded
                 })
+            } else if selected.len() > 1 {
+                lumapaint_formats::pdf::read_selected(&pending.bytes, options, &selected).map(
+                    |mut decoded| {
+                        if pending.format == lumapaint_formats::export::FormatId::Illustrator {
+                            decoded
+                                .report
+                                .issues
+                                .push(lumapaint_formats::ConversionIssue {
+                                    code: "ai.pdf_compatible_only",
+                                    tier: lumapaint_formats::CompatibilityTier::B,
+                                });
+                        }
+                        decoded
+                    },
+                )
             } else {
                 lumapaint_formats::io::read_document(
                     pending.format,
                     pending.info.name.clone(),
                     &pending.bytes,
-                    options,
+                    lumapaint_formats::io::ReadOptions {
+                        page_index: selected[0],
+                        ..options
+                    },
                 )
             };
             decoded.map(|d| (d, pending.target, pending.info.name))
@@ -159,7 +237,7 @@ pub(crate) async fn pdf_import_apply(
     .await;
     #[cfg(not(target_os = "macos"))]
     let result = {
-        let _ = (pending.bytes, pending.format, pending.target);
+        let _ = (pending.bytes, pending.format, pending.target, selected);
         Err("Native document editing is not supported on this platform yet".into())
     };
     app.state::<Imports>().release(&owner, token);
@@ -233,6 +311,22 @@ pub(crate) fn layer_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thumbnail_decodes_selected_page_to_bounded_png() {
+        use base64::Engine;
+        use lumapaint_formats::export::{DocumentExporter, ExportOptions, ExportSnapshot};
+        let page = lumapaint_formats::svg::import("preview".into(), "<svg width=\"120\" height=\"80\"><rect width=\"120\" height=\"80\" fill=\"red\"/></svg>".into()).unwrap();
+        let pdf = lumapaint_formats::pdf::PdfExporter
+            .export(&ExportSnapshot::capture(&page), ExportOptions::default())
+            .unwrap();
+        let url = thumbnail(&pdf.bytes, 0).unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        let (w, h) = lumapaint_renderer::vector::clipboard_png_size(&png).unwrap();
+        assert!(w <= 160 && h <= 160 && w > h);
+        assert!(thumbnail(&pdf.bytes, 1).is_err());
+    }
     #[test]
     fn stale_cancel_cannot_release_another_window_or_newer_request() {
         let imports = Imports::default();

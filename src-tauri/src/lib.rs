@@ -1,3 +1,4 @@
+mod font_viewer;
 mod image_frames;
 mod measurement_units;
 mod pdf_import;
@@ -125,6 +126,7 @@ pub fn run() {
             canvas::ruler_origin,
             canvas::page_thumbnails,
             pdf_import::pdf_import_context,
+            pdf_import::pdf_import_thumbnail,
             pdf_import::pdf_import_apply,
             pdf_import::pdf_import_cancel,
             modal_windows::open_modal_window,
@@ -156,6 +158,8 @@ pub fn run() {
             canvas::upsert_vector_object,
             canvas::set_text_object,
             canvas::text_fonts,
+            font_viewer::font_catalog,
+            font_viewer::font_preview,
             canvas::begin_text_edit,
             canvas::update_text_edit,
             canvas::set_text_edit_color,

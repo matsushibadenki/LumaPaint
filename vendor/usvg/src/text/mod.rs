@@ -124,7 +124,42 @@ impl FontResolver<'_> {
                 style,
             };
 
-            let id = fontdb.query(&query);
+            // Resolve exact styles without overriding earlier CSS family choices.
+            let id = name_list.iter().enumerate().find_map(|(index, family)| {
+                let exact = font.families.get(index).and_then(|family| match family {
+                    FontFamily::Named(name) => fontdb
+                        .faces()
+                        .find(|face| face.post_script_name == *name)
+                        .and_then(|face| {
+                            if (face.weight.0 >= 600) == (font.weight >= 600)
+                                && (face.style != fontdb::Style::Normal)
+                                    == (style != fontdb::Style::Normal)
+                            {
+                                return Some(face.id);
+                            }
+                            let families: Vec<_> = face
+                                .families
+                                .iter()
+                                .map(|(name, _)| fontdb::Family::Name(name))
+                                .collect();
+                            fontdb.query(&fontdb::Query {
+                                families: &families,
+                                weight: query.weight,
+                                stretch: query.stretch,
+                                style: query.style,
+                            })
+                        }),
+                    _ => None,
+                });
+                exact.or_else(|| {
+                    fontdb.query(&fontdb::Query {
+                        families: std::slice::from_ref(family),
+                        weight: query.weight,
+                        stretch: query.stretch,
+                        style: query.style,
+                    })
+                })
+            });
             if id.is_none() {
                 log::warn!(
                     "No match for '{}' font-family.",

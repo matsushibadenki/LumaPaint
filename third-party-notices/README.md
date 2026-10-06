@@ -1,4 +1,4 @@
-# Skia integration notices
+# Native rendering and font integration notices
 
 This directory is included in the application bundle. Skia is Copyright (c) 2011
 Google Inc. and distributed under the BSD license in Skia-BSD.txt. Rust bindings
@@ -20,9 +20,9 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-10-04)
+## Dependency inventory (2026-10-06)
 
-`cargo-license-inventory.json` inventories 586 locked Cargo packages across
+`cargo-license-inventory.json` inventories 590 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:
@@ -43,3 +43,12 @@ Additional fixed source notices:
 - simplecss 0.2.2: locked crates.io source, local changes documented in vendor/simplecss/LUMAPAINT-PATCHES.md
 
 - ttf-parser 0.25.1: the embedded PDF glyph-outline reader uses this parser directly; MIT and Apache-2.0 source notices are bundled.
+
+## PDF PostScript font reader
+
+freetype-rs 0.38.0 and freetype-sys 0.23.0 are statically bundled for the PDF
+font reader, independently of Skia. Their MIT notices are included here. The
+bundled native FreeType uses the FTL option; its own FTL and libpng notice are
+included as pdf-freetype-FTL.TXT and pdf-freetype-libpng-LICENSE.
+Portions of this software are copyright © 2024 The FreeType Project
+(www.freetype.org). All rights reserved.

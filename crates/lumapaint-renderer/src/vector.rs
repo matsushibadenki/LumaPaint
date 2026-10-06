@@ -1,5 +1,7 @@
 //! GPU-preferred vector rendering behind a premultiplied RGBA8 boundary shared with wgpu.
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
+pub mod font_viewer;
+pub mod kerning;
 #[cfg(feature = "skia")]
 pub mod pathfinder;
 #[cfg(test)]
@@ -12,7 +14,7 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
     FONTS
         .get_or_init(|| {
             let mut fonts = usvg::fontdb::Database::new();
-            fonts.load_system_fonts();
+            lumapaint_fonts::load_system_fonts(&mut fonts);
             configure_generic_font_families(&mut fonts);
             Arc::new(fonts)
         })
@@ -69,7 +71,57 @@ pub fn reflow_text_with_system_fonts(
     color: [u8; 3],
 ) -> Result<(), String> {
     if text.writing_mode == lumapaint_core::vector::WritingMode::Vertical {
-        text.reflow_vertical();
+        if text.has_vertical_character_options() {
+            if text.line_baselines.is_empty() {
+                text.reflow_vertical();
+            }
+            return text.validate();
+        }
+        let custom = text.kerning != lumapaint_core::vector::KerningMode::Metrics
+            || text
+                .runs
+                .iter()
+                .any(|r| r.style.kerning != lumapaint_core::vector::KerningMode::Metrics);
+        if !custom {
+            text.reflow_vertical();
+            return text.validate();
+        }
+        let advances = kerning::advances(text, color);
+        let map: std::collections::HashMap<_, _> =
+            advances.iter().map(|a| (a.start, a.advance)).collect();
+        text.reflow_vertical_with(|_, start, style| {
+            map.get(&start).copied().unwrap_or(style.font_size)
+        });
+        let mut positions = Vec::new();
+        let mut baselines = Vec::new();
+        let mut widths = Vec::new();
+        let mut origins = Vec::new();
+        for (column, (start, line, hard)) in text.visual_lines().into_iter().enumerate() {
+            let origin = text.indent_left
+                + if column == 0 || hard {
+                    text.indent_first
+                } else {
+                    0.
+                };
+            let mut cursor = origin;
+            let mut offset = start;
+            let mut line_positions = Vec::new();
+            use unicode_segmentation::UnicodeSegmentation;
+            for g in line.graphemes(true) {
+                line_positions.extend(std::iter::repeat_n(cursor, g.chars().count()));
+                cursor += map.get(&offset).copied().unwrap_or(text.font_size);
+                offset += g.encode_utf16().count();
+            }
+            baselines
+                .push(text.font_size * 0.5 + column as f32 * text.font_size * text.line_height);
+            origins.push(origin);
+            widths.push(cursor - origin);
+            positions.push(line_positions);
+        }
+        text.line_baselines = baselines;
+        text.line_origins = origins;
+        text.line_widths = widths;
+        text.character_origins = positions;
         return text.validate();
     }
     let source = text.clone();
@@ -86,9 +138,15 @@ pub fn reflow_text_with_system_fonts(
     let mut widths = Vec::new();
     let mut origins = Vec::new();
     let mut segment_origins = Vec::new();
-    let transformed = candidate.runs.iter().any(|run| {
-        run.style.scale_x != 1.0 || run.style.scale_y != 1.0 || run.style.rotation != 0.0
-    });
+    let custom_kerning = candidate.kerning != lumapaint_core::vector::KerningMode::Metrics
+        || candidate
+            .runs
+            .iter()
+            .any(|r| r.style.kerning != lumapaint_core::vector::KerningMode::Metrics);
+    let transformed = custom_kerning
+        || candidate.runs.iter().any(|run| {
+            run.style.scale_x != 1.0 || run.style.scale_y != 1.0 || run.style.rotation != 0.0
+        });
     let mut glyph_clusters = Vec::new();
     for (index, (start, line, hard_break_before)) in
         candidate.visual_lines().into_iter().enumerate()
@@ -136,14 +194,32 @@ pub fn reflow_text_with_system_fonts(
             let mut clusters = Vec::new();
             let mut offset = 0;
             let mut cursor = origin;
+            let mut line_text = source.clone();
+            line_text.content = line.into();
+            line_text.runs.clear();
+            let mut run_offset = 0;
             for grapheme in line.graphemes(true) {
+                let end = run_offset + grapheme.encode_utf16().count();
+                line_text.runs.push(lumapaint_core::vector::TextRun {
+                    start: run_offset,
+                    end,
+                    style: source.style_at(start + run_offset, color),
+                });
+                run_offset = end;
+            }
+            let advances = custom_kerning.then(|| kerning::advances(&line_text, color));
+            for (glyph_index, grapheme) in line.graphemes(true).enumerate() {
                 let end = offset + grapheme.encode_utf16().count();
                 clusters.push(lumapaint_core::vector::TextGlyphCluster {
                     start: offset,
                     end,
                     x: cursor,
                 });
-                cursor += measurer.measure(&source, color, grapheme, start + offset)?;
+                cursor += if let Some(advances) = &advances {
+                    advances.get(glyph_index).map_or(0., |a| a.advance)
+                } else {
+                    measurer.measure(&source, color, grapheme, start + offset)?
+                };
                 offset = end;
             }
             glyph_clusters.push(clusters);
@@ -193,6 +269,32 @@ impl PortableFontMeasurer {
         start: usize,
     ) -> Result<f32, String> {
         use unicode_segmentation::UnicodeSegmentation;
+        if text.kerning != lumapaint_core::vector::KerningMode::Metrics
+            || text.runs.iter().any(|r| {
+                r.start < start + content.encode_utf16().count()
+                    && r.end > start
+                    && r.style.kerning != lumapaint_core::vector::KerningMode::Metrics
+            })
+        {
+            let mut sample = lumapaint_core::vector::VectorText {
+                content: content.into(),
+                ..Default::default()
+            };
+            let mut offset = 0;
+            for g in content.graphemes(true) {
+                let end = offset + g.encode_utf16().count();
+                sample.runs.push(lumapaint_core::vector::TextRun {
+                    start: offset,
+                    end,
+                    style: text.style_at(start + offset, color),
+                });
+                offset = end;
+            }
+            return Ok(kerning::advances(&sample, color)
+                .iter()
+                .map(|a| a.advance)
+                .sum());
+        }
         let mut width = 0.0;
         let mut offset = start;
         let mut group = String::new();
@@ -250,6 +352,33 @@ fn find_style_font(
     style: &lumapaint_core::vector::TextStyle,
 ) -> Option<usvg::fontdb::ID> {
     use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
+    if let Some(info) = fonts
+        .faces()
+        .find(|info| info.post_script_name == style.font_family)
+    {
+        if (info.weight.0 >= 600) == style.bold && (info.style != Style::Normal) == style.italic {
+            return Some(info.id);
+        }
+        let families: Vec<_> = info
+            .families
+            .iter()
+            .map(|(name, _)| Family::Name(name))
+            .collect();
+        return fonts.query(&Query {
+            families: &families,
+            weight: if style.bold {
+                Weight::BOLD
+            } else {
+                Weight::NORMAL
+            },
+            style: if style.italic {
+                Style::Italic
+            } else {
+                Style::Normal
+            },
+            stretch: info.stretch,
+        });
+    }
     let families: Vec<_> = match style.font_family.as_str() {
         "serif" => vec![
             Family::Name("Hiragino Mincho ProN"),
@@ -320,6 +449,21 @@ fn shape_width(
     style: &lumapaint_core::vector::TextStyle,
     graphemes: usize,
 ) -> Result<f32, String> {
+    if style.kerning != lumapaint_core::vector::KerningMode::Metrics {
+        let mut text = lumapaint_core::vector::VectorText {
+            content: content.into(),
+            ..Default::default()
+        };
+        text.runs = vec![lumapaint_core::vector::TextRun {
+            start: 0,
+            end: content.encode_utf16().count(),
+            style: style.clone(),
+        }];
+        return Ok(kerning::advances(&text, style.color)
+            .iter()
+            .map(|a| a.advance)
+            .sum());
+    }
     let advance = fonts
         .with_face_data(id, |data, index| {
             let face = rustybuzz::Face::from_slice(data, index)?;
@@ -352,6 +496,14 @@ pub fn text_font_postscript_name(style: &lumapaint_core::vector::TextStyle) -> O
     };
     let families: Vec<_> = names.into_iter().map(Family::Name).collect();
     let fonts = system_fonts();
+    if fonts
+        .faces()
+        .any(|info| info.post_script_name == style.font_family)
+    {
+        return find_style_font(&fonts, style)
+            .and_then(|id| fonts.face(id))
+            .map(|info| info.post_script_name.clone());
+    }
     let id = fonts.query(&Query {
         families: &families,
         weight: if style.bold {
@@ -944,6 +1096,282 @@ mod tests {
     }
 
     #[test]
+    fn baseline_shift_moves_only_selected_glyphs() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{TextStylePatch, VectorText, WritingMode},
+        };
+        for writing_mode in [WritingMode::Horizontal, WritingMode::Vertical] {
+            let render = |shift| {
+                let mut text = VectorText {
+                    content: "決定\n日本".into(),
+                    font_size: 40.,
+                    box_width: 300.,
+                    box_height: Some(300.),
+                    writing_mode,
+                    ..Default::default()
+                };
+                text.apply_style(
+                    1,
+                    2,
+                    &TextStylePatch {
+                        baseline_shift: Some(shift),
+                        color: Some([255, 0, 0]),
+                        ..Default::default()
+                    },
+                    [0, 0, 255],
+                )
+                .unwrap();
+                reflow_text_with_system_fonts(&mut text, [0, 0, 255]).unwrap();
+                let mut doc = Document::default();
+                doc.set_text_object(TextSettings {
+                    id: None,
+                    text,
+                    position: [40., 40.],
+                    color: [0, 0, 255],
+                })
+                .unwrap();
+                let snap = doc.snapshot();
+                let pixels = rasterize_svg(
+                    &doc.svg_layers().next().unwrap().source,
+                    snap.width,
+                    snap.height,
+                )
+                .unwrap()
+                .pixels;
+                let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+                assert_eq!(
+                    pixels,
+                    rasterize_svg(
+                        &loaded.svg_layers().next().unwrap().source,
+                        snap.width,
+                        snap.height
+                    )
+                    .unwrap()
+                    .pixels
+                );
+                pixels
+            };
+            let normal = render(0.);
+            let colored_pixels = |pixels: &[u8], channel: usize| {
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p[channel] > 200 && p[2 - channel] < 20 && p[3] > 0)
+                    .map(|(i, p)| (i, *p))
+                    .collect::<Vec<_>>()
+            };
+            let unchanged = colored_pixels(&normal, 2);
+            assert!(!unchanged.is_empty());
+            for shift in [-12., 12.] {
+                let shifted = render(shift);
+                assert_eq!(
+                    unchanged,
+                    colored_pixels(&shifted, 2),
+                    "unselected text moved in {writing_mode:?}"
+                );
+                assert_ne!(
+                    colored_pixels(&normal, 0),
+                    colored_pixels(&shifted, 0),
+                    "selected glyph did not shift"
+                );
+            }
+        }
+    }
+    #[test]
+    fn vertical_height_ratio_scales_glyphs_and_advances_together() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{TextStylePatch, VectorText, WritingMode},
+        };
+        let render = |ratio: f32| {
+            let mut text = VectorText {
+                content: "決定".into(),
+                font_size: 40.,
+                box_width: 120.,
+                box_height: Some(200.),
+                writing_mode: WritingMode::Vertical,
+                ..Default::default()
+            };
+            if ratio != 1. {
+                text.apply_style(
+                    0,
+                    2,
+                    &TextStylePatch {
+                        scale_y: Some(ratio),
+                        ..Default::default()
+                    },
+                    [0, 0, 0],
+                )
+                .unwrap();
+            }
+            reflow_text_with_system_fonts(&mut text, [0, 0, 0]).unwrap();
+            let mut doc = Document::default();
+            doc.set_text_object(TextSettings {
+                id: None,
+                text,
+                position: [0., 0.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+            let snap = doc.snapshot();
+            let image = rasterize_svg(
+                &doc.svg_layers().next().unwrap().source,
+                snap.width,
+                snap.height,
+            )
+            .unwrap();
+            let points: Vec<_> = image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p[3] > 0)
+                .map(|(i, _)| (i % snap.width as usize, i / snap.width as usize))
+                .collect();
+            let min_x = points.iter().map(|p| p.0).min().unwrap();
+            let max_x = points.iter().map(|p| p.0).max().unwrap();
+            let min_y = points.iter().map(|p| p.1).min().unwrap();
+            let max_y = points.iter().map(|p| p.1).max().unwrap();
+            let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+            assert_eq!(
+                image.pixels,
+                rasterize_svg(
+                    &loaded.svg_layers().next().unwrap().source,
+                    snap.width,
+                    snap.height
+                )
+                .unwrap()
+                .pixels
+            );
+            (min_x, max_x, max_y - min_y + 1)
+        };
+        let normal = render(1.);
+        for ratio in [0.1, 0.5, 2.] {
+            let bounds = render(ratio);
+            assert!(
+                bounds.0.abs_diff(normal.0) <= 1 && bounds.1.abs_diff(normal.1) <= 1,
+                "height transform shifted column"
+            );
+            assert!(
+                (bounds.2 as f32 - normal.2 as f32 * ratio).abs() <= 4.,
+                "glyph height/advance mismatch at {ratio}: {bounds:?}"
+            );
+        }
+    }
+    #[test]
+    fn upright_digits_render_as_three_separate_rows_with_stale_narrow_advances() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{VectorText, WritingMode},
+        };
+        let text = VectorText {
+            content: "696".into(),
+            font_family: "Arial".into(),
+            font_size: 40.,
+            rotate_latin: false,
+            writing_mode: WritingMode::Vertical,
+            box_width: 120.,
+            box_height: Some(200.),
+            line_baselines: vec![20.],
+            line_origins: vec![0.],
+            character_origins: vec![vec![0., 20., 40.]],
+            ..Default::default()
+        };
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text,
+            position: [0., 0.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let snap = doc.snapshot();
+        let raster = rasterize_svg(
+            &doc.svg_layers().next().unwrap().source,
+            snap.width,
+            snap.height,
+        )
+        .unwrap();
+        let mut bands = 0;
+        let mut previous = false;
+        for row in raster.pixels.chunks_exact(snap.width as usize * 4) {
+            let occupied = row.as_chunks::<4>().0.iter().any(|p| p[3] > 0);
+            if occupied && !previous {
+                bands += 1;
+            }
+            previous = occupied;
+        }
+        assert_eq!(bands, 3, "upright digits must not overlap");
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(
+            raster.pixels,
+            rasterize_svg(
+                &loaded.svg_layers().next().unwrap().source,
+                snap.width,
+                snap.height
+            )
+            .unwrap()
+            .pixels
+        );
+    }
+    #[test]
+    fn tate_chu_yoko_raster_is_compact_and_matches_saved_document() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            vector::{VectorText, WritingMode},
+        };
+        let mut doc = Document::default();
+        let mut text = VectorText {
+            content: "1234".into(),
+            writing_mode: WritingMode::Vertical,
+            font_family: "Arial".into(),
+            font_size: 40.,
+            box_width: 120.,
+            box_height: Some(200.),
+            tate_chu_yoko: true,
+            ..Default::default()
+        };
+        reflow_text_with_system_fonts(&mut text, [0, 0, 0]).unwrap();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text,
+            position: [0., 0.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let snapshot = doc.snapshot();
+        let (w, h) = (snapshot.width, snapshot.height);
+        let source = &doc.svg_layers().next().unwrap().source;
+        let first = rasterize_svg(source, w, h).unwrap();
+        let points: Vec<_> = first
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p[3] > 0)
+            .map(|(i, _)| (i % w as usize, i / w as usize))
+            .collect();
+        assert!(!points.is_empty());
+        let height = points.iter().map(|p| p.1).max().unwrap()
+            - points.iter().map(|p| p.1).min().unwrap()
+            + 1;
+        let width = points.iter().map(|p| p.0).max().unwrap()
+            - points.iter().map(|p| p.0).min().unwrap()
+            + 1;
+        assert!(
+            height <= 40 && width <= 42,
+            "group bounds: {width} x {height}"
+        );
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        let second = rasterize_svg(&loaded.svg_layers().next().unwrap().source, w, h).unwrap();
+        assert_eq!(first.pixels, second.pixels);
+    }
+    #[test]
     fn vertical_native_positions_are_preserved_in_preview_and_save() {
         use lumapaint_core::document::{Document, TextSettings};
         use lumapaint_core::vector::{VectorText, WritingMode};
@@ -1242,7 +1670,7 @@ mod tests {
     #[test]
     fn installed_sans_font_repairs_missing_generic_family() {
         let mut fonts = usvg::fontdb::Database::new();
-        fonts.load_system_fonts();
+        lumapaint_fonts::load_system_fonts(&mut fonts);
         if !fonts.faces().any(|face| {
             face.families
                 .iter()

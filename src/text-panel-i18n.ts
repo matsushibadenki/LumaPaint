@@ -1,6 +1,7 @@
 export const textPanelMessages = {
   en: {
     title: 'Character', paragraph: 'Paragraph', font: 'Font family', style: 'Font style', regular: 'Regular', bold: 'Bold', italic: 'Italic', boldItalic: 'Bold italic',
+    rotateLatin: 'Rotate Latin in vertical text', tateChuYoko: 'Tate-chu-yoko', kerning: 'Kerning', metrics: 'Metrics', optical: 'Optical', japaneseMonospaced: 'Japanese monospaced',
     size: 'Font size', leading: 'Leading', tracking: 'Tracking (1/1000 em)', horizontal: 'Horizontal scale', vertical: 'Vertical scale', baseline: 'Baseline shift', rotation: 'Rotation', underline: 'Underline', strike: 'Strikethrough',
     color: 'Text color', left: 'Align left', center: 'Align center', right: 'Align right', justify: 'Justify', lists: 'Lists', bullets: 'Bulleted list', numbers: 'Numbered list', indentLeft: 'Left indent', indentRight: 'Right indent', indentFirst: 'First line indent', before: 'Space before paragraph', after: 'Space after paragraph', width: 'Text frame width', height: 'Text frame height (0: auto)', kinsoku: 'Line breaking rules', mojikumi: 'East Asian composition', hyphenation: 'Hyphenation', none: 'None', standard: 'Standard', strict: 'Strict', japanese: 'Japanese standard',
     hint: 'Click the canvas with T to add text. Double-click existing text to edit it.', editing: 'Changes appear live · ⌘ Enter to finish · Esc to cancel', edit: 'Edit on canvas', add: 'Add text', done: 'Finish editing', cancel: 'Cancel', empty: 'Select a text object to change its typography.', locked: 'This text is locked or hidden.',
@@ -8,6 +9,7 @@ export const textPanelMessages = {
   },
   ja: {
     title: '文字', paragraph: '段落', font: 'フォントファミリー', style: 'フォントスタイル', regular: 'レギュラー', bold: 'ボールド', italic: 'イタリック', boldItalic: 'ボールドイタリック',
+    rotateLatin: '縦組みの中の欧文回転', tateChuYoko: '縦中横', kerning: '文字詰め', metrics: 'メトリクス', optical: 'オプティカル', japaneseMonospaced: '和文等幅',
     size: '文字サイズ', leading: '行送り', tracking: '字間（1/1000 em）', horizontal: '水平比率', vertical: '垂直比率', baseline: 'ベースラインシフト', rotation: '文字の回転', underline: '下線', strike: '打ち消し線',
     color: '文字色', left: '左揃え', center: '中央揃え', right: '右揃え', justify: '均等配置', lists: 'リスト', bullets: '箇条書き', numbers: '番号付きリスト', indentLeft: '左インデント', indentRight: '右インデント', indentFirst: '最初の行のインデント', before: '段落前のアキ', after: '段落後のアキ', width: 'テキスト枠幅', height: 'テキスト枠高さ（0：自動）', kinsoku: '禁則処理', mojikumi: '文字組み', hyphenation: 'ハイフネーション', none: 'なし', standard: '標準', strict: '強い禁則', japanese: '和文標準',
     hint: 'Tでキャンバスをクリックして文字を追加。既存の文字はダブルクリックで編集できます。', editing: '変更はリアルタイムに反映 · ⌘ Enterで編集終了 · Escで取消', edit: 'キャンバスで編集', add: '文字を追加', done: '編集を終了', cancel: '取消', empty: '文字オブジェクトを選択すると書式を変更できます。', locked: 'この文字はロック中または非表示です。',
@@ -15,6 +17,7 @@ export const textPanelMessages = {
   },
   'zh-CN': {
     title: '字符', paragraph: '段落', font: '字体', style: '字体样式', regular: '常规', bold: '粗体', italic: '斜体', boldItalic: '粗斜体',
+    rotateLatin: '竖排西文旋转', tateChuYoko: '纵中横', kerning: '字偶距', metrics: '度量', optical: '光学', japaneseMonospaced: '日文等宽',
     size: '字号', leading: '行距', tracking: '字距（1/1000 em）', horizontal: '水平缩放', vertical: '垂直缩放', baseline: '基线偏移', rotation: '文字旋转', underline: '下划线', strike: '删除线',
     color: '文字颜色', left: '左对齐', center: '居中', right: '右对齐', justify: '两端对齐', lists: '列表', bullets: '项目符号列表', numbers: '编号列表', indentLeft: '左缩进', indentRight: '右缩进', indentFirst: '首行缩进', before: '段前间距', after: '段后间距', width: '文本框宽度', height: '文本框高度（0：自动）', kinsoku: '禁则处理', mojikumi: '东亚文字排版', hyphenation: '断字', none: '无', standard: '标准', strict: '严格', japanese: '日文标准',
     hint: '按T后点击画布添加文字。双击现有文字即可编辑。', editing: '更改会实时显示 · ⌘ Enter结束编辑 · Esc取消', edit: '在画布上编辑', add: '添加文字', done: '结束编辑', cancel: '取消', empty: '选择文字对象以更改排版。', locked: '该文字已锁定或隐藏。',

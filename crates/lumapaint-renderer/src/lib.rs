@@ -4702,6 +4702,8 @@ mod object_translation_tests {
     }
 }
 
+mod layer_effects_gpu;
+
 /// Adjust premultiplied renderer pixels without changing alpha or model source data.
 pub fn apply_layer_effects(
     pixels: &mut [u8],
@@ -4710,6 +4712,27 @@ pub fn apply_layer_effects(
     if !effects.enabled {
         return;
     }
+    if layer_effects_gpu::apply(pixels, effects) {
+        return;
+    }
+    apply_layer_effects_cpu(pixels, effects);
+}
+// Only workspace revisions may identify immutable raster sources.
+fn apply_layer_effects_source(
+    pixels: &mut [u8],
+    effects: &lumapaint_core::layer_effects::LayerEffects,
+    revision: u64,
+) {
+    if effects.enabled && !layer_effects_gpu::apply_source(pixels, effects, Some(revision)) {
+        apply_layer_effects_cpu(pixels, effects);
+    }
+}
+
+fn apply_layer_effects_cpu(
+    pixels: &mut [u8],
+    effects: &lumapaint_core::layer_effects::LayerEffects,
+) {
+    let prepared = (pixels.len() >= 256).then(|| effects.prepare());
     for p in pixels.as_chunks_mut::<4>().0 {
         if p[3] == 0 {
             continue;
@@ -4717,7 +4740,10 @@ pub fn apply_layer_effects(
         let alpha = u32::from(p[3]);
         let straight =
             [0, 1, 2].map(|i| ((u32::from(p[i]) * 255 + alpha / 2) / alpha).min(255) as u8);
-        let adjusted = effects.apply([straight[0], straight[1], straight[2], p[3]]);
+        let pixel = [straight[0], straight[1], straight[2], p[3]];
+        let adjusted = prepared
+            .as_ref()
+            .map_or_else(|| effects.apply(pixel), |e| e.apply(pixel));
         for i in 0..3 {
             p[i] = ((u32::from(adjusted[i]) * alpha + 127) / 255) as u8;
         }
@@ -4729,3 +4755,51 @@ pub mod paint_bucket;
 pub mod selection_tools;
 
 pub mod retouch;
+
+#[cfg(test)]
+mod effects_plan_tests {
+    #[test]
+    fn prepared_batches_match_reference_premultiplied_pixels_and_small_samples() {
+        use lumapaint_core::layer_effects::LayerEffects;
+        let mut e = LayerEffects {
+            enabled: true,
+            values: [1.2, 25., -35., 20., 10., -15., 30., -20., 25., -15.],
+            ..Default::default()
+        };
+        e.curves = std::array::from_fn(|_| {
+            vec![[0., 0.], [0.12, 0.22], [0.4, 0.33], [0.75, 0.88], [1., 1.]]
+        });
+        e.mixer[0] = [30., 25., -15.];
+        e.grading = [[30., 20., -5.], [210., 10., 5.], [300., 15., 0.]];
+        for count in [1, 64, 8192] {
+            let mut pixels: Vec<u8> = (0..count as u32)
+                .flat_map(|i| {
+                    let v = i.wrapping_mul(2654435761);
+                    let a = [0u8, 1, 64, 128, 255][i as usize % 5];
+                    [v as u8, (v >> 8) as u8, (v >> 16) as u8]
+                        .map(|c| (u16::from(c) * u16::from(a) / 255) as u8)
+                        .into_iter()
+                        .chain([a])
+                })
+                .collect();
+            let mut expected = pixels.clone();
+            for p in expected.as_chunks_mut::<4>().0 {
+                let a = u32::from(p[3]);
+                if a == 0 {
+                    continue;
+                }
+                let adjusted = e.apply([
+                    ((u32::from(p[0]) * 255 + a / 2) / a).min(255) as u8,
+                    ((u32::from(p[1]) * 255 + a / 2) / a).min(255) as u8,
+                    ((u32::from(p[2]) * 255 + a / 2) / a).min(255) as u8,
+                    p[3],
+                ]);
+                for c in 0..3 {
+                    p[c] = ((u32::from(adjusted[c]) * a + 127) / 255) as u8;
+                }
+            }
+            super::apply_layer_effects(&mut pixels, &e);
+            assert!(pixels == expected, "batch length={count}");
+        }
+    }
+}

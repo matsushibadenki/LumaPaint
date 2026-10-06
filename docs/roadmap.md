@@ -301,7 +301,15 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Done] PSB v2のRGB8部分読み込みとmacOS「開く」を追加。64bit長・32bitRLE行長、4圧縮方式、Unicode名・ネイティブ保存・不正長を検証。Photoshop 2026での別名保存ファイルも、追加情報の損失を報告し、プレビューとの画素比較を通過すればレイヤーを保持。
 - [Done] Photoshopが再保存で追加する文書／レイヤー情報のための不要な統合を減らす。既知の追加情報を省略するときはRGB8合成プレビューとの誤差1/255以内を確認し、日本語名・表示・画素をレイヤーとして保持。部分ロックを全体ロックへ変換し、設定の欠落を三言語で報告。差がある場合と検証容量を超える場合は統合画像へ戻す。未知の機能は引き続き未対応。
 - [Next] SVG・AI・PDF・PSD・PSB・INDDの日本語／Adobe往復精度を機能別に検証。残る差と判定条件は `docs/file-format-preparation.md` の互換表で管理。INDD直接I/OとIDML交換経路を区別する。
-- [Next] PDFの編集可能な文字情報、追加のフォント・任意CMap、追加画像形式・タイルパターン・追加shading／非線形補間・追加の透明効果・ICCの外観保持。AI固有データの読み書きと非PDF互換AIは未対応。
+- [Done] PDFの埋め込みEncoding CMapで1〜4バイトの文字コードをCIDへ変換。codespace・cidchar／cidrange・notdef・横／縦書きとIdentity親CMapに対応し、PDFのCID→GIDと文字幅を保持。複合フォントの単語間隔は元の1バイトコード32だけに適用。ExtGStateのFont指定で既存の文字間隔・行列を消していた処理も修正。合成日本語CIDフォントの横／縦PDFを可変長CMapへ変更し、元の輪郭SVGと完全一致を検証。
+- [Done] PDFのFontFile3／CIDFontType0C（裸のCID CFF）を読み込み。CFFプログラムを保持した内部sfntアダプターでCID→GIDの輪郭とPDFのW／DW文字幅を使用し、インストール済みフォントへ置換しない。添付PDFのヒラギノ3書体で本文・INDEXの文字省略が解消し、PDFKit表示との字形・配置を確認。独自CIDフォントの横／縦PDFでOpenType版と裸CFF版の輪郭SVG完全一致を検証。標準の0.001 FontMatrixはsfntアダプターで読み取り、その他は同梱FreeTypeの経路へ接続（詳細はフォント形式対応表）。
+- [Done] PDFの埋め込みType 1（PFA／PFB／バイナリFontFile）とType1Cに同梱FreeTypeの独立輪郭経路を追加。内蔵Encoding・Differences・PDF幅と字間を保持。Type 3のFontMatrix・CharProcs・d0/d1・描画リソースを読み取り、Trの扱いをISO仕様に合わせる。独自字形で配置・字形・容量制限を検証。[形式別の検証範囲と未完了事項](pdf-font-formats.md)を明記。
+- [Done] PDF埋め込みTTC／OTC（静的TrueType／CID CFF）の書体をPostScript名で選択。後方書体と単独フォントの輪郭SVG一致を検証し、名前の重複・不一致・矛盾・書体数超過を拒否。TrueTypeのEncoding省略／Symbolic時は内蔵Macintosh／Windows記号cmapで字形を解決し、4種類のコードブロックと曖昧な対応をテスト。詳細は[フォント対応表](pdf-font-formats.md)。
+- [Done] Adobe Fonts LiveTypeの不可視OTF／TTF／TTCを共通フォント検索へ追加。macOSの編集用フォントはプロセス内で登録し、SVG編集・描画・PDF代替フォント検索でも使用。暗号化キャッシュやメタデータは対象外。
+- [Done] 文字詰めをメトリクス／オプティカル／和文等幅から選択。文字範囲・挿入文字への適用、Undo/Redo・保存、横書き／縦書きの測定配置とSVG出力へ接続。字間は独立して加算。オプティカルは独自の輪郭距離計算で、Adobeの非公開アルゴリズムとの完全一致は未検証。詳細は[文字詰め](text-kerning.md)。
+- [Done] 縦組みの欧文回転と縦中横。文字範囲・挿入文字・全体への書式設定、1 emの横組みグループ、改列・保存・Undo/Redo・SVG描画へ接続。文字の水平・垂直比率を変更した場合のネイティブ文字送りも補正。詳細は[縦組み文字設定](vertical-character-options.md)。
+- [Done] 文字パネルのサブメニューからフォントビューアを表示。実書体の輪郭プレビュー、検索、和文／欧文、スタイル展開、お気に入り・グループ、最近使用／文書で使用中、選択文字への書体適用。Rustでカタログ・プレビューを生成し、一覧を仮想化。詳細は[フォントビューア](font-viewer.md)。
+- [Next] PDFの編集可能な文字情報、追加のフォント・定義済み日本語CMap／任意の親CMap、追加画像形式・タイルパターン・追加shading／非線形補間・追加の透明効果・ICCの外観保持。AI固有データの読み書きと非PDF互換AIは未対応。
 - [Done] 読み込みSVGのrect／ellipse／circle／line／polyline／polygon、静的CSSの座標・寸法・d・表示・2D変形、use／入れ子のuse／symbolのインスタンスをダイレクト選択の編集対象にする。Rustの描画パーサーと同じ解決済み形状から節点を生成。図形は編集時にベジェ化し、useはそのインスタンスだけ独立化。共有定義・他のインスタンス・グラデーション・クリップを保持し、複数輪郭の同時編集・安定した識別子・保存／再読込・Undo/Redoを検証。変換前後の描画ピクセルを比較して外観維持を確認。macOSで読み込みSVGを画像レイヤー移動より優先して節点編集へ振り分け、CSS図形・useの片方の節点移動とUndoを操作確認。
 - [Done] 静的SVGのCSS変数（:root、継承、重要度、大小文字区別、フォールバック、循環無効化）とcalc（同種単位／物理単位換算・四則演算）、viewBox基準のパーセントtranslateを共通パーサーへ追加。描画・ダイレクト選択・SVG出力が同じ解決結果を使用。展開深さ・値容量・変数数・総メモリを制限し、循環やゼロ除算は無効化。明示図形との画素一致と節点移動を検証。
 - [Next] SVGの動的CSS・3D変形、calcの異種単位（%＋pxなど）・transform-box:fill-boxの解決と編集。
@@ -611,6 +619,7 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Done] Dockable/floating Pages panel with lazy native content thumbnails, active-page highlighting, insertion, duplication, deletion, drag reordering and earlier/later controls. Page operations support Undo/Redo; layout Undo preserves changes on other pages. Japanese, English and Simplified Chinese.
 - [Done] Active spread fits and displays both pages on the native canvas; clicking the neighboring page makes it editable. Vector neighbors retain SVG fidelity; painted neighbors use a Rust-owned composite cache capped at 2048 pixels. Only small panel thumbnails cross IPC. Native file envelope limit raised to 64 MiB for multi-page documents.
 - [Done] 複数ページPDFの全ページ読み込み。Rustで共有PDFを一度解析し、論理順・個別寸法・指定DPIを保持した単一文書を生成。通常の「開く」は全ページが既定、指定ページのみも選択可能。レイヤー読み込みは指定ページのみ。最大512ページ・展開SVG合計128MiB、途中の変換失敗時は元文書を変更しない。ネイティブ保存・再読込と全ページPDF再出力を検証。
+- [Done] PDF読み込みダイアログにページサムネイルと複数選択を追加。表示中の12ページをRustのワーカーで順に生成（最大160pxのPNGのみIPCへ渡す）。選択ページを元の順番で文書化し、レイヤー読み込みは単一選択。プレビュー失敗時も選択可能。EN／JA／简体中文、740px／380px幅の一覧・選択・切り替えをPlaywrightで検証（IPCはモック）、実PDFのプレビューと選択ページの寸法・順序・重複除去・不正選択をRustで検証。
 - [Done] 全ページPDF書き出し。論理ページ順、個別寸法・DPI、各ページのリソースを保持し、元文書・履歴を変更しない。
 - [Next] ページ別SVG出力、親ページ、余白・裁ち落とし、見開き横断オブジェクトとテキスト連結。SVGは現在アクティブページのみ。
 - [Later] Section numbering, alternate layouts, page-size presets per section and booklet imposition.
@@ -646,7 +655,10 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 
 - [Done] RGB8タイルレイヤーの非破壊エフェクトモデル、fx／ドッキング・フローティング対応パネルを追加。露光量・コントラスト・ハイライト・シャドウ・白／黒レベル・相対色温度／色かぶり・自然な彩度・彩度、RGB／各色の折れ線カーブを編集し、有効／無効・リセット・Undo／Redo・ネイティブ保存に対応。数値確定／スライダー終了時に描画更新する。元画素とマスクを保持し、旧文書は効果なしとして読む。
 - [Done] PSD／PSB出力ではエフェクトを各レイヤーの画素へ焼き込み、編集可能なエフェクト設定が保持されない変換を三言語で確認。ネイティブ形式では設定と元画素を保持し、書き出し前後の合成・アルファを検証する。
-- [Next] 効果のGPU計算とCPUフォールバック、画面更新キャッシュ・ヒストグラム。今回の色調処理は独立RustのCPU処理であり、Camera Rawと同一の計算／RAW現像互換ではない。
+- [Done] レイヤーエフェクトのバッチ用事前計算を追加。露光・色温度・トーンの256入力値をf32中間値として保持し、カーブ接線・ミキサー判定・グレーディング色を再利用。描画・タイル合成・サムネイル・PSD／PSBの焼き込みへ接続し、小さなスポイト処理は従来経路を維持。表示領域の補正前画素を保持し、効果・不透明度のみの変更とUndo/RedoでSVG／文字の再ラスタライズを省略。保持画素は補正前32MiB＋補正後32MiBに制限。Releaseの262,144画素・5回中央値で画素処理部分が2.55〜3.81倍（画面全体の速度ではない）。検証と再計測方法は `docs/layer-effects-performance-2026-10-06.md`。
+- [Done] 描画用RGBA8バッチの色調・カーブ・HSL・グレーディングをwgpuで計算。GPU初期化は非同期とし、未準備・未対応・容量超過・処理失敗時はCPUへ自動フォールバック。保持GPUバッファは64MiB以内で再利用し、画素の転送と読み戻しはRust内で完結。実機比較で透明度を完全保持、RGB差は各成分1階調以内。Releaseの262,144／1,048,576画素・5回中央値で転送込みの画素補正がCPUの約4.2〜6.7倍。詳細は `docs/layer-effects-gpu-qa-2026-10-06.md`。
+- [Done] 表示キャッシュの補正前画像に専用世代番号を付け、同一画像の効果変更・Undo/RedoではGPU入力バッファを再利用。全画素ハッシュや画像の再転送なしで設定だけを更新。形状・表示領域・サイズの変更、別の処理によるバッファ上書きでは再転送し、実機テストで入力転送0バイトとCPU比較を検証。保持するGPU入力は直近1画像で、既存64MiB予算内。
+- [Next] CPUタイル合成・PSD／PSB焼き込みのGPU対応、補正結果をGPU表示へ直接渡すことで読み戻しを削減、複数レイヤーの入力保持、ヒストグラム、描画入力から表示までの遅延測定。Camera Rawと同一の計算／RAW現像互換ではない。
 - [Next] テクスチャ・明瞭度・かすみ除去、キャリブレーション、シャープ・ノイズ軽減・粒子・周辺光量・空間ぼかし。
 - [Later] RAWセンサー現像、HDR処理、カメラ／レンズプロファイル、色収差・フリンジ、深度付きレンズぼかし、AIノイズ除去／スーパー解像度。必要なプロファイル・RAW／深度情報とモデルを独立I/O層で設計する。
 

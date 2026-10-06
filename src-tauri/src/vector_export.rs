@@ -95,7 +95,7 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
         "pdf.selected_page_only" => "選んだページだけを読み込みます。\nOnly the selected page is opened.\n仅打开所选页面。",
         "ai.pdf_compatible_only" => "AI内のPDF互換部分を読み込みます。AI固有の編集情報は保持されません。\nThe PDF-compatible portion of AI is opened; AI-specific editing data is not retained.\n打开AI的PDF兼容部分，不保留AI专有编辑信息。",
         "pdf.font_substitution" => "PDFのフォントをシステムフォントへ置き換えます。字形が変わる場合があります。\nPDF fonts are substituted with system fonts; glyph shapes may change.\nPDF字体替换为系统字体，字形可能变化。",
-        "pdf.font_program" | "pdf.font_encoding" | "pdf.font_widths" | "pdf.font_state" | "pdf.glyph_missing" | "pdf.glyph_outline" | "pdf.text_position" => "PDF内の一部のフォント・文字符号・文字配置は対応範囲外で、文字が省略されます。\nSome PDF fonts, encodings, or text placements are unsupported; affected text is omitted.\n部分PDF字体、编码或文字位置不受支持，相关文字将被省略。",
+        "pdf.font_program" | "pdf.font_matrix" | "pdf.font_collection_face" | "pdf.font_mapping" | "pdf.font_encoding" | "pdf.font_widths" | "pdf.font_state" | "pdf.glyph_missing" | "pdf.glyph_outline" | "pdf.text_position" => "PDF内の一部のフォント・文字符号・文字配置は対応範囲外で、文字が省略されます。\nSome PDF fonts, encodings, or text placements are unsupported; affected text is omitted.\n部分PDF字体、编码或文字位置不受支持，相关文字将被省略。",
         "pdf.invisible_text_omitted" => "PDFの不可視文字は省略されます。\nInvisible PDF text is omitted.\n省略PDF的不可见文字。",
         "pdf.text_conversion" => "PDF内の文字は読み込めません。\nPDF text cannot be imported.\n无法导入PDF文字。",
         "pdf.image_xobject" => "PDF内の画像は読み込めません。\nPDF images cannot be imported.\n无法导入PDF图像。",

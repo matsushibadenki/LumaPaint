@@ -212,7 +212,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
     {panelView('transform',<section className="inspector-panel" role="tabpanel" id="inspector-panel-transform" aria-labelledby="inspector-tab-transform"><TransformPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
     {panelView('stroke',<section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} onStyle={onStrokeStyle} /></section>)}
     {panelView('text',<section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">
-      <TextPanel locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
+      <TextPanel usedFonts={[...new Set(document.textObjects.flatMap(object=>[object.text.fontFamily,...(object.text.runs??[]).map(run=>run.style.fontFamily)]))]} locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
     </section>)}
 
     {panelView('color',<section className="inspector-panel property-section" role="tabpanel" id="inspector-panel-color" aria-labelledby="inspector-tab-color">

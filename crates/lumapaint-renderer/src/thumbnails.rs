@@ -117,10 +117,12 @@ fn render_sized_inner(
         tiles.discard_history();
     }
     let effects = document.layer_effects("layer-1");
+    let effects = effects.enabled.then(|| effects.prepare());
     let mut paint = vec![0; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
-            let mut pixel = effects.apply(tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]));
+            let input = tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]);
+            let mut pixel = effects.as_ref().map_or(input, |e| e.apply(input));
             for c in 0..3 {
                 pixel[c] = (pixel[c] as u16 * pixel[3] as u16 / 255) as u8;
             }

@@ -174,9 +174,12 @@ pub fn write(
         }
         baked = state.clone();
         for layer in &mut baked.layers {
-            for tile in &mut layer.tiles {
-                for pixel in tile.pixels.as_chunks_mut::<4>().0 {
-                    *pixel = layer.effects.apply(*pixel);
+            if layer.effects.enabled {
+                let effects = layer.effects.prepare();
+                for tile in &mut layer.tiles {
+                    for pixel in tile.pixels.as_chunks_mut::<4>().0 {
+                        *pixel = effects.apply(*pixel);
+                    }
                 }
             }
             layer.effects = Default::default();
