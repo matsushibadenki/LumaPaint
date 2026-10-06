@@ -1557,7 +1557,7 @@
       "source_notices": [
         "LICENSE"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "source": null,
       "repository": "https://github.com/PistonDevelopers/freetype-sys.git"
     },
     {

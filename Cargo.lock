@@ -1212,8 +1212,6 @@ dependencies = [
 [[package]]
 name = "freetype-sys"
 version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eab537ce43cab850c64b4cdc390ce7e4f47f877485ddc323208e268280c308ae"
 dependencies = [
  "cc",
  "libz-sys",

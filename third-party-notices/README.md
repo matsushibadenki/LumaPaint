@@ -52,3 +52,7 @@ bundled native FreeType uses the FTL option; its own FTL and libpng notice are
 included as pdf-freetype-FTL.TXT and pdf-freetype-libpng-LICENSE.
 Portions of this software are copyright © 2024 The FreeType Project
 (www.freetype.org). All rights reserved.
+
+The local freetype-sys build fixes are documented in
+vendor/freetype-sys/LUMAPAINT-PATCHES.md; original native source licenses remain
+in that directory. Windows zlib headers and linkage come from libz-sys metadata.

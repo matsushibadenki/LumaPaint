@@ -17,6 +17,7 @@ codegen-units = 1
 block = { path = "vendor/block" }
 usvg = { path = "vendor/usvg" }
 simplecss = { path = "vendor/simplecss" }
+freetype-sys = { path = "vendor/freetype-sys" }
 
 # Native drawing must remain interactive in `tauri dev` as well as release builds.
 [profile.dev.package.lumapaint-core]
