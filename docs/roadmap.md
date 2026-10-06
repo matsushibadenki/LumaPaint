@@ -413,11 +413,11 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Later] グループ単位の拡大縮小・回転・描画順変更と、レイヤーパネル上でのグループ間ドラッグ
 - [Later] 禁則処理・縦書き・高度なOpenType機能・フォント埋め込み
 - [Done] レイアウトの基本ページ管理：単ページ／見開き、左開き／右開き、ページパネルと追加・複製・削除・並べ替え、ネイティブ保存。
-- [Later] アニメーションのタイムライン・キーフレーム・再生・書き出し（下部タブと表示領域は実装済み）
+- [Done] 下部タイムライン：ピクセルレイヤーのコマ記録・空白コマ・複製・再編集・ホールド表示、ベクターレイヤーの位置XY／倍率XY／回転／不透明度の独立キー、リニア／ホールド／イーズ補間、キーのドラッグ移動、fps・尺・ループ、再生・スクラブ・フレーム送り。Rust側の時計・プレビュー、通常文書のネイティブ保存とUndo/Redo、日英中UI（[仕様と検証](animation-timeline.md)）
+- [Later] アニメーションのGIF／動画／連番書き出し、音声、グラフエディター、モーションパス・シェイプ補間、タイル文書のタイムライン
 - [Later] 投げ縄・選択範囲の変形・境界ぼかし、非破壊フィルター・空間マスク
 - [Later] AIプロバイダー抽象化・資格情報ストア・生成履歴
 - [Later] ページ・コマ・吹き出し・キャラクター管理
-- [Later] アニメーション・タイムライン
 - [Later] ICC・CMYK・各種エクスポート
 - [Pending] Windows・Linuxの実機検証と配布
 - [Later] macOS署名・公証・正式なアイコンと配布設定
@@ -706,5 +706,17 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 ## Paint Bucket / 塗りつぶし / 油漆桶
 
 - [Done] macOS paint tool, Shift+G, foreground/pattern sources, six blend modes, opacity, tolerance 0–255, anti-alias, contiguous/global matching and All Layers sampling. Rust worker and GPU-preferred blending; current pixel target, selection, no-op detection and one-entry Undo/Redo. EN/JA/简体中文 toolbar/dialog controls; see `docs/paint-bucket-qa.md`.
-- [Next] Alpha-lock-preserving fill, editable large tile documents and additional group/effect sampling comparisons.
+- [Done] Alpha-lock-preserving fill for base and additional image-backed paint layers. Preserve every destination alpha byte, transparent pixels, selection exclusions and transparent pattern cells across all six blend modes. Use the alpha-lock-aware atomic preview/commit path; save/reload and single Undo/Redo are verified. Fully transparent destination tiles skip GPU blending.
+- [Next] Editable large tile documents and additional group/effect sampling comparisons.
 - [Later] Imported pattern libraries and additional Photoshop blend modes.
+
+
+## AI画像生成とプロンプト管理
+
+- [Done] 詳細条件を17項目・375候補に拡張。分類付きプルダウン、指定なし／自由入力、4分類の折りたたみ、設定数表示・クリア、固定操作バー、幅に応じた配置、旧ブックマーク互換を追加。日英中と狭い表示で操作検証。
+
+- [Done] AI生成タブの大きなプロンプト欄と撮影条件（カメラ・フィルム・レンズ・照明・絞り・シャッター・ISO・ぼけ・生成タイプ）、保存／更新／削除できる共有ブックマーク。日英中対応。
+- [Done] 環境設定のOpenAI／Google Geminiキー入力と接続認証。macOSキーチェーン保存、固定HTTPS接続、認証情報を含まないエラー表示。認証と画像モデル利用権限の確認は区別する。
+- [Done] Rust側API通信・画像保持・新規画像レイヤー生成・選択範囲の画像修正。選択範囲外の画素保持、単一Undo/Redo、文書変更時の適用拒否とキャンセル。大容量タイル文書、macOS以外のネイティブ画像適用は未対応。実API認証／生成はユーザーキー設定後に別途検証する。詳細は `docs/ai-generation.md`。
+- [Next] 生成結果の候補管理と再適用、モデル利用権限の一覧表示、大容量タイル文書への部分適用。
+- [Later] Windows／LinuxのOS資格情報ストア・ネイティブ画像適用、複数参照画像・生成履歴ライブラリ。

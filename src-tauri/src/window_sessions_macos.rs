@@ -919,6 +919,7 @@ pub(in crate::canvas) fn close_window(label: &str) {
     close(label, true);
 }
 fn close(label: &str, discard: bool) {
+    super::timeline::close(label);
     if CLOSED.with(|closed| closed.borrow().contains(label)) {
         return;
     }

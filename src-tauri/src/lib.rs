@@ -4,6 +4,7 @@ mod measurement_units;
 mod pdf_import;
 #[cfg(any(target_os = "macos", test))]
 mod psd_import;
+mod timeline;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
     lumapaint_formats::io::FILE_FORMATS
@@ -195,6 +196,11 @@ pub fn run() {
             canvas::set_gradient_tool,
             gradient_presets::gradient_library,
             swatches::swatch_library,
+            ai::ai_credentials,
+            ai::ai_bookmarks,
+            ai::ai_generate,
+            ai::ai_cancel,
+            timeline::timeline,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,
@@ -289,6 +295,9 @@ pub fn run() {
             }
         });
 }
+mod ai;
+#[cfg(any(target_os = "macos", test))]
+mod ai_raster;
 mod canvas;
 mod editor_windows;
 mod gradient_presets;

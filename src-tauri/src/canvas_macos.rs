@@ -3,6 +3,8 @@
 mod crop_tool;
 #[path = "gradient_tool_macos.rs"]
 mod gradient_tool;
+#[path = "timeline_macos.rs"]
+pub(crate) mod timeline;
 #[path = "window_sessions_macos.rs"]
 pub(super) mod window_sessions;
 pub(super) use window_sessions::{current_label, SessionGuard};
@@ -796,6 +798,12 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
+        if timeline::active() {
+            if phase == 0 {
+                emit_error("Exit animation preview or load a cel to paint / 作画に戻るか、コマを編集してください / 请退出动画预览或载入帧以绘画".into());
+            }
+            return;
+        }
         if self.isHidden() || !DOCUMENT_OPEN.with(|open| open.get()) {
             return;
         }
@@ -4283,6 +4291,10 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         viewport = viewport.with_screen_zoom(screen_zoom);
         Some(canvas.renderer.render(viewport, &preview.document))
     }) {
+        return result;
+    }
+
+    if let Some(result) = timeline::render(canvas) {
         return result;
     }
 
@@ -10136,4 +10148,69 @@ fn vector_selection_context() -> bool {
                 | CanvasTool::ImageFrameEllipse
         )
     })
+}
+
+pub(crate) fn ai_prepare(
+    edit: bool,
+) -> Result<(crate::ai_raster::Target, Option<Document>), String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        return Err("AI generation is not available for tiled documents yet / タイル文書には未対応です / 暂不支持分块文档".into());
+    }
+    DOCUMENT.with(|slot| {
+        let doc = slot.borrow();
+        let snapshot = doc.snapshot();
+        let (width, height) = doc.dimensions();
+        if u64::from(width) * u64::from(height) > 16_777_216 {
+            return Err("AI canvas must be at most 16 megapixels / AI処理は1600万画素までです / AI画布最多1600万像素".into());
+        }
+        let selection = if edit { doc.selection().cloned() } else { None };
+        let workspace = if selection.is_some() { Some(doc.clone_stamp_workspace()?) } else { None };
+        let target = crate::ai_raster::Target {
+            document: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            revision: doc.revision(), layer: snapshot.layer_id, width, height,
+            selection, pixels: Vec::new(), input: None, bounds: [0, 0, width, height],
+        };
+        Ok((target, workspace))
+    })
+}
+/// Pure Rust image preparation runs on a worker, outside the AppKit thread.
+pub(crate) fn ai_input(
+    mut target: crate::ai_raster::Target,
+    workspace: Option<Document>,
+) -> Result<crate::ai_raster::Target, String> {
+    if let Some(workspace) = workspace {
+        let (_, _, pixels) = clipboard::raw_selected_pixels(&workspace)?;
+        target.prepare_input(pixels)?;
+    }
+    Ok(target)
+}
+pub(crate) fn ai_apply(prepared: crate::ai_raster::Prepared, name: String) -> Result<(), String> {
+    ensure_document_open()?;
+    let target = prepared.target;
+    if ACTIVE_DOCUMENT_ID.with(|id| id.get()) != target.document
+        || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+    {
+        return Err(
+            "Select the original document / 元のドキュメントを選択してください / 请选择原始文档"
+                .into(),
+        );
+    }
+    DOCUMENT.with(|slot| {
+        crate::ai_raster::apply(
+            crate::ai_raster::Prepared {
+                target,
+                source: prepared.source,
+            },
+            name,
+            ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+            &mut slot.borrow_mut(),
+        )
+    })?;
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+    emit_document();
+    Ok(())
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 #[path = "canvas_macos.rs"]
-mod platform;
+pub(crate) mod platform;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1383,7 +1383,7 @@ pub fn shutdown() {
 }
 
 #[cfg(target_os = "macos")]
-async fn on_main<T: Send + 'static>(
+pub(crate) async fn on_main<T: Send + 'static>(
     window: tauri::WebviewWindow,
     action: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {

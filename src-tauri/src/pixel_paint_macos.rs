@@ -416,7 +416,7 @@ pub(super) fn fill_pointer(
     }
     PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
     doc.finish();
-    let workspace = doc.clone_stamp_workspace()?;
+    let workspace = doc.retouch_workspace()?;
     let sample_doc = if settings.all_layers {
         Some(doc.clone_stamp_sampling_document(lumapaint_core::clone_stamp::Sample::AllLayers)?)
     } else {
@@ -424,9 +424,14 @@ pub(super) fn fill_pointer(
     };
     let brush = BRUSH.with(|brush| *brush.borrow());
     let snapshot = doc.snapshot();
+    let alpha_locked = snapshot
+        .layers
+        .iter()
+        .find(|layer| layer.id == snapshot.layer_id)
+        .is_some_and(|layer| layer.alpha_locked);
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let (w, h) = doc.dimensions();
-    let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
+    let preview_document = doc.retouch_preview_document(preview_source(w, h, token))?;
     let image_id = if snapshot.layer_id == "layer-1" {
         "clone-stamp-preview-base".into()
     } else {
@@ -440,7 +445,7 @@ pub(super) fn fill_pointer(
             document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
             image_id,
             clone_stamp: true,
-            retouch: false,
+            retouch: true,
             layer: snapshot.layer_id,
             revision: snapshot.revision,
             sender,
@@ -461,7 +466,12 @@ pub(super) fn fill_pointer(
             } else {
                 destination.pixels().to_vec()
             };
-            let result = lumapaint_renderer::paint_bucket::fill(
+            let fill = if alpha_locked {
+                lumapaint_renderer::paint_bucket::fill_alpha_locked
+            } else {
+                lumapaint_renderer::paint_bucket::fill
+            };
+            let result = fill(
                 (w, h),
                 destination.pixels().to_vec(),
                 &source,

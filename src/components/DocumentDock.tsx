@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type KeyboardEvent, type PointerEvent } from 'react';
+import { TimelinePanel } from './TimelinePanel';
+import { AiGenerationPanel } from './AiGenerationPanel';
 import type { Locale } from '../i18n';
 
 const labels = {
@@ -17,20 +19,28 @@ export function DocumentDock({ locale, children }: { locale: Locale; children: R
   const buttons = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   const [active, setActive] = useState<Tab | null>(null);
   const [height, setHeight] = useState(200);
+  const panelOpened = useRef(false);
+  function prepareTab(tab: Tab) {
+    if ((tab === 'generation' || tab === 'timeline') && !panelOpened.current) { panelOpened.current = true; setHeight(value => Math.max(value, 420)); }
+  }
   const [available, setAvailable] = useState(0);
+  const [availableWidth, setAvailableWidth] = useState(0);
   const drag = useRef<{ pointer: number; y: number; height: number } | null>(null);
   const pending = useRef<number | null>(null);
   const frame = useRef(0);
   // Reserve a useful canvas area, the tab strip and the draggable divider.
   const max = Math.max(0, available - 120 - 34 - 8);
-  const min = Math.min(80, max);
+  const min = Math.min(active === 'generation' ? (availableWidth <= 650 ? 400 : 300) : active === 'timeline' ? (availableWidth <= 700 ? 280 : 200) : 80, max);
   const clamp = (value: number) => Math.max(min, Math.min(max, value));
   const panelHeight = clamp(height);
 
   useEffect(() => {
     const element = root.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => setAvailable(element.getBoundingClientRect().height));
+    const observer = new ResizeObserver(() => {
+      const bounds = element.getBoundingClientRect();
+      setAvailable(bounds.height); setAvailableWidth(bounds.width);
+    });
     observer.observe(element);
     return () => { observer.disconnect(); cancelAnimationFrame(frame.current); };
   }, []);
@@ -57,7 +67,7 @@ export function DocumentDock({ locale, children }: { locale: Locale; children: R
     const next = event.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length]
       : event.key === 'ArrowLeft' ? tabs[(index + tabs.length - 1) % tabs.length]
       : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[tabs.length - 1] : null;
-    if (next) { event.preventDefault(); event.stopPropagation(); setActive(next); buttons.current[next]?.focus(); }
+    if (next) { event.preventDefault(); event.stopPropagation(); prepareTab(next); setActive(next); buttons.current[next]?.focus(); }
     if (event.key === 'Escape' && active) { event.preventDefault(); event.stopPropagation(); setActive(null); }
   }
   return <div ref={root} className="document-dock" data-open={active !== null}>
@@ -78,15 +88,17 @@ export function DocumentDock({ locale, children }: { locale: Locale; children: R
           if (next !== null) { event.preventDefault(); event.stopPropagation(); setHeight(clamp(next)); }
           if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); buttons.current[active]?.focus(); setActive(null); }
         }}><span aria-hidden="true" /></div>
-      <section id={`${id}-panel`} className="document-dock-panel" role="tabpanel" aria-labelledby={`${id}-${active}`} tabIndex={0}
-        style={{ height: panelHeight }}><span className="document-dock-panel-label">{t[active]}</span></section>
     </>}
+    <section id={`${id}-panel`} className="document-dock-panel" data-panel={active} role="tabpanel" hidden={!active} aria-labelledby={`${id}-${active ?? 'generation'}`} tabIndex={0} style={{ height: panelHeight }}>
+      <div className="ai-dock-content" hidden={active !== 'generation'}><AiGenerationPanel locale={locale} /></div>
+      {active === 'timeline' && <TimelinePanel locale={locale} />}
+    </section>
     <div className="document-dock-bar">
       <div role="tablist" aria-label={t.tabs} className="document-dock-tabs">
         {tabs.map(tab => <button key={tab} ref={element => { buttons.current[tab] = element; }} id={`${id}-${tab}`} type="button" role="tab"
           aria-selected={active === tab} aria-expanded={active === tab} aria-controls={active === tab ? `${id}-panel` : undefined}
           tabIndex={active === null || active === tab ? 0 : -1} onKeyDown={event => tabKey(event, tab)}
-          onClick={() => setActive(previous => previous === tab ? null : tab)}>{t[tab]}</button>)}
+          onClick={() => { prepareTab(tab); setActive(previous => previous === tab ? null : tab); }}>{t[tab]}</button>)}
       </div>
       {active && <button className="document-dock-close" type="button" aria-label={t.close} title={t.close}
         onClick={() => { buttons.current[active]?.focus(); setActive(null); }}>×</button>}

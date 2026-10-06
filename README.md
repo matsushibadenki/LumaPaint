@@ -5,7 +5,9 @@
 LumaPaint is a creative application for comics, illustration, AI generation, and animation, built around a shared non-destructive model.
 The current implementation includes an editing workspace inspired by Adobe products and a basic brush for macOS.
 You can draw on a 960 × 640 canvas, change the brush color and diameter, undo and redo individual strokes, and toggle the visibility of a single layer.
-Projects can be saved, saved under a new name, and reopened as `.lumapaint` files. Automatic recovery copies allow you to restore work on the next launch. AI generation is not yet implemented.
+Projects can be saved, saved under a new name, and reopened as `.lumapaint` files. Automatic recovery copies allow you to restore work on the next launch. The AI Generation tab supports OpenAI and Google Gemini image generation, selected-region editing and reusable structured prompt bookmarks on macOS. Configure API keys in Preferences; keys are stored in the native Keychain. See [AI generation](docs/ai-generation.md) for limits and verification.
+
+The Timeline tab supports stop-motion cels on pixel layers and independent transform/opacity keyframes on vector layers, with playback, scrubbing, loop controls, native project persistence and Undo/Redo. See [Animation timeline](docs/animation-timeline.md) for the editing workflow and current scope.
 
 Commands are organized into 11 top-level menus. The File menu contains Open, Save, and Save As; Edit contains Undo and Redo; View contains zoom controls; and Window contains panel controls. Unimplemented commands are disabled and marked as coming soon.
 Click the application icon to the left of the File menu to open Settings. Use the General tab to change the language and the Appearance tab to change the theme.

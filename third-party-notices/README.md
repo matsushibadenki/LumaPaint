@@ -22,7 +22,7 @@ Sources:
 
 ## Dependency inventory (2026-10-06)
 
-`cargo-license-inventory.json` inventories 590 locked Cargo packages across
+`cargo-license-inventory.json` inventories 629 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:

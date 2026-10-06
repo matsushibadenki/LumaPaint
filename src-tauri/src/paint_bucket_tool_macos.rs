@@ -21,6 +21,81 @@ pub(super) fn pointer(doc: &mut Document, point: Point, phase: u8) -> Result<(),
 mod tests {
     use super::*;
     #[test]
+    fn bucket_alpha_locked_targets_preserve_alpha_save_and_history() {
+        for base in [true, false] {
+            let mut doc = Document::default();
+            doc.crop_canvas([0., 0., 4., 1.]).unwrap();
+            if !base {
+                let id = doc.add_paint_layer().unwrap();
+                doc.select_layer(id).unwrap();
+            }
+            let rgba = vec![
+                0, 0, 0, 0, 32, 32, 32, 64, 64, 64, 64, 128, 128, 128, 128, 255,
+            ];
+            let png = lumapaint_renderer::vector::document_png(4, 1, rgba).unwrap();
+            doc.replace_moved_pixels(clipboard::image_svg(4, 1, &png), None)
+                .unwrap();
+            let id = doc.snapshot().layer_id;
+            doc.set_layer_settings(LayerSettings {
+                id: id.clone(),
+                name: "Locked alpha".into(),
+                opacity: 1.,
+                locked: false,
+                alpha_locked: true,
+                mask_enabled: false,
+                mask_inverted: false,
+                mask_density: 1.,
+            })
+            .unwrap();
+            BRUSH.with(|brush| {
+                *brush.borrow_mut() = Brush {
+                    color: [255, 0, 0],
+                    ..Default::default()
+                }
+            });
+            configure(Settings {
+                tolerance: 255,
+                anti_alias: false,
+                all_layers: true,
+                ..Default::default()
+            })
+            .unwrap();
+            let before = clipboard::raw_selected_pixels(&doc).unwrap().2;
+            pointer(&mut doc, Point { x: 1., y: 0. }, 0).unwrap();
+            pointer(&mut doc, Point { x: 1., y: 0. }, 2).unwrap();
+            PIXEL_PAINT_COMMIT.with(|p| p.borrow_mut().take());
+            let after = clipboard::raw_selected_pixels(&doc).unwrap().2;
+            assert_ne!(before, after);
+            for (a, b) in after
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(before.as_chunks::<4>().0)
+            {
+                assert_eq!(a[3], b[3]);
+                if b[3] == 0 {
+                    assert_eq!(a, b);
+                }
+            }
+            doc.undo();
+            assert_eq!(clipboard::raw_selected_pixels(&doc).unwrap().2, before);
+            doc.redo();
+            assert_eq!(clipboard::raw_selected_pixels(&doc).unwrap().2, after);
+            let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+            loaded.select_layer(id.clone()).unwrap();
+            assert_eq!(clipboard::raw_selected_pixels(&loaded).unwrap().2, after);
+            assert!(
+                loaded
+                    .snapshot()
+                    .layers
+                    .iter()
+                    .find(|layer| layer.id == id)
+                    .unwrap()
+                    .alpha_locked
+            );
+        }
+    }
+    #[test]
     fn bucket_base_commit_is_atomic_undoable_and_noop_has_no_history() {
         ACTIVE_DOCUMENT_ID.with(|id| id.set(884));
         BRUSH.with(|b| {

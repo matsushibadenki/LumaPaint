@@ -37,6 +37,37 @@ pub fn fill(
     settings: Settings,
     selection: Option<&Selection>,
 ) -> Result<ResultImage, String> {
+    fill_impl(
+        size, original, sample, point, color, settings, selection, false,
+    )
+}
+
+/// Fill color while preserving every destination alpha byte.
+pub fn fill_alpha_locked(
+    size: (u32, u32),
+    original: Vec<u8>,
+    sample: &[u8],
+    point: Point,
+    color: [u8; 3],
+    settings: Settings,
+    selection: Option<&Selection>,
+) -> Result<ResultImage, String> {
+    fill_impl(
+        size, original, sample, point, color, settings, selection, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_impl(
+    size: (u32, u32),
+    original: Vec<u8>,
+    sample: &[u8],
+    point: Point,
+    color: [u8; 3],
+    settings: Settings,
+    selection: Option<&Selection>,
+    alpha_locked: bool,
+) -> Result<ResultImage, String> {
     settings.validate()?;
     let bytes = crate::vector::document_rgba_len(size.0, size.1)?;
     if original.len() != bytes
@@ -139,7 +170,7 @@ pub fn fill(
     }
     let mut dirty = BTreeSet::new();
     for (i, a) in mask.iter().enumerate() {
-        if *a > 0 {
+        if *a > 0 && (!alpha_locked || original[i * 4 + 3] > 0) {
             dirty.insert(TileCoord {
                 x: (i % w as usize) as u32 / TILE_SIZE,
                 y: (i / w as usize) as u32 / TILE_SIZE,
@@ -158,6 +189,15 @@ pub fn fill(
                 let mut value = [0.; 12];
                 for (c, v) in value[..4].iter_mut().enumerate() {
                     *v = original[i * 4 + c] as f32 / 255.;
+                }
+                if alpha_locked {
+                    let alpha = value[3];
+                    if alpha > 0. {
+                        for channel in &mut value[..3] {
+                            *channel /= alpha;
+                        }
+                    }
+                    value[3] = 1.;
                 }
                 let s = settings.pattern_size;
                 let ink = settings.source == Source::Foreground
@@ -181,7 +221,23 @@ pub fn fill(
                 values.push(value);
             }
         }
-        let tile = crate::clone_stamp::blend_batch(&values, settings.mode);
+        let mut tile = crate::clone_stamp::blend_batch(&values, settings.mode);
+        if alpha_locked {
+            for (index, pixel) in tile.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let x = origin[0] + index as u32 % extent[0];
+                let y = origin[1] + index as u32 / extent[0];
+                let at = ((y * w + x) * 4) as usize;
+                let alpha = original[at + 3];
+                if alpha == 0 || values[index][8] == 0. || values[index][7] == 0. {
+                    pixel.copy_from_slice(&original[at..at + 4]);
+                } else {
+                    for channel in &mut pixel[..3] {
+                        *channel = ((u16::from(*channel) * u16::from(alpha) + 127) / 255) as u8;
+                    }
+                    pixel[3] = alpha;
+                }
+            }
+        }
         let mut tile_changed = false;
         for (row, y) in (origin[1]..origin[1] + extent[1]).enumerate() {
             let at = ((y * w + origin[0]) * 4) as usize;
@@ -233,6 +289,88 @@ mod tests {
             [255, 255, 255, 255],
         ]
         .concat()
+    }
+    #[test]
+    fn locked_fill_keeps_alpha_and_unselected_pixels_for_every_blend_mode() {
+        use lumapaint_core::clone_stamp::Mode;
+        let original = [
+            [0, 0, 0, 0],
+            [32, 32, 32, 64],
+            [64, 64, 64, 128],
+            [128, 128, 128, 255],
+        ]
+        .concat();
+        let sample = [255; 16];
+        let selection = Selection::new(
+            lumapaint_core::selection::SelectionShape::Rectangle,
+            [0., 0., 3., 1.],
+        );
+        for mode in [
+            Mode::Normal,
+            Mode::Multiply,
+            Mode::Screen,
+            Mode::Overlay,
+            Mode::Darken,
+            Mode::Lighten,
+        ] {
+            let result = fill_alpha_locked(
+                (4, 1),
+                original.clone(),
+                &sample,
+                Point { x: 1., y: 0. },
+                [255, 0, 0],
+                Settings {
+                    mode,
+                    ..Default::default()
+                },
+                Some(&selection),
+            )
+            .unwrap();
+            assert_eq!(&result.pixels[..4], &original[..4]);
+            assert_eq!(&result.pixels[12..], &original[12..]);
+            for (a, b) in result
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(original.as_chunks::<4>().0)
+            {
+                assert_eq!(a[3], b[3]);
+                assert!(a[..3].iter().all(|c| *c <= a[3]));
+            }
+            if mode == Mode::Normal {
+                assert_eq!(&result.pixels[4..12], [64, 0, 0, 64, 128, 0, 0, 128]);
+            }
+        }
+        let empty = fill_alpha_locked(
+            (4, 1),
+            vec![0; 16],
+            &sample,
+            Point { x: 0., y: 0. },
+            [255, 0, 0],
+            Settings::default(),
+            None,
+        )
+        .unwrap();
+        assert!(!empty.changed && empty.uploads.is_empty());
+        let pattern = fill_alpha_locked(
+            (4, 1),
+            original.clone(),
+            &sample,
+            Point { x: 1., y: 0. },
+            [255, 0, 0],
+            Settings {
+                source: Source::Pattern,
+                pattern: Pattern::Checker,
+                pattern_size: 2,
+                opacity: 0.5,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(&pattern.pixels[4..8], [48, 16, 16, 64]);
+        assert_eq!(&pattern.pixels[8..], &original[8..]);
     }
     #[test]
     fn contiguous_stops_at_boundary_and_global_reaches_disconnected_color() {

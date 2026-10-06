@@ -1,3 +1,5 @@
+#[path = "animation.rs"]
+pub mod animation;
 #[path = "document_vector_selection.rs"]
 mod vector_selection;
 pub use vector_selection::{
@@ -558,6 +560,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    animation: std::sync::Arc<animation::Animation>,
     crop_dimensions: Option<(u32, u32)>,
     compound_shapes: Vec<CompoundShape>,
     layer_groups: LayerGroupsState,
@@ -599,6 +602,7 @@ pub struct TranslationMetrics {
 /// the existing complete-state contract until their delta transactions migrate.
 #[derive(Clone)]
 enum VectorHistoryEntry {
+    Animation(std::sync::Arc<animation::Animation>),
     SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
     PixelSelection(Option<Selection>),
     State(Box<VectorHistoryState>),
@@ -680,6 +684,7 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    animation: std::sync::Arc<animation::Animation>,
     saved_vector_selections: std::sync::Arc<Vec<SavedVectorSelection>>,
     previous_vector_selection: Vec<String>,
     compound_shapes: Vec<CompoundShape>,
@@ -742,6 +747,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            animation: Default::default(),
             saved_vector_selections: std::sync::Arc::new(Vec::new()),
             previous_vector_selection: Vec::new(),
             compound_shapes: Vec::new(),
@@ -1080,6 +1086,7 @@ impl Document {
             layer_groups.roots.retain(|id| id != &edit.layer_id);
         }
         DocumentState {
+            animation: self.animation.as_ref().clone(),
             saved_vector_selections: self.saved_vector_selections.as_ref().clone(),
             pixel_selection: self.selection.clone(),
             compound_shapes: self.compound_shapes.clone(),
@@ -1130,6 +1137,7 @@ impl Document {
 
     /// Validate and restore model state; file signatures and codecs belong to the I/O layer.
     pub fn from_document_state(mut file: DocumentState) -> Result<Self, String> {
+        file.animation.validate(file.width, file.height)?;
         if let Some(selection) = &file.pixel_selection {
             selection.validate()?;
         }
@@ -1249,6 +1257,7 @@ impl Document {
             .collect();
         let stroke_count = file.strokes.len();
         Ok(Self {
+            animation: std::sync::Arc::new(file.animation),
             saved_vector_selections: std::sync::Arc::new(file.saved_vector_selections),
             previous_vector_selection: Vec::new(),
             selection: file.pixel_selection,
@@ -6739,6 +6748,9 @@ impl Document {
     }
     fn exchange_vector_history(&mut self, entry: VectorHistoryEntry) -> VectorHistoryEntry {
         match entry {
+            VectorHistoryEntry::Animation(previous) => {
+                VectorHistoryEntry::Animation(std::mem::replace(&mut self.animation, previous))
+            }
             VectorHistoryEntry::SavedSelections(previous) => VectorHistoryEntry::SavedSelections(
                 std::mem::replace(&mut self.saved_vector_selections, previous),
             ),
@@ -6818,6 +6830,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            animation: self.animation.clone(),
             crop_dimensions: None,
             compound_shapes: self.compound_shapes.clone(),
             layer_groups: self.layer_groups.clone(),
@@ -6839,6 +6852,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.animation = state.animation;
         if let Some((width, height)) = state.crop_dimensions {
             self.width = width;
             self.height = height;
@@ -8705,6 +8719,8 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default)]
+    pub animation: animation::Animation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub saved_vector_selections: Vec<SavedVectorSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -4804,3 +4804,6 @@ mod effects_plan_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod animation_tests;

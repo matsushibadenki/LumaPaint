@@ -6,7 +6,8 @@ import { settingsMessages } from '../settings-i18n';
 import { ColorPickerPopover } from './ColorPickerPopover';
 import { usePasteboardColor } from '../pasteboard-preference';
 
-type Tab = 'general' | 'appearance';
+import { AiSettings } from './AiGenerationPanel';
+type Tab = 'general' | 'appearance' | 'ai';
 const locales: { value: Locale; label: string }[] = [{ value: 'en', label: 'English' }, { value: 'ja', label: '日本語' }, { value: 'zh-CN', label: '简体中文' }];
 
 export function SettingsDialog({ locale, theme, onLocale, onTheme, onClose }: {
@@ -29,10 +30,10 @@ export function SettingsDialog({ locale, theme, onLocale, onTheme, onClose }: {
       <header><h2 id="settings-title">{t.title}</h2><button ref={closeButton} type="button" className="settings-close" aria-label={t.close} onClick={onClose}>×</button></header>
       <div className="settings-body">
         <div className="settings-tabs" role="tablist" aria-orientation="vertical">
-          {(['general', 'appearance'] as const).map(value => <button key={value} type="button" role="tab" aria-selected={tab === value} aria-controls={`settings-panel-${value}`} onClick={() => setTab(value)}>{t[value]}</button>)}
+          {(['general', 'appearance', 'ai'] as const).map(value => <button key={value} type="button" role="tab" aria-selected={tab === value} aria-controls={`settings-panel-${value}`} onClick={() => setTab(value)}>{value === 'ai' ? (locale === 'en' ? 'AI Generation' : 'AI生成') : t[value]}</button>)}
         </div>
         <div className="settings-panel" id={`settings-panel-${tab}`} role="tabpanel">
-          {tab === 'general' ? <>
+          {tab === 'ai' ? <AiSettings locale={locale} /> : tab === 'general' ? <>
             <h3>{common.language}</h3><p>{t.languageDescription}</p>
             <div className="setting-options">{locales.map(option => <label key={option.value} className="setting-choice"><input type="radio" name="language" value={option.value} checked={locale === option.value} onChange={() => onLocale(option.value)} /><span>{option.label}</span></label>)}</div>
           </> : <>
