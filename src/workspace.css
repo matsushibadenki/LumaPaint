@@ -873,3 +873,6 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
   .timeline-inspector { border-left:0; border-top:1px solid var(--color-rule); padding:8px 10px; gap:8px; }
   .timeline-toolbar { gap:6px 8px; }
 }
+
+.ai-settings .ai-api-key-link { display:inline-flex; align-items:center; gap:4px; margin:4px 0 12px; color:var(--color-focus); text-underline-offset:3px; line-height:1.6; }
+.ai-settings .ai-api-key-link:hover { color:var(--color-ink); }

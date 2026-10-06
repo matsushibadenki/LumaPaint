@@ -197,6 +197,7 @@ pub fn run() {
             gradient_presets::gradient_library,
             swatches::swatch_library,
             ai::ai_credentials,
+            ai::ai_open_key_page,
             ai::ai_bookmarks,
             ai::ai_generate,
             ai::ai_cancel,

@@ -798,11 +798,20 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
-        if timeline::active() {
-            if phase == 0 {
-                emit_error("Exit animation preview or load a cel to paint / 作画に戻るか、コマを編集してください / 请退出动画预览或载入帧以绘画".into());
+        if phase == 0
+            && timeline::active()
+            && !matches!(
+                TOOL.with(|t| t.get()),
+                CanvasTool::Hand
+                    | CanvasTool::ZoomIn
+                    | CanvasTool::ZoomOut
+                    | CanvasTool::Eyedropper
+            )
+        {
+            if let Err(error) = timeline::begin_editing() {
+                emit_error(error);
+                return;
             }
-            return;
         }
         if self.isHidden() || !DOCUMENT_OPEN.with(|open| open.get()) {
             return;

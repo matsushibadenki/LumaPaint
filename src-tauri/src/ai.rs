@@ -29,6 +29,35 @@ impl Provider {
         }
     }
 }
+/// Open only the two provider key-management pages in the system browser.
+#[tauri::command]
+pub async fn ai_open_key_page(provider: Provider) -> Result<(), String> {
+    let url = match provider {
+        Provider::Openai => "https://platform.openai.com/api-keys",
+        Provider::Gemini => "https://aistudio.google.com/api-keys",
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "start", ""]);
+            command
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let mut command = std::process::Command::new("xdg-open");
+        let status = command.arg(url).status().map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Could not open browser / ブラウザーを開けませんでした / 无法打开浏览器".into())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Prompt {
@@ -341,11 +370,7 @@ pub async fn ai_generate(window: tauri::WebviewWindow, request: Request) -> Resu
                 }
             }
             Provider::Gemini => {
-                let mut parts = vec![json!({"text":prompt})];
-                if let Some(bytes) = input {
-                    parts.push(json!({"inlineData":{"mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(bytes)}}));
-                }
-                client.post(format!("https://generativelanguage.googleapis.com/v1/models/{}:generateContent",request.model)).header("x-goog-api-key",key).json(&json!({"contents":[{"parts":parts}],"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}))
+                gemini_request(&client, &key, &request.model, &prompt, input.as_deref())
             }
         };
         let result=response(req.send().await.map_err(|_|"AI request failed or timed out / AI通信が失敗またはタイムアウトしました / AI请求失败或超时")?).await?;
@@ -371,10 +396,37 @@ pub async fn ai_generate(window: tauri::WebviewWindow, request: Request) -> Resu
     }
 }
 #[cfg(any(target_os = "macos", test))]
+fn gemini_request(
+    client: &reqwest::Client,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    input: Option<&[u8]>,
+) -> reqwest::RequestBuilder {
+    let mut parts = vec![json!({"text":prompt})];
+    if let Some(bytes) = input {
+        parts.push(json!({"inlineData":{"mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(bytes)}}));
+    }
+    client.post(format!("https://generativelanguage.googleapis.com/v1/models/{model}:generateContent"))
+        .header("x-goog-api-key", key)
+        .json(&json!({"contents":[{"parts":parts}],"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}))
+}
+#[cfg(any(target_os = "macos", test))]
 fn extract_image(provider: Provider, value: &Value) -> Result<Vec<u8>, String> {
-    let data=match provider {
-        Provider::Openai=>value.pointer("/data/0/b64_json").and_then(Value::as_str),
-        Provider::Gemini=>value.pointer("/candidates/0/content/parts").and_then(Value::as_array).and_then(|parts|parts.iter().find_map(|p|p.pointer("/inlineData/data").or_else(||p.pointer("/inline_data/data")).and_then(Value::as_str))),
+    let data = match provider {
+        Provider::Openai => value.pointer("/data/0/b64_json").and_then(Value::as_str),
+        Provider::Gemini => value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .and_then(|parts| {
+                parts.iter()
+                    .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
+                    .find_map(|part| {
+                        part.pointer("/inlineData/data")
+                            .or_else(|| part.pointer("/inline_data/data"))
+                            .and_then(Value::as_str)
+                    })
+            }),
     }.ok_or("No image returned; check prompt and model / 画像が返されませんでした。プロンプトとモデルを確認してください / 未返回图像，请检查提示词和模型")?;
     if data.len() > LIMIT {
         return Err("Image too large".into());
@@ -398,6 +450,53 @@ mod tests {
             assert_eq!(extract_image(p, &v).unwrap(), vec![1, 2, 3]);
         }
         assert!(extract_image(Provider::Openai, &json!({"data":[]})).is_err());
+    }
+    #[test]
+    fn gemini_final_image_excludes_thoughts() {
+        let thought = json!({"thought":true,"inlineData":{"data":"BAUG"}});
+        let final_image = json!({"inline_data":{"data":"AQID"},"thoughtSignature":"signature"});
+        let response = json!({"candidates":[{"content":{"parts":[thought.clone(),final_image]}}]});
+        assert_eq!(
+            extract_image(Provider::Gemini, &response).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert!(extract_image(
+            Provider::Gemini,
+            &json!({"candidates":[{"content":{"parts":[thought]}}]})
+        )
+        .is_err());
+    }
+    #[test]
+    fn nano_banana_generation_and_edit_requests() {
+        let client = reqwest::Client::new();
+        for image in [None, Some([1u8, 2, 3].as_slice())] {
+            let request = gemini_request(
+                &client,
+                "fixture-key",
+                "gemini-nano-banana-2.1",
+                "日本語の看板",
+                image,
+            )
+            .build()
+            .unwrap();
+            assert_eq!(request.url().as_str(), "https://generativelanguage.googleapis.com/v1/models/gemini-nano-banana-2.1:generateContent");
+            assert_eq!(request.headers()["x-goog-api-key"], "fixture-key");
+            let body: Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["contents"][0]["parts"][0]["text"], "日本語の看板");
+            assert_eq!(
+                body["generationConfig"]["responseModalities"],
+                json!(["TEXT", "IMAGE"])
+            );
+            let parts = body["contents"][0]["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), if image.is_some() { 2 } else { 1 });
+            if image.is_some() {
+                assert_eq!(
+                    parts[1]["inlineData"],
+                    json!({"mimeType":"image/png","data":"AQID"})
+                );
+            }
+        }
     }
     #[test]
     fn bounded_http_and_redacted_errors() {

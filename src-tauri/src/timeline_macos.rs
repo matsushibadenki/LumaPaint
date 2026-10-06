@@ -9,6 +9,8 @@ struct Runtime {
     rendered_frame: Option<u32>,
     started: Option<(Instant, u32)>,
     preview: Option<Document>,
+    editing: Option<(String, u32, u64)>,
+    gpu_frame: Option<u32>,
 }
 thread_local! { static RUNTIMES: RefCell<std::collections::HashMap<String, Runtime>> = RefCell::new(std::collections::HashMap::new()); }
 fn identity() -> (u64, u64) {
@@ -23,8 +25,10 @@ fn reset_stale(runtime: &mut Runtime) {
         runtime.started = None;
         runtime.preview = None;
         runtime.rendered_frame = None;
+        runtime.gpu_frame = None;
         if id != runtime.document_id {
             runtime.frame = 0;
+            runtime.editing = None;
         }
         runtime.document_id = id;
         runtime.revision = revision;
@@ -47,13 +51,23 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
         let mut runtimes = r.borrow_mut();
         let runtime = runtimes.get_mut(&current_label())?;
         reset_stale(runtime);
-        let preview = runtime.preview.as_ref()?;
+        runtime.preview.as_ref()?;
         // Host tile caches describe the editable document, not animation cels.
         canvas.tile_ready = None;
         canvas.tile_cache = None;
+        // Invalidate the GPU tile ownership too: a retained paint-cache flag can
+        // otherwise suppress strokes while pointing at another cel's texture.
+        if runtime.gpu_frame != Some(runtime.frame) {
+            canvas.renderer.clear_tiled_preview();
+            runtime.gpu_frame = Some(runtime.frame);
+        }
         canvas.renderer.set_tiled_preview_visible(false);
         canvas.renderer.set_selection_overlay_visible(false);
-        Some(canvas.renderer.render(canvas.viewport, preview))
+        Some(
+            canvas
+                .renderer
+                .render(canvas.viewport, runtime.preview.as_ref().unwrap()),
+        )
     })
 }
 fn evaluate(runtime: &mut Runtime) -> bool {
@@ -71,6 +85,48 @@ fn evaluate(runtime: &mut Runtime) -> bool {
         preview.evaluate_animation(&doc, runtime.frame);
         true
     })
+}
+/// A document pointer-down enters drawing without discarding the displayed cel.
+pub(super) fn begin_editing() -> Result<(), String> {
+    if !active() {
+        return Ok(());
+    }
+    let frame = RUNTIMES.with(|r| r.borrow()[&current_label()].frame);
+    let layer = DOCUMENT.with(|d| d.borrow().snapshot().layer_id);
+    let held = DOCUMENT.with(|d| {
+        d.borrow()
+            .animation()
+            .tracks
+            .get(&layer)
+            .and_then(|t| t.cels.range(..=frame).next_back())
+            .is_some()
+    });
+    if held {
+        command(Request::Load { layer, frame })?;
+    } else {
+        command(Request::Stop)?;
+    }
+    Ok(())
+}
+fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
+    let Some((layer, frame, revision)) = runtime.editing.clone() else {
+        return Ok(false);
+    };
+    if runtime.document_id != identity().0 {
+        runtime.editing = None;
+        return Ok(false);
+    }
+    let changed = DOCUMENT.with(|d| {
+        let mut doc = d.borrow_mut();
+        doc.finish();
+        if doc.revision() == revision {
+            return Ok(false);
+        }
+        doc.capture_animation_cel(&layer, frame, false)?;
+        Ok::<_, String>(true)
+    })?;
+    runtime.editing = None;
+    Ok(changed)
 }
 pub(crate) fn command(request: Request) -> Result<Response, String> {
     if !DOCUMENT_OPEN.with(|d| d.get()) {
@@ -101,7 +157,20 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             rendered_frame: None,
             started: None,
             preview: None,
+            editing: None,
+            gpu_frame: None,
         });
+        if let Request::Seek { frame } = &request {
+            if *frame >= DOCUMENT.with(|d| d.borrow().animation().duration) {
+                return Err("Frame is outside the timeline".into());
+            }
+        }
+        if matches!(
+            request,
+            Request::Seek { .. } | Request::Play | Request::Stop | Request::Load { .. }
+        ) {
+            changed |= record_edit(runtime)?;
+        }
         reset_stale(runtime);
         let duration = DOCUMENT.with(|d| {
             let d = d.borrow();
@@ -141,6 +210,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             Request::Stop => {
                 runtime.started = None;
                 runtime.preview = None;
+                runtime.gpu_frame = None;
                 redraw_needed = true;
             }
             Request::Seek { frame } => {
@@ -154,6 +224,15 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             }
             edit => {
                 // Validate the edit completely before invalidating preview state.
+                let editing = match &edit {
+                    Request::Load { layer, frame }
+                    | Request::Capture {
+                        layer,
+                        frame,
+                        blank: true,
+                    } => Some((layer.clone(), *frame)),
+                    _ => None,
+                };
                 let next_frame = match &edit {
                     Request::Duplicate { frame, .. } | Request::MoveKey { frame, .. } => {
                         Some(*frame)
@@ -223,6 +302,11 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 runtime.started = None;
                 runtime.preview = None;
                 runtime.revision = identity().1;
+                runtime.gpu_frame = None;
+                if let Some((layer, frame)) = editing {
+                    runtime.editing = Some((layer, frame, runtime.revision));
+                    runtime.frame = frame;
+                }
                 if let Some(frame) = next_frame {
                     runtime.frame = frame;
                 }
@@ -327,6 +411,79 @@ mod tests {
         DOCUMENT.with(|d| {
             assert!(d.borrow().has_active_stroke());
             assert_eq!(d.borrow().revision(), revision);
+        });
+    }
+    #[test]
+    fn seeking_and_automatic_editing_preserve_and_record_cel_artwork() {
+        let _restore = setup();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.begin(
+                lumapaint_core::document::Point { x: 20., y: 20. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+            doc.capture_animation_cel("layer-1", 0, false).unwrap();
+            doc.blank_animation_cel("layer-1", 5).unwrap();
+        });
+        command(Request::Seek { frame: 2 }).unwrap();
+        RUNTIMES.with(|r| {
+            assert_eq!(
+                r.borrow()[&current_label()]
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .committed_paint_strokes()
+                    .count(),
+                1
+            );
+        });
+        begin_editing().unwrap();
+        assert!(!active());
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            assert_eq!(doc.committed_paint_strokes().count(), 1);
+            doc.begin(
+                lumapaint_core::document::Point { x: 40., y: 40. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+        });
+        // Passive UI refresh must not lose the pending editable frame.
+        command(Request::Get).unwrap();
+        command(Request::Seek { frame: 5 }).unwrap();
+        RUNTIMES.with(|r| {
+            assert_eq!(
+                r.borrow()[&current_label()]
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .committed_paint_strokes()
+                    .count(),
+                0
+            )
+        });
+        command(Request::Seek { frame: 2 }).unwrap();
+        RUNTIMES.with(|r| {
+            assert_eq!(
+                r.borrow()[&current_label()]
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .committed_paint_strokes()
+                    .count(),
+                2
+            )
+        });
+        DOCUMENT.with(|d| {
+            assert_eq!(
+                d.borrow().animation().tracks["layer-1"].cels[&2]
+                    .strokes
+                    .len(),
+                2
+            )
         });
     }
     #[test]
