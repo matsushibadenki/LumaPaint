@@ -3232,6 +3232,9 @@ impl Document {
                     SelectionOperation::Subtract => {
                         engine.combine(&path, &shape, PathOperation::Difference)?
                     }
+                    SelectionOperation::Intersect => {
+                        engine.combine(&path, &shape, PathOperation::Intersection)?
+                    }
                     SelectionOperation::Invert => {
                         engine.combine(&shape, &path, PathOperation::Difference)?
                     }
@@ -7115,6 +7118,12 @@ impl Document {
                             }
                             ids
                         }
+                        SelectionMode::Intersect => self
+                            .selected_vector_objects
+                            .iter()
+                            .filter(|id| hits.contains(id))
+                            .cloned()
+                            .collect(),
                         SelectionMode::Subtract => self
                             .selected_vector_objects
                             .iter()
@@ -7152,13 +7161,15 @@ impl Document {
                         bounds,
                         operation: if gesture.mode == SelectionMode::Add {
                             SelectionOperation::Add
+                        } else if gesture.mode == SelectionMode::Intersect {
+                            SelectionOperation::Intersect
                         } else {
                             SelectionOperation::Subtract
                         },
                     };
                     self.selection = Some(match gesture.mode {
                         SelectionMode::Replace => Selection::new(gesture.shape, bounds),
-                        SelectionMode::Add => match &gesture.base {
+                        SelectionMode::Add | SelectionMode::Intersect => match &gesture.base {
                             Some(base) => {
                                 let mut result = base.clone();
                                 result.regions.push(region);
@@ -12616,9 +12627,11 @@ impl Document {
             SelectionMode::Replace => Selection {
                 regions: Vec::new(),
             },
-            SelectionMode::Add => self.selection.clone().unwrap_or(Selection {
-                regions: Vec::new(),
-            }),
+            SelectionMode::Add | SelectionMode::Intersect => {
+                self.selection.clone().unwrap_or(Selection {
+                    regions: Vec::new(),
+                })
+            }
             SelectionMode::Subtract => self.selection.clone().unwrap_or_else(|| {
                 Selection::new(
                     SelectionShape::Rectangle,
@@ -12629,6 +12642,8 @@ impl Document {
         result.ensure_capacity()?;
         region.operation = if result.regions.is_empty() {
             SelectionOperation::Replace
+        } else if mode == SelectionMode::Intersect {
+            SelectionOperation::Intersect
         } else if mode == SelectionMode::Subtract {
             SelectionOperation::Subtract
         } else {

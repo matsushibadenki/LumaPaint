@@ -1,38 +1,38 @@
 # LumaPaint
 
-![view](docs/images/view.png)
+![Workspace](docs/images/view.png)
 
-漫画・イラスト・AI生成・アニメーションを共通の非破壊モデルで扱う制作アプリです。
-現在はAdobe製品のワークスペース構成を参考にした編集画面と、macOS向けの基本ブラシを実装しています。
-960×640のキャンバスに描画し、色・径の変更、ストローク単位のUndo/Redo、単一レイヤーの表示切替ができます。
-`.lumapaint`ファイルへの保存・別名保存・再読込に対応しています。復旧用コピーの自動保存と、次回起動時の作業復旧に対応しています。AI生成は未実装です。
+LumaPaint is a creative application for comics, illustration, AI generation, and animation, built around a shared non-destructive model.
+The current implementation includes an editing workspace inspired by Adobe products and a basic brush for macOS.
+You can draw on a 960 × 640 canvas, change the brush color and diameter, undo and redo individual strokes, and toggle the visibility of a single layer.
+Projects can be saved, saved under a new name, and reopened as `.lumapaint` files. Automatic recovery copies allow you to restore work on the next launch. AI generation is not yet implemented.
 
-上部の11分類のメニューから操作できます。「ファイル」に開く・保存・別名で保存、「編集」にUndo/Redo、「表示」にズーム、「ウインドウ」にパネル操作を配置しています。未実装の項目は「準備中」と表示し、無効化しています。
-ファイルメニュー左側のアプリアイコンから設定を開き、一般タブで言語、アピアランスタブで外観を変更できます。
-イメージメニューの「カラーモード」からRGB／CMYKを選択できます。選択したモードは作品ファイルと復旧用コピーに保持され、今後のモードは共通の定義へ追加できます。
-同じイメージメニューの「階調」から8／16／32 bitsを選択でき、選択値は作品ファイルと復旧用コピーに保持されます。
-編集メニューの「カラー設定」では、RGB用のsRGB・Display P3・Adobe RGB、CMYK用のJapan Color 2001 Coatedからカラープロファイルを選択できます。モードを変更した場合は互換性のある既定プロファイルへ自動的に切り替わります。
-右側のプロパティエリアは、ブラシ・ドキュメント・レイヤーをタブで切り替えられます。タブはドラッグ＆ドロップまたはAlt＋左右矢印キーで並べ替えでき、選択中のタブと並び順は端末内に保存されます。
-ファイルメニューの「SVGをレイヤーとして読み込み」からSVGファイルを追加できます。SVGは縦横比を保ってキャンバス中央へ配置され、レイヤーパネルで個別に表示を切り替えられます。元のSVGデータは作品ファイルと復旧用コピーへ保持されます。
+Commands are organized into 11 top-level menus. The File menu contains Open, Save, and Save As; Edit contains Undo and Redo; View contains zoom controls; and Window contains panel controls. Unimplemented commands are disabled and marked as coming soon.
+Click the application icon to the left of the File menu to open Settings. Use the General tab to change the language and the Appearance tab to change the theme.
+Choose RGB or CMYK from Image → Color Mode. The selected mode is preserved in project files and recovery copies; additional modes can be added to the shared definitions.
+The same Image menu offers 8-, 16-, and 32-bit depth settings, which are also preserved in project files and recovery copies.
+Edit → Color Settings lets you choose sRGB, Display P3, or Adobe RGB for RGB documents, and Japan Color 2001 Coated for CMYK documents. Changing the color mode automatically selects a compatible default profile.
+The properties area on the right provides Brush, Document, and Layers tabs. Reorder tabs by dragging them or pressing Alt + Left/Right Arrow. The active tab and tab order are saved locally.
+Use File → Import SVG as Layer to add an SVG file. It is centered on the canvas with its aspect ratio preserved, and its visibility can be toggled independently in the Layers panel. The original SVG data is preserved in project files and recovery copies.
 
-macOSでは基本的なSVG図形をGoogle Skiaで描画し、複雑なSVGはresvgで描画します。ベクター編集に向けたパス演算基盤も追加しています。制御点編集UIは後続の実装です。[採用範囲とビルド条件](docs/vector-engine.md)を参照してください。
+On macOS, basic SVG shapes are rendered with Google Skia, while complex SVG content is rendered with resvg. A path-operation foundation has also been added for vector editing. The control-point editing UI is planned for a later implementation. See [vector engine scope and build requirements](docs/vector-engine.md).
 
-外部形式の対応は[Adobe／オープン形式の互換設計と対応表](docs/format-compatibility.md)で管理します。独立RustライブラリにPSDの不透明RGB8合成画像の読込基盤を追加しています。PSDのGUI読込、レイヤー編集互換、PSD出力はまだ未対応です。
+External format support is tracked in the [Adobe and open-format compatibility design and matrix](docs/format-compatibility.md). An independent Rust library provides the foundation for reading opaque RGB8 composite images from PSD files. PSD import through the GUI, editable layer compatibility, and PSD export are not yet supported.
 
-## 開発環境（macOS優先）
+## Development environment (macOS first)
 
-- Node.js 26.10.0（`.nvmrc`で固定）、npm
-- Rust stable（Cargo、rustfmt、Clippyを含む）
-- Xcode Command Line Tools（`xcode-select --install`）
-- macOS 12以上。まず開発中のMacで動作確認し、対応範囲を段階的に検証します。
+- Node.js 26.10.0, pinned in `.nvmrc`, and npm
+- Rust stable, including Cargo, rustfmt, and Clippy
+- Xcode Command Line Tools (`xcode-select --install`)
+- macOS 12 or later. Validation starts on the development Mac, with supported configurations verified incrementally.
 
 ```sh
-nvm use # nvmを利用している場合
+nvm use # If you use nvm
 npm ci
 npm run tauri dev
 ```
 
-UIのみのプレビューは `npm run dev` です。ブラウザではRustコアに接続されず、その旨が画面に表示されます。
+For a UI-only preview, run `npm run dev`. The browser does not connect to the Rust core, and the UI displays a notice explaining this limitation.
 
 ```sh
 npm run build
@@ -41,51 +41,51 @@ npm run test:rust
 npm run tauri build -- --bundles app
 ```
 
-macOSアプリの出力先は `target/release/bundle/macos/LumaPaint.app` です。
-開発用アプリは `npm run tauri build -- --debug --bundles app` で生成でき、
-出力先は `target/debug/bundle/macos/LumaPaint.app` です。
-配布用署名・公証、正式なアイコン、正式なアプリ識別子の確定は今後行います。
+The macOS application is generated at `target/release/bundle/macos/LumaPaint.app`.
+To generate a development application, run `npm run tauri build -- --debug --bundles app`.
+Its output path is `target/debug/bundle/macos/LumaPaint.app`.
+Distribution signing and notarization, the final application icon, and the final application identifier are planned for later.
 
-## 構成
+## Project structure
 
 ```text
-src/                      React + TypeScript（UI・翻訳・IPC窓口）
-src-tauri/                Tauri 2（デスクトップ起動・OSとの接続）
-crates/lumapaint-core/    OS・UI・描画エンジン非依存のRustコア
-crates/lumapaint-formats/ Native／SVG／PSD I/O・共通Exporter・互換レポート
-crates/lumapaint-svg/     SVG形状解決・編集の交換可能なアダプター
-crates/lumapaint-renderer/  wgpu描画・WGSLシェーダー（OS非依存）
-docs/                    設計・開発方針・ロードマップ
+src/                        React + TypeScript: UI, translations, and IPC
+src-tauri/                  Tauri 2: desktop startup and OS integration
+crates/lumapaint-core/       Rust core independent of the OS, UI, and renderer
+crates/lumapaint-formats/    Native/SVG/PSD I/O, shared exporter, compatibility reports
+crates/lumapaint-svg/        Replaceable adapter for SVG geometry resolution and editing
+crates/lumapaint-renderer/   Cross-platform wgpu rendering and WGSL shaders
+docs/                       Design, development guidelines, and roadmap
 ```
 
-[Documentと外部エンジンの境界](docs/document-boundaries.md)に依存方向と実行時アダプターの接続方法をまとめています。
+[Document and external engine boundaries](docs/document-boundaries.md) describes dependency direction and how runtime adapters connect to the core.
 
-macOSではRust + wgpu + MetalでWKWebViewの子NSViewに描画します。
-拡大・縮小・全体表示、ウィンドウのサイズ変更、外観変更に応じて必要なフレームだけ描画します。
-倍率は全体表示を100%とする相対値です。GPU情報は準備完了表示のツールチップで確認できます。
-ブラウザと他OSでは未対応の案内を表示し、ズーム操作を無効化します。
-UIの言語（英語・日本語・简体中文）と外観（システム・ライト・ダーク）は端末内に保存します。
-APIキーはまだ取り扱いません。描画データはメモリ内に保持し、保存操作でファイルへ書き出します。
+On macOS, Rust, wgpu, and Metal render directly into an NSView child of WKWebView.
+Only necessary frames are rendered in response to zooming, fitting the canvas, window resizing, and appearance changes.
+Zoom is relative to the fit-to-view scale, which is treated as 100%. GPU information is available in the tooltip on the ready indicator.
+Browsers and other operating systems display an unsupported-platform notice and disable zoom controls.
+UI language (English, Japanese, or Simplified Chinese) and appearance (System, Light, or Dark) are saved locally.
+API keys are not currently handled. Drawing data is kept in memory and written to a file when saved.
 
-## 他プラットフォーム
+## Other platforms
 
-Windows・Linuxでも共有できる構成とし、CIに3 OSのコンパイルチェックを配置しています。
-macOS以外の実機動作とパッケージ配布は未検証です。OS固有の機能はTauri側に閉じ込めます。
-WindowsはMSVCビルドツール・WebView2、LinuxはWebKitGTK等の依存パッケージが必要です。
-詳細は [Tauriの前提条件](https://v2.tauri.app/start/prerequisites/) を参照してください。
+The architecture supports sharing code with Windows and Linux, and CI includes compilation checks on all three operating systems.
+Runtime behavior on physical Windows and Linux machines, as well as package distribution for those platforms, has not yet been verified. OS-specific functionality is confined to the Tauri layer.
+Windows requires the MSVC build tools and WebView2. Linux requires dependency packages such as WebKitGTK.
+See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for details.
 
-[開発方針](docs/development.md) / [ロードマップ](docs/roadmap.md) / [設計仕様書](docs/LumaPaint設計仕様書.md)
+[Development guidelines](docs/development.md) / [Roadmap](docs/roadmap.md) / [Design specification](docs/LumaPaint設計仕様書.md)
 
-## 作品の保存
+## Saving projects
 
-上部の「保存」「別名で保存」「開く」を使います。ショートカットは⌘S、⇧⌘S、⌘Oです。
-ファイルはバージョン付きJSON形式で、線の座標・色・径とレイヤーの表示状態を保持します。
-Undoの取り消し済み分岐やUI設定は作品ファイルに含めません。詳しくは [保存形式](docs/project-format.md) を参照してください。
+Use Save, Save As, and Open from the top menu. Their shortcuts are ⌘S, ⇧⌘S, and ⌘O.
+Project files use versioned JSON and preserve stroke coordinates, colors, diameters, and layer visibility.
+Discarded undo branches and UI preferences are not included in project files. See the [project format](docs/project-format.md) for details.
 
-## 作業の復旧
+## Recovering work
 
-ストローク確定やUndo/Redoの後に、作品ファイルとは別の復旧用コピーをバックグラウンドで保存します。
-異常終了後は起動時の「前回の作業を復旧」から戻せます。復旧した作品は手動で保存してください。
-未確定のストロークや書き込み途中の変更は復旧できない場合があります。[復旧機能の仕様](docs/recovery.md) を参照してください。
+After a stroke is committed or Undo/Redo is performed, a recovery copy is saved in the background separately from the project file.
+After an unexpected shutdown, choose Restore Previous Work at startup. Save the recovered project manually.
+Uncommitted strokes and changes interrupted during writing may not be recoverable. See the [recovery specification](docs/recovery.md).
 
-[大規模Sceneと描画キャッシュ](docs/large-scene-rendering.md)に、変更対象だけを処理する設計、10万／100万オブジェクトへの移行順、60／120fpsの計測条件をまとめています。
+[Large scenes and rendering caches](docs/large-scene-rendering.md) describes the design for processing only changed objects, the migration path toward 100,000 and 1,000,000 objects, and the measurement criteria for 60/120 fps.

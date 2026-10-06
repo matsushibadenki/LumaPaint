@@ -19,6 +19,7 @@ pub enum SelectionOperation {
     Replace,
     Add,
     Subtract,
+    Intersect,
     Invert,
 }
 
@@ -186,6 +187,7 @@ impl Selection {
                 SelectionOperation::Replace => hit,
                 SelectionOperation::Add => inside || hit,
                 SelectionOperation::Subtract => inside && !hit,
+                SelectionOperation::Intersect => inside && hit,
                 SelectionOperation::Invert => hit && !inside,
             };
         }
@@ -239,6 +241,7 @@ pub enum SelectionMode {
     Replace,
     Add,
     Subtract,
+    Intersect,
 }
 
 #[derive(Clone)]
@@ -272,6 +275,58 @@ mod tests {
     }
     fn hit(doc: &Document, x: f32, y: f32) -> bool {
         doc.selection().unwrap().contains(point(x, y))
+    }
+
+    #[test]
+    fn intersect_selection_preserves_overlap_history_and_saved_mask() {
+        let mut doc = Document::default();
+        drag(
+            &mut doc,
+            SelectionShape::Rectangle,
+            SelectionMode::Replace,
+            (100., 100.),
+            (300., 300.),
+        );
+        let before = doc.selection().cloned();
+        drag(
+            &mut doc,
+            SelectionShape::Ellipse,
+            SelectionMode::Intersect,
+            (200., 100.),
+            (400., 300.),
+        );
+        assert!(hit(&doc, 250., 200.));
+        assert!(!hit(&doc, 150., 200.) && !hit(&doc, 350., 200.) && !hit(&doc, 205., 105.));
+        let after = doc.selection().cloned();
+        doc.set_tool_pixel_selection(before.clone()).unwrap();
+        assert!(doc.commit_path_selection(after.clone()).unwrap());
+        doc.undo();
+        assert_eq!(doc.selection(), before.as_ref());
+        doc.redo();
+        assert_eq!(doc.selection(), after.as_ref());
+        let loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(loaded.selection(), after.as_ref());
+        doc.set_path_selection(
+            vec![
+                point(500., 500.),
+                point(600., 500.),
+                point(600., 600.),
+                point(500., 600.),
+            ],
+            0.,
+            SelectionMode::Intersect,
+        )
+        .unwrap();
+        assert!(!hit(&doc, 250., 200.) && !hit(&doc, 550., 550.));
+        assert!(
+            doc.selection().is_some(),
+            "empty intersection must not turn into unrestricted painting"
+        );
+        let mut fresh = Document::default();
+        fresh
+            .set_path_selection(vec![point(30., 30.)], 10., SelectionMode::Intersect)
+            .unwrap();
+        assert!(hit(&fresh, 30., 30.) && !hit(&fresh, 60., 60.));
     }
 
     #[test]

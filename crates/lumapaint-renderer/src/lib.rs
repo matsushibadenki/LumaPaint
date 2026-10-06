@@ -262,6 +262,7 @@ fn selection_bind_group(
                 SelectionOperation::Add => 1.,
                 SelectionOperation::Subtract => 2.,
                 SelectionOperation::Invert => 3.,
+                SelectionOperation::Intersect => 5.,
             };
             if matches!(
                 region.shape,

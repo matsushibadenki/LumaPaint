@@ -2597,6 +2597,18 @@ fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
     )
     .unwrap();
     let selection = doc.selection().unwrap().clone();
+    doc.set_path_selection(
+        vec![
+            Point { x: 220., y: 160. },
+            Point { x: 460., y: 160. },
+            Point { x: 460., y: 400. },
+            Point { x: 220., y: 400. },
+        ],
+        0.,
+        lumapaint_core::selection::SelectionMode::Intersect,
+    )
+    .unwrap();
+    let intersection = doc.selection().unwrap().clone();
     let stroke = Stroke {
         eraser: false,
         clear: false,
@@ -2611,7 +2623,11 @@ fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
         selection: None,
     };
     let baseline = gpu.render(std::slice::from_ref(&stroke));
-    for selection in [selection.clone(), selection.translated(60., 20.)] {
+    for selection in [
+        selection.clone(),
+        selection.translated(60., 20.),
+        intersection,
+    ] {
         let mut clipped = stroke.clone();
         clipped.selection = Some(selection.clone());
         let pixels = gpu.render(&[clipped]);

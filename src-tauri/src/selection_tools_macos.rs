@@ -114,7 +114,10 @@ pub(super) fn pointer(
             {
                 return Ok(());
             }
-            let mode = if flags.contains(NSEventModifierFlags::Option) {
+            let mode = if flags.contains(NSEventModifierFlags::Shift | NSEventModifierFlags::Option)
+            {
+                SelectionMode::Intersect
+            } else if flags.contains(NSEventModifierFlags::Option) {
                 SelectionMode::Subtract
             } else if flags.contains(NSEventModifierFlags::Shift)
                 || (tool == CanvasTool::SelectionBrush && settings.mode == SelectionMode::Replace)

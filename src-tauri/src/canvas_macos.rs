@@ -3378,7 +3378,9 @@ fn cancel_vector_drag() -> bool {
 }
 
 fn selection_mode(flags: NSEventModifierFlags) -> SelectionMode {
-    if flags.contains(NSEventModifierFlags::Option) {
+    if flags.contains(NSEventModifierFlags::Shift | NSEventModifierFlags::Option) {
+        SelectionMode::Intersect
+    } else if flags.contains(NSEventModifierFlags::Option) {
         SelectionMode::Subtract
     } else if flags.contains(NSEventModifierFlags::Shift) {
         SelectionMode::Add
@@ -7497,7 +7499,7 @@ mod tests {
         );
         assert_eq!(
             selection_mode(NSEventModifierFlags::Shift | NSEventModifierFlags::Option),
-            SelectionMode::Subtract
+            SelectionMode::Intersect
         );
     }
 

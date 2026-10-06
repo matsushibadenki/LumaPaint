@@ -20,7 +20,7 @@ fn selection_distance(point:vec2<f32>)->f32 {
     if r.info.y==2. {distance=select(nearest,-nearest,parity);}
     nearest=100000.;parity=false;
   }
-  switch op {case 0:{result=distance;}case 1:{result=min(result,distance);}case 2:{result=max(result,-distance);}case 3:{result=max(-result,distance);}default:{}}
+  switch op {case 0:{result=distance;}case 1:{result=min(result,distance);}case 2:{result=max(result,-distance);}case 3:{result=max(-result,distance);}case 5:{result=max(result,distance);}default:{}}
  }
  return result;
 }
@@ -35,7 +35,7 @@ fn selection_contains(point:vec2<f32>)->bool {
    if r.info.w<0.5{continue;}
    hit=select(stroke_hit,parity||edge,r.info.y==2.);parity=false;edge=false;stroke_hit=false;
   }
-  switch op {case 0:{inside=hit;}case 1:{inside=inside||hit;}case 2:{inside=inside&&!hit;}case 3:{inside=hit&&!inside;}default:{}}
+  switch op {case 0:{inside=hit;}case 1:{inside=inside||hit;}case 2:{inside=inside&&!hit;}case 3:{inside=hit&&!inside;}case 5:{inside=inside&&hit;}default:{}}
  }
  return inside;
 }
