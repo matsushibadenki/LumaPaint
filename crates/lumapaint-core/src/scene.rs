@@ -126,9 +126,11 @@ impl Journal {
         }
     }
     fn push(&mut self, target: Target, changes: Changes, removed: bool) {
+        let _timer = crate::performance::time("scene_journal_push");
         if !changes.any() {
             return;
         }
+        crate::performance::count("scene_journal_events", 1);
         self.sequence = self
             .sequence
             .checked_add(1)

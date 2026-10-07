@@ -28,6 +28,24 @@ fn generations(document: &Document, layer: &SvgLayer) -> Generations {
 fn source_key(layer: &SvgLayer) -> (usize, usize) {
     (layer.source.as_ptr() as usize, layer.source.len())
 }
+
+/// Runtime identity of a composed image, never document/save-file state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceIdentity {
+    journal_id: u64,
+    source_key: (usize, usize),
+    generations: Generations,
+}
+
+impl SourceIdentity {
+    pub fn capture(document: &Document, layer: &SvgLayer) -> Self {
+        Self {
+            journal_id: document.scene_journal().instance_id(),
+            source_key: source_key(layer),
+            generations: generations(document, layer),
+        }
+    }
+}
 impl ObjectCacheState {
     pub fn new(document: &Document, layer: &SvgLayer, certify: bool) -> Self {
         let (width, height) = document.dimensions();

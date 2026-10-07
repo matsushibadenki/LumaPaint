@@ -786,6 +786,7 @@ fn rasterize_tree_region(
     crop: bool,
     object: bool,
 ) -> Result<SvgRegionRaster, String> {
+    let _timer = crate::performance::time("svg_raster_including_readback");
     let [width, height] = size;
     let [scale, x, y] = transform;
     let bounds = tree.root().abs_layer_bounding_box();
@@ -842,6 +843,18 @@ fn rasterize_tree_region(
     }
     let width = (right - left) as u32;
     let height = (bottom - top) as u32;
+    crate::performance::count(
+        "raster_surface_bytes",
+        u64::from(width) * u64::from(height) * 4,
+    );
+    crate::performance::count(
+        if crop {
+            "cropped_rasterizations"
+        } else {
+            "full_layer_rasterizations"
+        },
+        1,
+    );
     let x = x - left as f32;
     let y = y - top as f32;
 

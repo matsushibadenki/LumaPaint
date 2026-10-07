@@ -60,5 +60,11 @@ fn main() {
         old.sort_by(f64::total_cmp);
         new.sort_by(f64::total_cmp);
         println!("frames={frames} samples=20 legacy_median_us={:.3} retained_median_us={:.3} legacy_p95_us={:.3} retained_p95_us={:.3}",old[10],new[10],old[18],new[18]);
+        if lumapaint_core::performance::enabled() {
+            println!(
+                "document/layout profile: {:?}",
+                lumapaint_core::performance::take()
+            );
+        }
     }
 }

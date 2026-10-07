@@ -7,6 +7,7 @@ pub mod document;
 pub mod gradient;
 pub mod graph;
 pub mod layer_effects;
+pub mod performance;
 pub mod scene;
 pub mod selection;
 pub mod stroke;

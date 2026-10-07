@@ -8,14 +8,16 @@ use lumapaint_core::tiles::{
     RasterDab, TileCoord, TileInvalidation, TileUpload, TiledRasterDocument, TILE_SIZE,
 };
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 pub mod frame_cache;
 mod frame_overlay;
 pub mod gradient_raster;
 #[cfg(feature = "skia")]
 mod native_bezier;
 mod object_cache_state;
+pub mod performance;
 pub mod portable_paths;
+mod text_copy_plan;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
 mod workspace;
@@ -28,8 +30,7 @@ pub use wgpu;
 use wgpu::util::DeviceExt;
 
 fn render_metrics_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("LUMAPAINT_RENDER_METRICS").is_some())
+    performance::enabled()
 }
 
 #[derive(Default)]
@@ -1348,6 +1349,7 @@ pub struct Renderer {
     object_pipeline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
     object_cache: HashMap<String, ObjectLayerCache>,
+    text_clear_buffer: Option<wgpu::Buffer>,
     #[cfg(feature = "skia")]
     native_geometry: native_bezier::Cache,
     effects_display: Option<effects_display::EffectsDisplay>,
@@ -1561,6 +1563,9 @@ fn upload_svg_rect(
     rect: Option<[usize; 4]>,
 ) {
     if let Some([x, y, width, height]) = rect {
+        let _timer = performance::time("svg_texture_write_host");
+        performance::count("svg_uploaded_bytes", (width * height * 4) as u64);
+        performance::count("svg_texture_writes", 1);
         let packed = pack_svg_rect(pixels, stride, [x, y, width, height]);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -1589,6 +1594,7 @@ fn upload_svg_rect(
 }
 
 struct CachedSvg {
+    source_identity: Option<object_cache_state::SourceIdentity>,
     gpu_effects: bool,
     comparison_pixels: Vec<u8>,
     fully_contained: bool,
@@ -1597,6 +1603,28 @@ struct CachedSvg {
     size: (u32, u32),
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+}
+
+impl CachedSvg {
+    fn matches_source(&self, document: &Document, layer: &SvgLayer) -> bool {
+        composed_source_matches(&self.source, self.source_identity, document, layer)
+    }
+}
+
+fn composed_source_matches(
+    source: &str,
+    identity: Option<object_cache_state::SourceIdentity>,
+    document: &Document,
+    layer: &SvgLayer,
+) -> bool {
+    if identity.is_some_and(|identity| {
+        identity == object_cache_state::SourceIdentity::capture(document, layer)
+    }) {
+        performance::count("retained_text_svg_identity_hits", 1);
+        true
+    } else {
+        source == layer.source
+    }
 }
 
 struct ObjectLayerCache {
@@ -1672,12 +1700,22 @@ impl ObjectLayerCache {
         {
             return None;
         }
-        self.state
-            .translated(document, layer, &self.objects, &self.selected_ids)
+        let delta = self
+            .state
+            .translated(document, layer, &self.objects, &self.selected_ids)?;
+        if self.runs.iter().any(|run| run.object_id.is_some())
+            && !text_copy_rectangles_valid(&self.runs, self.document_size, delta.offset)
+        {
+            return None;
+        }
+        Some(delta)
     }
     fn translation(&self, document: &Document, layer: &SvgLayer) -> Option<[f32; 2]> {
         if let Some(delta) = self.journal_translation(document, layer) {
             return Some(delta.offset);
+        }
+        if self.runs.iter().any(|run| run.object_id.is_some()) {
+            return None;
         }
         if (layer.vector_layer && !self.state.certified())
             || self.runs.is_empty()
@@ -1741,11 +1779,184 @@ impl ObjectLayerCache {
 }
 
 struct ObjectRun {
+    // Present only for independently retained text frames.
+    object_id: Option<String>,
     selected: bool,
     cached: CachedSvg,
     geometry: wgpu::BindGroup,
     geometry_buffer: wgpu::Buffer,
     rectangle: [f32; 4],
+}
+
+/// Copy disjoint integer-aligned frame textures into a retained layer on the GPU.
+/// No blending/resampling occurs here, so presentation matches the old layer texture.
+fn compose_retained_text_gpu<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    frames: impl IntoIterator<Item = (&'a wgpu::Texture, [f32; 4])>,
+    clear: Option<(&wgpu::Buffer, &[[u32; 4]])>,
+) {
+    let _timer = performance::time("retained_text_gpu_copy_encode_host");
+    let frames: Vec<_> = frames.into_iter().collect();
+    if clear.is_some_and(|(_, regions)| regions.is_empty()) && frames.is_empty() {
+        performance::count("retained_text_gpu_noop", 1);
+        return;
+    }
+    let mut encoder = device.create_command_encoder(&Default::default());
+    if let Some((zero, regions)) = clear {
+        for &[x, y, width, height] in regions {
+            let pitch = (width * 4).div_ceil(256) * 256;
+            let rows = (zero.size() / u64::from(pitch)) as u32;
+            performance::count(
+                "retained_text_gpu_cleared_bytes",
+                u64::from(width) * u64::from(height) * 4,
+            );
+            let mut row = 0;
+            while row < height {
+                let count = rows.min(height - row);
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: zero,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(pitch),
+                            rows_per_image: Some(count),
+                        },
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: target,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x,
+                            y: y + row,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height: count,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                row += count;
+            }
+        }
+    } else {
+        performance::count("retained_text_gpu_full_clears", 1);
+        performance::count(
+            "retained_text_gpu_cleared_bytes",
+            u64::from(target.width()) * u64::from(target.height()) * 4,
+        );
+        let view = target.create_view(&Default::default());
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Clear retained text composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+    for (texture, rect) in frames {
+        performance::count(
+            "retained_text_gpu_copied_bytes",
+            u64::from(texture.width()) * u64::from(texture.height()) * 4,
+        );
+        encoder.copy_texture_to_texture(
+            texture.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: rect[0] as u32,
+                    y: rect[1] as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: texture.width(),
+                height: texture.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    queue.submit([encoder.finish()]);
+}
+
+fn text_copy_rectangles_valid(runs: &[ObjectRun], size: (u32, u32), offset: [f32; 2]) -> bool {
+    let mut rectangles: Vec<[f32; 4]> = Vec::with_capacity(runs.len());
+    for run in runs {
+        let mut rect = run.rectangle;
+        if run.selected {
+            rect[0] += offset[0];
+            rect[1] += offset[1];
+        }
+        if !rect.iter().all(|value| value.is_finite())
+            || rect[0].fract() != 0.0
+            || rect[1].fract() != 0.0
+            || rect[0] < 0.0
+            || rect[1] < 0.0
+            || rect[0] + rect[2] > size.0 as f32
+            || rect[1] + rect[3] > size.1 as f32
+            || rectangles.iter().any(|other| {
+                rect[0] < other[0] + other[2]
+                    && other[0] < rect[0] + rect[2]
+                    && rect[1] < other[1] + other[3]
+                    && other[1] < rect[1] + rect[3]
+            })
+        {
+            return false;
+        }
+        rectangles.push(rect);
+    }
+    true
+}
+
+fn update_retained_text_gpu<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    frames: impl IntoIterator<Item = (&'a wgpu::Texture, [f32; 4])>,
+    plan: Option<&text_copy_plan::Plan>,
+    scratch: &mut Option<wgpu::Buffer>,
+) {
+    if plan.is_some_and(|plan| plan.clears.is_empty() && plan.copies.is_empty()) {
+        performance::count("retained_text_gpu_noop", 1);
+        return;
+    }
+    let clear = if let Some(plan) = plan {
+        let buffer = scratch.get_or_insert_with(|| {
+            performance::count("retained_text_gpu_zero_buffer_allocations", 1);
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Zero source for local text clearing"),
+                size: 4 * 1024 * 1024,
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        });
+        Some((&*buffer, plan.clears.as_slice()))
+    } else {
+        None
+    };
+    compose_retained_text_gpu(
+        device,
+        queue,
+        target,
+        frames
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| plan.is_none_or(|plan| plan.copies.contains(index)))
+            .map(|(_, frame)| frame),
+        clear,
+    );
 }
 
 fn uniform_object_translation(
@@ -1895,6 +2106,243 @@ pub fn prepare_svg_layer(
 }
 
 impl Renderer {
+    /// Install a generation-checked worker result. Independent text textures are retained
+    /// across edits; unmodified frames keep their GPU resource and rectangle buffer.
+    pub fn install_prepared_display(
+        &mut self,
+        document: &Document,
+        prepared: frame_cache::PreparedDisplayLayer,
+    ) -> Result<usize, String> {
+        let frame_cache::PreparedDisplayLayer::Text(prepared) = prepared else {
+            let frame_cache::PreparedDisplayLayer::Full(prepared) = prepared else {
+                unreachable!()
+            };
+            let bytes = prepared.pixels.len();
+            if self
+                .object_cache
+                .get(&prepared.id)
+                .is_some_and(|cache| cache.runs.iter().any(|run| run.object_id.is_some()))
+            {
+                self.object_cache.remove(&prepared.id);
+            }
+            self.install_prepared_svg(prepared)?;
+            return Ok(bytes);
+        };
+        let limit = self.device.limits().max_texture_dimension_2d;
+        if prepared.size.0 == 0
+            || prepared.size.1 == 0
+            || prepared.size.0 > limit
+            || prepared.size.1 > limit
+        {
+            return Err("Invalid retained text layer dimensions".into());
+        }
+        let layer = document
+            .svg_layers()
+            .find(|layer| layer.id == prepared.id)
+            .ok_or("Prepared text layer no longer exists")?;
+        if layer.source != prepared.source
+            || layer.effective_opacity() != 1.0
+            || document.dimensions() != prepared.size
+            || document.has_layer_effects(&layer.id)
+        {
+            return Err("Prepared text layer is stale or incompatible".into());
+        }
+        let frame_bytes: usize = prepared
+            .frames
+            .iter()
+            .map(|frame| frame.frame.pixels.len())
+            .sum();
+        let bytes =
+            frame_bytes.saturating_add(prepared.size.0 as usize * prepared.size.1 as usize * 4);
+        let other_bytes: usize = self
+            .object_cache
+            .iter()
+            .filter(|(id, _)| **id != layer.id)
+            .map(|(_, cache)| cache.bytes)
+            .sum();
+        let retain_frames = bytes <= (64usize * 1024 * 1024).saturating_sub(other_bytes);
+        if !retain_frames {
+            performance::count("fallback.retained_text_gpu_budget", 1);
+        }
+        for frame in &prepared.frames {
+            let width = frame.frame.width;
+            if width == 0 {
+                return Err("Invalid retained text dimensions".into());
+            }
+            let height = frame.frame.pixels.len() / (width * 4);
+            let limit = self.device.limits().max_texture_dimension_2d as usize;
+            if width == 0 || height == 0 || width > limit || height > limit {
+                return Err("Invalid retained text dimensions".into());
+            }
+        }
+        let previous = self.object_cache.remove(&layer.id);
+        let partial_plan = previous
+            .as_ref()
+            .filter(|cache| {
+                cache.document_size == prepared.size
+                    && !cache.runs.is_empty()
+                    && cache.runs.iter().all(|run| run.object_id.is_some())
+                    && self.svg_cache.get(&layer.id).is_some_and(|composite| {
+                        composite.size == prepared.size
+                            && composite
+                                ._texture
+                                .usage()
+                                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                    })
+            })
+            .map(|cache| {
+                text_copy_plan::plan(
+                    cache.runs.iter().map(|run| text_copy_plan::Key {
+                        id: run.object_id.as_deref().unwrap(),
+                        source: &run.cached.source,
+                        rectangle: run.rectangle,
+                    }),
+                    prepared.frames.iter().map(|frame| text_copy_plan::Key {
+                        id: &frame.id,
+                        source: &frame.source,
+                        rectangle: [
+                            frame.frame.origin.0 as f32,
+                            frame.frame.origin.1 as f32,
+                            frame.frame.width as f32,
+                            (frame.frame.pixels.len() / (frame.frame.width * 4)) as f32,
+                        ],
+                    }),
+                )
+            });
+        let mut old_runs: HashMap<String, ObjectRun> = previous
+            .into_iter()
+            .filter(|cache| cache.document_size == prepared.size)
+            .flat_map(|cache| cache.runs)
+            .filter_map(|run| run.object_id.clone().map(|id| (id, run)))
+            .collect();
+        let selected_ids = layer_selected_ids(document, layer);
+        let mut runs = Vec::with_capacity(prepared.frames.len());
+        let mut uploaded = 0;
+        for frame in prepared.frames {
+            let height = frame.frame.pixels.len() / (frame.frame.width * 4);
+            let rectangle = [
+                frame.frame.origin.0 as f32,
+                frame.frame.origin.1 as f32,
+                frame.frame.width as f32,
+                height as f32,
+            ];
+            let selected = selected_ids.contains(&frame.id);
+            if let Some(mut old) = old_runs
+                .remove(&frame.id)
+                .filter(|run| run.cached.source == frame.source && run.rectangle == rectangle)
+            {
+                old.selected = selected;
+                crate::performance::count("retained_text_gpu_reuses", 1);
+                runs.push(old);
+                continue;
+            }
+            uploaded += frame.frame.pixels.len();
+            let cached = self.make_cached_svg(PreparedSvgLayer {
+                id: layer.id.clone(),
+                source: frame.source,
+                opacity: 1.0,
+                size: (frame.frame.width as u32, height as u32),
+                fully_contained: true,
+                pixels: frame.frame.pixels.clone(),
+            })?;
+            let buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Retained text bounds"),
+                    contents: bytemuck::cast_slice(&rectangle),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+            let geometry = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Retained text geometry"),
+                layout: &self.object_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            runs.push(ObjectRun {
+                object_id: Some(frame.id),
+                selected,
+                cached,
+                geometry,
+                geometry_buffer: buffer,
+                rectangle,
+            });
+        }
+        let mut composite = self
+            .svg_cache
+            .remove(&layer.id)
+            .filter(|cached| {
+                cached.size == prepared.size
+                    && cached
+                        ._texture
+                        .usage()
+                        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            })
+            .unwrap_or_else(|| {
+                performance::count("retained_text_gpu_composite_allocations", 1);
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Retained text GPU composite"),
+                    size: wgpu::Extent3d {
+                        width: prepared.size.0,
+                        height: prepared.size.1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                self.cached_svg_texture(
+                    texture,
+                    PreparedSvgLayer {
+                        id: layer.id.clone(),
+                        source: String::new(),
+                        opacity: 1.0,
+                        size: prepared.size,
+                        fully_contained: true,
+                        pixels: Vec::new(),
+                    },
+                )
+            });
+        update_retained_text_gpu(
+            &self.device,
+            &self.queue,
+            &composite._texture,
+            runs.iter().map(|run| (&run.cached._texture, run.rectangle)),
+            partial_plan.as_ref(),
+            &mut self.text_clear_buffer,
+        );
+        composite.source.clear();
+        composite.source_identity =
+            Some(object_cache_state::SourceIdentity::capture(document, layer));
+        composite.comparison_pixels.clear();
+        composite.opacity = 1.0;
+        composite.fully_contained = true;
+        self.svg_cache.insert(layer.id.clone(), composite);
+        if retain_frames {
+            self.object_cache.insert(
+                layer.id.clone(),
+                ObjectLayerCache {
+                    state: object_cache_state::ObjectCacheState::new(document, layer, true),
+                    objects: layer.vector_objects.clone(),
+                    source: prepared.source,
+                    selected_ids,
+                    opacity: 1.0,
+                    document_size: prepared.size,
+                    runs,
+                    bytes,
+                    upload_bytes: uploaded,
+                },
+            );
+        }
+        Ok(uploaded)
+    }
+
     /// Opt-in tile paint preview. The host must only install a tile document
     /// matching the current v1 document and clear it when that source changes.
     pub fn install_tiled_preview(&mut self, tiles: &TiledRasterDocument) -> Result<(), String> {
@@ -2056,7 +2504,7 @@ impl Renderer {
                 .get(&layer.id)
                 .is_some_and(|cached| cached.ready(document, layer))
                 || self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                    cached.source == layer.source
+                    cached.matches_source(document, layer)
                         && cached.opacity == layer.effective_opacity()
                         && cached.size == size
                 })
@@ -2081,7 +2529,7 @@ impl Renderer {
                     .get(&layer.id)
                     .is_some_and(|cached| cached.ready(document, layer))
                     && !self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                        cached.source == layer.source
+                        cached.matches_source(document, layer)
                             && cached.opacity == layer.effective_opacity()
                             && cached.size == size
                     })
@@ -2172,6 +2620,7 @@ impl Renderer {
                     prepared.pixels.len()
                 );
             }
+            cached.source_identity = None;
             cached.source = prepared.source;
             cached.opacity = prepared.opacity;
             cached.fully_contained = prepared.fully_contained;
@@ -2276,6 +2725,9 @@ impl Renderer {
         {
             return Err("Invalid prepared SVG pixels".into());
         }
+        let _timer = performance::time("svg_texture_create_upload_host");
+        performance::count("svg_texture_creations", 1);
+        performance::count("svg_uploaded_bytes", prepared.pixels.len() as u64);
         let texture = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
@@ -2289,7 +2741,10 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
@@ -2318,6 +2773,7 @@ impl Renderer {
             ],
         });
         CachedSvg {
+            source_identity: None,
             gpu_effects: false,
             comparison_pixels: Vec::new(),
             fully_contained: prepared.fully_contained,
@@ -2423,6 +2879,7 @@ impl Renderer {
                 }],
             });
             prepared.push(ObjectRun {
+                object_id: None,
                 selected,
                 cached,
                 geometry,
@@ -2736,6 +3193,7 @@ impl Renderer {
             object_pipeline,
             object_layout,
             object_cache: HashMap::new(),
+            text_clear_buffer: None,
             #[cfg(feature = "skia")]
             native_geometry,
             effects_display,
@@ -2894,6 +3352,7 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
+        let frame_timer = performance::time("render_frame_host");
         let clipped;
         let document = if document.has_document_clipping() {
             clipped = document.clipping_view();
@@ -3173,7 +3632,7 @@ impl Renderer {
                 // layers, or a whole selected layer whose image can just move.
                 if offset != [0., 0.]
                     && self.svg_cache.get(&original.id).is_some_and(|cached| {
-                        cached.source == original.source
+                        cached.matches_source(document, original)
                             && cached.opacity == original.effective_opacity()
                             && cached.size == (width, height)
                             && retained_drag_selection(
@@ -3193,7 +3652,11 @@ impl Renderer {
                 }
                 // Selecting/deselecting a complete layer only retags its retained
                 // image. Unrelated layers keep their caches when selection changes.
-                if local_selection.is_empty()
+                if self
+                    .object_cache
+                    .get(&original.id)
+                    .is_some_and(|cache| cache.runs.iter().all(|run| run.object_id.is_some()))
+                    || local_selection.is_empty()
                     || self
                         .object_cache
                         .get(&original.id)
@@ -3204,7 +3667,12 @@ impl Renderer {
                         if cache.matches_content(document, original) && !cache.runs.is_empty() {
                             cache.state.observe(document, original);
                             for run in &mut cache.runs {
-                                run.selected = !local_selection.is_empty();
+                                run.selected = run
+                                    .object_id
+                                    .as_ref()
+                                    .map_or(!local_selection.is_empty(), |id| {
+                                        local_selection.contains(id)
+                                    });
                             }
                             cache.selected_ids = local_selection.clone();
                         }
@@ -3227,6 +3695,31 @@ impl Renderer {
                         });
                 if let Some(delta) = committed_offset {
                     if let Some(cache) = self.object_cache.get_mut(&original.id) {
+                        let text_update = cache
+                            .runs
+                            .iter()
+                            .all(|run| run.object_id.is_some())
+                            .then(|| {
+                                text_copy_plan::plan(
+                                    cache.runs.iter().map(|run| text_copy_plan::Key {
+                                        id: run.object_id.as_deref().unwrap(),
+                                        source: &run.cached.source,
+                                        rectangle: run.rectangle,
+                                    }),
+                                    cache.runs.iter().map(|run| {
+                                        let mut rectangle = run.rectangle;
+                                        if run.selected {
+                                            rectangle[0] += delta[0];
+                                            rectangle[1] += delta[1];
+                                        }
+                                        text_copy_plan::Key {
+                                            id: run.object_id.as_deref().unwrap(),
+                                            source: &run.cached.source,
+                                            rectangle,
+                                        }
+                                    }),
+                                )
+                            });
                         let committed = cache.apply_translation(
                             &self.queue,
                             document,
@@ -3238,6 +3731,25 @@ impl Renderer {
                         drag_metrics.committed_legacy_objects += committed.legacy_objects;
                         drag_metrics.committed_svg_copy_bytes += committed.svg_copy_bytes;
                         drag_metrics.committed_uniform_bytes += committed.uniform_bytes;
+                        if cache.runs.iter().all(|run| run.object_id.is_some()) {
+                            if let Some(composite) = self.svg_cache.get_mut(&original.id) {
+                                update_retained_text_gpu(
+                                    &self.device,
+                                    &self.queue,
+                                    &composite._texture,
+                                    cache
+                                        .runs
+                                        .iter()
+                                        .map(|run| (&run.cached._texture, run.rectangle)),
+                                    text_update.as_ref(),
+                                    &mut self.text_clear_buffer,
+                                );
+                                composite.source_identity = Some(
+                                    object_cache_state::SourceIdentity::capture(document, original),
+                                );
+                                composite.source.clear();
+                            }
+                        }
                     }
                 }
                 let valid = self.object_cache.get(&original.id).is_some_and(|cache| {
@@ -3249,7 +3761,13 @@ impl Renderer {
                 // Selection-only redraws must not synchronously rasterize text.
                 // The async SVG worker supplies cold content; split runs only
                 // when a drag actually needs independent transforms.
-                if !valid && (!defer_svg || offset != [0., 0.]) {
+                let independent_text = offset == [0., 0.]
+                    && original.effective_opacity() == 1.0
+                    && original
+                        .vector_objects
+                        .iter()
+                        .all(|object| object.text.is_some());
+                if !valid && (!defer_svg || offset != [0., 0.]) && !independent_text {
                     let started = std::time::Instant::now();
                     self.object_cache.remove(&original.id);
                     let cache = self
@@ -3272,8 +3790,23 @@ impl Renderer {
                     drag_metrics.cache_setup_ms += started.elapsed().as_secs_f64() * 1000.0;
                     self.object_cache.insert(original.id.clone(), cache);
                 }
+                if offset == [0., 0.]
+                    && valid
+                    && self
+                        .object_cache
+                        .get(&original.id)
+                        .is_some_and(|cache| cache.runs.iter().all(|run| run.object_id.is_some()))
+                    && self
+                        .svg_cache
+                        .get(&original.id)
+                        .is_some_and(|cache| cache.matches_source(document, original))
+                {
+                    // Present the GPU-composed layer with the original sampling at every zoom.
+                    continue;
+                }
                 if self.object_cache.get(&original.id).is_some_and(|cache| {
-                    !cache.runs.is_empty() && (valid || !defer_svg || offset != [0., 0.])
+                    !cache.runs.is_empty()
+                        && (valid || ((!defer_svg || offset != [0., 0.]) && !independent_text))
                 }) {
                     object_layers.insert(original.id.as_str());
                     drag_metrics.object_reuse += 1;
@@ -3285,7 +3818,7 @@ impl Renderer {
                 && document.vector_layer_moves_as_unit(original)
                 && self.svg_cache.get(&original.id).is_some_and(|cached| {
                     cached.fully_contained
-                        && cached.source == original.source
+                        && cached.matches_source(document, original)
                         && cached.opacity == original.effective_opacity()
                         && cached.size == (width, height)
                 })
@@ -3333,7 +3866,7 @@ impl Renderer {
             }
             let layer = preview.as_ref().unwrap_or(original);
             if self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                cached.source == layer.source
+                cached.matches_source(document, layer)
                     && cached.opacity == layer.effective_opacity()
                     && cached.size == (width, height)
             }) {
@@ -3344,11 +3877,28 @@ impl Renderer {
                 continue;
             }
             let started = std::time::Instant::now();
-            let prepared = self
-                .frame_raster_cache
-                .prepare_layer(layer, width, height)?;
-            drag_metrics.upload_bytes += prepared.pixels.len();
-            self.install_prepared_svg(prepared)?;
+            if offset == [0., 0.] {
+                let prepared = self
+                    .frame_raster_cache
+                    .prepare_display_layer(layer, width, height)?;
+                let text = matches!(&prepared, frame_cache::PreparedDisplayLayer::Text(_));
+                drag_metrics.upload_bytes += self.install_prepared_display(document, prepared)?;
+                if text
+                    && offset != [0., 0.]
+                    && self
+                        .object_cache
+                        .get(&layer.id)
+                        .is_some_and(|cache| cache.ready(document, layer))
+                {
+                    object_layers.insert(original.id.as_str());
+                }
+            } else {
+                let prepared = self
+                    .frame_raster_cache
+                    .prepare_layer(layer, width, height)?;
+                drag_metrics.upload_bytes += prepared.pixels.len();
+                self.install_prepared_svg(prepared)?;
+            }
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
         let exterior_needed = document
@@ -3365,7 +3915,7 @@ impl Renderer {
                             .iter()
                             .any(|object| document.selected_vector_ids().contains(&object.id)))
                         || self.svg_cache.get(&layer.id).is_none_or(|cached| {
-                            cached.source != layer.source || !cached.fully_contained
+                            !cached.matches_source(document, layer) || !cached.fully_contained
                         })
                 });
         if exterior_needed {
@@ -3737,8 +4287,36 @@ impl Renderer {
                 pass.draw(0..*count, 0..1);
             }
         }
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
+        {
+            let _timer = performance::time("queue_submit_host");
+            self.queue.submit(Some(encoder.finish()));
+        }
+        {
+            let _timer = performance::time("queue_present_host");
+            self.queue.present(frame);
+        }
+        #[cfg(feature = "skia")]
+        if render_metrics_enabled() {
+            let metrics = &self.native_geometry.metrics;
+            performance::count("native_geometry_rebuilds", metrics.geometry_builds as u64);
+            performance::count("native_bvh_builds", metrics.bvh_builds as u64);
+            performance::count("native_bvh_refits", metrics.bvh_refits as u64);
+            performance::count("native_svg_generations", metrics.svg_generations as u64);
+            performance::count(
+                "native_geometry_uploaded_bytes",
+                metrics.geometry_upload_bytes,
+            );
+            performance::count(
+                "native_uniform_uploaded_bytes",
+                metrics.uniform_upload_bytes as u64,
+            );
+            performance::count("object_cache_reuses", drag_metrics.object_reuse as u64);
+            performance::count("object_cache_builds", drag_metrics.cache_builds as u64);
+        }
+        drop(frame_timer);
+        if render_metrics_enabled() {
+            eprintln!("lumapaint-render-profile {:?}", performance::take());
+        }
         #[cfg(feature = "skia")]
         if render_metrics_enabled() {
             eprintln!(
@@ -3774,6 +4352,78 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composed_image_identity_needs_no_svg_copy_and_rejects_stale_or_foreign_state() {
+        use lumapaint_core::document::TextSettings;
+        use lumapaint_core::vector::VectorText;
+        let mut document = Document::default();
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "English 日本語 简体中文".into(),
+                    ..Default::default()
+                },
+                position: [60., 60.],
+                color: [0, 0, 0],
+            })
+            .unwrap();
+        let id = document.snapshot().text_objects[0].id.clone();
+        document.select_vector_objects(vec![id]).unwrap();
+        let token = object_cache_state::SourceIdentity::capture(
+            &document,
+            document.svg_layers().next().unwrap(),
+        );
+        assert!(composed_source_matches(
+            "",
+            Some(token),
+            &document,
+            document.svg_layers().next().unwrap()
+        ));
+        let foreign = document.clone();
+        assert!(!composed_source_matches(
+            "",
+            Some(token),
+            &foreign,
+            foreign.svg_layers().next().unwrap()
+        ));
+        document.move_selected_vectors(8., 0.).unwrap();
+        assert!(!composed_source_matches(
+            "",
+            Some(token),
+            &document,
+            document.svg_layers().next().unwrap()
+        ));
+        let moved = object_cache_state::SourceIdentity::capture(
+            &document,
+            document.svg_layers().next().unwrap(),
+        );
+        assert!(composed_source_matches(
+            "",
+            Some(moved),
+            &document,
+            document.svg_layers().next().unwrap()
+        ));
+        document.undo();
+        assert!(!composed_source_matches(
+            "",
+            Some(moved),
+            &document,
+            document.svg_layers().next().unwrap()
+        ));
+        let restored = object_cache_state::SourceIdentity::capture(
+            &document,
+            document.svg_layers().next().unwrap(),
+        );
+        document.redo();
+        assert!(!composed_source_matches(
+            "",
+            Some(restored),
+            &document,
+            document.svg_layers().next().unwrap()
+        ));
+    }
 
     #[test]
     fn selection_only_redraw_reuses_runs_but_changed_drag_selection_does_not() {

@@ -543,6 +543,8 @@ impl VectorText {
         &mut self,
         mut measure: impl FnMut(&str, usize, &TextStyle) -> f32,
     ) {
+        let _timer = crate::performance::time("text_reflow_vertical");
+        crate::performance::count("text_reflow_vertical_calls", 1);
         self.clear_measured_layout();
         let limit = if self.point_text {
             100_000.0
@@ -617,6 +619,8 @@ impl VectorText {
         &mut self,
         mut measure: impl FnMut(&str, usize) -> Result<f32, String>,
     ) -> Result<(), String> {
+        let _timer = crate::performance::time("text_reflow_horizontal");
+        crate::performance::count("text_reflow_horizontal_calls", 1);
         use unicode_segmentation::UnicodeSegmentation;
 
         let mut candidate = self.clone();

@@ -2614,6 +2614,8 @@ impl Document {
     }
 
     pub fn set_text_object(&mut self, mut settings: TextSettings) -> Result<(), String> {
+        let _timer = crate::performance::time("document_text_edit");
+        crate::performance::count("document_text_edit_calls", 1);
         if self.path_editing.is_some() {
             return Err(
                 "Paths accept geometry only / パスには文字を追加できません / 路径不支持文字".into(),
@@ -6161,6 +6163,15 @@ impl Document {
         dy: f32,
         record_history: bool,
     ) -> Result<bool, String> {
+        let _timer = crate::performance::time("document_vector_move");
+        crate::performance::count(
+            if record_history {
+                "document_vector_move_commits"
+            } else {
+                "document_vector_move_previews"
+            },
+            1,
+        );
         if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
             return Err("Invalid vector translation".into());
         }

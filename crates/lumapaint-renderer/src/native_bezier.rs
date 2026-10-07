@@ -215,14 +215,19 @@ impl Cache {
         scene: (&lumapaint_core::scene::Journal, &[String]),
         offset: [f32; 2],
     ) -> bool {
+        let _timer = crate::performance::time("native_geometry_prepare");
         let (journal, selected) = scene;
         if !layer.vector_layer || layer.effective_opacity() != 1. || layer.vector_objects.is_empty()
         {
             return false;
         }
         let current = self.verified.get_mut(&layer.id);
-        let rebuild = current.is_none_or(|entry| !entry.refresh(layer, journal));
+        let rebuild = {
+            let _timer = crate::performance::time("native_journal_validate_refit");
+            current.is_none_or(|entry| !entry.refresh(layer, journal))
+        };
         if rebuild {
+            let _timer = crate::performance::time("native_layer_verify_bvh_build");
             self.metrics.svg_generations += 1;
             self.metrics.bvh_builds += 1;
             let expected = lumapaint_core::document::vector_svg(
@@ -257,9 +262,19 @@ impl Cache {
         }
         self.metrics.bvh_refits += self.verified[&layer.id].last_refits;
         if !self.verified[&layer.id].compatible {
+            if crate::performance::enabled() {
+                for object in &layer.vector_objects {
+                    if let Some(reason) = unsupported_reason(object) {
+                        crate::performance::count(reason, 1);
+                    }
+                }
+            }
             return false;
         }
-        let mut candidates = viewport_candidates(&self.verified[&layer.id].spatial, viewport);
+        let mut candidates = {
+            let _timer = crate::performance::time("native_spatial_query");
+            viewport_candidates(&self.verified[&layer.id].spatial, viewport)
+        };
         // A drag can bring a selected object into view from outside its stored bounds.
         if offset != [0., 0.] {
             candidates.extend(
@@ -387,21 +402,36 @@ fn viewport_candidates(
         .items
 }
 fn supported(o: &VectorObject) -> bool {
-    o.text.is_none()
-        && o.image_frame.is_none()
-        && o.group_path.is_empty()
-        && o.clipping_group.is_none()
-        && o.fill.is_some()
-        && o.stroke.is_none()
-        && o.fill_gradient.is_none()
-        && o.stroke_gradient.is_none()
-        && o.live_corners.is_none()
-        && o.rectangle_radii.is_none()
-        && o.blend_mode == "normal"
-        && (f64::from(o.transform[0]) * f64::from(o.transform[3])
-            - f64::from(o.transform[1]) * f64::from(o.transform[2]))
-        .abs()
-            > 1e-12
+    unsupported_reason(o).is_none()
+}
+
+// First incompatible feature; reasons describe native eligibility, not final render routing.
+fn unsupported_reason(o: &VectorObject) -> Option<&'static str> {
+    let determinant = f64::from(o.transform[0]) * f64::from(o.transform[3])
+        - f64::from(o.transform[1]) * f64::from(o.transform[2]);
+    if o.text.is_some() {
+        Some("native_ineligible.text")
+    } else if o.image_frame.is_some() {
+        Some("native_ineligible.image_frame")
+    } else if !o.group_path.is_empty() {
+        Some("native_ineligible.group")
+    } else if o.clipping_group.is_some() {
+        Some("native_ineligible.clip")
+    } else if o.fill.is_none() {
+        Some("native_ineligible.no_fill")
+    } else if o.stroke.is_some() {
+        Some("native_ineligible.stroke")
+    } else if o.fill_gradient.is_some() || o.stroke_gradient.is_some() {
+        Some("native_ineligible.gradient")
+    } else if o.live_corners.is_some() || o.rectangle_radii.is_some() {
+        Some("native_ineligible.live_shape")
+    } else if o.blend_mode != "normal" {
+        Some("native_ineligible.blend")
+    } else if determinant.is_nan() || determinant.abs() <= 1e-12 {
+        Some("native_ineligible.singular_transform")
+    } else {
+        None
+    }
 }
 type CurveGeometry = (Vec<[f32; 8]>, [f64; 2], [f64; 4]);
 fn segments(o: &VectorObject) -> Option<CurveGeometry> {

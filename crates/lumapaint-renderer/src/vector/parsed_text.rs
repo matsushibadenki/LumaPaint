@@ -48,6 +48,8 @@ impl Cache {
 }
 
 pub(super) fn parse_uncached(source: &str) -> Result<usvg::Tree, String> {
+    let _timer = crate::performance::time("svg_parse_including_text_shaping");
+    crate::performance::count("svg_parses", 1);
     let options = usvg::Options {
         fontdb: system_fonts(),
         font_resolver: font_resolver(),
@@ -69,10 +71,19 @@ pub(super) fn parse(source: &str) -> Result<Arc<usvg::Tree>, String> {
     if candidate {
         if let Ok(mut cache) = cache.try_lock() {
             if let Some(tree) = cache.get(source) {
+                crate::performance::count("parsed_text_cache_hits", 1);
                 return Ok(tree);
             }
         }
     }
+    crate::performance::count(
+        if candidate {
+            "parsed_text_cache_misses"
+        } else {
+            "parsed_text_cache_bypasses"
+        },
+        1,
+    );
     let tree = Arc::new(parse_uncached(source)?);
     if candidate {
         if let Some(charge) = retained_charge(source, &tree) {
@@ -89,8 +100,7 @@ pub(super) fn parse(source: &str) -> Result<Arc<usvg::Tree>, String> {
 // entry. Images (including bitmap emoji), filters and paint servers bypass retention to
 // avoid hiding large decoded resources. In-flight Arc users may outlive cache eviction.
 fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
-    if !tree.has_text_nodes()
-        || !tree.filters().is_empty()
+    if !tree.filters().is_empty()
         || !tree.patterns().is_empty()
         || !tree.masks().is_empty()
         || !tree.linear_gradients().is_empty()
@@ -98,7 +108,12 @@ fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
     {
         return None;
     }
-    fn visit(group: &usvg::Group, bytes: &mut usize, depth: usize) -> Option<()> {
+    fn visit(
+        group: &usvg::Group,
+        bytes: &mut usize,
+        depth: usize,
+        has_text: &mut bool,
+    ) -> Option<()> {
         if depth > 64 || *bytes > MAX_BYTES {
             return None;
         }
@@ -107,11 +122,12 @@ fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
             *bytes = bytes.saturating_add(1024 + node.id().len());
             match node {
                 usvg::Node::Image(_) => return None,
-                usvg::Node::Group(child) => visit(child, bytes, depth + 1)?,
+                usvg::Node::Group(child) => visit(child, bytes, depth + 1, has_text)?,
                 usvg::Node::Path(path) => {
                     *bytes = bytes.saturating_add(path.data().points().len().saturating_mul(32));
                 }
                 usvg::Node::Text(text) => {
+                    *has_text = true;
                     for span in text.layouted() {
                         *bytes = bytes.saturating_add(1024);
                         for glyph in &span.positioned_glyphs {
@@ -122,7 +138,7 @@ fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
             }
             let mut valid = true;
             node.subroots(|root| {
-                valid &= visit(root, bytes, depth + 1).is_some();
+                valid &= visit(root, bytes, depth + 1, has_text).is_some();
             });
             if !valid || *bytes > MAX_BYTES {
                 return None;
@@ -131,8 +147,11 @@ fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
         Some(())
     }
     let mut bytes = source.len().saturating_mul(8).saturating_add(4096);
-    visit(tree.root(), &mut bytes, 0)?;
-    (bytes <= MAX_BYTES).then_some(bytes)
+    // usvg Tree::has_text_nodes checks subroots, but misses ordinary nested groups.
+    // Detect text in the same complete traversal used for retained-memory accounting.
+    let mut has_text = false;
+    visit(tree.root(), &mut bytes, 0, &mut has_text)?;
+    (has_text && bytes <= MAX_BYTES).then_some(bytes)
 }
 
 #[cfg(test)]
@@ -140,6 +159,19 @@ mod tests {
     use super::*;
 
     const SOURCE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><text x="10" y="40" font-size="24">English 日本語 简体中文</text></svg>"#;
+
+    #[test]
+    fn nested_text_frames_are_retained_without_repeated_shaping() {
+        let source = SOURCE
+            .replace("<text", "<g><g><text")
+            .replace("</text>", "</text></g></g>");
+        let tree = Arc::new(parse_uncached(&source).unwrap());
+        let charge = retained_charge(&source, &tree).expect("nested text must be cacheable");
+        let mut cache = Cache::default();
+        cache.insert(&source, Arc::clone(&tree), charge);
+        assert!(Arc::ptr_eq(&tree, &cache.get(&source).unwrap()));
+        assert!(retained_charge("<svg/>", &parse_uncached(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#).unwrap()).is_none());
+    }
 
     #[test]
     fn reuse_is_exact_and_eviction_obeys_both_limits() {

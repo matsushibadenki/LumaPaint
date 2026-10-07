@@ -2465,11 +2465,13 @@ fn verify_object_texture_moves(shared: bool) {
         bytes: pixels.len(),
         upload_bytes: 0,
         runs: vec![ObjectRun {
+            object_id: None,
             selected: true,
             rectangle,
             geometry_buffer: bounds_buffer,
             geometry,
             cached: CachedSvg {
+                source_identity: None,
                 gpu_effects: false,
                 comparison_pixels: vec![],
                 fully_contained: true,
@@ -2686,6 +2688,425 @@ fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
                     "Path selection mismatch at {x},{y}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
+    use frame_cache::{FrameRasterCache, PreparedDisplayLayer};
+    use lumapaint_core::document::TextSettings;
+    use lumapaint_core::vector::VectorText;
+    let gpu = Gpu::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let (images, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+    let geometry = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+    let pipeline = create_layer_pipeline(
+        &gpu.device,
+        &[&gpu.uniform_layout, &images, &geometry],
+        format,
+        include_str!("object.wgsl"),
+        "Retained text comparison",
+    );
+    let mut document = Document::default();
+    for (index, y) in [80., 240.].into_iter().enumerate() {
+        if index > 0 {
+            let id = document.svg_layers().next().unwrap().id.clone();
+            document.select_layer(id).unwrap();
+        }
+        document
+            .set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "English 日本語 简体中文 ffi".into(),
+                    font_size: 32.,
+                    box_width: 500.,
+                    box_height: Some(80.),
+                    ..Default::default()
+                },
+                position: [80., y],
+                color: [160, 40, 90],
+            })
+            .unwrap();
+    }
+    let layer = document.svg_layers().next().unwrap();
+    let full = prepare_svg_layer(layer, 960, 640).unwrap();
+    let PreparedDisplayLayer::Text(prepared) = FrameRasterCache::default()
+        .prepare_display_layer(layer, 960, 640)
+        .unwrap()
+    else {
+        panic!("expected independent text")
+    };
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let image = |pixels: &[u8], rect: [f32; 4], external: Option<&wgpu::Texture>| {
+        let uploaded = external.is_none().then(|| {
+            gpu.device.create_texture_with_data(
+                &gpu.queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: rect[2] as u32,
+                        height: rect[3] as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                pixels,
+            )
+        });
+        let texture = external.unwrap_or_else(|| uploaded.as_ref().unwrap());
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &images,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&rect),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bounds = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &geometry,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        (bind, bounds)
+    };
+    let reference = vec![image(&full.pixels, [0., 0., 960., 640.], None)];
+    let uploads: Vec<_> = prepared
+        .frames
+        .iter()
+        .map(|frame| {
+            let frame = &frame.frame;
+            let width = frame.width as u32;
+            let height = (frame.pixels.len() / (frame.width * 4)) as u32;
+            let texture = gpu.device.create_texture_with_data(
+                &gpu.queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &frame.pixels,
+            );
+            (
+                texture,
+                [
+                    frame.origin.0 as f32,
+                    frame.origin.1 as f32,
+                    width as f32,
+                    height as f32,
+                ],
+            )
+        })
+        .collect();
+    let composite = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 960,
+            height: 640,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    // A reused layer may contain old glyphs anywhere; clearing must remove them.
+    let mut stale = gpu.device.create_command_encoder(&Default::default());
+    let stale_view = composite.create_view(&Default::default());
+    {
+        let _pass = stale.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &stale_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 1.,
+                        g: 0.,
+                        b: 1.,
+                        a: 1.,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+    gpu.queue.submit([stale.finish()]);
+    compose_retained_text_gpu(
+        &gpu.device,
+        &gpu.queue,
+        &composite,
+        uploads.iter().map(|(texture, rect)| (texture, *rect)),
+        None,
+    );
+    let retained = vec![image(&[], [0., 0., 960., 640.], Some(&composite))];
+    let mut scratch = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 32768,
+        usage: wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    }));
+    for zoom in [1.0, 0.5, 1.7] {
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&Uniforms {
+                    viewport: [W as f32, H as f32, 1., 960. / 976. * zoom],
+                    appearance: [0.; 4],
+                    document: [960., 640., 0., 0.],
+                    pasteboard: [0.; 4],
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniforms = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let render = |runs: &[(wgpu::BindGroup, wgpu::BindGroup)]| {
+            let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: W,
+                    height: H,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(W * H * 4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let view = output.create_view(&Default::default());
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &uniforms, &[]);
+                for (image, bounds) in runs {
+                    pass.set_bind_group(1, image, &[]);
+                    pass.set_bind_group(2, bounds, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+            }
+            encoder.copy_texture_to_buffer(
+                output.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(W * 4),
+                        rows_per_image: Some(H),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: W,
+                    height: H,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            rx.recv().unwrap().unwrap();
+            let pixels = readback.slice(..).get_mapped_range().unwrap().to_vec();
+            readback.unmap();
+            pixels
+        };
+        let first = &prepared.frames[0].frame;
+        let base = uploads[0].1;
+        let mut previous_x = base[0];
+        // Move one frame, delete it, then restore it; leave the other GPU frame untouched.
+        for shift in [Some(32u32), None, Some(0)] {
+            let mut dirty = vec![[
+                previous_x as u32,
+                base[1] as u32,
+                base[2] as u32,
+                base[3] as u32,
+            ]];
+            let mut expected = full.pixels.clone();
+            for row in 0..base[3] as usize {
+                let start = ((base[1] as usize + row) * 960 + base[0] as usize) * 4;
+                expected[start..start + first.width * 4].fill(0);
+            }
+            let copies = shift.map(|shift| {
+                let rect = [base[0] + shift as f32, base[1], base[2], base[3]];
+                dirty.push(rect.map(|value| value as u32));
+                previous_x = rect[0];
+                for (row, pixels) in first.pixels.chunks_exact(first.width * 4).enumerate() {
+                    let start =
+                        ((first.origin.1 + row) * 960 + first.origin.0 + shift as usize) * 4;
+                    expected[start..start + pixels.len()].copy_from_slice(pixels);
+                }
+                (&uploads[0].0, rect)
+            });
+            if performance::enabled() {
+                performance::take();
+            }
+            let plan = text_copy_plan::Plan {
+                clears: dirty,
+                copies: if shift.is_some() { vec![0] } else { vec![] },
+            };
+            let incoming = uploads.iter().enumerate().map(|(index, (texture, rect))| {
+                if index == 0 {
+                    copies.unwrap_or((texture, *rect))
+                } else {
+                    (texture, *rect)
+                }
+            });
+            update_retained_text_gpu(
+                &gpu.device,
+                &gpu.queue,
+                &composite,
+                incoming,
+                Some(&plan),
+                &mut scratch,
+            );
+            if performance::enabled() {
+                let stats = performance::take();
+                assert_eq!(
+                    stats
+                        .counts
+                        .get("retained_text_gpu_full_clears")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    stats
+                        .counts
+                        .get("retained_text_gpu_copied_bytes")
+                        .copied()
+                        .unwrap_or(0),
+                    if shift.is_some() {
+                        first.pixels.len() as u64
+                    } else {
+                        0
+                    }
+                );
+                eprintln!("local text update zoom={zoom} shift={shift:?} {stats:?}");
+            }
+            let mut unused_scratch = None;
+            update_retained_text_gpu(
+                &gpu.device,
+                &gpu.queue,
+                &composite,
+                uploads.iter().map(|(texture, rect)| (texture, *rect)),
+                Some(&text_copy_plan::Plan::default()),
+                &mut unused_scratch,
+            );
+            assert!(
+                unused_scratch.is_none(),
+                "no-op must not allocate a clearing buffer"
+            );
+            let reference = if shift == Some(0) {
+                &reference
+            } else {
+                // Same full-layer presentation, with expected pixels prepared on the CPU.
+                // The unselected frame must remain unchanged throughout the update sequence.
+                &vec![image(&expected, [0., 0., 960., 640.], None)]
+            };
+            let retained_pixels = render(&retained);
+            let reference_pixels = render(reference);
+            let mismatches: Vec<_> = retained_pixels
+                .iter()
+                .zip(&reference_pixels)
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .collect();
+            assert!(
+                mismatches.is_empty(),
+                "zoom {zoom}, shift {shift:?}: {} unequal channels; first {:?}",
+                mismatches.len(),
+                mismatches.first()
+            );
         }
     }
 }

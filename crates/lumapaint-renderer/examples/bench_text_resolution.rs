@@ -53,18 +53,43 @@ fn main() {
                 cold += start.elapsed().as_secs_f64() * 1000.0;
             }
             rasterize_svg(source, size, size).unwrap();
+            if lumapaint_renderer::performance::enabled() {
+                lumapaint_renderer::performance::take();
+            }
             let start = Instant::now();
-            for _ in 0..3 {
+            let mut samples = Vec::with_capacity(20);
+            for _ in 0..20 {
+                let sample = Instant::now();
                 rasterize_svg(source, size, size).unwrap();
+                samples.push(sample.elapsed().as_secs_f64() * 1000.0);
             }
             println!(
                 "{lines} lines, {size}, {backend:?}: cold {:.1} ms, warm {:.1} ms",
                 cold / 3.0,
-                start.elapsed().as_secs_f64() * 1000.0 / 3.0
+                start.elapsed().as_secs_f64() * 1000.0 / 20.0
             );
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "warm samples=20 median {:.2} ms p95 {:.2} ms p99 {:.2} ms",
+                (samples[9] + samples[10]) / 2.0,
+                samples[18],
+                samples[19]
+            );
+            if lumapaint_renderer::performance::enabled() {
+                println!(
+                    "warm-only CPU profile: {:?}",
+                    lumapaint_renderer::performance::take()
+                );
+            }
         }
     }
     compare_frame_cache();
+    if lumapaint_renderer::performance::enabled() {
+        println!(
+            "CPU profile (this benchmark thread): {:?}",
+            lumapaint_renderer::performance::take()
+        );
+    }
 }
 
 fn compare_frame_cache() {
@@ -109,6 +134,12 @@ fn compare_frame_cache() {
         .unwrap();
     let mut full_ms = 0.0;
     let mut cached_ms = 0.0;
+    let mut display_cache = FrameRasterCache::default();
+    display_cache
+        .prepare_display_layer(document.svg_layers().next().unwrap(), 2048, 2048)
+        .unwrap();
+    let mut display_ms = 0.0;
+    let mut display_bytes = 0;
     for revision in 0..3 {
         let first = document.snapshot().text_objects[0].clone();
         let mut settings = TextSettings {
@@ -127,6 +158,40 @@ fn compare_frame_cache() {
         let cached = cache.prepare_layer(layer, 2048, 2048).unwrap();
         cached_ms += started.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(cached.pixels, full.pixels);
+        if lumapaint_renderer::performance::enabled() {
+            lumapaint_renderer::performance::take();
+        }
+        let started = Instant::now();
+        let prepared = display_cache
+            .prepare_display_layer(layer, 2048, 2048)
+            .unwrap();
+        display_ms += started.elapsed().as_secs_f64() * 1000.0;
+        display_bytes = prepared.pixel_bytes();
+        if lumapaint_renderer::performance::enabled() {
+            let stats = lumapaint_renderer::performance::take();
+            if matches!(
+                &prepared,
+                lumapaint_renderer::frame_cache::PreparedDisplayLayer::Text(_)
+            ) {
+                assert_eq!(
+                    stats
+                        .counts
+                        .get("full_canvas_allocations")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    stats
+                        .cpu_nanoseconds
+                        .get("text_frame_cpu_composite")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+            }
+            println!("retained preparation-only profile revision {revision}: {stats:?}");
+        }
     }
     println!(
         "two frames, edit one: full {:.1} ms, cached {:.1} ms; rerasterized {} frames",
@@ -134,4 +199,5 @@ fn compare_frame_cache() {
         cached_ms / 3.0,
         cache.rasterized_frames
     );
+    println!("retained frame preparation {:.1} ms; payload {} bytes vs {} full-canvas bytes (GPU reuse measured separately)", display_ms / 3.0, display_bytes, 2048 * 2048 * 4);
 }

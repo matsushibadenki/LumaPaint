@@ -25,7 +25,7 @@ use lumapaint_core::vector::{
     VectorPath,
 };
 use lumapaint_formats::native::NativeDocumentCodec;
-use lumapaint_renderer::frame_cache::FrameRasterCache;
+use lumapaint_renderer::frame_cache::{FrameRasterCache, PreparedDisplayLayer};
 use lumapaint_renderer::{
     paint_stroke_into_tiles_at_scale, project_committed_paint_layer_at_scale,
     stroke_candidate_tile_coords_at_scale, update_projected_paint_appearance, validate_svg, wgpu,
@@ -92,6 +92,7 @@ impl RasterKey {
 struct RasterJob {
     key: RasterKey,
     layers: Vec<lumapaint_core::document::SvgLayer>,
+    full_layers: std::collections::HashSet<String>,
     size: (u32, u32),
     queued_at: Instant,
 }
@@ -146,8 +147,7 @@ struct TileCache {
 }
 
 fn render_metrics_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("LUMAPAINT_RENDER_METRICS").is_some())
+    lumapaint_renderer::performance::enabled()
 }
 
 pub fn initialize(app: tauri::AppHandle) {
@@ -164,6 +164,7 @@ pub fn initialize(app: tauri::AppHandle) {
         .spawn(move || {
             let mut frame_cache = FrameRasterCache::default();
             while let Ok(job) = receiver.recv() {
+                if render_metrics_enabled() { lumapaint_renderer::performance::take(); }
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
                 let before_rasterized = frame_cache.rasterized_frames;
@@ -172,7 +173,12 @@ pub fn initialize(app: tauri::AppHandle) {
                 let mut result = Ok(Vec::with_capacity(job.layers.len()));
                 for layer in &job.layers {
                     if receiver.superseded(job.key.canvas_token) { break; }
-                    match frame_cache.prepare_layer(layer, job.size.0, job.size.1) {
+                    let prepared = if job.full_layers.contains(&layer.id) {
+                        frame_cache.prepare_layer(layer, job.size.0, job.size.1).map(PreparedDisplayLayer::Full)
+                    } else {
+                        frame_cache.prepare_display_layer(layer, job.size.0, job.size.1)
+                    };
+                    match prepared {
                         Ok(layer) => result.as_mut().unwrap().push(layer),
                         Err(error) => { result = Err(error); break; }
                     }
@@ -182,6 +188,7 @@ pub fn initialize(app: tauri::AppHandle) {
                 if receiver.superseded(job.key.canvas_token) { continue; }
                 let cpu_time = started.elapsed();
                 if render_metrics_enabled() {
+                    eprintln!("lumapaint-svg-worker-profile {:?}", lumapaint_renderer::performance::take());
                     let stats = frame_cache.stats();
                     eprintln!(
                         "LumaPaint text-frame cache rasterized={} reused={} entries={} payload_bytes={} payload_budget_bytes={} evicted={}",
@@ -4780,6 +4787,11 @@ fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), S
         canvas.token,
         RasterJob {
             key,
+            full_layers: layers
+                .iter()
+                .filter(|layer| document.has_layer_effects(&layer.id))
+                .map(|layer| layer.id.clone())
+                .collect(),
             layers,
             size: document.dimensions(),
             queued_at: Instant::now(),
@@ -4794,7 +4806,7 @@ fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), S
 
 fn finish_raster_job(
     key: RasterKey,
-    result: Result<Vec<PreparedSvgLayer>, String>,
+    result: Result<Vec<PreparedDisplayLayer>, String>,
     queued_for: Duration,
     cpu_time: Duration,
 ) {
@@ -4827,13 +4839,20 @@ fn finish_raster_job(
                         .collect()
                 });
                 for layer in layers {
-                    if !missing.contains(&layer.id) {
+                    if !missing.contains(layer.id()) {
                         continue;
                     }
-                    upload_bytes += layer.pixels.len();
-                    if let Err(error) = canvas.renderer.install_prepared_svg(layer) {
-                        failure = Some(error);
-                        break;
+                    let installed = DOCUMENT.with(|document| {
+                        canvas
+                            .renderer
+                            .install_prepared_display(&document.borrow(), layer)
+                    });
+                    match installed {
+                        Ok(bytes) => upload_bytes += bytes,
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
                     }
                 }
             }
