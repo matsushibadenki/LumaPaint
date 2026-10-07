@@ -2435,6 +2435,7 @@ fn verify_object_texture_moves(shared: bool) {
             geometry_buffer: bounds_buffer,
             geometry,
             cached: CachedSvg {
+                gpu_effects: false,
                 comparison_pixels: vec![],
                 fully_contained: true,
                 source: String::new(),

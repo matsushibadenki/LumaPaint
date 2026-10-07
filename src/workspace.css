@@ -863,8 +863,10 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-inspector label { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
 .timeline-inspector label>select { flex:1; max-width:100%; }
 .timeline-inspector label>input { width:72px; padding:4px; }
-.timeline-actions { display:flex; flex-wrap:wrap; gap:6px; }
-.timeline-actions button { padding:5px 8px; }
+.timeline-edit-toolbar { flex:none; padding:3px 10px; border-bottom:1px solid var(--color-rule); }
+.timeline-edit-tools { display:flex; align-items:center; gap:3px; }
+.timeline-edit-tools .tool-button { flex:none; width:29px; height:29px; min-height:29px; padding:5px; }
+.timeline-edit-tools .tool-button svg { width:17px; height:17px; }
 .timeline-inspector p { margin:0; color:var(--color-muted); font-size:10px; line-height:1.65; }
 .timeline-error { flex:none; max-height:64px; overflow:auto; padding:6px 10px; color:var(--color-error); border-top:1px solid var(--color-rule); overflow-wrap:anywhere; }
 .timeline-empty { padding:16px; }

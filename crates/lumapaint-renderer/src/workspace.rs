@@ -9,12 +9,19 @@ struct RetainedLayer {
     pixels: Vec<u8>,
     source_pixels: Vec<u8>,
     source_revision: u64,
+    deferred: bool,
+}
+
+pub(super) struct WorkspaceImage {
+    pub image: PreparedSvgLayer,
+    pub effect: Option<(lumapaint_core::layer_effects::LayerEffects, u64)>,
 }
 
 #[derive(Default)]
 pub(super) struct WorkspaceCache {
     key: Option<[f32; 8]>,
     journal_cursor: u64,
+    gpu_display: bool,
     layers: Vec<(
         String,
         String,
@@ -40,8 +47,14 @@ impl WorkspaceCache {
         viewport: Viewport,
         offset: [f32; 2],
     ) -> Result<Option<Vec<PreparedSvgLayer>>, String> {
-        let mut prepared =
-            self.prepare_filtered(document, viewport, offset, &Default::default())?;
+        let mut prepared = self
+            .prepare_filtered(document, viewport, offset, &Default::default(), None)?
+            .map(|images| {
+                images
+                    .into_iter()
+                    .map(|item| item.image)
+                    .collect::<Vec<_>>()
+            });
         if let Some(images) = &mut prepared {
             for image in images {
                 if image.pixels.is_empty() {
@@ -57,7 +70,8 @@ impl WorkspaceCache {
         viewport: Viewport,
         offset: [f32; 2],
         excluded: &std::collections::HashSet<&str>,
-    ) -> Result<Option<Vec<PreparedSvgLayer>>, String> {
+        gpu_limits: Option<&wgpu::Limits>,
+    ) -> Result<Option<Vec<WorkspaceImage>>, String> {
         let key = [
             viewport.width as f32,
             viewport.height as f32,
@@ -89,7 +103,8 @@ impl WorkspaceCache {
         } else {
             previews.iter().collect()
         };
-        if self.key == Some(key)
+        if self.gpu_display == gpu_limits.is_some()
+            && self.key == Some(key)
             && self.layers.len() == layers.len()
             && self
                 .layers
@@ -118,7 +133,9 @@ impl WorkspaceCache {
             lumapaint_core::scene::JournalRead::Incremental { cursor, .. } => (cursor, true),
             lumapaint_core::scene::JournalRead::Rebuild { cursor } => (cursor, false),
         };
-        let same_view = self.key == Some(key) && complete_history;
+        let same_view =
+            self.gpu_display == gpu_limits.is_some() && self.key == Some(key) && complete_history;
+        self.gpu_display = gpu_limits.is_some();
         // A failed raster must not leave a valid key after moving old payloads.
         self.key = None;
         let mut retained = std::collections::HashMap::new();
@@ -126,22 +143,29 @@ impl WorkspaceCache {
         for layer in &layers {
             let effects = document.layer_effects(&layer.id);
             let opacity = layer.effective_opacity();
+            let deferred = effects.enabled
+                && gpu_limits.is_some_and(|limits| {
+                    super::effects_display::layout((size[0], size[1]), limits).is_some()
+                });
             let old = self
                 .retained
                 .remove(&layer.id)
-                .filter(|old| same_view && old.size == size);
+                .filter(|old| same_view && old.size == size && old.deferred == deferred);
             if old.as_ref().is_some_and(|old| {
                 old.layer.source == layer.source
                     && old.layer.effective_opacity() == opacity
                     && old.effects == effects
             }) {
-                prepared.push(PreparedSvgLayer {
-                    id: layer.id.clone(),
-                    source: layer.id.clone(),
-                    opacity,
-                    size: (size[0], size[1]),
-                    fully_contained: true,
-                    pixels: Vec::new(),
+                prepared.push(WorkspaceImage {
+                    effect: None,
+                    image: PreparedSvgLayer {
+                        id: layer.id.clone(),
+                        source: layer.id.clone(),
+                        opacity,
+                        size: (size[0], size[1]),
+                        fully_contained: true,
+                        pixels: Vec::new(),
+                    },
                 });
                 retained.insert(layer.id.clone(), old.unwrap());
                 continue;
@@ -164,9 +188,11 @@ impl WorkspaceCache {
                 let old = old.unwrap();
                 let source_pixels = old.source_pixels;
                 let mut pixels = old.pixels;
-                pixels.copy_from_slice(&source_pixels);
-                crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
-                apply_opacity(&mut pixels, opacity);
+                if !deferred {
+                    pixels.copy_from_slice(&source_pixels);
+                    crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    apply_opacity(&mut pixels, opacity);
+                }
                 (source_pixels, pixels)
             } else if let Some(tiles) = tiles {
                 let old = old.unwrap();
@@ -199,8 +225,10 @@ impl WorkspaceCache {
                         source_pixels[to..to + width as usize * 4]
                             .copy_from_slice(&tile[from..from + width as usize * 4]);
                     }
-                    crate::apply_layer_effects(&mut tile, &effects);
-                    apply_opacity(&mut tile, opacity);
+                    if !deferred {
+                        crate::apply_layer_effects(&mut tile, &effects);
+                        apply_opacity(&mut tile, opacity);
+                    }
                     for row in y..y + height {
                         let from = ((row - top) * (right - left) + x - left) as usize * 4;
                         let to = (row * size[0] + x) as usize * 4;
@@ -221,28 +249,34 @@ impl WorkspaceCache {
                     rect,
                 )?;
                 let mut pixels = source_pixels.clone();
-                crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
-                apply_opacity(&mut pixels, opacity);
+                if !deferred {
+                    crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    apply_opacity(&mut pixels, opacity);
+                }
                 (source_pixels, pixels)
             };
             retained.insert(
                 layer.id.clone(),
                 RetainedLayer {
                     layer: (*layer).clone(),
-                    effects,
+                    effects: effects.clone(),
+                    deferred,
                     size,
                     source_pixels,
                     source_revision,
                     pixels: pixels.clone(),
                 },
             );
-            prepared.push(PreparedSvgLayer {
-                id: layer.id.clone(),
-                source: layer.id.clone(),
-                opacity,
-                size: (size[0], size[1]),
-                fully_contained: true,
-                pixels: std::mem::take(&mut pixels),
+            prepared.push(WorkspaceImage {
+                effect: deferred.then_some((effects, source_revision)),
+                image: PreparedSvgLayer {
+                    id: layer.id.clone(),
+                    source: layer.id.clone(),
+                    opacity,
+                    size: (size[0], size[1]),
+                    fully_contained: true,
+                    pixels: std::mem::take(&mut pixels),
+                },
             });
         }
         self.retained = retained;
@@ -378,6 +412,57 @@ fn world_rect(viewport: Viewport) -> [f32; 4] {
 mod tests {
     use super::*;
     use lumapaint_formats::native::NativeDocumentCodec;
+
+    #[test]
+    fn deferred_effects_keep_raw_pixels_and_invalidate_on_mode_or_effect_changes() {
+        let mut doc = Document::default();
+        doc.import_svg("image".into(), r##"<svg width="960" height="640"><rect width="960" height="640" fill="#404040"/></svg>"##.into()).unwrap();
+        let id = doc.svg_layers().next().unwrap().id.clone();
+        let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
+        let mut effects = lumapaint_core::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        effects.values[0] = 1.;
+        doc.set_layer_effects(&id, effects.clone()).unwrap();
+        let limits = wgpu::Limits::default();
+        let mut cache = WorkspaceCache::default();
+        let prepare = |cache: &mut WorkspaceCache, doc: &Document| {
+            cache.prepare_filtered(doc, viewport, [0., 0.], &Default::default(), Some(&limits))
+        };
+        let first = prepare(&mut cache, &doc).unwrap().unwrap().remove(0);
+        let revision = first.effect.unwrap().1;
+        let rasters = cache.rasterizations;
+        let raw = first.image.pixels;
+        let index = raw
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .position(|p| p[3] == 255)
+            .unwrap()
+            * 4;
+        assert_eq!(&raw[index..index + 4], &[64, 64, 64, 255]);
+        assert!(prepare(&mut cache, &doc).unwrap().is_none());
+        effects.values[0] = 2.;
+        doc.set_layer_effects(&id, effects).unwrap();
+        let changed = prepare(&mut cache, &doc).unwrap().unwrap().remove(0);
+        assert_eq!(changed.effect.unwrap().1, revision);
+        assert_eq!(changed.image.pixels, raw);
+        assert_eq!(cache.rasterizations, rasters);
+        let cpu = cache
+            .prepare(&doc, viewport, [0., 0.])
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        assert_ne!(cpu.pixels, raw);
+        let direct = prepare(&mut cache, &doc).unwrap().unwrap().remove(0);
+        assert!(direct.effect.is_some());
+        assert_eq!(direct.image.pixels, raw);
+        doc.set_layer_effects(&id, Default::default()).unwrap();
+        let disabled = prepare(&mut cache, &doc).unwrap().unwrap().remove(0);
+        assert!(disabled.effect.is_none());
+        assert_eq!(disabled.image.pixels, raw);
+    }
 
     #[test]
     fn effects_invalidate_retained_pixels_without_changing_svg() {

@@ -1350,6 +1350,7 @@ pub struct Renderer {
     object_cache: HashMap<String, ObjectLayerCache>,
     #[cfg(feature = "skia")]
     native_geometry: native_bezier::Cache,
+    effects_display: Option<effects_display::EffectsDisplay>,
     workspace_cache: workspace::WorkspaceCache,
     workspace_image: Option<Vec<CachedSvg>>,
     page_preview: Option<Document>,
@@ -1588,6 +1589,7 @@ fn upload_svg_rect(
 }
 
 struct CachedSvg {
+    gpu_effects: bool,
     comparison_pixels: Vec<u8>,
     fully_contained: bool,
     source: String,
@@ -2167,9 +2169,9 @@ impl Renderer {
     }
 
     fn update_workspace_images(
-        &self,
+        &mut self,
         previous: Vec<CachedSvg>,
-        prepared: Vec<PreparedSvgLayer>,
+        prepared: Vec<workspace::WorkspaceImage>,
     ) -> Result<Vec<CachedSvg>, String> {
         let mut previous: std::collections::HashMap<_, _> = previous
             .into_iter()
@@ -2177,16 +2179,52 @@ impl Renderer {
             .collect();
         prepared
             .into_iter()
-            .map(|mut image| {
-                if let Some(mut cached) = previous
-                    .remove(&image.source)
-                    .filter(|old| old.size == image.size && !old.comparison_pixels.is_empty())
-                {
+            .map(|item| {
+                let mut image = item.image;
+                if let Some((effects, revision)) = item.effect {
+                    if let Some(display) = &mut self.effects_display {
+                        let old_texture = previous.get(&image.source).map(|old| &old._texture);
+                        if let Some(texture) = display.render(
+                            &self.device,
+                            &self.queue,
+                            effects_display::Request {
+                                pixels: &image.pixels,
+                                size: image.size,
+                                revision,
+                                effects: &effects,
+                                opacity: image.opacity,
+                                previous: old_texture,
+                            },
+                        ) {
+                            let mut cached = self.cached_svg_texture(texture, image);
+                            cached.gpu_effects = true;
+                            return Ok(cached);
+                        }
+                    }
+                    // Unsupported dimensions/configuration keep the portable CPU path.
+                    apply_layer_effects_cpu(&mut image.pixels, &effects);
+                    if image.opacity != 1.0 {
+                        for value in &mut image.pixels {
+                            *value = (*value as f32 * image.opacity).round() as u8;
+                        }
+                    }
+                    // GPU output has no CPU comparison payload. A fallback needs a full
+                    // upload so pixels from the previous adjustment cannot remain.
+                    previous.remove(&image.source);
+                }
+                if let Some(mut cached) = previous.remove(&image.source).filter(|old| {
+                    old.size == image.size && (old.gpu_effects || !old.comparison_pixels.is_empty())
+                }) {
                     if image.pixels.is_empty() {
                         return Ok(cached);
                     }
                     let stride = image.size.0 as usize * 4;
-                    let dirty = changed_svg_rect(&cached.comparison_pixels, &image.pixels, stride);
+                    let dirty = if cached.gpu_effects {
+                        Some([0, 0, image.size.0 as usize, image.size.1 as usize])
+                    } else {
+                        changed_svg_rect(&cached.comparison_pixels, &image.pixels, stride)
+                    };
+                    cached.gpu_effects = false;
                     upload_svg_rect(&self.queue, &cached._texture, &image.pixels, stride, dirty);
                     cached.comparison_pixels = image.pixels;
                     cached.opacity = image.opacity;
@@ -2259,6 +2297,7 @@ impl Renderer {
             ],
         });
         CachedSvg {
+            gpu_effects: false,
             comparison_pixels: Vec::new(),
             fully_contained: prepared.fully_contained,
             source: prepared.source,
@@ -2463,6 +2502,7 @@ impl Renderer {
             })
             .await
             .map_err(|e| e.to_string())?;
+        let effects_display = effects_display::EffectsDisplay::new(&device).await;
         let capabilities = surface.get_capabilities(&adapter);
         let device_error = Arc::new(Mutex::new(None));
         let errors = Arc::clone(&device_error);
@@ -2676,6 +2716,7 @@ impl Renderer {
             object_cache: HashMap::new(),
             #[cfg(feature = "skia")]
             native_geometry,
+            effects_display,
             workspace_cache: workspace::WorkspaceCache::default(),
             workspace_image: None,
             page_preview: None,
@@ -3274,10 +3315,16 @@ impl Renderer {
                         })
                 });
         if exterior_needed {
-            if let Some(prepared) =
-                self.workspace_cache
-                    .prepare_filtered(document, viewport, offset, &object_layers)?
-            {
+            if let Some(prepared) = self.workspace_cache.prepare_filtered(
+                document,
+                viewport,
+                offset,
+                &object_layers,
+                self.effects_display
+                    .as_ref()
+                    .map(|_| self.device.limits())
+                    .as_ref(),
+            )? {
                 let previous = self.workspace_image.take().unwrap_or_default();
                 match self.update_workspace_images(previous, prepared) {
                     Ok(images) => self.workspace_image = Some(images),
@@ -3298,6 +3345,10 @@ impl Renderer {
                 viewport,
                 [0., 0.],
                 &Default::default(),
+                self.effects_display
+                    .as_ref()
+                    .map(|_| self.device.limits())
+                    .as_ref(),
             )? {
                 let previous = self.page_workspace_image.take().unwrap_or_default();
                 self.page_workspace_image = Some(self.update_workspace_images(previous, prepared)?);
@@ -4703,6 +4754,7 @@ mod object_translation_tests {
     }
 }
 
+mod effects_display;
 mod layer_effects_gpu;
 
 /// Adjust premultiplied renderer pixels without changing alpha or model source data.

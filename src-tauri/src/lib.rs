@@ -1,6 +1,7 @@
 mod font_viewer;
 mod image_frames;
 mod measurement_units;
+mod media_browser;
 mod pdf_import;
 #[cfg(any(target_os = "macos", test))]
 mod psd_import;
@@ -54,7 +55,13 @@ fn runtime_info() -> lumapaint_core::RuntimeInfo {
 
 pub fn run() {
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("media", |_context, request, responder| {
+            media_browser::serve(request, responder)
+        })
         .setup(|app| {
+            if let Err(error) = media_browser::initialize(app.handle()) {
+                eprintln!("Media browser: {error}");
+            }
             app.manage(modal_windows::Modals::default());
             app.manage(pdf_import::Imports::default());
             #[cfg(target_os = "macos")]
@@ -117,6 +124,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            media_browser::media_scan,
+            media_browser::media_interest,
+            media_browser::media_cancel_scan,
+            media_browser::media_page,
+            media_browser::media_pick_folder,
             measurement_units::measurement_unit,
             measurement_units::set_measurement_unit,
             runtime_info,

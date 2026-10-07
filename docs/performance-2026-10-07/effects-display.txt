@@ -1,0 +1,5 @@
+Command: cargo test --release --offline -p lumapaint-renderer benchmark_direct_effect_display -- --ignored --nocapture
+Same wgpu device/queue, resident source on both paths, 2 warmup + 6 measured samples. GPU completion awaited for timing only.
+effects display 1024x1024: readback+upload median 6.469 ms, direct 3.927 ms; avoided output CPU transfers 8388608 bytes/update (input resident on both paths)
+effects display 2048x2048: readback+upload median 19.021 ms, direct 15.263 ms; avoided output CPU transfers 33554432 bytes/update (input resident on both paths)
+No application FPS or end-to-end input latency measurement.

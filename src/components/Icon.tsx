@@ -1,6 +1,11 @@
 type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-type PanelIconName = 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+type PanelIconName = 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
+  animationRecord: 'M4 4h16v16H4z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
+  animationDuplicate: 'M3 3h12v12H3z M9 15v6h12V9h-6 M12 12h6 M15 9v6',
+  animationDelete: 'M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7',
+  animationKey: 'M12 3l9 9-9 9-9-9z M8 12h8 M12 8v8',
+
   lasso:'M5 5c-5 3-4 10 4 12s14-6 10-10S8 2 5 5 M8 15c4 5-5 8-5 3',
   polygonLasso:'M3 3l17 3-6 13-11-5z M4 14c-3 7 5 9 5 3',
   magneticLasso:'M3 13V5h4v8a5 5 0 0 0 10 0V5h4v8a9 9 0 0 1-18 0 M3 9h4 M17 9h4',

@@ -5,10 +5,10 @@ use std::{
     num::NonZeroU64,
     sync::{Mutex, OnceLock},
 };
-const CONFIG_LEN: usize = 1096;
+pub(super) const CONFIG_LEN: usize = 1096;
 const BUDGET: u64 = 64 * 1024 * 1024;
 const MIN_PIXELS: usize = 262144;
-fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
+pub(super) fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
     e.validate().ok()?;
     let plan = e.prepare();
     let mut out = [0.; CONFIG_LEN];
@@ -245,7 +245,7 @@ pub(super) fn apply_source(pixels: &mut [u8], effects: &LayerEffects, source: Op
     {
         return false;
     }
-    let Ok(mut state) = GPU.get_or_init(|| Mutex::new(State::Idle)).lock() else {
+    let Ok(mut state) = GPU.get_or_init(|| Mutex::new(State::Idle)).try_lock() else {
         return false;
     };
     if matches!(*state, State::Idle) {
@@ -453,6 +453,81 @@ mod tests {
         assert_eq!(gpu.uploaded_bytes, input.len() * 4 + smaller.len());
         gpu.render_source(&input, &c, Some(42)).unwrap();
         assert_eq!(gpu.uploaded_bytes, input.len() * 5 + smaller.len());
+    }
+
+    #[test]
+    #[ignore = "requires hardware GPU; Release benchmark includes completed GPU work"]
+    fn benchmark_direct_effect_display_against_readback_upload() {
+        use std::time::Instant;
+        let mut gpu = Gpu::new().expect("GPU required");
+        let mut direct =
+            pollster::block_on(crate::effects_display::EffectsDisplay::new(&gpu.device)).unwrap();
+        for dimension in [1024, 2048] {
+            let input = pixels(dimension as usize * dimension as usize);
+            let effects = effects(3);
+            let config = config(&effects).unwrap();
+            let legacy_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Benchmark readback-upload texture"),
+                size: wgpu::Extent3d {
+                    width: dimension,
+                    height: dimension,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let mut texture = None;
+            let mut old_times = Vec::new();
+            let mut new_times = Vec::new();
+            for sample in 0..8 {
+                let start = Instant::now();
+                let output = gpu.render_source(&input, &config, Some(1)).unwrap();
+                gpu.queue.write_texture(
+                    legacy_texture.as_image_copy(),
+                    &output,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(dimension * 4),
+                        rows_per_image: Some(dimension),
+                    },
+                    legacy_texture.size(),
+                );
+                gpu.queue.submit([]);
+                gpu.device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                let old = start.elapsed().as_secs_f64() * 1000.;
+                let start = Instant::now();
+                texture = direct.render(
+                    &gpu.device,
+                    &gpu.queue,
+                    crate::effects_display::Request {
+                        pixels: &input,
+                        size: (dimension, dimension),
+                        revision: 1,
+                        effects: &effects,
+                        opacity: 1.,
+                        previous: texture.as_ref(),
+                    },
+                );
+                assert!(texture.is_some());
+                gpu.device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                let new = start.elapsed().as_secs_f64() * 1000.;
+                if sample >= 2 {
+                    old_times.push(old);
+                    new_times.push(new);
+                }
+            }
+            old_times.sort_by(f64::total_cmp);
+            new_times.sort_by(f64::total_cmp);
+            eprintln!("effects display {dimension}x{dimension}: readback+upload median {:.3} ms, direct {:.3} ms; avoided output CPU transfers {} bytes/update (input resident on both paths)", (old_times[2]+old_times[3])*0.5, (new_times[2]+new_times[3])*0.5, input.len()*2);
+        }
     }
 
     #[test]

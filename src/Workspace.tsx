@@ -14,6 +14,7 @@ import { editGuides,editLayerGroups } from './bridge';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from './measurement-units';
 import {placeImage,subscribePlaceImage} from './bridge';
 import { ToolSettingsDialog, toolSettingsLabels } from './components/ToolSettingsDialog';
+import { lazy, Suspense } from 'react';
 import { ToneStudio, toneStudioLabels } from './components/ToneStudio';
 import { DocumentDock } from './components/DocumentDock';
 import { NativeModal } from './NativeModal';
@@ -56,7 +57,12 @@ import { type ColorTarget } from './components/ColorPanel';
 import { NewDocumentDialog } from './components/NewDocumentDialog';
 import { subscribeNewDocument, type NewDocumentSettings, type DisplayChannel } from './bridge';
 
+const mediaBrowserTitle = { ja: '画像・動画ブラウザー', en: 'Media browser', 'zh-CN': '图片与视频浏览器' };
+const MediaBrowser = lazy(() => import('./components/MediaBrowser').then(module => ({ default: module.MediaBrowser })));
+
 export function Workspace() {
+  const [mediaBrowserOpen,setMediaBrowserOpen]=useState(false);
+  const closeMediaBrowser=useCallback(()=>setMediaBrowserOpen(false),[]);
   const [toneStudioOpen,setToneStudioOpen]=useState(false);
   const [toneStudioLoaded,setToneStudioLoaded]=useState(false);
   const [colorPickerOcclusion, setColorPickerOcclusion] = useState<ColorPickerOcclusion | null>(null);
@@ -524,7 +530,7 @@ export function Workspace() {
         if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
         return;
       }
-      if (toneStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
+      if (mediaBrowserOpen || toneStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
       if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n', 'd'].includes(event.key.toLowerCase())) {
         event.preventDefault();
@@ -604,7 +610,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -640,11 +646,12 @@ export function Workspace() {
         onColorSettings={openColorSettings}
         onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); changeZoom(0); }} onError={setError} />
       <div className="workspace-preferences">
-        <button className="icon-button tone-studio-launcher" title={toneStudioLabels[locale].title} aria-label={toneStudioLabels[locale].title} aria-pressed={toneStudioOpen} aria-controls="tone-studio-overlay" onClick={()=>{if(inlineText)endText(true);setToneStudioLoaded(true);setToneStudioOpen(value=>!value);}}><Icon name="palette"/></button>
+        <button className="icon-button media-browser-launcher" title={mediaBrowserTitle[locale]} aria-label={mediaBrowserTitle[locale]} aria-pressed={mediaBrowserOpen} aria-controls="media-browser-overlay" onClick={()=>{if(inlineText)endText(true);setToneStudioOpen(false);setMediaBrowserOpen(value=>!value);}}><Icon name="image"/></button>
+        <button className="icon-button tone-studio-launcher" title={toneStudioLabels[locale].title} aria-label={toneStudioLabels[locale].title} aria-pressed={toneStudioOpen} aria-controls="tone-studio-overlay" onClick={()=>{if(inlineText)endText(true);setMediaBrowserOpen(false);setToneStudioLoaded(true);setToneStudioOpen(value=>!value);}}><Icon name="palette"/></button>
         <button className="icon-button" title={t.panels} aria-label={t.panels} aria-pressed={panels} onClick={() => setPanels(value => !value)}><Icon name="panels" /></button>
       </div>
     </header>
-    <div className="options-bar" inert={toneStudioOpen} aria-label={cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
+    <div className="options-bar" inert={toneStudioOpen || mediaBrowserOpen} aria-label={cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
       <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : canvasTool === 'vectorDirectSelect' ? t.vectorDirectSelect : t[toolState.tools[toolMode]]}</span></span>
       {isRetouch(canvasTool)?<><label>{t.size}<SizeInput label={t.size} resolution={horizontalResolution} value={brush.size} onChange={size=>setBrush(previous=>({...previous,size}))}/></label><label>{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness=>setBrush(previous=>({...previous,hardness}))}/></label><RetouchControls key={canvasTool} locale={locale} tool={canvasTool} onError={setError}/></>:isPathSelection(canvasTool)?<SelectionPathControls key={canvasTool} locale={locale} tool={canvasTool} onError={setError}/>:canvasTool==='paintBucket'?<><PaintBucketControls locale={locale} onError={setError}/><label className="color-control">{t.foreground}<ColorPickerPopover locale={locale} color={brush.color} label={t.foreground} noColor={!!brush.noColor} onNone={()=>setBrush(previous=>({...previous,noColor:true}))} onChange={changeForeground}/></label></>:canvasTool==='cloneStamp'? <><label>{t.size}<SizeInput label={t.size} resolution={horizontalResolution} value={brush.size} onChange={size=>setBrush(previous=>({...previous,size}))}/></label><label>{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness=>setBrush(previous=>({...previous,hardness}))}/></label><CloneStampControls locale={locale} onError={setError}/></> : cropTool ? <><span className="selection-hint">{t.cropHint}</span><button disabled={!documentEditable || !ready} onClick={()=>void invoke('crop_action',{confirm:true}).catch(cause=>setError(String(cause)))}>{t.cropApply}</button><button onClick={()=>void invoke('crop_action',{confirm:false}).catch(cause=>setError(String(cause)))}>{t.cropCancel}</button></> : documentState.guides.selected.length > 0 ? <GuideOptions key={documentState.guides.selected.join('|')+measurementUnit+documentState.guides.origin.join(',')} document={documentState} locale={locale} enabled={ready && !busy && documentEditable} onUpdate={updateDocument} onError={setError}/> : documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool && canvasTool !== 'vectorDirectSelect' ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
         onAppearance={async (opacity, blendMode) => { updateDocument(await setVectorAppearance([...documentState.selectedVectorObjects], opacity, blendMode)); }}
@@ -660,7 +667,7 @@ export function Workspace() {
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
-    <main className="editor-layout" inert={toneStudioOpen}>
+    <main className="editor-layout" inert={toneStudioOpen || mediaBrowserOpen}>
       {savedSelectionDialog&&<NativeModal kind="vectorSelections" action={savedSelectionDialog} locale={locale} theme={theme} onClose={()=>setSavedSelectionDialog(null)} onError={setError}><SavedSelectionsDialog locale={locale} document={documentState} mode={savedSelectionDialog} onClose={()=>setSavedSelectionDialog(null)} onUpdate={updateDocument}/></NativeModal>}
       {toolSettings && <NativeModal kind="toolSettings" action={toolSettings} locale={locale} theme={theme} onClose={()=>setToolSettings(null)} onError={setError}><ToolSettingsDialog tool={toolSettings} locale={locale} document={documentState} brush={brush} onBrush={setBrush} onZoom={changeZoom} onUpdate={updateDocument} onClose={()=>setToolSettings(null)}/></NativeModal>}
       {directControlOpen && <NativeModal kind="directControls" locale={locale} theme={theme} onClose={()=>setDirectControlOpen(false)} onError={setError}><DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} /></NativeModal>}
@@ -720,7 +727,7 @@ export function Workspace() {
           filePending.current=true;setFileBusy(true);
           try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
         }}/>}
-        <DocumentDock locale={locale}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
@@ -733,6 +740,7 @@ export function Workspace() {
         onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
+    {mediaBrowserOpen&&<Suspense fallback={null}><MediaBrowser locale={locale} onClose={closeMediaBrowser}/></Suspense>}
     {toneStudioLoaded&&<ToneStudio locale={locale} open={toneStudioOpen} onClose={()=>setToneStudioOpen(false)}/>}
     {settingsOpen && <NativeModal kind="settings" locale={locale} theme={theme} onClose={closeSettings} onError={setError}><SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} /></NativeModal>}
     {importImageOpen && <NativeModal kind="importImage" locale={locale} theme={theme} onClose={()=>setImportImageOpen(false)} onError={setError}><ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {

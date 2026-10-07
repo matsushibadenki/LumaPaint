@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale } from '../i18n';
+import { Icon } from './Icon';
 
 type Property = 'x'|'y'|'scaleX'|'scaleY'|'rotation'|'opacity';
 type Interpolation = 'linear'|'hold'|'ease';
@@ -104,6 +105,7 @@ export function TimelinePanel({locale}:{locale:Locale}) {
       <button disabled={!state.preview||busy} onClick={()=>void command({action:'stop'})}>{t.stop}</button>
       <span className="timeline-mode" data-preview={state.preview}>{busy?t.busy:state.preview?t.preview:t.drawing}</span>
     </div>
+    {data&&<div className="timeline-edit-toolbar">{layer?.pixel?<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.capture} aria-label={t.capture} disabled={disabled||state.preview} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:false})}><Icon name="animationRecord"/></button><button className="tool-button" title={t.blank} aria-label={t.blank} disabled={disabled} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:true})}><Icon name="document"/></button><button className="tool-button" title={t.duplicate} aria-label={t.duplicate} disabled={disabled||!layer.cels.some(f=>f<=state.frame)||state.frame>=data.duration-1} onClick={()=>void command({action:'duplicate',layer:layerId,from:state.frame,frame:state.frame+1})}><Icon name="animationDuplicate"/></button><button className="tool-button" title={t.edit} aria-label={t.edit} disabled={disabled||!layer.cels.some(f=>f<=state.frame)} onClick={()=>void command({action:'load',layer:layerId,frame:state.frame})}><Icon name="brush"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!celAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property:null})}><Icon name="animationDelete"/></button></div>:<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.key} aria-label={t.key} disabled={disabled||value.trim()===''||!Number.isFinite(Number(value))} onClick={()=>void command({action:'key',layer:layerId,frame:state.frame,property,value:Number(value),interpolation})}><Icon name="animationKey"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!keyAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property})}><Icon name="animationDelete"/></button></div>}</div>}
     {data?<div className="timeline-body">
       <div className="timeline-tracks" aria-label={t.hint}>
         <div className="timeline-sheet" style={{width:180+timelineWidth}}>
@@ -124,11 +126,11 @@ export function TimelinePanel({locale}:{locale:Locale}) {
       <aside className="timeline-inspector">
         <div className="timeline-inspector-title"><strong>{layer?.name??t.hint}</strong><span>{layer?.pixel?t.pixel:t.vector}</span></div>
         {layer?.locked?<p>{t.locked}</p>:layer?.pixel?<>
-          <div className="timeline-actions"><button disabled={disabled||state.preview} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:false})}>{t.capture}</button><button disabled={disabled} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:true})}>{t.blank}</button><button disabled={disabled||!layer.cels.some(f=>f<=state.frame)||state.frame>=data.duration-1} onClick={()=>void command({action:'duplicate',layer:layerId,from:state.frame,frame:state.frame+1})}>{t.duplicate}</button><button disabled={disabled||!layer.cels.some(f=>f<=state.frame)} onClick={()=>void command({action:'load',layer:layerId,frame:state.frame})}>{t.edit}</button><button disabled={disabled||!celAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property:null})}>{t.remove}</button></div><p>{t.pixelHint}</p>
+          <p>{t.pixelHint}</p>
         </>:layer?<>
           <label>{t.value}<select value={property} onChange={e=>setProperty(e.target.value as Property)}>{properties.map(p=><option key={p} value={p}>{t[p]}</option>)}</select><input aria-label={t[property]} type="number" step="0.1" value={value} disabled={disabled} onChange={e=>setValue(e.target.value)}/></label>
           <label>{t.interpolation}<select value={interpolation} onChange={e=>setInterpolation(e.target.value as Interpolation)}>{(['linear','hold','ease'] as const).map(i=><option key={i} value={i}>{t[i]}</option>)}</select></label>
-          <div className="timeline-actions"><button disabled={disabled||value.trim()===''||!Number.isFinite(Number(value))} onClick={()=>void command({action:'key',layer:layerId,frame:state.frame,property,value:Number(value),interpolation})}>◆ {t.key}</button><button disabled={disabled||!keyAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property})}>{t.remove}</button></div><p>{t.vectorHint}</p>
+          <p>{t.vectorHint}</p>
         </>:null}
       </aside>
     </div>:<p className="timeline-empty">{t.empty}</p>}
