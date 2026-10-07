@@ -228,10 +228,61 @@ mod tests {
             .clone_stamp_sampling_document(crate::clone_stamp::Sample::AllLayers)
             .unwrap();
         assert_no_history(&sampled);
+        for all_layers in [false, true] {
+            let selection_sample = doc.selection_sampling_document(all_layers);
+            assert_no_history(&selection_sample);
+            assert!(selection_sample.selection.is_none());
+        }
+        assert_no_history(&doc.clipping_view());
         let preview = doc.clone_stamp_preview_document("<svg/>".into()).unwrap();
         assert_no_history(&preview);
         assert_eq!(doc.undo_order.len(), undo_count);
         assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+    }
+    #[test]
+    #[ignore = "manual rendering fork timing; not an application latency benchmark"]
+    fn rendering_fork_timing_with_history_and_pages() {
+        let mut doc = Document::default();
+        let layer = doc.add_paint_layer().unwrap();
+        doc.select_layer(layer).unwrap();
+        let padding = "x".repeat(128 * 1024);
+        for generation in 0..32 {
+            doc.replace_selected_image(format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"640\"><!--{padding}{generation}--><rect width=\"64\" height=\"64\" fill=\"red\"/></svg>"
+            )).unwrap();
+        }
+        for _ in 0..3 {
+            doc.edit_pages(PageEdit {
+                action: "duplicate".into(),
+                index: Some(0),
+                facing: None,
+                binding: None,
+            })
+            .unwrap();
+        }
+        let measure = |full: bool| {
+            let mut times = Vec::new();
+            for iteration in 0..22 {
+                let start = std::time::Instant::now();
+                let fork = if full {
+                    doc.clone()
+                } else {
+                    doc.clone_for_rendering()
+                };
+                std::hint::black_box(&fork);
+                let elapsed = start.elapsed().as_secs_f64() * 1000.;
+                if iteration >= 2 {
+                    times.push(elapsed);
+                }
+                drop(fork);
+            }
+            times.sort_by(f64::total_cmp);
+            (times[10], times[18])
+        };
+        let full = measure(true);
+        let render = measure(false);
+        println!("Rendering fork fixture: 960x640, 128 KiB SVG, 32 image edits, 4 pages; 2 warmups + 20 samples; allocation/copy only, destruction excluded");
+        println!("Full clone median {:.3} ms / p95 {:.3} ms; rendering fork median {:.3} ms / p95 {:.3} ms", full.0, full.1, render.0, render.1);
     }
     #[test]
     fn sampling_fork_includes_live_stroke_but_does_not_finish_original_gesture() {

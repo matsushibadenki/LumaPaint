@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-fontdb = "=0.23.0"
+fontdb = "=0.24.0"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "=3.27.0"

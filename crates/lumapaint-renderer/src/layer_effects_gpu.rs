@@ -48,7 +48,7 @@ fn capacity(bytes: u64, limits: &wgpu::Limits) -> Option<u64> {
     }
     let capacity = bytes.checked_next_power_of_two()?;
     (capacity <= limits.max_buffer_size
-        && capacity <= u64::from(limits.max_storage_buffer_binding_size)
+        && capacity <= limits.max_storage_buffer_binding_size
         && capacity <= (BUDGET - CONFIG_LEN as u64 * 4) / 3
         && (bytes / 4).div_ceil(256) <= u64::from(limits.max_compute_workgroups_per_dimension))
     .then_some(capacity)
@@ -75,7 +75,7 @@ impl Gpu {
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).ok()?;
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Layer effects"),
             source: wgpu::ShaderSource::Wgsl(include_str!("layer_effects.wgsl").into()),
@@ -88,7 +88,7 @@ impl Gpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+        if let Some(error) = pollster::block_on(validation_scope.pop()) {
             #[cfg(test)]
             eprintln!("Effect shader validation: {error}");
             #[cfg(not(test))]
@@ -117,8 +117,8 @@ impl Gpu {
     ) -> Option<Vec<u8>> {
         let size = pixels.len() as u64;
         let cap = capacity(size, &self.device.limits())?;
-        self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let memory_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let result = (|| {
             if self.buffers.as_ref().is_none_or(|b| b.capacity < size) {
                 let make = |label, size, usage| {
@@ -207,12 +207,12 @@ impl Gpu {
                 });
             self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
             recv.recv().ok()?.ok()?;
-            let bytes = b.readback.slice(..size).get_mapped_range().to_vec();
+            let bytes = b.readback.slice(..size).get_mapped_range().ok()?.to_vec();
             b.readback.unmap();
             Some(bytes)
         })();
-        let validation = pollster::block_on(self.device.pop_error_scope());
-        let memory = pollster::block_on(self.device.pop_error_scope());
+        let validation = pollster::block_on(validation_scope.pop());
+        let memory = pollster::block_on(memory_scope.pop());
         if validation.is_some() || memory.is_some() {
             self.source = None;
             None

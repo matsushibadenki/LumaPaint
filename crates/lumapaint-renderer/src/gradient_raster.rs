@@ -13,7 +13,7 @@ impl Gpu {
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).ok()?;
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Pixel gradient"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gradient_raster.wgsl").into()),
@@ -26,7 +26,7 @@ impl Gpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        if pollster::block_on(device.pop_error_scope()).is_some() {
+        if pollster::block_on(validation_scope.pop()).is_some() {
             return None;
         }
         Some(Self {
@@ -39,7 +39,7 @@ impl Gpu {
         let size = u64::from(w) * u64::from(h) * 4;
         let limits = self.device.limits();
         if size == 0
-            || size > u64::from(limits.max_storage_buffer_binding_size)
+            || size > limits.max_storage_buffer_binding_size
             || size > limits.max_buffer_size
             || (w as u64 * h as u64).div_ceil(256)
                 > u64::from(limits.max_compute_workgroups_per_dimension)
@@ -127,7 +127,7 @@ impl Gpu {
         });
         self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
         recv.recv().ok()?.ok()?;
-        let bytes = readback.slice(..).get_mapped_range().to_vec();
+        let bytes = readback.slice(..).get_mapped_range().ok()?.to_vec();
         readback.unmap();
         Some(bytes)
     }

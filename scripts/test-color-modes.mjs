@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import ts from 'typescript';
-const code=ts.transpileModule(readFileSync('src/color-models.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+import {stripTypeScriptTypes} from 'node:module';
+const code=stripTypeScriptTypes(readFileSync('src/color-models.ts','utf8'));
 const {rgbToLab,labToRgb,rgbToGray}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
 for(const rgb of [[0,0,0],[255,255,255],[255,0,0],[0,255,0],[0,0,255],[128,128,128]]) {
  const lab=rgbToLab(rgb);assert.ok(lab.every(Number.isFinite));const actual=labToRgb(lab);assert.deepEqual(actual,rgb);

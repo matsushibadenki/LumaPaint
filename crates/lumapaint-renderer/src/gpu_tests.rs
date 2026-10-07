@@ -199,7 +199,10 @@ fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     rx.recv().unwrap().unwrap();
-    let bytes = buffer.slice(..).get_mapped_range();
+    let bytes = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("GPU buffer mapped after successful map callback");
     let expected = 1. - (-2.0f32).exp();
     let float_error = (f32::from(bytes[3]) / 255. - expected).abs();
     let byte_error = (f32::from(bytes[259]) / 255. - expected).abs();
@@ -283,8 +286,8 @@ impl Gpu {
             let selection_layout = create_selection_layout(&device);
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&uniform_layout, &selection_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&uniform_layout), Some(&selection_layout)],
+                immediate_size: 0,
             });
             let brush = create_brush_pipeline(&device, &layout);
             let outline =
@@ -477,7 +480,11 @@ impl Gpu {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let result = readback.slice(..).get_mapped_range().to_vec();
+        let result = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback")
+            .to_vec();
         readback.unmap();
         result
     }
@@ -652,7 +659,11 @@ impl Gpu {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let pixels = readback.slice(..).get_mapped_range().to_vec();
+        let pixels = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback")
+            .to_vec();
         readback.unmap();
         pixels
     }
@@ -914,7 +925,11 @@ fn gpu_tile_upload_updates_edge_and_clears_hidden_content() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let data = buffer.slice(..).get_mapped_range().to_vec();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback")
+            .to_vec();
         buffer.unmap();
         data
     };
@@ -1073,7 +1088,11 @@ fn gpu_tile_preview_uses_document_coordinates_and_premultiplied_blending() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let pixels = readback.slice(..).get_mapped_range().to_vec();
+        let pixels = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback")
+            .to_vec();
         readback.unmap();
         pixels
     };
@@ -1604,7 +1623,11 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let data = readback.slice(..).get_mapped_range().to_vec();
+        let data = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback")
+            .to_vec();
         readback.unmap();
         data
     };
@@ -1627,13 +1650,13 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_text_frame_overlay_pipeline_is_valid() {
     let gpu = Gpu::new();
-    gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let layout = gpu
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&gpu.uniform_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&gpu.uniform_layout)],
+            immediate_size: 0,
         });
     let pipeline =
         frame_overlay::pipeline(&gpu.device, &layout, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -1698,7 +1721,7 @@ fn gpu_text_frame_overlay_pipeline_is_valid() {
     gpu.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    assert!(pollster::block_on(gpu.device.pop_error_scope()).is_none());
+    assert!(pollster::block_on(validation_scope.pop()).is_none());
 }
 
 #[test]
@@ -1839,7 +1862,10 @@ fn gpu_channel_components_and_alpha() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let bytes = readback.slice(..).get_mapped_range();
+        let bytes = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         for value in &bytes[..3] {
             assert!(
                 (i32::from(*value) - expected).abs() <= 1,
@@ -1917,7 +1943,10 @@ fn gpu_svg_rect_upload_matches_full_image_after_move_clear_and_undo() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         for y in 0..height as usize {
             assert_eq!(
                 &data[y * pitch as usize..y * pitch as usize + stride],
@@ -2023,7 +2052,10 @@ fn gpu_pixel_tile_upload_preserves_untouched_pixels_opacity_and_edge_clears() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let data = buffer.slice(..).get_mapped_range();
+        let data = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         for y in 0..height as usize {
             assert_eq!(
                 &data[y * pitch as usize..y * pitch as usize + stride],
@@ -2108,7 +2140,7 @@ fn gpu_background_and_pixel_layer_brush_width_match_across_zoom() {
 #[ignore = "Requires an available GPU; run explicitly on the desktop host"]
 fn gpu_artboard_exterior_pipeline_is_valid() {
     let gpu = Gpu::new();
-    gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
     let _pipeline = create_textured_layer_pipeline(
@@ -2122,7 +2154,7 @@ fn gpu_artboard_exterior_pipeline_is_valid() {
     gpu.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    assert!(pollster::block_on(gpu.device.pop_error_scope()).is_none());
+    assert!(pollster::block_on(validation_scope.pop()).is_none());
 }
 
 #[test]
@@ -2268,7 +2300,10 @@ fn gpu_artboard_exterior_masks_page_pixels() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let bytes = readback.slice(..).get_mapped_range();
+        let bytes = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         assert_eq!(bytes[3], expected_alpha, "pan {pan}: {bytes:?}");
     }
 }
@@ -2559,7 +2594,10 @@ fn verify_object_texture_moves(shared: bool) {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         rx.recv().unwrap().unwrap();
-        let data = readback.slice(..).get_mapped_range();
+        let data = readback
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         let x = (42. + offset) as usize;
         let pixel = (89 * W as usize + x) * 4;
         assert_eq!(data[pixel + 3], 128, "offset {offset}");

@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.65.0"
+edition = "2024"
+rust-version = "1.85.0"
 name = "usvg"
-version = "0.45.1"
+version = "0.48.1"
 build = false
 exclude = ["tests"]
 autolib = false
@@ -28,24 +28,34 @@ keywords = ["svg"]
 categories = ["multimedia::images"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/linebender/resvg"
+resolver = "2"
 
 [features]
 default = [
+    "svgz",
     "text",
     "system-fonts",
     "memmap-fonts",
+    "writer",
 ]
 memmap-fonts = ["fontdb/memmap"]
+svgz = ["flate2"]
 system-fonts = [
     "fontdb/fs",
     "fontdb/fontconfig",
 ]
 text = [
     "fontdb",
-    "rustybuzz",
+    "harfrust",
+    "skrifa",
     "unicode-bidi",
     "unicode-script",
     "unicode-vo",
+    "writer",
+]
+writer = [
+    "xmlwriter",
+    "base64",
 ]
 
 [lib]
@@ -56,32 +66,40 @@ path = "src/lib.rs"
 name = "usvg"
 path = "src/main.rs"
 required-features = [
+    "svgz",
     "text",
     "system-fonts",
     "memmap-fonts",
+    "writer",
 ]
 
 [dependencies.base64]
-version = "0.22"
+version = "0.23"
+optional = true
 
 [dependencies.data-url]
 version = "0.3"
 
 [dependencies.flate2]
-version = "1.0"
+version = "1.1"
 features = ["rust_backend"]
-default-features = false
-
-[dependencies.fontdb]
-version = "0.23.0"
 optional = true
 default-features = false
 
+[dependencies.fontdb]
+version = "0.24"
+optional = true
+default-features = false
+
+[dependencies.harfrust]
+version = "0.12.0"
+optional = true
+
 [dependencies.imagesize]
-version = "0.13"
+version = "0.15.0"
 
 [dependencies.kurbo]
-version = "0.11"
+version = "0.13.0"
 
 [dependencies.log]
 version = "0.4"
@@ -91,11 +109,7 @@ version = "0.5"
 features = ["eq-separator"]
 
 [dependencies.roxmltree]
-version = "0.20"
-
-[dependencies.rustybuzz]
-version = "0.20.1"
-optional = true
+version = "0.21.1"
 
 [dependencies.simplecss]
 version = "0.2"
@@ -103,14 +117,20 @@ version = "0.2"
 [dependencies.siphasher]
 version = "1.0"
 
+[dependencies.skrifa]
+version = "0.44"
+features = ["std"]
+optional = true
+default-features = false
+
 [dependencies.strict-num]
 version = "0.1.1"
 
 [dependencies.svgtypes]
-version = "0.15.3"
+version = "0.16.1"
 
 [dependencies.tiny-skia-path]
-version = "0.11.4"
+version = "0.12.0"
 
 [dependencies.unicode-bidi]
 version = "0.3"
@@ -126,6 +146,7 @@ optional = true
 
 [dependencies.xmlwriter]
 version = "0.1"
+optional = true
 
 [dev-dependencies.once_cell]
-version = "1.5"
+version = "1.21"

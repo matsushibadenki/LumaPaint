@@ -62,9 +62,8 @@ pub(super) fn pointer(
         let layer_id = doc.selected_layer_id().to_owned();
         let revision = doc.revision();
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
-        let mut preview_document = doc.clone();
         let (w, h) = doc.dimensions();
-        preview_document.replace_selected_image(preview_source(w, h, token))?;
+        let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
         let (sender, receiver) = mpsc::channel();
         let (done, completed) = mpsc::channel();
         PIXEL_PAINT.with(|slot| {

@@ -7,13 +7,14 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive", "rc"] }
+serde = { version = "=1.0.229", features = ["derive", "rc"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
+svg2pdf = { path = "vendor/svg2pdf" }
 block = { path = "vendor/block" }
 usvg = { path = "vendor/usvg" }
 simplecss = { path = "vendor/simplecss" }

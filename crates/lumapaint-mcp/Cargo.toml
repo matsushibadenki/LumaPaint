@@ -6,4 +6,4 @@ edition.workspace = true
 [dependencies]
 lumapaint-core = { path = "../lumapaint-core" }
 serde.workspace = true
-serde_json = "1"
+serde_json = "=1.0.151"

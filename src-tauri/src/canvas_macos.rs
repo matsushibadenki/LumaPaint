@@ -425,7 +425,7 @@ impl PaintView {
                     CanvasTool::Hand => Some(NSCursor::openHandCursor()),
                     CanvasTool::Text | CanvasTool::TextFrame => Some(NSCursor::IBeamCursor()),
                     CanvasTool::TextVertical | CanvasTool::TextFrameVertical => Some(NSCursor::IBeamCursorForVerticalLayout()),
-                    CanvasTool::VectorSelect => Some(NSCursor::arrowCursor()),
+                    CanvasTool::VectorSelect => Some(selection_cursor()),
                     CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
                     CanvasTool::VectorDirectSelect | CanvasTool::VectorPen | CanvasTool::VectorPencil | CanvasTool::VectorAnchorAdd | CanvasTool::VectorAnchorDelete | CanvasTool::VectorAnchorConvert | CanvasTool::VectorRectangle | CanvasTool::VectorEllipse | CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse | CanvasTool::Rectangle | CanvasTool::Ellipse => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
                     CanvasTool::PaintBucket | CanvasTool::Lasso | CanvasTool::PolygonLasso | CanvasTool::MagneticLasso => Some(NSCursor::crosshairCursor()),
@@ -657,6 +657,16 @@ impl PaintView {
                 if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", tool); }
             }
             else { unsafe { msg_send![super(self), keyDown: event] } }
+        }
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, _event: &NSEvent) {
+            let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
+            if TOOL.with(|tool| tool.get()) == CanvasTool::VectorSelect
+                && !PANNING.with(|value| value.get())
+            {
+                selection_cursor().set();
+                self.refresh_cursor();
+            }
         }
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
@@ -1386,7 +1396,7 @@ impl PenDraft {
 
     fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
         use std::fmt::Write;
-        let mut preview = document.clone();
+        let mut preview = document.clone_for_rendering();
         preview.upsert_vector_object(&self.layer, self.object(false, "pen-draft")?)?;
         let mut guide = self.object(false, "pen-guides")?;
         guide.kind = VectorObjectKind::Compound;
@@ -1702,7 +1712,7 @@ fn anchor_pointer(
 impl AnchorDraft {
     fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
         use std::fmt::Write;
-        let mut preview = document.clone();
+        let mut preview = document.clone_for_rendering();
         if self.original != self.object {
             preview.direct_object_preview(&self.layer, self.object.clone())?;
         }
@@ -2270,7 +2280,7 @@ fn apply_corner_gesture(document: &mut Document, draft: &DirectGesture) -> Resul
 }
 
 fn anchor_guides_preview(document: &Document, scale: f32) -> Result<Document, String> {
-    let mut preview = document.clone();
+    let mut preview = document.clone_for_rendering();
     for (layer, object) in direct_objects(document)
         .into_iter()
         .filter(|(_, o)| document.selected_vector_ids().contains(&o.id))
@@ -2289,7 +2299,7 @@ fn anchor_guides_preview(document: &Document, scale: f32) -> Result<Document, St
 
 fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
     use std::fmt::Write;
-    let mut preview = document.clone();
+    let mut preview = document.clone_for_rendering();
     let points = DIRECT_POINTS.with(|points| points.borrow().clone());
     let gesture = DIRECT_GESTURE.with(|draft| draft.borrow().clone());
     if let Some(draft) = gesture.as_ref().filter(|draft| !draft.marquee) {
@@ -4674,7 +4684,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             key,
             work: TileWork::Reconcile {
                 cache: Box::new(cache),
-                document: Box::new(document.clone()),
+                document: Box::new(document.clone_for_rendering()),
                 stroke_hint,
             },
             state,
@@ -4700,7 +4710,7 @@ fn refresh_tile_preview(canvas: &mut Canvas, document: &Document) {
             canvas.token,
             TileJob {
                 key,
-                work: TileWork::Full(Box::new(document.clone())),
+                work: TileWork::Full(Box::new(document.clone_for_rendering())),
                 state,
                 dimensions: document.dimensions(),
                 queued_at: Instant::now(),
@@ -5541,16 +5551,18 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
             parent.addSubview(&view);
             // The view is attached before creating Metal's layer so its backing scale is known.
             let result = (|| {
-                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                     backends: wgpu::Backends::METAL,
-                    ..Default::default()
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
                 });
                 let handle = AppKitWindowHandle::new(NonNull::from(&*view).cast());
                 // SAFETY: view is a retained live NSView on the main thread. Canvas owns it
                 // until AFTER Renderer (and its surface) is dropped. No raw pointer is stored elsewhere.
                 let surface = unsafe {
                     instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                        raw_display_handle: RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
+                        raw_display_handle: Some(RawDisplayHandle::AppKit(
+                            AppKitDisplayHandle::new(),
+                        )),
                         raw_window_handle: RawWindowHandle::AppKit(handle),
                     })
                 }
@@ -7251,6 +7263,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn history_free_tile_jobs_match_full_document_projection() {
+        let mut state = Document::default().document_state();
+        state.width = 64;
+        state.height = 64;
+        let mut doc = Document::from_document_state(state).unwrap();
+        doc.begin(
+            lumapaint_core::document::Point { x: 12., y: 20. },
+            Brush::default(),
+        )
+        .unwrap();
+        doc.finish();
+        doc.undo();
+        doc.redo();
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let fork = doc.clone_for_rendering();
+        for scale in [1, 2] {
+            let full = project_committed_paint_layer_at_scale(&doc.clone(), scale).unwrap();
+            let light = project_committed_paint_layer_at_scale(&fork, scale).unwrap();
+            assert_eq!(
+                serde_json::to_value(full.state()).unwrap(),
+                serde_json::to_value(light.state()).unwrap()
+            );
+        }
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        doc.undo();
+        assert!(doc.committed_paint_strokes().next().is_none());
+    }
     #[test]
     fn tile_result_rejects_an_old_document_canvas_or_scale() {
         let key = TileKey {
@@ -9161,6 +9201,42 @@ thread_local! {
     // Static tool glyphs are cached once on the AppKit thread, independent of document render caches.
     static TOOL_ICON_CURSORS: RefCell<Vec<(CanvasTool,Retained<NSCursor>)>> = const { RefCell::new(Vec::new()) };
 }
+fn selection_cursor() -> Retained<NSCursor> {
+    // Read the current flags rather than retaining key state across window focus changes.
+    let flags: NSEventModifierFlags = unsafe { msg_send![class!(NSEvent), modifierFlags] };
+    if !flags.contains(NSEventModifierFlags::Option) {
+        return NSCursor::arrowCursor();
+    }
+    thread_local! {
+        static DUPLICATE_CURSOR: Retained<NSCursor> = duplicate_selection_cursor();
+    }
+    DUPLICATE_CURSOR.with(Clone::clone)
+}
+
+#[allow(deprecated)]
+fn duplicate_selection_cursor() -> Retained<NSCursor> {
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(32., 32.));
+    image.lockFocus();
+    // Back triangle first; the front triangle's tip is the actual pointer hotspot.
+    unsafe {
+        for [x, y] in [[11., 24.], [3., 29.]] {
+            let path: Retained<AnyObject> = msg_send![class!(NSBezierPath), bezierPath];
+            let _: () = msg_send![&*path, moveToPoint: NSPoint::new(x, y)];
+            for [dx, dy] in [[0., -17.], [13., -11.]] {
+                let _: () = msg_send![&*path, lineToPoint: NSPoint::new(x + dx, y + dy)];
+            }
+            let _: () = msg_send![&*path, closePath];
+            NSColor::blackColor().setFill();
+            let _: () = msg_send![&*path, fill];
+            NSColor::whiteColor().setStroke();
+            let _: () = msg_send![&*path, setLineWidth: 1.2f64];
+            let _: () = msg_send![&*path, stroke];
+        }
+    }
+    image.unlockFocus();
+    NSCursor::initWithImage_hotSpot(NSCursor::alloc(), &image, NSPoint::new(3., 3.))
+}
+
 #[allow(deprecated)]
 fn tool_icon_cursor(tool: CanvasTool) -> Retained<NSCursor> {
     if let Some(cursor) = TOOL_ICON_CURSORS.with(|cache| {

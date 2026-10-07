@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import ts from 'typescript';
-async function load(path) { const code=ts.transpileModule(readFileSync(new URL(path,import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;return import('data:text/javascript;base64,'+Buffer.from(code).toString('base64')); }
+import {stripTypeScriptTypes} from 'node:module';
+async function load(path) { const code=stripTypeScriptTypes(readFileSync(new URL(path,import.meta.url),'utf8'));return import('data:text/javascript;base64,'+Buffer.from(code).toString('base64')); }
 const {pixelsPerMeasurement}=await load('../src/measurement-math.ts');
 const {rulerTicks}=await load('../src/ruler-math.ts');
 for(const dpi of [.5,72,144,150.25,300.5,1200]) {

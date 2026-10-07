@@ -25,17 +25,19 @@ pub(super) fn rasterize_shared(
     draw: impl FnOnce(&mut Surface),
 ) -> Option<wgpu::Texture> {
     // SAFETY: the guard is kept while taking an owned reference to the device.
-    let raw_device = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }?
-        .raw_device()
-        .lock()
-        .clone();
+    let raw_device = unsafe {
+        let hal = device.as_hal::<wgpu::hal::api::Metal>()?;
+        metal::Device::from_ptr(objc2::rc::Retained::into_raw(hal.raw_device().clone()).cast())
+    };
     // SAFETY: callers pass the queue belonging to this device. Keep an owned
     // Metal reference after releasing the HAL guard. Both engines commit to
     // the same serial queue, so GPU ordering replaces a CPU completion wait.
-    let raw_queue = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }?
-        .as_raw()
-        .lock()
-        .clone();
+    let raw_queue = unsafe {
+        let hal = queue.as_hal::<wgpu::hal::api::Metal>()?;
+        let retained = objc2::rc::Retained::retain(hal.as_raw() as *const _
+            as *mut objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>)?;
+        metal::CommandQueue::from_ptr(objc2::rc::Retained::into_raw(retained).cast())
+    };
     // Windows can use the same physical device with different serial queues.
     // Reusing a context across queues would lose producer/consumer ordering.
     let key = (raw_device.as_ptr() as usize, raw_queue.as_ptr() as usize);
@@ -114,9 +116,12 @@ pub(super) fn rasterize_shared(
         // same encoded premultiplied bytes as the old RGBA upload path.
         let hal = unsafe {
             wgpu::hal::metal::Device::texture_from_raw(
-                raw,
+                objc2::rc::Retained::retain(
+                    raw.as_ptr()
+                        .cast::<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>(),
+                )?,
                 wgpu::TextureFormat::Rgba8Unorm,
-                metal::MTLTextureType::D2,
+                objc2_metal::MTLTextureType::Type2D,
                 1,
                 1,
                 wgpu::hal::CopyExtent {
@@ -124,6 +129,7 @@ pub(super) fn rasterize_shared(
                     height: size.height,
                     depth: 1,
                 },
+                None,
             )
         };
         Some(unsafe {
@@ -139,6 +145,7 @@ pub(super) fn rasterize_shared(
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
                 },
+                wgpu::TextureUses::COLOR_TARGET,
             )
         })
     })
@@ -217,9 +224,9 @@ mod tests {
     #[test]
     #[ignore = "requires Metal; local cache-generation benchmark"]
     fn benchmark_shared_texture_transfer() {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
@@ -289,9 +296,9 @@ mod tests {
     #[test]
     #[ignore = "requires a real Metal device"]
     fn shared_queue_orders_interleaved_skia_and_wgpu_without_cpu_waits() {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
@@ -342,7 +349,10 @@ mod tests {
             .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         rx.recv().unwrap().unwrap();
-        let bytes = buffer.slice(..).get_mapped_range();
+        let bytes = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         for i in 0..64u8 {
             assert_eq!(
                 &bytes[usize::from(i) * 256..usize::from(i) * 256 + 4],
@@ -358,9 +368,9 @@ mod tests {
     #[ignore = "requires a real Metal device"]
     fn different_window_queues_keep_separate_contexts() {
         SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let first = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
@@ -411,7 +421,13 @@ mod tests {
                 .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
             device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             rx.recv().unwrap().unwrap();
-            assert_eq!(&buffer.slice(..).get_mapped_range()[..4], &[255, 0, 0, 255]);
+            assert_eq!(
+                &buffer
+                    .slice(..)
+                    .get_mapped_range()
+                    .expect("GPU buffer mapped after successful map callback")[..4],
+                &[255, 0, 0, 255]
+            );
             buffer.unmap();
         }
         SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
@@ -420,9 +436,9 @@ mod tests {
     #[test]
     #[ignore = "requires a real Metal device"]
     fn shared_texture_matches_metal_and_survives_context_eviction() {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
@@ -499,7 +515,10 @@ mod tests {
             for value in &mut expected {
                 *value = (*value as f32 * opacity).round() as u8;
             }
-            let mapped = buffer.slice(..).get_mapped_range();
+            let mapped = buffer
+                .slice(..)
+                .get_mapped_range()
+                .expect("GPU buffer mapped after successful map callback");
             let actual: Vec<_> = mapped
                 .chunks(stride as usize)
                 .flat_map(|row| row[..width as usize * 4].iter().copied())
@@ -534,16 +553,14 @@ mod tests {
         .is_none());
         // Force an unavailable shared context: the caller can use the established
         // CPU raster/upload path without losing the document edit.
-        let device_key = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
-            .unwrap()
-            .raw_device()
-            .lock()
-            .as_ptr() as usize;
+        let device_key = objc2::rc::Retained::as_ptr(
+            unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
+                .unwrap()
+                .raw_device(),
+        ) as usize;
         let queue_key = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }
             .unwrap()
-            .as_raw()
-            .lock()
-            .as_ptr() as usize;
+            .as_raw() as *const _ as usize;
         let key = (device_key, queue_key);
         SHARED_CONTEXTS.with(|slot| {
             slot.borrow_mut().insert(key, State::Unavailable);

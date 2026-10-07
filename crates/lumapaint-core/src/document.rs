@@ -827,6 +827,7 @@ impl Document {
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
             svg_geometry_backend: self.svg_geometry_backend.clone(),
+            path_editing: self.path_editing.clone(),
             saved_paths: self.saved_paths.clone(),
             clipping_path_id: self.clipping_path_id.clone(),
             selection: self.selection.clone(),
@@ -4520,7 +4521,7 @@ impl Document {
     }
 
     pub fn saved_path_edit_view(&self, width: f32) -> Self {
-        let mut doc = self.clone();
+        let mut doc = self.clone_for_rendering();
         let Some(edit) = &self.path_editing else {
             return doc;
         };
@@ -4713,7 +4714,7 @@ impl Document {
     /// every paint/image/vector layer. This transient layer is never serialized.
     pub fn clipping_view(&self) -> Self {
         use std::fmt::Write;
-        let mut doc = self.clone();
+        let mut doc = self.clone_for_rendering();
         let Some(path) = self
             .saved_paths
             .iter()
@@ -4836,9 +4837,9 @@ impl Document {
 
     /// Transient inspection projection; never stored in project data or history.
     pub fn outline_view(&self, offset: [f32; 2], line_width: f32) -> Self {
-        let mut preview = self.clone();
+        let mut preview = self.clone_for_rendering();
         if offset != [0., 0.] {
-            let _ = preview.move_selected_vectors(offset[0], offset[1]);
+            let _ = preview.move_selected_vectors_preview(offset[0], offset[1]);
         }
         for layer in &mut preview.svg_layers {
             if !layer.vector_layer {
@@ -6147,6 +6148,19 @@ impl Document {
         self.translation_metrics
     }
     pub fn move_selected_vectors(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
+        self.move_selected_vectors_inner(dx, dy, true)
+    }
+    /// Translate an isolated rendering fork without creating editing history.
+    /// Call only on a transient preview; commit through move_selected_vectors.
+    pub fn move_selected_vectors_preview(&mut self, dx: f32, dy: f32) -> Result<bool, String> {
+        self.move_selected_vectors_inner(dx, dy, false)
+    }
+    fn move_selected_vectors_inner(
+        &mut self,
+        dx: f32,
+        dy: f32,
+        record_history: bool,
+    ) -> Result<bool, String> {
         if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
             return Err("Invalid vector translation".into());
         }
@@ -6157,14 +6171,15 @@ impl Document {
         let mut metrics = TranslationMetrics::default();
         // Saved-path editing still uses the complete-state transaction because
         // its stored path is a second authoritative copy of the edited objects.
-        let use_complete_history = self.path_editing.is_some()
-            || self.svg_layers.iter().any(|layer| {
-                self.noncanonical_vector_sources.contains(&layer.id)
-                    && layer
-                        .vector_objects
-                        .iter()
-                        .any(|o| self.selected_vector_objects.contains(&o.id))
-            });
+        let use_complete_history = record_history
+            && (self.path_editing.is_some()
+                || self.svg_layers.iter().any(|layer| {
+                    self.noncanonical_vector_sources.contains(&layer.id)
+                        && layer
+                            .vector_objects
+                            .iter()
+                            .any(|o| self.selected_vector_objects.contains(&o.id))
+                }));
         let previous = use_complete_history.then(|| self.vector_history_state());
         let mut edits = Vec::new();
         for (layer_index, layer) in self.svg_layers.iter().enumerate() {
@@ -6260,13 +6275,17 @@ impl Document {
             }
         }
         metrics.edited_objects = edits.len();
-        metrics.history_transform_bytes = edits.len() * std::mem::size_of::<ObjectHistoryEntry>();
+        metrics.history_transform_bytes = if record_history {
+            edits.len() * std::mem::size_of::<ObjectHistoryEntry>()
+        } else {
+            0
+        };
         let journal_started = std::time::Instant::now();
         if let Some(previous) = previous {
             metrics.full_layer_snapshots = previous.layers.len();
             metrics.history_transform_bytes = 0;
             self.record_vector_edit(previous);
-        } else {
+        } else if record_history {
             self.notify_object_history(&edits);
             self.vector_undo.push(VectorHistoryEntry::Objects {
                 edits,
@@ -6277,6 +6296,9 @@ impl Document {
             self.redo.clear();
             self.redo_order.clear();
             self.undo_order.push(HistoryKind::Vector);
+        } else {
+            self.notify_object_history(&edits);
+            self.sync_saved_path();
         }
         for index in touched {
             self.noncanonical_vector_sources
@@ -9491,6 +9513,9 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                             - column as f32 * text.font_size * text.line_height,
                         |baseline| text.box_width - baseline,
                     );
+                    if !text_line_fits_frame(text, start, line, x, color) {
+                        continue;
+                    }
                     let y = text.line_origins.get(column).copied().unwrap_or(
                         text.indent_left + if column == 0 { text.indent_first } else { 0. },
                     );
@@ -9573,6 +9598,9 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     }
                 }
                 let baseline = text.line_baselines.get(index).copied().unwrap_or(y);
+                if !text_line_fits_frame(text, start, line, baseline, color) {
+                    continue;
+                }
                 let first_indent = if index == 0 || hard_break_before {
                     text.indent_first
                 } else {
@@ -9801,6 +9829,47 @@ fn utf16_slice(value: &str, start: usize, end: usize) -> Option<&str> {
     Some(&value[start_byte?..end_byte?])
 }
 
+/// Suppress an entire overflowing row/column instead of clipping part of its em box.
+/// Coordinates are local to the text frame, before the object transform.
+fn text_line_fits_frame(
+    text: &crate::vector::VectorText,
+    start: usize,
+    line: &str,
+    baseline: f32,
+    color: [u8; 3],
+) -> bool {
+    let Some(height) = text.box_height.filter(|_| !text.point_text) else {
+        return true;
+    };
+    let vertical = text.writing_mode == crate::vector::WritingMode::Vertical;
+    let limit = if vertical { text.box_width } else { height };
+    let mut offset = start;
+    for character in line.chars() {
+        let style = text.style_at(offset, color);
+        offset += character.len_utf16();
+        let angle = style.rotation.to_radians();
+        let w = style.font_size * style.scale_x;
+        let h = style.font_size * style.scale_y;
+        let (low, high) = if vertical {
+            let half = (w * angle.cos().abs() + h * angle.sin().abs()) * 0.5;
+            (
+                baseline + style.baseline_shift - half,
+                baseline + style.baseline_shift + half,
+            )
+        } else {
+            let cross = h * angle.cos().abs() + w * angle.sin().abs();
+            (
+                baseline - style.baseline_shift - cross * 0.8,
+                baseline - style.baseline_shift + cross * 0.2,
+            )
+        };
+        if low < -0.001 || high > limit + 0.001 {
+            return false;
+        }
+    }
+    true
+}
+
 fn write_vertical_character_options(
     svg: &mut String,
     original: &crate::vector::VectorText,
@@ -9847,6 +9916,11 @@ fn write_vertical_character_options(
                 - column as f32 * text.font_size * text.line_height,
             |baseline| text.box_width - baseline,
         );
+        if let Some((line_start, line, _)) = lines.get(native_column) {
+            if !text_line_fits_frame(&text, *line_start, line, x, color) {
+                continue;
+            }
+        }
         let size = style.font_size;
         let char_index = lines
             .get(native_column)
@@ -9938,6 +10012,14 @@ fn write_transformed_text(
                 text.font_size + text.space_before
             }) + index as f32 * text.font_size * text.line_height,
         );
+        let baseline = if vertical {
+            text.box_width - cross
+        } else {
+            cross
+        };
+        if !text_line_fits_frame(text, start, line, baseline, color) {
+            continue;
+        }
         let mut offset = 0;
         let mut character_index = 0;
         let mut cursor = text
@@ -12380,6 +12462,62 @@ mod independent_saved_path_tests {
     }
 
     #[test]
+    fn preview_translation_matches_commit_without_history_or_source_mutation() {
+        for variant in 0..3 {
+            let mut doc = Document::default();
+            let layer = if variant == 2 {
+                doc.saved_path_action("new", None, "Cutout").unwrap();
+                doc.selected_vector_target().unwrap().unwrap()
+            } else {
+                doc.add_vector_layer().unwrap()
+            };
+            doc.upsert_vector_object(&layer, square("moving")).unwrap();
+            doc.select_vector_objects(vec!["moving".into()]).unwrap();
+            if variant == 1 {
+                doc.noncanonical_vector_sources.insert(layer);
+            }
+            let original = serde_json::to_value(doc.document_state()).unwrap();
+            let mut expected = doc.clone();
+            expected.move_selected_vectors(5., 7.).unwrap();
+            let mut preview = doc.clone_for_rendering();
+            assert!(preview.move_selected_vectors_preview(5., 7.).unwrap());
+            assert_eq!(
+                serde_json::to_value(preview.document_state()).unwrap(),
+                serde_json::to_value(expected.document_state()).unwrap()
+            );
+            assert!(preview.vector_undo.is_empty());
+            assert!(preview.undo_order.is_empty());
+            assert_eq!(preview.translation_metrics.history_transform_bytes, 0);
+            assert_eq!(preview.translation_metrics.full_layer_snapshots, 0);
+            let state = serde_json::to_value(preview.document_state()).unwrap();
+            let revision = preview.revision();
+            let cursor = preview.scene_journal.cursor();
+            assert!(preview.move_selected_vectors_preview(f32::NAN, 2.).is_err());
+            assert_eq!(
+                serde_json::to_value(preview.document_state()).unwrap(),
+                state
+            );
+            assert_eq!(preview.revision(), revision);
+            assert_eq!(preview.scene_journal.cursor(), cursor);
+            let outline = doc.outline_view([5., 7.], 1.);
+            assert!(outline.vector_undo.is_empty());
+            assert!(outline.undo_order.is_empty());
+            assert_eq!(
+                outline.svg_layers[0].vector_objects[0].transform[4..],
+                [5., 7.]
+            );
+            assert_eq!(
+                serde_json::to_value(doc.document_state()).unwrap(),
+                original
+            );
+            expected.undo();
+            assert_eq!(
+                serde_json::to_value(expected.document_state()).unwrap(),
+                original
+            );
+        }
+    }
+    #[test]
     fn independent_paths_isolate_tools_persistence_clipping_and_history() {
         let mut doc = Document::default();
         let artwork = doc.add_vector_layer().unwrap();
@@ -13017,7 +13155,7 @@ impl Document {
 }
 impl Document {
     pub fn selection_sampling_document(&self, all_layers: bool) -> Self {
-        let mut result = self.clone();
+        let mut result = self.clone_for_rendering();
         result.finish();
         result.selection = None;
         if !all_layers {
@@ -13031,5 +13169,83 @@ impl Document {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod text_frame_overflow_tests {
+    use super::text_line_fits_frame;
+    use crate::vector::{VectorText, WritingMode};
+    #[test]
+    fn hides_incomplete_rows_and_columns_but_keeps_exact_fit() {
+        let mut text = VectorText {
+            font_size: 20.,
+            box_width: 50.,
+            box_height: Some(50.),
+            ..VectorText::default()
+        };
+        assert!(text_line_fits_frame(&text, 0, "日本語abc中文", 46., [0; 3]));
+        assert!(!text_line_fits_frame(
+            &text,
+            0,
+            "日本語abc中文",
+            47.,
+            [0; 3]
+        ));
+        text.writing_mode = WritingMode::Vertical;
+        assert!(text_line_fits_frame(&text, 0, "日本語", 10., [0; 3]));
+        assert!(!text_line_fits_frame(&text, 0, "日本語", 9., [0; 3]));
+        text.box_height = None;
+        assert!(text_line_fits_frame(&text, 0, "日本語", -10., [0; 3]));
+    }
+}
+
+#[cfg(test)]
+mod text_frame_svg_tests {
+    use super::{Document, TextSettings};
+    use crate::vector::{VectorText, WritingMode};
+    #[test]
+    fn overflowing_last_line_stays_editable_and_returns_when_frame_grows() {
+        for mode in [WritingMode::Horizontal, WritingMode::Vertical] {
+            let mut doc = Document::default();
+            let mut text = VectorText {
+                content: "Visible\nHidden".into(),
+                font_size: 20.,
+                box_width: 200.,
+                box_height: Some(50.),
+                writing_mode: mode,
+                line_baselines: if mode == WritingMode::Horizontal {
+                    vec![20., 48.]
+                } else {
+                    vec![10., 195.]
+                },
+                ..VectorText::default()
+            };
+            doc.set_text_object(TextSettings {
+                id: None,
+                text: text.clone(),
+                position: [0., 0.],
+                color: [0; 3],
+            })
+            .unwrap();
+            let created = doc.snapshot().text_objects[0].clone();
+            let svg = &doc.svg_layers().next().unwrap().source;
+            assert!(svg.contains("Visible"), "{svg}");
+            assert!(!svg.contains(">Hidden<"), "{svg}");
+            assert_eq!(created.text.content, text.content);
+            if mode == WritingMode::Horizontal {
+                text.box_height = Some(80.);
+            } else {
+                text.box_width = 240.;
+            }
+            doc.set_text_object(TextSettings {
+                id: Some(created.id),
+                text,
+                position: [0., 0.],
+                color: [0; 3],
+            })
+            .unwrap();
+            assert!(doc.svg_layers().next().unwrap().source.contains(">Hidden<"));
+        }
     }
 }

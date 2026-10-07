@@ -46,7 +46,18 @@ export function NewDocumentDialog({ locale, onCreate, onClose }: { locale: Local
   const submitting = useRef(false);
   const measurementUnit=useMeasurementUnit();
   const dimension=(pixels:number,dpi:number)=>Number((pixels/unitFactor(measurementUnit,dpi)).toFixed(3));
-  useEffect(()=>{if(settings.document.unit===measurementUnit)return;const old=unitFactor(settings.document.unit,settings.document.resolution),next=unitFactor(measurementUnit,settings.document.resolution);setWidth(v=>String(Number((Number(v)*old/next).toFixed(5))));setHeight(v=>String(Number((Number(v)*old/next).toFixed(5))));setSettings(v=>({...v,document:{...v.document,unit:measurementUnit}}));},[measurementUnit,settings.document.unit,settings.document.resolution]);
+  // Track the unit of the input values immediately, before React commits queued updates.
+  // StrictMode replays mount effects; converting twice scales A4's 210 mm to 2480 mm.
+  const dimensionUnit = useRef<DocumentUnit>(paperPresets[0].unit);
+  useEffect(() => {
+    if (dimensionUnit.current === measurementUnit) return;
+    const old = unitFactor(dimensionUnit.current, settings.document.resolution);
+    const next = unitFactor(measurementUnit, settings.document.resolution);
+    dimensionUnit.current = measurementUnit;
+    setWidth(v => String(Number((Number(v) * old / next).toFixed(5))));
+    setHeight(v => String(Number((Number(v) * old / next).toFixed(5))));
+    setSettings(v => ({ ...v, document: { ...v.document, unit: measurementUnit } }));
+  }, [measurementUnit, settings.document.unit, settings.document.resolution]);
   const d = settings.document; const factor = unitFactor(d.unit, d.resolution);
   const pixelWidth = Math.round(Number(width) * factor); const pixelHeight = Math.round(Number(height) * factor);
   const valid = (settings.pages?.count??1)>=1 && (settings.pages?.count??1)<=512 && Number.isInteger(settings.pages?.count??1) && d.name.trim().length > 0 && d.name.length <= 120 && Number(width) > 0 && Number(height) > 0 && pixelWidth >= 1 && pixelHeight >= 1 && pixelWidth <= 8192 && pixelHeight <= 8192 && Number.isInteger(d.resolution) && d.resolution >= 1 && d.resolution <= 1200;
@@ -55,6 +66,7 @@ export function NewDocumentDialog({ locale, onCreate, onClose }: { locale: Local
   useEffect(() => { const node = dialog.current!; node.showModal(); return () => node.close(); }, []);
   const setDoc = (patch: Partial<typeof d>) => setSettings(value => ({ ...value, document: { ...value.document, ...patch } }));
   function choose(id: string, value: NewDocumentSettings, dimensions?: [number, number]) {
+    dimensionUnit.current = value.document.unit;
     setSelected(id); setSettings(value); setError('');
     const f = unitFactor(value.document.unit, value.document.resolution);
     setWidth(String(dimensions?.[0] ?? Number((value.document.width / f).toFixed(4))));

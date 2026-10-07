@@ -1179,8 +1179,8 @@ fn create_brush_pipeline(
             label: Some("Round brush pipeline"), layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32] }],
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32] })],
             },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
@@ -1188,7 +1188,7 @@ fn create_brush_pipeline(
 color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max },
 alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
 }), write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview: None, cache: None,
+            multiview_mask: None, cache: None,
         })
 }
 
@@ -1230,7 +1230,7 @@ fn create_selection_pipeline(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -1262,8 +1262,8 @@ fn create_brush_composite(
     });
     let brush_composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Brush composite layout"),
-        bind_group_layouts: &[&bind_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bind_layout)],
+        immediate_size: 0,
     });
     let brush_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Brush mask composite"),
@@ -1302,7 +1302,7 @@ fn create_brush_composite(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     (bind_layout, pipeline)
@@ -1465,8 +1465,8 @@ fn create_layer_pipeline_with_fragment(
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: layouts,
-        push_constant_ranges: &[],
+        bind_group_layouts: &layouts.iter().copied().map(Some).collect::<Vec<_>>(),
+        immediate_size: 0,
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -1505,7 +1505,7 @@ fn create_layer_pipeline_with_fragment(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -1610,6 +1610,27 @@ struct ObjectLayerCache {
     bytes: usize,
     upload_bytes: usize,
 }
+// At rest every run uses the same viewport transform, so changing selection
+// does not change the composed pixels. The partition matters only while dragging.
+fn object_selection_matches(cached: &[String], selected: &[String], offset: [f32; 2]) -> bool {
+    offset == [0., 0.] || cached == selected
+}
+
+fn retained_drag_selection(
+    document: &Document,
+    layer: &SvgLayer,
+    selection_empty: bool,
+    fully_contained: bool,
+) -> Option<bool> {
+    if selection_empty {
+        Some(false)
+    } else if fully_contained && document.vector_layer_moves_as_unit(layer) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 fn layer_selected_ids(document: &Document, layer: &SvgLayer) -> Vec<String> {
     document
         .selected_vector_ids()
@@ -2490,6 +2511,7 @@ impl Renderer {
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
+                apply_limit_buckets: false,
                 force_fallback_adapter: false,
             })
             .await
@@ -2541,7 +2563,7 @@ impl Renderer {
         } else {
             surface_format
         };
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shared viewport layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -2557,8 +2579,8 @@ impl Renderer {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Canvas layout"),
-            bind_group_layouts: &[&bind_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_layout)],
+            immediate_size: 0,
         });
         let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, surface_format);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2587,14 +2609,14 @@ impl Renderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let selection_layout = create_selection_layout(&device);
         let paint_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Selected paint layout"),
-            bind_group_layouts: &[&bind_layout, &selection_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_layout), Some(&selection_layout)],
+            immediate_size: 0,
         });
         let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
         let selection_pipeline = create_selection_pipeline(&device, &paint_layout, surface_format);
@@ -2667,7 +2689,7 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        if let Some(error) = device.pop_error_scope().await {
+        if let Some(error) = validation_scope.pop().await {
             return Err(error.to_string());
         }
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2963,14 +2985,22 @@ impl Renderer {
             self.surface.configure(&self.device, &self.config);
         }
         let frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
-                self.surface
-                    .get_current_texture()
-                    .map_err(|e| e.to_string())?
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+                    error => return Err(format!("Surface acquisition failed: {error:?}")),
+                }
             }
-            Err(error) => return Err(error.to_string()),
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(())
+            }
+            error => return Err(format!("Surface acquisition failed: {error:?}")),
         };
         let mut background_viewport = viewport;
         if !document.background_visible() {
@@ -3138,6 +3168,29 @@ impl Renderer {
                     .get(&original.id)
                     .and_then(|cache| cache.state.selection(document, original))
                     .unwrap_or_else(|| layer_selected_ids(document, original));
+                // Check the already-displayed layer texture BEFORE constructing
+                // object runs. Starting a drag must not rasterize stationary
+                // layers, or a whole selected layer whose image can just move.
+                if offset != [0., 0.]
+                    && self.svg_cache.get(&original.id).is_some_and(|cached| {
+                        cached.source == original.source
+                            && cached.opacity == original.effective_opacity()
+                            && cached.size == (width, height)
+                            && retained_drag_selection(
+                                document,
+                                original,
+                                local_selection.is_empty(),
+                                cached.fully_contained,
+                            )
+                            .is_some()
+                    })
+                {
+                    if !local_selection.is_empty() {
+                        translated_layers.insert(original.id.as_str());
+                        drag_metrics.unit_reuse += 1;
+                    }
+                    continue;
+                }
                 // Selecting/deselecting a complete layer only retags its retained
                 // image. Unrelated layers keep their caches when selection changes.
                 if local_selection.is_empty()
@@ -3189,11 +3242,14 @@ impl Renderer {
                 }
                 let valid = self.object_cache.get(&original.id).is_some_and(|cache| {
                     cache.matches_content(document, original)
-                        && cache.selected_ids == local_selection
+                        && object_selection_matches(&cache.selected_ids, &local_selection, offset)
                         && cache.opacity == original.effective_opacity()
                         && cache.document_size == (width, height)
                 });
-                if !valid {
+                // Selection-only redraws must not synchronously rasterize text.
+                // The async SVG worker supplies cold content; split runs only
+                // when a drag actually needs independent transforms.
+                if !valid && (!defer_svg || offset != [0., 0.]) {
                     let started = std::time::Instant::now();
                     self.object_cache.remove(&original.id);
                     let cache = self
@@ -3216,11 +3272,9 @@ impl Renderer {
                     drag_metrics.cache_setup_ms += started.elapsed().as_secs_f64() * 1000.0;
                     self.object_cache.insert(original.id.clone(), cache);
                 }
-                if self
-                    .object_cache
-                    .get(&original.id)
-                    .is_some_and(|cache| !cache.runs.is_empty())
-                {
+                if self.object_cache.get(&original.id).is_some_and(|cache| {
+                    !cache.runs.is_empty() && (valid || !defer_svg || offset != [0., 0.])
+                }) {
                     object_layers.insert(original.id.as_str());
                     drag_metrics.object_reuse += 1;
                     continue;
@@ -3684,7 +3738,7 @@ impl Renderer {
             }
         }
         self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
         #[cfg(feature = "skia")]
         if render_metrics_enabled() {
             eprintln!(
@@ -3721,6 +3775,16 @@ impl Renderer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn selection_only_redraw_reuses_runs_but_changed_drag_selection_does_not() {
+        let old = vec!["long-text".to_string()];
+        let new = vec!["other-text".to_string()];
+        assert!(object_selection_matches(&old, &new, [0., 0.]));
+        assert!(object_selection_matches(&old, &[], [0., 0.]));
+        assert!(!object_selection_matches(&old, &new, [1., 0.]));
+        assert!(!object_selection_matches(&old, &new, [0., -1.]));
+        assert!(object_selection_matches(&old, &old, [10., 5.]));
+    }
     #[test]
     fn pasteboard_color_has_independent_linear_uniforms_and_valid_shader() {
         let mut viewport = Viewport::new(800.0, 600.0, 1.0, 1.0, true).unwrap();
@@ -4338,6 +4402,67 @@ mod tests {
         document
     }
 
+    #[test]
+    fn retained_drag_reuses_stationary_and_whole_layers_but_rejects_partial_selection() {
+        let mut doc = separated_drag_document();
+        let layer = doc.svg_layers().next().unwrap();
+        assert_eq!(retained_drag_selection(&doc, layer, false, true), None);
+        doc.select_vector_objects(vec!["moving".into(), "still".into()])
+            .unwrap();
+        let layer = doc.svg_layers().next().unwrap();
+        assert_eq!(
+            retained_drag_selection(&doc, layer, false, true),
+            Some(true)
+        );
+        assert_eq!(retained_drag_selection(&doc, layer, false, false), None);
+        doc.select_vector_objects(vec![]).unwrap();
+        let layer = doc.svg_layers().next().unwrap();
+        assert_eq!(
+            retained_drag_selection(&doc, layer, true, false),
+            Some(false)
+        );
+    }
+    #[test]
+    fn retained_text_pixels_translate_without_reflow() {
+        use lumapaint_core::{document::TextSettings, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語 English 中文".into(),
+                ..Default::default()
+            },
+            position: [50., 50.],
+            color: [50, 60, 100],
+        })
+        .unwrap();
+        let id = doc.snapshot().text_objects[0].id.clone();
+        doc.select_vector_objects(vec![id]).unwrap();
+        let layer = doc.svg_layers().find(|layer| layer.vector_layer).unwrap();
+        assert_eq!(
+            retained_drag_selection(&doc, layer, false, true),
+            Some(true)
+        );
+        let raster = vector::rasterize_svg(&layer.source, 960, 640).unwrap();
+        let mut shifted = vec![0; raster.pixels.len()];
+        for y in 0..633usize {
+            for x in 0..947usize {
+                let from = (y * 960 + x) * 4;
+                let to = ((y + 7) * 960 + x + 13) * 4;
+                shifted[to..to + 4].copy_from_slice(&raster.pixels[from..from + 4]);
+            }
+        }
+        let translated = doc
+            .translated_vector_layer(layer, 13., 7.)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            shifted,
+            vector::rasterize_svg(&translated.source, 960, 640)
+                .unwrap()
+                .pixels
+        );
+    }
     #[test]
     fn separated_vector_drag_runs_match_full_preview_pixels() {
         let document = separated_drag_document();

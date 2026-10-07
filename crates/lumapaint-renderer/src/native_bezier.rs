@@ -877,7 +877,11 @@ mod tests {
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, |r| r.unwrap());
             device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let pixels = buffer.slice(..).get_mapped_range().to_vec();
+            let pixels = buffer
+                .slice(..)
+                .get_mapped_range()
+                .expect("GPU buffer mapped after successful map callback")
+                .to_vec();
             buffer.unmap();
             pixels
         };

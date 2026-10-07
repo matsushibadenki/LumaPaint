@@ -28,7 +28,7 @@ pub(super) fn layout(size: (u32, u32), limits: &wgpu::Limits) -> Option<(u64, u6
     (input / 4 >= 262_144
         && input.div_ceil(1024) <= u64::from(limits.max_compute_workgroups_per_dimension)
         && capacity <= limits.max_buffer_size
-        && capacity <= u64::from(limits.max_storage_buffer_binding_size)
+        && capacity <= limits.max_storage_buffer_binding_size
         && capacity * 2 + CONFIG_BYTES <= BUDGET)
         .then_some((input, capacity, stride))
 }
@@ -50,8 +50,8 @@ pub(super) struct EffectsDisplay {
 
 impl EffectsDisplay {
     pub async fn new(device: &wgpu::Device) -> Option<Self> {
-        device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Direct display effects"),
             source: wgpu::ShaderSource::Wgsl(include_str!("layer_effects.wgsl").into()),
@@ -64,8 +64,8 @@ impl EffectsDisplay {
             compilation_options: Default::default(),
             cache: None,
         });
-        let invalid = device.pop_error_scope().await;
-        let memory = device.pop_error_scope().await;
+        let invalid = validation_scope.pop().await;
+        let memory = memory_scope.pop().await;
         if invalid.is_some() || memory.is_some() {
             return None;
         }
@@ -267,7 +267,10 @@ mod tests {
             .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         rx.recv().unwrap().unwrap();
-        let mapped = buffer.slice(..).get_mapped_range();
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("GPU buffer mapped after successful map callback");
         mapped
             .chunks(stride as usize)
             .flat_map(|row| row[..texture.width() as usize * 4].iter().copied())

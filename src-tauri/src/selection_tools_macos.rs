@@ -151,7 +151,7 @@ pub(super) fn pointer(
                     } else {
                         0.
                     },
-                    preview: doc.clone(),
+                    preview: doc.clone_for_rendering(),
                     edges,
                 },
             );

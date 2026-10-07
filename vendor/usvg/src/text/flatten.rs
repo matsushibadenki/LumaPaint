@@ -4,12 +4,20 @@
 use std::mem;
 use std::sync::Arc;
 
+use crate::GlyphId;
 use fontdb::{Database, ID};
-use rustybuzz::ttf_parser;
-use rustybuzz::ttf_parser::{GlyphId, RasterImageFormat, RgbaColor};
+use skrifa::MetadataProvider;
+use skrifa::Tag;
+use skrifa::bitmap::{BitmapData, BitmapFormat};
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::prelude::LocationRef;
+use skrifa::raw::TableProvider as _;
+use skrifa::raw::types::BoundingBox;
+use svgtypes::Color;
 use tiny_skia_path::{NonZeroRect, Size, Transform};
 use xmlwriter::XmlWriter;
 
+use crate::text::OPSZ;
 use crate::text::colr::GlyphPainter;
 use crate::*;
 
@@ -21,11 +29,32 @@ fn resolve_rendering_mode(text: &Text) -> ShapeRendering {
     }
 }
 
+/// Returns the effective variation settings for a glyph: the span's explicit
+/// variations plus an automatically computed `opsz` value when
+/// `font-optical-sizing: auto` is in effect and the font has an `opsz` axis
+/// that wasn't set explicitly. This matches browser behavior
+/// (CSS font-optical-sizing: auto).
+fn effective_variations(
+    cache: &mut Cache,
+    span: &layout::Span,
+    glyph: &layout::PositionedGlyph,
+) -> Vec<FontVariation> {
+    let mut variations = span.variations.clone();
+    if span.font_optical_sizing == crate::FontOpticalSizing::Auto
+        && !variations.iter().any(|v| &v.tag == b"opsz")
+        && cache.has_opsz_axis(glyph.font)
+    {
+        variations.push(FontVariation::new(*b"opsz", glyph.font_size()));
+    }
+    variations
+}
+
 fn push_outline_paths(
     span: &layout::Span,
     builder: &mut tiny_skia_path::PathBuilder,
     new_children: &mut Vec<Node>,
     rendering_mode: ShapeRendering,
+    abs_transform: Transform,
 ) {
     let builder = mem::replace(builder, tiny_skia_path::PathBuilder::new());
 
@@ -38,16 +67,17 @@ fn push_outline_paths(
             span.paint_order,
             rendering_mode,
             Arc::new(p),
-            Transform::default(),
+            abs_transform,
         )
     }) {
         new_children.push(Node::Path(Box::new(path)));
     }
 }
 
-pub(crate) fn flatten(text: &mut Text, fontdb: &fontdb::Database) -> Option<(Group, NonZeroRect)> {
+pub(crate) fn flatten(text: &mut Text, cache: &mut Cache) -> Option<(Group, NonZeroRect)> {
     let mut new_children = vec![];
 
+    let abs_transform = text.abs_transform;
     let rendering_mode = resolve_rendering_mode(text);
 
     for span in &text.layouted {
@@ -72,35 +102,49 @@ pub(crate) fn flatten(text: &mut Text, fontdb: &fontdb::Database) -> Option<(Gro
         let mut span_builder = tiny_skia_path::PathBuilder::new();
 
         for glyph in &span.positioned_glyphs {
+            let variations = effective_variations(cache, span, glyph);
+
             // A (best-effort conversion of a) COLR glyph.
-            if let Some(tree) = fontdb.colr(glyph.font, glyph.id) {
+            if let Some(tree) = cache.fontdb_colr(glyph.font, glyph.id, &variations) {
                 let mut group = Group {
                     transform: glyph.colr_transform(),
                     ..Group::empty()
                 };
-                // TODO: Probably need to update abs_transform of children?
+                // TODO: Probably need to update abs_transform of children? Same
+                // for SVG and bitmap glyphs.
                 group.children.push(Node::Group(Box::new(tree.root)));
                 group.calculate_bounding_boxes();
 
                 new_children.push(Node::Group(Box::new(group)));
             }
             // An SVG glyph. Will return the usvg node containing the glyph descriptions.
-            else if let Some(node) = fontdb.svg(glyph.font, glyph.id) {
-                push_outline_paths(span, &mut span_builder, &mut new_children, rendering_mode);
+            else if let Some(node) = cache.fontdb_svg(glyph.font, glyph.id) {
+                push_outline_paths(
+                    span,
+                    &mut span_builder,
+                    &mut new_children,
+                    rendering_mode,
+                    abs_transform,
+                );
 
                 let mut group = Group {
                     transform: glyph.svg_transform(),
                     ..Group::empty()
                 };
-                // TODO: Probably need to update abs_transform of children?
                 group.children.push(node);
                 group.calculate_bounding_boxes();
 
                 new_children.push(Node::Group(Box::new(group)));
             }
             // A bitmap glyph.
-            else if let Some(img) = fontdb.raster(glyph.font, glyph.id) {
-                push_outline_paths(span, &mut span_builder, &mut new_children, rendering_mode);
+            else if let Some(img) = cache.fontdb_raster(glyph.font, glyph.id) {
+                push_outline_paths(
+                    span,
+                    &mut span_builder,
+                    &mut new_children,
+                    rendering_mode,
+                    abs_transform,
+                );
 
                 let transform = if img.is_sbix {
                     glyph.sbix_transform(
@@ -112,12 +156,7 @@ pub(crate) fn flatten(text: &mut Text, fontdb: &fontdb::Database) -> Option<(Gro
                         img.image.size.height(),
                     )
                 } else {
-                    glyph.cbdt_transform(
-                        img.x as f32,
-                        img.y as f32,
-                        img.pixels_per_em as f32,
-                        img.image.size.height(),
-                    )
+                    glyph.cbdt_transform(img.x as f32, img.y as f32, img.pixels_per_em as f32)
                 };
 
                 let mut group = Group {
@@ -128,15 +167,23 @@ pub(crate) fn flatten(text: &mut Text, fontdb: &fontdb::Database) -> Option<(Gro
                 group.calculate_bounding_boxes();
 
                 new_children.push(Node::Group(Box::new(group)));
-            } else if let Some(outline) = fontdb
-                .outline(glyph.font, glyph.id)
-                .and_then(|p| p.transform(glyph.outline_transform()))
-            {
-                span_builder.push_path(&outline);
+            } else {
+                let outline = cache.fontdb_outline(glyph.font, glyph.id, &variations);
+
+                if let Some(outline) = outline.and_then(|p| p.transform(glyph.outline_transform()))
+                {
+                    span_builder.push_path(&outline);
+                }
             }
         }
 
-        push_outline_paths(span, &mut span_builder, &mut new_children, rendering_mode);
+        push_outline_paths(
+            span,
+            &mut span_builder,
+            &mut new_children,
+            rendering_mode,
+            abs_transform,
+        );
 
         if let Some(path) = span.line_through.as_ref() {
             let mut path = path.clone();
@@ -159,11 +206,12 @@ pub(crate) fn flatten(text: &mut Text, fontdb: &fontdb::Database) -> Option<(Gro
     Some((group, stroke_bbox))
 }
 
+#[derive(Default)]
 struct PathBuilder {
     builder: tiny_skia_path::PathBuilder,
 }
 
-impl ttf_parser::OutlineBuilder for PathBuilder {
+impl OutlinePen for PathBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
         self.builder.move_to(x, y);
     }
@@ -172,12 +220,12 @@ impl ttf_parser::OutlineBuilder for PathBuilder {
         self.builder.line_to(x, y);
     }
 
-    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        self.builder.quad_to(x1, y1, x, y);
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        self.builder.quad_to(cx0, cy0, x, y);
     }
 
-    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.builder.cubic_to(x1, y1, x2, y2, x, y);
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.builder.cubic_to(cx0, cy0, cx1, cy1, x, y);
     }
 
     fn close(&mut self) {
@@ -186,73 +234,121 @@ impl ttf_parser::OutlineBuilder for PathBuilder {
 }
 
 pub(crate) trait DatabaseExt {
-    fn outline(&self, id: ID, glyph_id: GlyphId) -> Option<tiny_skia_path::Path>;
+    fn outline(
+        &self,
+        id: ID,
+        glyph_id: GlyphId,
+        variations: &[crate::FontVariation],
+    ) -> Option<tiny_skia_path::Path>;
+    fn has_opsz_axis(&self, id: ID) -> bool;
     fn raster(&self, id: ID, glyph_id: GlyphId) -> Option<BitmapImage>;
     fn svg(&self, id: ID, glyph_id: GlyphId) -> Option<Node>;
-    fn colr(&self, id: ID, glyph_id: GlyphId) -> Option<Tree>;
+    fn colr(&self, id: ID, glyph_id: GlyphId, variations: &[crate::FontVariation]) -> Option<Tree>;
 }
 
+#[derive(Clone)]
 pub(crate) struct BitmapImage {
     image: Image,
     x: i16,
     y: i16,
     pixels_per_em: u16,
-    glyph_bbox: Option<ttf_parser::Rect>,
+    glyph_bbox: Option<BoundingBox<i16>>,
     is_sbix: bool,
 }
 
 impl DatabaseExt for Database {
     #[inline(never)]
-    fn outline(&self, id: ID, glyph_id: GlyphId) -> Option<tiny_skia_path::Path> {
+    fn outline(
+        &self,
+        id: ID,
+        glyph_id: GlyphId,
+        variations: &[crate::FontVariation],
+    ) -> Option<tiny_skia_path::Path> {
         self.with_face_data(id, |data, face_index| -> Option<tiny_skia_path::Path> {
-            let font = ttf_parser::Face::parse(data, face_index).ok()?;
+            let font = skrifa::FontRef::from_index(data, face_index).ok()?;
+            let outline = font.outline_glyphs().get(glyph_id.into())?;
 
-            let mut builder = PathBuilder {
-                builder: tiny_skia_path::PathBuilder::new(),
-            };
+            let mut builder = PathBuilder::default();
 
-            font.outline_glyph(glyph_id, &mut builder)?;
+            let size = skrifa::prelude::Size::unscaled();
+            // An empty variation list resolves to the default value of every
+            // variation axis, which is what we want for non-variable fonts and
+            // for variable fonts used without variations.
+            let location = font.axes().location(
+                variations
+                    .iter()
+                    .map(|v| (Tag::from_be_bytes(v.tag), v.value)),
+            );
+            outline
+                .draw(DrawSettings::unhinted(size, &location), &mut builder)
+                .ok()?;
+
             builder.builder.finish()
         })?
     }
 
+    fn has_opsz_axis(&self, id: ID) -> bool {
+        self.with_face_data(id, |data, face_index| -> Option<bool> {
+            let font = skrifa::FontRef::from_index(data, face_index).ok()?;
+            Some(font.axes().get_by_tag(OPSZ).is_some())
+        })
+        .flatten()
+        .unwrap_or(false)
+    }
+
     fn raster(&self, id: ID, glyph_id: GlyphId) -> Option<BitmapImage> {
         self.with_face_data(id, |data, face_index| -> Option<BitmapImage> {
-            let font = ttf_parser::Face::parse(data, face_index).ok()?;
-            let image = font.glyph_raster_image(glyph_id, u16::MAX)?;
+            let font = skrifa::FontRef::from_index(data, face_index).ok()?;
+            let bitmap_strikes = font.bitmap_strikes();
 
-            if image.format == RasterImageFormat::PNG {
-                let bitmap_image = BitmapImage {
-                    image: Image {
-                        id: String::new(),
-                        visible: true,
-                        size: Size::from_wh(image.width as f32, image.height as f32)?,
-                        rendering_mode: ImageRendering::OptimizeQuality,
-                        kind: ImageKind::PNG(Arc::new(image.data.into())),
-                        abs_transform: Transform::default(),
-                        abs_bounding_box: NonZeroRect::from_xywh(
-                            0.0,
-                            0.0,
-                            image.width as f32,
-                            image.height as f32,
-                        )?,
-                    },
-                    x: image.x,
-                    y: image.y,
-                    pixels_per_em: image.pixels_per_em,
-                    glyph_bbox: font.glyph_bounding_box(glyph_id),
-                    // ttf-parser always checks sbix first, so if this table exists, it was used.
-                    is_sbix: font.tables().sbix.is_some(),
-                };
+            // We set size to unscaled to get the largest image available
+            let size = skrifa::prelude::Size::unscaled();
+            let location = LocationRef::default();
+            let image = bitmap_strikes.glyph_for_size(size, glyph_id.into())?;
 
-                return Some(bitmap_image);
+            match image.data {
+                BitmapData::Png(data) => {
+                    let metrics = font.glyph_metrics(size, location);
+                    let bounding_box = metrics.bounds(glyph_id.into()).map(|bbox| BoundingBox {
+                        x_min: bbox.x_min as i16,
+                        y_min: bbox.y_min as i16,
+                        x_max: bbox.x_max as i16,
+                        y_max: bbox.y_max as i16,
+                    });
+
+                    let bitmap_image = BitmapImage {
+                        image: Image {
+                            id: String::new(),
+                            visible: true,
+                            size: Size::from_wh(image.width as f32, image.height as f32)?,
+                            rendering_mode: ImageRendering::OptimizeQuality,
+                            kind: ImageKind::PNG(Arc::new(data.to_vec())),
+                            abs_transform: Transform::default(),
+                            abs_bounding_box: NonZeroRect::from_xywh(
+                                0.0,
+                                0.0,
+                                image.width as f32,
+                                image.height as f32,
+                            )?,
+                        },
+                        x: image.inner_bearing_x as i16,
+                        y: image.inner_bearing_y as i16,
+                        pixels_per_em: image.ppem_x as u16,
+                        glyph_bbox: bounding_box,
+                        is_sbix: bitmap_strikes.format() == Some(BitmapFormat::Sbix),
+                    };
+
+                    Some(bitmap_image)
+                }
+                // TODO: implement other bitmap formats
+                BitmapData::Bgra(_) | BitmapData::Mask(_) => None,
             }
-
-            None
         })?
     }
 
     fn svg(&self, id: ID, glyph_id: GlyphId) -> Option<Node> {
+        // SEE: https://docs.rs/read-fonts/latest/read_fonts/tables/svg/type.Svg.html
+
         // TODO: Technically not 100% accurate because the SVG format in a OTF font
         // is actually a subset/superset of a normal SVG, but it seems to work fine
         // for Twitter Color Emoji, so might as well use what we already have.
@@ -260,19 +356,25 @@ impl DatabaseExt for Database {
         // TODO: Glyph records can contain the data for multiple glyphs. We should
         // add a cache so we don't need to reparse the data every time.
         self.with_face_data(id, |data, face_index| -> Option<Node> {
-            let font = ttf_parser::Face::parse(data, face_index).ok()?;
-            let image = font.glyph_svg_image(glyph_id)?;
-            let tree = Tree::from_data(image.data, &Options::default()).ok()?;
+            let font = skrifa::FontRef::from_index(data, face_index).ok()?;
+            let svg_table = font.svg().ok()?;
+            let image_data = svg_table.glyph_data(glyph_id.into()).ok()??;
+            let tree = Tree::from_data(image_data, &Options::default()).ok()?;
 
             // Twitter Color Emoji seems to always have one SVG record per glyph,
             // while Noto Color Emoji sometimes contains multiple ones. It's kind of hacky,
             // but the best we have for now.
-            let node = if image.start_glyph_id == image.end_glyph_id {
+            let document_list = svg_table.svg_document_list().ok()?;
+            let doc_record = document_list.document_records().iter().find(|r| {
+                (r.start_glyph_id.get().to_u32()..=r.end_glyph_id.get().to_u32())
+                    .contains(&glyph_id.0)
+            })?;
+            let node = if doc_record.start_glyph_id == doc_record.end_glyph_id {
                 Node::Group(Box::new(tree.root))
             } else {
                 tree.node_by_id(&format!("glyph{}", glyph_id.0))
                     .log_none(|| {
-                        log::warn!("Failed to find SVG glyph node for glyph {}", glyph_id.0)
+                        log::warn!("Failed to find SVG glyph node for glyph {}", glyph_id.0);
                     })
                     .cloned()?
             };
@@ -281,9 +383,15 @@ impl DatabaseExt for Database {
         })?
     }
 
-    fn colr(&self, id: ID, glyph_id: GlyphId) -> Option<Tree> {
+    fn colr(&self, id: ID, glyph_id: GlyphId, variations: &[crate::FontVariation]) -> Option<Tree> {
         self.with_face_data(id, |data, face_index| -> Option<Tree> {
-            let face = ttf_parser::Face::parse(data, face_index).ok()?;
+            let font = skrifa::FontRef::from_index(data, face_index).ok()?;
+
+            let location = font.axes().location(
+                variations
+                    .iter()
+                    .map(|v| (Tag::from_be_bytes(v.tag), v.value)),
+            );
 
             let mut svg = XmlWriter::new(xmlwriter::Options::default());
 
@@ -298,23 +406,23 @@ impl DatabaseExt for Database {
             svg.start_element("g");
 
             let mut glyph_painter = GlyphPainter {
-                face: &face,
+                font: &font,
+                location: LocationRef::from(&location),
                 svg: &mut svg,
                 path_buf: &mut path_buf,
                 gradient_index,
                 clip_path_index,
-                palette_index: 0,
-                transform: ttf_parser::Transform::default(),
-                outline_transform: ttf_parser::Transform::default(),
-                transforms_stack: vec![ttf_parser::Transform::default()],
+                foreground_color: Color::new_rgba(0, 0, 0, 255),
+                transform: skrifa::color::Transform::default(),
+                outline_transform: skrifa::color::Transform::default(),
+                transforms_stack: vec![skrifa::color::Transform::default()],
+                clip_stack: Vec::new(),
             };
 
-            face.paint_color_glyph(
-                glyph_id,
-                0,
-                RgbaColor::new(0, 0, 0, 255),
-                &mut glyph_painter,
-            )?;
+            font.color_glyphs()
+                .get(glyph_id.into())?
+                .paint(&location, &mut glyph_painter)
+                .ok()?;
             svg.end_element();
 
             Tree::from_data(svg.end_document().as_bytes(), &Options::default()).ok()

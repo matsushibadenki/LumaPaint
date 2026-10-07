@@ -286,6 +286,23 @@ impl<'a, 'input: 'a> SvgNode<'a, 'input> {
             .iter()
             .find(|a| a.name == aid)
             .map(|a| a.value.as_str())?;
+        // These AId have an initial value of none
+        let is_possible_none = matches!(
+            aid,
+            AId::Mask
+                | AId::MarkerStart
+                | AId::MarkerMid
+                | AId::MarkerEnd
+                | AId::ClipPath
+                | AId::Filter
+                | AId::FontSizeAdjust
+                | AId::TextDecoration
+                | AId::Stroke
+                | AId::StrokeDasharray
+        );
+        if is_possible_none && value == "none" {
+            return None;
+        }
         match T::parse(*self, aid, value) {
             Some(v) => Some(v),
             None => {
@@ -372,11 +389,7 @@ impl<'a, 'input: 'a> SvgNode<'a, 'input> {
             } else {
                 // Non-inheritable attributes can inherit a value only from a direct parent.
                 let n = self.parent_element()?;
-                if n.has_attribute(aid) {
-                    Some(n)
-                } else {
-                    None
-                }
+                if n.has_attribute(aid) { Some(n) } else { None }
             }
         }
     }
@@ -697,12 +710,14 @@ impl AId {
                 | AId::FloodOpacity
                 | AId::FontFamily
                 | AId::FontKerning // technically not presentation
+                | AId::FontOpticalSizing // technically not presentation
                 | AId::FontSize
                 | AId::FontSizeAdjust
                 | AId::FontStretch
                 | AId::FontStyle
                 | AId::FontVariant
                 | AId::FontWeight
+                | AId::FontVariationSettings
                 | AId::GlyphOrientationHorizontal
                 | AId::GlyphOrientationVertical
                 | AId::ImageRendering
@@ -773,6 +788,7 @@ impl AId {
                 | AId::FloodOpacity
                 | AId::FontFamily
                 | AId::FontKerning
+                | AId::FontOpticalSizing
                 | AId::FontSize
                 | AId::FontStretch
                 | AId::FontStyle

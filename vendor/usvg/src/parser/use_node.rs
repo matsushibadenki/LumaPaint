@@ -200,7 +200,7 @@ pub(crate) fn convert_svg(
 
     if let Some(clip_rect) = get_clip_rect(node, node, state) {
         let mut g = clip_element(node, clip_rect, orig_ts, state, cache);
-        g.abs_transform = parent.abs_transform;
+        g.abs_transform = parent.abs_transform.pre_concat(orig_ts);
         convert_children(node, new_ts, &new_state, cache, false, &mut g);
         g.calculate_bounding_boxes();
         parent.children.push(Node::Group(Box::new(g)));
@@ -270,26 +270,27 @@ fn convert_children(
     is_context_element: bool,
     parent: &mut Group,
 ) {
-    // Temporarily adjust absolute transform so `convert_group` would account for `transform`.
-    let old_abs_transform = parent.abs_transform;
-    parent.abs_transform = parent.abs_transform.pre_concat(transform);
+    // Cache the parent absolute transform.
+    let parent_abs_transform = parent.abs_transform;
 
     let required = !transform.is_identity();
-    if let Some(mut g) =
-        converter::convert_group(node, state, required, cache, parent, &|cache, g| {
-            if state.parent_clip_path.is_some() {
-                converter::convert_clip_path_elements(node, state, cache, g);
-            } else {
-                converter::convert_children(node, state, cache, g);
-            }
-        })
-    {
-        g.is_context_element = is_context_element;
-        g.transform = transform;
-        parent.children.push(Node::Group(Box::new(g)));
-    }
 
-    parent.abs_transform = old_abs_transform;
+    let Some(g) = converter::convert_group(node, state, required, cache, parent, &|cache, g| {
+        // Make sure they are correct before converting children.
+        g.transform = transform;
+        g.abs_transform = parent_abs_transform.pre_concat(transform);
+        g.is_context_element = is_context_element;
+
+        if state.parent_clip_path.is_some() {
+            converter::convert_clip_path_elements(node, state, cache, g);
+        } else {
+            converter::convert_children(node, state, cache, g);
+        }
+    }) else {
+        return;
+    };
+
+    parent.children.push(Node::Group(Box::new(g)));
 }
 
 fn get_clip_rect(

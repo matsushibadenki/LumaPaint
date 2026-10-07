@@ -16,9 +16,9 @@ fn capacities(required: [u64; 3], limits: &wgpu::Limits) -> Option<[u64; 3]> {
         required[2].max(4).checked_next_power_of_two()?,
     ];
     if required.contains(&0)
-        || capacities.iter().any(|n| {
-            *n > limits.max_buffer_size || *n > u64::from(limits.max_storage_buffer_binding_size)
-        })
+        || capacities
+            .iter()
+            .any(|n| *n > limits.max_buffer_size || *n > limits.max_storage_buffer_binding_size)
         || capacities[0] + capacities[1] + 2 * capacities[2] + 48 > CACHE_BUDGET
     {
         return None;
@@ -39,7 +39,7 @@ impl Gpu {
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).ok()?;
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Retouch"),
             source: wgpu::ShaderSource::Wgsl(include_str!("retouch.wgsl").into()),
@@ -52,7 +52,7 @@ impl Gpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+        if let Some(error) = pollster::block_on(validation_scope.pop()) {
             #[cfg(test)]
             eprintln!("Retouch GPU validation: {error}");
             #[cfg(not(test))]
@@ -76,9 +76,9 @@ impl Gpu {
     ) -> Option<Vec<u8>> {
         let size = values.len() as u64 * 4;
         let limits = self.device.limits();
-        if source.len() as u64 * 16 > u64::from(limits.max_storage_buffer_binding_size)
+        if source.len() as u64 * 16 > limits.max_storage_buffer_binding_size
             || size == 0
-            || values.len() as u64 * 32 > u64::from(limits.max_storage_buffer_binding_size)
+            || values.len() as u64 * 32 > limits.max_storage_buffer_binding_size
             || size > limits.max_buffer_size
             || (values.len() as u64).div_ceil(256)
                 > u64::from(limits.max_compute_workgroups_per_dimension)
@@ -187,7 +187,12 @@ impl Gpu {
             });
         self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
         recv.recv().ok()?.ok()?;
-        let bytes = buffers.readback.slice(..size).get_mapped_range().to_vec();
+        let bytes = buffers
+            .readback
+            .slice(..size)
+            .get_mapped_range()
+            .ok()?
+            .to_vec();
         buffers.readback.unmap();
         Some(bytes)
     }

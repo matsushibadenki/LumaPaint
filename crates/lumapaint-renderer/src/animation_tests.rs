@@ -226,3 +226,58 @@ fn history_free_pixel_preview_matches_committed_image_without_mutating_source() 
     assert_eq!(doc.snapshot().layer_id, id);
     assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
 }
+
+#[test]
+fn selecting_partial_text_layers_does_not_change_artwork_or_scene_generation() {
+    use lumapaint_core::document::TextSettings;
+    use lumapaint_core::vector::VectorText;
+    let mut state = Document::default().document_state();
+    state.width = 256;
+    state.height = 256;
+    let mut doc = Document::from_document_state(state).unwrap();
+    doc.set_text_object(TextSettings {
+        id: None,
+        text: VectorText {
+            content: "日本語 English 中文".into(),
+            box_width: 220.,
+            ..Default::default()
+        },
+        position: [8., 8.],
+        color: [0, 0, 0],
+    })
+    .unwrap();
+    let first = doc.snapshot().text_objects[0].id.clone();
+    doc.set_text_object(TextSettings {
+        id: None,
+        text: VectorText {
+            content: "Second frame".into(),
+            box_width: 220.,
+            ..Default::default()
+        },
+        position: [8., 100.],
+        color: [80, 40, 180],
+    })
+    .unwrap();
+    let second = doc.snapshot().text_objects[1].id.clone();
+    let before = document_pixels(&doc).unwrap();
+    let revision = doc.revision();
+    let cursor = doc.scene_journal().cursor();
+    let sources: Vec<_> = doc.svg_layers().map(|layer| layer.source.clone()).collect();
+    for selection in [
+        vec![first.clone()],
+        vec![second.clone()],
+        vec![first, second],
+        vec![],
+    ] {
+        doc.select_vector_objects(selection).unwrap();
+        assert_eq!(document_pixels(&doc).unwrap(), before);
+        assert_eq!(doc.revision(), revision);
+        assert_eq!(doc.scene_journal().cursor(), cursor);
+        assert_eq!(
+            doc.svg_layers()
+                .map(|layer| layer.source.clone())
+                .collect::<Vec<_>>(),
+            sources
+        );
+    }
+}

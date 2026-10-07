@@ -10,27 +10,29 @@ skia = ["dep:skia-safe", "dep:metal"]
 [dependencies]
 serde.workspace = true
 lumapaint-fonts = { path = "../lumapaint-fonts" }
-pollster = "0.4"
+pollster = "=1.0.1"
 i_overlay = "=9.0.0"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 lumapaint-core = { path = "../lumapaint-core" }
-wgpu = "27"
-bytemuck = { version = "1", features = ["derive"] }
-resvg = "0.45"
-ttf-parser = "0.25"
-rustybuzz = "0.20"
-unicode-segmentation = "1.13"
+wgpu = "=30.0.1"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+resvg = "=0.48.1"
+ttf-parser = "=0.25.1"
+rustybuzz = "=0.20.1"
+unicode-segmentation = "=1.13.3"
 skia-safe = { version = "=0.153.3", features = ["svg", "webp"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-metal = "=0.3.2"
 skia-safe = { version = "=0.153.3", features = ["svg", "webp", "metal", "ganesh"], optional = true }
-metal = { version = "0.32", optional = true }
+metal = { version = "=0.33.0", optional = true }
 
 [dev-dependencies]
 lopdf = { version = "=0.45.0", default-features = false }
-base64 = "0.22"
+base64 = "=0.23.1"
 png = "=0.18.1"
-serde_json = "1"
+serde_json = "=1.0.151"
 lumapaint-formats = { path = "../lumapaint-formats" }
 lumapaint-svg = { path = "../lumapaint-svg" }
-pollster = "0.4"
+pollster = "=1.0.1"

@@ -1102,6 +1102,12 @@ mod tests {
                 )
                 .unwrap();
                 reflow_text_with_system_fonts(&mut text, [0, 0, 255]).unwrap();
+                // Keep shifted glyphs inside the frame: overflowing lines are now hidden
+                // as a unit, which this glyph-position regression intentionally excludes.
+                text.line_baselines = match writing_mode {
+                    WritingMode::Horizontal => vec![60., 116.],
+                    WritingMode::Vertical => vec![40., 96.],
+                };
                 let mut doc = Document::default();
                 doc.set_text_object(TextSettings {
                     id: None,
@@ -1554,7 +1560,9 @@ mod tests {
         shape.kind = VectorObjectKind::Path;
         shape.path.data = "M20 20H100V100H20Z".into();
         shape.control_points = vec![[20., 20.], [100., 20.], [100., 100.], [20., 100.]];
+        let shape_id = shape.id.clone();
         doc.upsert_vector_object(&id, shape).unwrap();
+        doc.select_vector_objects(vec![shape_id]).unwrap();
         let preview = doc.outline_view([0., 0.], 1.);
         assert_eq!(preview.svg_layers().next().unwrap().source, image);
         let raster = rasterize_svg(
@@ -1569,6 +1577,27 @@ mod tests {
         .unwrap();
         assert_eq!(raster.pixels[(60 * 960 + 60) * 4 + 3], 0);
         assert!(raster.pixels[(20 * 960 + 60) * 4 + 3] > 0);
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let mut committed = doc.clone();
+        committed.move_selected_vectors(12., -4.).unwrap();
+        let expected = committed.outline_view([0., 0.], 1.);
+        let dragged = doc.outline_view([12., -4.], 1.);
+        let pixels = |document: &Document| {
+            rasterize_svg(
+                &document
+                    .svg_layers()
+                    .find(|layer| layer.vector_layer)
+                    .unwrap()
+                    .source,
+                960,
+                640,
+            )
+            .unwrap()
+            .pixels
+        };
+        assert_eq!(pixels(&dragged), pixels(&expected));
+        assert_eq!(dragged.svg_layers().next().unwrap().source, image);
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
     }
 
     #[test]
