@@ -545,7 +545,7 @@ impl SparseTiles {
         color: [u8; 3],
         selection: Option<&Selection>,
     ) -> Result<Vec<TileChange>, String> {
-        self.paint_dabs_with_alpha_lock(dabs, color, selection, false)
+        self.paint_dabs_with_alpha_lock(dabs, color, selection, false, None)
     }
 
     fn paint_dabs_with_alpha_lock(
@@ -554,8 +554,10 @@ impl SparseTiles {
         color: [u8; 3],
         selection: Option<&Selection>,
         alpha_locked: bool,
+        targets: Option<&BTreeSet<TileCoord>>,
     ) -> Result<Vec<TileChange>, String> {
-        let density = dab_density(self.width, self.height, dabs, selection)?;
+        let density =
+            dab_density_on_tiles(self.width, self.height, dabs, selection, None, targets)?;
         let mut changes = Vec::new();
         for (coord, coverage) in density {
             let before = self.tiles.get(&coord).cloned();
@@ -869,7 +871,7 @@ fn dab_density(
     dabs: &[RasterDab],
     selection: Option<&Selection>,
 ) -> Result<BTreeMap<TileCoord, Vec<f32>>, String> {
-    dab_density_on_tiles(width, height, dabs, selection, None)
+    dab_density_on_tiles(width, height, dabs, selection, None, None)
 }
 
 fn dab_density_on_tiles(
@@ -878,6 +880,7 @@ fn dab_density_on_tiles(
     dabs: &[RasterDab],
     selection: Option<&Selection>,
     occupied: Option<&BTreeMap<TileCoord, Vec<u8>>>,
+    targets: Option<&BTreeSet<TileCoord>>,
 ) -> Result<BTreeMap<TileCoord, Vec<f32>>, String> {
     if dabs.len() > 65_536 {
         return Err("Too many raster brush dabs".into());
@@ -902,50 +905,57 @@ fn dab_density_on_tiles(
         let bottom = ((dab.y + dab.radius + fringe).ceil() as i32)
             .min(height as i32)
             .max(0) as u32;
+        if left >= right || top >= bottom {
+            continue;
+        }
         let inner = dab.radius * dab.hardness;
-        for y in top..bottom {
+        for tile_y in top / TILE_SIZE..bottom.div_ceil(TILE_SIZE) {
             for tile_x in left / TILE_SIZE..right.div_ceil(TILE_SIZE) {
                 let coord = TileCoord {
                     x: tile_x,
-                    y: y / TILE_SIZE,
+                    y: tile_y,
                 };
-                if occupied.is_some_and(|tiles| !tiles.contains_key(&coord)) {
+                if occupied.is_some_and(|tiles| !tiles.contains_key(&coord))
+                    || targets.is_some_and(|tiles| !tiles.contains(&coord))
+                {
                     continue;
                 }
                 let coverage = density
                     .entry(coord)
                     .or_insert_with(|| vec![0.0; TILE_BYTES / 4]);
-                for x in left.max(tile_x * TILE_SIZE)..right.min((tile_x + 1) * TILE_SIZE) {
-                    if selection.is_some_and(|selection| {
-                        !selection.contains(Point {
-                            x: x as f32 + 0.5,
-                            y: y as f32 + 0.5,
-                        })
-                    }) {
-                        continue;
+                for y in top.max(tile_y * TILE_SIZE)..bottom.min((tile_y + 1) * TILE_SIZE) {
+                    for x in left.max(tile_x * TILE_SIZE)..right.min((tile_x + 1) * TILE_SIZE) {
+                        if selection.is_some_and(|selection| {
+                            !selection.contains(Point {
+                                x: x as f32 + 0.5,
+                                y: y as f32 + 0.5,
+                            })
+                        }) {
+                            continue;
+                        }
+                        let dx = x as f32 + 0.5 - dab.x;
+                        let dy = y as f32 + 0.5 - dab.y;
+                        let distance = dx.hypot(dy);
+                        // Share the GPU brush's document-pixel radial profile. A 2x
+                        // preview must scale the fringe as well as the tip radius.
+                        let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01)
+                            * dab.texture_scale;
+                        let edge = (inner + aa).max(dab.radius + aa);
+                        let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
+                        let profile = 1.0 - t * t * (3.0 - 2.0 * t);
+                        if profile <= 0.0 {
+                            continue;
+                        }
+                        let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                        coverage[index] += (4.0 + 12.0 * dab.hardness)
+                            * dab.weight
+                            * profile
+                            * brush_texture(
+                                (x as f32 + 0.5) / dab.texture_scale,
+                                (y as f32 + 0.5) / dab.texture_scale,
+                                dab.texture,
+                            );
                     }
-                    let dx = x as f32 + 0.5 - dab.x;
-                    let dy = y as f32 + 0.5 - dab.y;
-                    let distance = dx.hypot(dy);
-                    // Share the GPU brush's document-pixel radial profile. A 2x
-                    // preview must scale the fringe as well as the tip radius.
-                    let aa =
-                        ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01) * dab.texture_scale;
-                    let edge = (inner + aa).max(dab.radius + aa);
-                    let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
-                    let profile = 1.0 - t * t * (3.0 - 2.0 * t);
-                    if profile <= 0.0 {
-                        continue;
-                    }
-                    let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
-                    coverage[index] += (4.0 + 12.0 * dab.hardness)
-                        * dab.weight
-                        * profile
-                        * brush_texture(
-                            (x as f32 + 0.5) / dab.texture_scale,
-                            (y as f32 + 0.5) / dab.texture_scale,
-                            dab.texture,
-                        );
                 }
             }
         }
@@ -1691,6 +1701,18 @@ impl TiledRasterDocument {
         dabs: &[RasterDab],
         selection: Option<&Selection>,
     ) -> Result<Option<TileInvalidation>, String> {
+        self.erase_dabs_clipped_in_tiles(layer_id, dabs, selection, None)
+    }
+
+    /// Recompute a complete stroke only on selected tiles. None processes all tiles.
+    /// Dab order and optical-density accumulation are identical to a full stroke.
+    pub fn erase_dabs_clipped_in_tiles(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        selection: Option<&Selection>,
+        targets: Option<&BTreeSet<TileCoord>>,
+    ) -> Result<Option<TileInvalidation>, String> {
         let layer = self
             .layers
             .iter_mut()
@@ -1705,6 +1727,7 @@ impl TiledRasterDocument {
             dabs,
             selection,
             Some(&layer.tiles.tiles),
+            targets,
         )?;
         let mut changes = Vec::new();
         for (coord, coverage) in density {
@@ -1754,6 +1777,18 @@ impl TiledRasterDocument {
         color: [u8; 3],
         selection: Option<&Selection>,
     ) -> Result<Option<TileInvalidation>, String> {
+        self.paint_dabs_clipped_in_tiles(layer_id, dabs, color, selection, None)
+    }
+
+    /// Same compositing and history as paint_dabs_clipped, restricted to target tiles.
+    pub fn paint_dabs_clipped_in_tiles(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        color: [u8; 3],
+        selection: Option<&Selection>,
+        targets: Option<&BTreeSet<TileCoord>>,
+    ) -> Result<Option<TileInvalidation>, String> {
         let layer = self
             .layers
             .iter_mut()
@@ -1762,10 +1797,13 @@ impl TiledRasterDocument {
         if !layer.visible || layer.locked {
             return Err("Raster layer is hidden or locked".into());
         }
-        let changes =
-            layer
-                .tiles
-                .paint_dabs_with_alpha_lock(dabs, color, selection, layer.alpha_locked)?;
+        let changes = layer.tiles.paint_dabs_with_alpha_lock(
+            dabs,
+            color,
+            selection,
+            layer.alpha_locked,
+            targets,
+        )?;
         if changes.is_empty() {
             return Ok(None);
         }
@@ -2012,6 +2050,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn targeted_dabs_match_full_stroke_preserve_other_tiles_and_undo() {
+        let mut base = TiledRasterDocument::new(768, 256).unwrap();
+        base.add_layer("paint".into(), "Paint".into()).unwrap();
+        let dabs = [RasterDab {
+            texture: 1.,
+            texture_scale: 1.,
+            x: 256.,
+            y: 120.,
+            radius: 60.,
+            hardness: 0.3,
+            weight: 0.4,
+        }];
+        base.paint_dabs_clipped("paint", &dabs, [50, 80, 100], None)
+            .unwrap();
+        base.discard_history();
+        let targets = BTreeSet::from([TileCoord { x: 1, y: 0 }]);
+        let selection = Selection::new(
+            crate::selection::SelectionShape::Rectangle,
+            [240., 80., 60., 60.],
+        );
+        for erase in [false, true] {
+            let mut full = base.clone();
+            let mut partial = base.clone();
+            let edit = |doc: &mut TiledRasterDocument, targets| {
+                if erase {
+                    doc.erase_dabs_clipped_in_tiles("paint", &dabs, Some(&selection), targets)
+                } else {
+                    doc.paint_dabs_clipped_in_tiles(
+                        "paint",
+                        &dabs,
+                        [200, 30, 70],
+                        Some(&selection),
+                        targets,
+                    )
+                }
+            };
+            edit(&mut full, None).unwrap();
+            let changes = edit(&mut partial, Some(&targets)).unwrap().unwrap();
+            assert_eq!(changes.coords, vec![TileCoord { x: 1, y: 0 }]);
+            assert_eq!(
+                partial.layers()[0].tiles.tile(TileCoord { x: 1, y: 0 }),
+                full.layers()[0].tiles.tile(TileCoord { x: 1, y: 0 })
+            );
+            assert_eq!(
+                partial.layers()[0].tiles.tile(TileCoord { x: 0, y: 0 }),
+                base.layers()[0].tiles.tile(TileCoord { x: 0, y: 0 })
+            );
+            let edited = partial.state();
+            partial.undo().unwrap();
+            assert_eq!(partial.state(), base.state());
+            partial.redo().unwrap();
+            assert_eq!(partial.state(), edited);
+            let mut invalid = dabs;
+            invalid[0].x = f32::NAN;
+            assert!(partial
+                .paint_dabs_clipped_in_tiles("paint", &invalid, [0; 3], None, Some(&targets))
+                .is_err());
+            assert_eq!(partial.state(), edited);
+        }
+    }
+
+    #[test]
     fn layer_effects_preserve_pixels_validate_atomically_and_undo() {
         let mut d = TiledRasterDocument::new(1, 1).unwrap();
         d.add_layer("image".into(), "Image".into()).unwrap();
@@ -2231,17 +2331,28 @@ mod tests {
             weight: 1.0,
         }];
         let full = dab_density(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None).unwrap();
-        let sparse =
-            dab_density_on_tiles(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None, Some(&occupied))
-                .unwrap();
+        let sparse = dab_density_on_tiles(
+            TILE_SIZE * 2,
+            TILE_SIZE * 2,
+            &dabs,
+            None,
+            Some(&occupied),
+            None,
+        )
+        .unwrap();
         assert_eq!(sparse.len(), 1);
         assert_eq!(sparse[&coord], full[&coord]);
         let empty = BTreeMap::new();
-        assert!(
-            dab_density_on_tiles(TILE_SIZE * 2, TILE_SIZE * 2, &dabs, None, Some(&empty))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(dab_density_on_tiles(
+            TILE_SIZE * 2,
+            TILE_SIZE * 2,
+            &dabs,
+            None,
+            Some(&empty),
+            None
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]

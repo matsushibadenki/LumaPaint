@@ -1,0 +1,2 @@
+frames=1 samples=20 legacy_median_us=71.500 retained_median_us=62.041 legacy_p95_us=80.542 retained_p95_us=69.042
+frames=8 samples=20 legacy_median_us=108.042 retained_median_us=54.959 legacy_p95_us=132.208 retained_p95_us=62.792

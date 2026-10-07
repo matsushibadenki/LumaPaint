@@ -43,6 +43,13 @@ impl<J> LatestSender<J> {
     }
 }
 impl<J> LatestReceiver<J> {
+    /// Checked between independent raster units. The single consumer cannot
+    /// remove a newer request while the current unit is executing.
+    pub(crate) fn superseded(&self, canvas: u64) -> bool {
+        let state = self.0.state.lock().unwrap();
+        state.stopped || state.pending.iter().any(|(key, _)| *key == canvas)
+    }
+
     pub(crate) fn recv(&self) -> Result<J, RecvError> {
         let mut state = self.0.state.lock().unwrap();
         loop {
@@ -86,6 +93,22 @@ mod tests {
         assert_eq!(receiver.recv().unwrap(), "next A");
         drop(sender);
         assert!(receiver.recv().is_err());
+    }
+    #[test]
+    fn running_work_yields_to_newer_same_canvas_without_cancelling_other_windows() {
+        let (sender, receiver) = channel();
+        sender.try_send(1, "running A").unwrap();
+        assert_eq!(receiver.recv().unwrap(), "running A");
+        sender.try_send(2, "B").unwrap();
+        assert!(!receiver.superseded(1));
+        sender.try_send(1, "stale A").unwrap();
+        sender.try_send(1, "latest A").unwrap();
+        assert!(receiver.superseded(1));
+        assert_eq!(receiver.recv().unwrap(), "B");
+        assert_eq!(receiver.recv().unwrap(), "latest A");
+        assert!(!receiver.superseded(1));
+        drop(sender);
+        assert!(receiver.superseded(1));
     }
     #[test]
     fn stopped_worker_rejects_jobs_and_releases_payloads() {

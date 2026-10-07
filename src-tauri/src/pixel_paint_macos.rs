@@ -59,7 +59,8 @@ pub(super) fn pointer(
         if !started {
             return Ok(true);
         }
-        let snapshot = doc.snapshot();
+        let layer_id = doc.selected_layer_id().to_owned();
+        let revision = doc.revision();
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
         let mut preview_document = doc.clone();
         let (w, h) = doc.dimensions();
@@ -70,11 +71,11 @@ pub(super) fn pointer(
             *slot.borrow_mut() = Some(PixelPaint {
                 token,
                 document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
-                image_id: snapshot.layer_id.clone(),
+                image_id: layer_id.clone(),
                 clone_stamp: false,
                 retouch: false,
-                layer: snapshot.layer_id,
-                revision: snapshot.revision,
+                layer: layer_id,
+                revision,
                 sender,
                 latest: None,
                 preview_document,
@@ -103,8 +104,7 @@ pub(super) fn pointer(
         let Some(draft) = slot.as_mut() else {
             return Ok(false);
         };
-        let snapshot = doc.snapshot();
-        if snapshot.layer_id != draft.layer || snapshot.revision != draft.revision {
+        if doc.selected_layer_id() != draft.layer || doc.revision() != draft.revision {
             *slot = None;
             return Err("Paint target changed / 描画先が変更されました / 绘画目标已更改".into());
         }
@@ -173,14 +173,15 @@ pub(super) fn clone_pointer(
     let workspace = doc.clone_stamp_workspace()?;
     let sample_doc = doc.clone_stamp_sampling_document(settings.sample)?;
     let brush = BRUSH.with(|brush| *brush.borrow());
-    let snapshot = doc.snapshot();
+    let layer_id = doc.selected_layer_id().to_owned();
+    let revision = doc.revision();
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let (w, h) = doc.dimensions();
     let preview_document = doc.clone_stamp_preview_document(preview_source(w, h, token))?;
-    let image_id = if snapshot.layer_id == "layer-1" {
+    let image_id = if layer_id == "layer-1" {
         "clone-stamp-preview-base".into()
     } else {
-        snapshot.layer_id.clone()
+        layer_id.clone()
     };
     let (sender, receiver) = mpsc::channel();
     let (done, completed) = mpsc::channel();
@@ -191,8 +192,8 @@ pub(super) fn clone_pointer(
             image_id,
             clone_stamp: true,
             retouch: false,
-            layer: snapshot.layer_id,
-            revision: snapshot.revision,
+            layer: layer_id,
+            revision,
             sender,
             latest: None,
             preview_document,
@@ -249,7 +250,7 @@ pub(super) fn clone_pointer(
                 }
                 if sample.finish {
                     let pixels = preview.pixels_after_update();
-                    let png = lumapaint_renderer::vector::document_png(w, h, pixels.clone())?;
+                    let png = lumapaint_renderer::vector::document_png_ref(w, h, &pixels)?;
                     let _ = done.send(Ok(PaintFrame {
                         uploads: Vec::new(),
                         pixels,
@@ -290,19 +291,16 @@ pub(super) fn retouch_pointer(
         workspace.clone()
     };
     let brush = BRUSH.with(|brush| *brush.borrow());
-    let snapshot = doc.snapshot();
-    let alpha_locked = snapshot
-        .layers
-        .iter()
-        .find(|l| l.id == snapshot.layer_id)
-        .is_some_and(|l| l.alpha_locked);
+    let layer_id = doc.selected_layer_id().to_owned();
+    let revision = doc.revision();
+    let alpha_locked = doc.selected_layer_alpha_locked();
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let (w, h) = doc.dimensions();
     let preview_document = doc.retouch_preview_document(preview_source(w, h, token))?;
-    let image_id = if snapshot.layer_id == "layer-1" {
+    let image_id = if layer_id == "layer-1" {
         "clone-stamp-preview-base".into()
     } else {
-        snapshot.layer_id.clone()
+        layer_id.clone()
     };
     let (sender, receiver) = mpsc::channel();
     let (done, completed) = mpsc::channel();
@@ -313,8 +311,8 @@ pub(super) fn retouch_pointer(
             image_id,
             clone_stamp: true,
             retouch: true,
-            layer: snapshot.layer_id,
-            revision: snapshot.revision,
+            layer: layer_id,
+            revision,
             sender,
             latest: None,
             preview_document,
@@ -381,7 +379,7 @@ pub(super) fn retouch_pointer(
                         }));
                         return Ok(());
                     }
-                    let png = lumapaint_renderer::vector::document_png(w, h, pixels.clone())?;
+                    let png = lumapaint_renderer::vector::document_png_ref(w, h, &pixels)?;
                     let _ = done.send(Ok(PaintFrame {
                         uploads: Vec::new(),
                         pixels,
@@ -423,19 +421,16 @@ pub(super) fn fill_pointer(
         None
     };
     let brush = BRUSH.with(|brush| *brush.borrow());
-    let snapshot = doc.snapshot();
-    let alpha_locked = snapshot
-        .layers
-        .iter()
-        .find(|layer| layer.id == snapshot.layer_id)
-        .is_some_and(|layer| layer.alpha_locked);
+    let layer_id = doc.selected_layer_id().to_owned();
+    let revision = doc.revision();
+    let alpha_locked = doc.selected_layer_alpha_locked();
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     let (w, h) = doc.dimensions();
     let preview_document = doc.retouch_preview_document(preview_source(w, h, token))?;
-    let image_id = if snapshot.layer_id == "layer-1" {
+    let image_id = if layer_id == "layer-1" {
         "clone-stamp-preview-base".into()
     } else {
-        snapshot.layer_id.clone()
+        layer_id.clone()
     };
     let (sender, receiver) = mpsc::channel();
     let (done, completed) = mpsc::channel();
@@ -446,8 +441,8 @@ pub(super) fn fill_pointer(
             image_id,
             clone_stamp: true,
             retouch: true,
-            layer: snapshot.layer_id,
-            revision: snapshot.revision,
+            layer: layer_id,
+            revision,
             sender,
             latest: None,
             preview_document,
@@ -492,7 +487,7 @@ pub(super) fn fill_pointer(
                 }),
             );
             let source = if result.changed {
-                let png = lumapaint_renderer::vector::document_png(w, h, result.pixels.clone())?;
+                let png = lumapaint_renderer::vector::document_png_ref(w, h, &result.pixels)?;
                 Some(clipboard::image_svg(w, h, &png))
             } else {
                 None
@@ -547,25 +542,22 @@ fn paint_worker(
             }
         }
         preview.update(&workspace)?;
-        let source = if finish {
-            let (w, h) = workspace.dimensions();
-            let png = lumapaint_renderer::vector::document_png(w, h, preview.pixels().to_vec())?;
-            Some(clipboard::image_svg(w, h, &png))
-        } else {
-            None
-        };
-        output(PaintFrame {
-            uploads: preview.take_uploads(),
-            pixels: if finish {
-                preview.pixels().to_vec()
-            } else {
-                Vec::new()
-            },
-            source,
-        });
         if finish {
+            let (w, h) = workspace.dimensions();
+            let (pixels, uploads) = preview.into_parts();
+            let png = lumapaint_renderer::vector::document_png_ref(w, h, &pixels)?;
+            output(PaintFrame {
+                uploads,
+                pixels,
+                source: Some(clipboard::image_svg(w, h, &png)),
+            });
             return Ok(());
         }
+        output(PaintFrame {
+            uploads: preview.take_uploads(),
+            pixels: Vec::new(),
+            source: None,
+        });
     }
 }
 
@@ -628,10 +620,10 @@ fn receive_frame(token: u64, result: Result<PaintFrame, String>) {
         };
         let mut valid = false;
         DOCUMENT.with(|doc| {
-            let snapshot = doc.borrow().snapshot();
+            let doc = doc.borrow();
             valid = draft.document_id == ACTIVE_DOCUMENT_ID.with(|id| id.get())
-                && snapshot.layer_id == draft.layer
-                && snapshot.revision == draft.revision;
+                && doc.selected_layer_id() == draft.layer
+                && doc.revision() == draft.revision;
         });
         if !valid {
             *slot = None;

@@ -844,6 +844,39 @@ impl Document {
         self.revision
     }
 
+    /// Lightweight edit target; does not build object, text or page UI summaries.
+    pub fn selected_layer_id(&self) -> &str {
+        self.selected_layer
+            .as_deref()
+            .filter(|id| {
+                *id == "layer-1"
+                    || self.svg_layers.iter().any(|layer| layer.id == *id)
+                    || self.layer_groups.groups.iter().any(|group| group.id == *id)
+            })
+            .unwrap_or("layer-1")
+    }
+
+    pub fn selected_layer_alpha_locked(&self) -> bool {
+        let id = self.selected_layer_id();
+        if id == "layer-1" {
+            self.layer_alpha_locked
+        } else {
+            self.svg_layers
+                .iter()
+                .find(|layer| layer.id == id)
+                .is_some_and(|layer| layer.alpha_locked)
+        }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.revision != self.saved_revision || self.active.is_some()
+    }
+
+    /// Current visible brush input without scanning committed stroke history.
+    pub fn active_paint_stroke(&self) -> Option<&Stroke> {
+        self.active.as_ref().filter(|_| self.visible)
+    }
+
     pub fn has_active_stroke(&self) -> bool {
         self.active.is_some()
     }
@@ -1027,15 +1060,7 @@ impl Document {
             pages: self.pages_snapshot(),
             canvas_color: self.canvas_color,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
-            layer_id: self
-                .selected_layer
-                .clone()
-                .filter(|id| {
-                    id == "layer-1"
-                        || self.svg_layers.iter().any(|layer| &layer.id == id)
-                        || self.layer_groups.groups.iter().any(|group| &group.id == id)
-                })
-                .unwrap_or_else(|| "layer-1".into()),
+            layer_id: self.selected_layer_id().to_owned(),
             layer_visible: self
                 .selected_layer
                 .as_ref()
@@ -1073,7 +1098,7 @@ impl Document {
             can_undo: !self.undo_order.is_empty(),
             can_redo: !self.redo_order.is_empty(),
             revision: self.revision,
-            dirty: self.revision != self.saved_revision || self.active.is_some(),
+            dirty: self.is_dirty(),
             file_name: self.file_name.clone(),
         }
     }
@@ -2416,6 +2441,87 @@ impl Document {
             layer.source = vector_svg(preview.width, preview.height, &layer.vector_objects);
         }
         Ok(preview)
+    }
+
+    /// Update an isolated, retained preview of an existing text object. No
+    /// history is recorded: callers must commit via set_text_object instead.
+    /// Only the affected layer is staged; failures leave the preview intact.
+    pub fn update_text_preview(&mut self, mut settings: TextSettings) -> Result<(), String> {
+        if self.path_editing.is_some() || self.active.is_some() {
+            return Err("Finish the active edit before text preview".into());
+        }
+        let hide = settings.text.content.trim().is_empty() && settings.text.box_height.is_none();
+        if !hide {
+            settings.text.validate()?;
+        }
+        if settings
+            .position
+            .iter()
+            .any(|v| !v.is_finite() || v.abs() >= 100_000.)
+        {
+            return Err("Invalid text position".into());
+        }
+        let id = settings
+            .id
+            .as_deref()
+            .ok_or("Existing text object required")?;
+        self.ensure_object_unlocked(id)?;
+        let (index, position) = self
+            .svg_layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| layer.vector_layer)
+            .find_map(|(i, layer)| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .position(|o| o.id == id && o.text.is_some())
+                    .map(|p| (i, p))
+            })
+            .ok_or("Text object not found")?;
+        let previous = &self.svg_layers[index];
+        if previous.locked || !previous.visible {
+            return Err("Text layer is locked or hidden".into());
+        }
+        let mut updated = previous.clone();
+        let object = &mut updated.vector_objects[position];
+        let original = object.text.as_ref().unwrap();
+        settings.text.change_generation = original.change_generation;
+        settings.text.updated_at_ms = original.updated_at_ms;
+        object.visible = !hide;
+        if !hide {
+            object.control_points = settings.text.control_points();
+            object.text = Some(settings.text);
+            object.transform[4..6].copy_from_slice(&settings.position);
+            object.fill = Some(VectorPaint {
+                registration: false,
+                color: [settings.color[0], settings.color[1], settings.color[2], 255],
+            });
+        }
+        object.validate()?;
+        updated.source = vector_svg(self.width, self.height, &updated.vector_objects);
+        if updated.source.len()
+            + self
+                .svg_layers
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != index)
+                .map(|(_, l)| l.source.len())
+                .sum::<usize>()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much vector data".into());
+        }
+        validate_svg_layer(&updated)?;
+        self.scene_journal.layers_changed(
+            std::slice::from_ref(previous),
+            std::slice::from_ref(&updated),
+        );
+        self.transform_slots.0.remove(&updated.id);
+        self.noncanonical_vector_sources.remove(&updated.id);
+        self.svg_layers[index] = updated;
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
     }
 
     pub fn text_at(&self, point: [f32; 2]) -> Option<String> {
@@ -7306,6 +7412,130 @@ pub(crate) fn mask_factor(enabled: bool, inverted: bool, density: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lightweight_edit_state_matches_ui_after_selection_and_history_changes() {
+        let mut doc = Document::default();
+        let check = |doc: &Document| {
+            let snapshot = doc.snapshot();
+            assert_eq!(doc.selected_layer_id(), snapshot.layer_id);
+            assert_eq!(doc.is_dirty(), snapshot.dirty);
+            let alpha = snapshot
+                .layers
+                .iter()
+                .find(|layer| layer.id == snapshot.layer_id)
+                .is_some_and(|layer| layer.alpha_locked);
+            assert_eq!(doc.selected_layer_alpha_locked(), alpha);
+        };
+        check(&doc);
+        doc.begin(Point { x: 20., y: 20. }, Brush::default())
+            .unwrap();
+        check(&doc);
+        doc.finish();
+        let layer = doc.add_paint_layer().unwrap();
+        doc.svg_layers
+            .iter_mut()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .alpha_locked = true;
+        check(&doc);
+        doc.undo();
+        check(&doc);
+        doc.redo();
+        check(&doc);
+        doc.selected_layer = Some("missing-layer".into());
+        check(&doc);
+        assert_eq!(doc.selected_layer_id(), "layer-1");
+    }
+
+    #[test]
+    fn retained_text_updates_are_atomic_without_history_or_unrelated_layer_copies() {
+        for mode in [
+            crate::vector::WritingMode::Horizontal,
+            crate::vector::WritingMode::Vertical,
+        ] {
+            let mut doc = Document::default();
+            let other = doc.add_vector_layer().unwrap();
+            doc.set_text_object(TextSettings {
+                id: None,
+                text: VectorText {
+                    content: "日本語 ABC 简体中文".into(),
+                    writing_mode: mode,
+                    box_height: Some(180.),
+                    ..Default::default()
+                },
+                position: [40., 50.],
+                color: [12, 34, 56],
+            })
+            .unwrap();
+            doc.affine_selected_vectors([1.2, 0., 0., 1.5, 5., 9.])
+                .unwrap();
+            let text = doc.snapshot().text_objects.remove(0);
+            let mut settings = TextSettings {
+                id: Some(text.id),
+                text: text.text,
+                position: text.position,
+                color: text.color,
+            };
+            let before = doc.document_state();
+            let mut preview = doc.clone();
+            let history = preview.vector_undo.len();
+            let journal = preview.scene_journal.instance_id();
+            let other_ptr = preview
+                .svg_layers
+                .iter()
+                .find(|l| l.id == other)
+                .unwrap()
+                .source
+                .as_ptr();
+            for content in ["変更 123", "日本語\n简体中文 ABC", "Undo相当"] {
+                settings.text.content = content.into();
+                settings.text.clear_measured_layout();
+                preview.update_text_preview(settings.clone()).unwrap();
+                let mut expected = doc.clone();
+                expected.set_text_object(settings.clone()).unwrap();
+                assert_eq!(
+                    preview.svg_layers.last().unwrap().source,
+                    expected.svg_layers.last().unwrap().source
+                );
+                assert_eq!(preview.vector_undo.len(), history);
+                assert_eq!(preview.scene_journal.instance_id(), journal);
+                assert_eq!(
+                    preview
+                        .svg_layers
+                        .iter()
+                        .find(|l| l.id == other)
+                        .unwrap()
+                        .source
+                        .as_ptr(),
+                    other_ptr
+                );
+            }
+            let saved = serde_json::to_vec(&preview.document_state()).unwrap();
+            let revision = preview.revision();
+            let cursor = preview.scene_journal.cursor();
+            let mut invalid = settings.clone();
+            invalid.position[0] = f32::NAN;
+            assert!(preview.update_text_preview(invalid).is_err());
+            assert_eq!(
+                serde_json::to_vec(&preview.document_state()).unwrap(),
+                saved
+            );
+            assert_eq!(preview.revision(), revision);
+            assert_eq!(preview.scene_journal.cursor(), cursor);
+            settings.text.content.clear();
+            settings.text.box_height = None;
+            preview.update_text_preview(settings.clone()).unwrap();
+            assert!(!preview.svg_layers.last().unwrap().vector_objects[0].visible);
+            settings.text.content = "復帰".into();
+            preview.update_text_preview(settings).unwrap();
+            assert!(preview.svg_layers.last().unwrap().vector_objects[0].visible);
+            assert_eq!(
+                serde_json::to_vec(&doc.document_state()).unwrap(),
+                serde_json::to_vec(&before).unwrap()
+            );
+        }
+    }
 
     fn move_fixture(count: usize) -> Document {
         let mut document = Document::default();

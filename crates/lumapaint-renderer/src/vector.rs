@@ -2,6 +2,7 @@
 //! Existing complex SVGs keep the established resvg behavior; verified simple paths use Skia.
 pub mod font_viewer;
 pub mod kerning;
+mod parsed_text;
 #[cfg(feature = "skia")]
 pub mod pathfinder;
 #[cfg(test)]
@@ -679,16 +680,7 @@ pub(crate) fn rasterize_svg_object_shared(
     if source.len() > 4 * 1024 * 1024 {
         return None;
     }
-    let options = usvg::Options {
-        fontdb: system_fonts(),
-        font_resolver: font_resolver(),
-        image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
-            resolve_string: Box::new(|_, _| None),
-        },
-        ..Default::default()
-    };
-    let tree = usvg::Tree::from_str(source, &options).ok()?;
+    let tree = parsed_text::parse(source).ok()?;
     if !supports_skia(tree.root()) || tree.root().children().is_empty() {
         return None;
     }
@@ -742,16 +734,7 @@ pub(crate) fn rasterize_svg_object(
     if source.len() > 4 * 1024 * 1024 {
         return Err("SVG source too large".into());
     }
-    let options = usvg::Options {
-        fontdb: system_fonts(),
-        font_resolver: font_resolver(),
-        image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
-            resolve_string: Box::new(|_, _| None),
-        },
-        ..Default::default()
-    };
-    let tree = usvg::Tree::from_str(source, &options).map_err(|e| e.to_string())?;
+    let tree = parsed_text::parse(source)?;
     let scale =
         (document.0 as f32 / tree.size().width()).min(document.1 as f32 / tree.size().height());
     let x = (document.0 as f32 - tree.size().width() * scale) * 0.5;
@@ -774,16 +757,7 @@ fn rasterize_svg_region(
     {
         return Err("Invalid SVG source size or raster dimensions".into());
     }
-    let options = usvg::Options {
-        fontdb: system_fonts(),
-        font_resolver: font_resolver(),
-        image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
-            resolve_string: Box::new(|_, _| None),
-        },
-        ..Default::default()
-    };
-    let tree = usvg::Tree::from_str(source, &options).map_err(|error| error.to_string())?;
+    let tree = parsed_text::parse(source)?;
     let size = tree.size();
     let (scale, x, y) = if let Some((document, rect)) = workspace {
         let doc_scale = (document[0] as f32 / size.width()).min(document[1] as f32 / size.height());
@@ -984,12 +958,17 @@ pub fn document_rgba_len(width: u32, height: u32) -> Result<usize, String> {
 
 /// Encode a document layer for persistence; full pixels stay on the Rust side.
 pub fn document_png(width: u32, height: u32, pixels: Vec<u8>) -> Result<Vec<u8>, String> {
+    document_png_ref(width, height, &pixels)
+}
+
+/// Borrow premultiplied pixels so an editing worker can retain or move its
+/// completed raster without cloning it solely for PNG persistence.
+pub fn document_png_ref(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, String> {
     let expected = document_rgba_len(width, height)?;
     if pixels.len() != expected {
         return Err("Invalid image pixels".into());
     }
-    let size = tiny_skia::IntSize::from_wh(width, height).ok_or("Invalid image size")?;
-    tiny_skia::Pixmap::from_vec(pixels, size)
+    tiny_skia::PixmapRef::from_bytes(pixels, width, height)
         .ok_or("Invalid image pixels")?
         .encode_png()
         .map_err(|e| e.to_string())

@@ -133,11 +133,102 @@ define_class!(
     }
 );
 
+/// One verified preview per editor. Pan/zoom/selection redraws reuse the same
+/// document and journal; native layout and document ownership stay on main.
+#[derive(Default)]
+struct PreviewCache {
+    value: Option<(u64, Document)>,
+    new_object_id: Option<String>,
+}
+impl PreviewCache {
+    fn update_existing(
+        &mut self,
+        generation: u64,
+        base: &Document,
+        settings: impl FnOnce() -> TextSettings,
+    ) -> Result<&Document, String> {
+        if self
+            .value
+            .as_ref()
+            .is_none_or(|(saved, _)| *saved != generation)
+        {
+            let settings = settings();
+            if let Some((saved, preview)) = &mut self.value {
+                preview.update_text_preview(settings)?;
+                *saved = generation;
+            } else {
+                let mut preview = base.clone();
+                preview.update_text_preview(settings)?;
+                self.value = Some((generation, preview));
+            }
+        }
+        Ok(&self.value.as_ref().unwrap().1)
+    }
+
+    fn update_new(
+        &mut self,
+        generation: u64,
+        base: &Document,
+        settings: impl FnOnce() -> TextSettings,
+    ) -> Result<&Document, String> {
+        if self
+            .value
+            .as_ref()
+            .is_some_and(|(saved, _)| *saved == generation)
+        {
+            return Ok(&self.value.as_ref().unwrap().1);
+        }
+        let mut settings = settings();
+        if let Some(id) = &self.new_object_id {
+            settings.id = Some(id.clone());
+            return self.update_existing(generation, base, || settings);
+        }
+        if settings.text.content.trim().is_empty() && settings.text.box_height.is_none() {
+            if let Some((saved, _)) = &mut self.value {
+                *saved = generation;
+            } else {
+                self.value = Some((generation, base.clone()));
+            }
+        } else {
+            // Allocate the temporary object once. Its ID stays private to this preview;
+            // commit still creates the real object through the canonical document command.
+            let preview = live_preview(base, settings)?;
+            let id = preview
+                .snapshot()
+                .selected_vector_objects
+                .into_iter()
+                .next()
+                .ok_or("New text preview object missing")?;
+            self.new_object_id = Some(id);
+            self.value = Some((generation, preview));
+        }
+        Ok(&self.value.as_ref().unwrap().1)
+    }
+
+    #[cfg(test)]
+    fn get_or_update(
+        &mut self,
+        generation: u64,
+        build: impl FnOnce() -> Result<Document, String>,
+    ) -> Result<&Document, String> {
+        if self
+            .value
+            .as_ref()
+            .is_none_or(|(saved, _)| *saved != generation)
+        {
+            // Keep the last valid entry on failure, but never label it as current.
+            self.value = Some((generation, build()?));
+        }
+        Ok(&self.value.as_ref().unwrap().1)
+    }
+}
+
 struct Session {
     page_clip: Retained<PageClip>,
     view: Retained<InlineEditor>,
     settings: TextSettings,
     preview: Document,
+    rendered_preview: RefCell<PreviewCache>,
     object_transform: [f32; 6],
     edited: std::cell::Cell<bool>,
     layout_generation: std::cell::Cell<u64>,
@@ -190,9 +281,14 @@ pub fn render(canvas: &mut Canvas) -> Result<(), String> {
                 .renderer
                 .set_selection_overlay_visible(!session.settings.text.point_text);
             canvas.renderer.set_frame_overlay(overlay);
-            let settings = cached_current(session).unwrap_or_else(|| session.settings.clone());
-            let preview = live_preview(&session.preview, settings)?;
-            canvas.renderer.render(canvas.viewport, &preview)
+            let mut cache = session.rendered_preview.borrow_mut();
+            let current = || cached_current(session).unwrap_or_else(|| session.settings.clone());
+            let preview = if session.settings.id.is_some() {
+                cache.update_existing(session.layout_generation.get(), &session.preview, current)?
+            } else {
+                cache.update_new(session.layout_generation.get(), &session.preview, current)?
+            };
+            canvas.renderer.render(canvas.viewport, preview)
         } else {
             DOCUMENT.with(|doc| {
                 canvas.renderer.render_vector_drag(
@@ -906,6 +1002,7 @@ pub fn begin(mut settings: TextSettings) -> Result<(), String> {
             view: view.clone(),
             settings,
             preview,
+            rendered_preview: RefCell::new(PreviewCache::default()),
             object_transform,
             edited: std::cell::Cell::new(false),
             layout_generation: std::cell::Cell::new(0),
@@ -1757,6 +1854,175 @@ mod transform_tests {
             .iter()
             .any(|pixel| pixel[3] > 0));
     }
+    #[test]
+    fn retained_preview_skips_unchanged_work_and_retries_failed_generation() {
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語 English 简体中文".into(),
+                box_height: Some(180.),
+                ..Default::default()
+            },
+            position: [40., 50.],
+            color: [12, 34, 56],
+        })
+        .unwrap();
+        let before = doc.encode().unwrap();
+        let text = doc.snapshot().text_objects.remove(0);
+        let mut settings = TextSettings {
+            id: Some(text.id),
+            text: text.text,
+            position: text.position,
+            color: text.color,
+        };
+        let mut cache = PreviewCache::default();
+        let first = cache
+            .get_or_update(0, || live_preview(&doc, settings.clone()))
+            .unwrap()
+            .scene_journal()
+            .instance_id();
+        for _ in 0..100 {
+            let reused = cache
+                .get_or_update(0, || panic!("pan/selection must reuse preview"))
+                .unwrap();
+            assert_eq!(reused.scene_journal().instance_id(), first);
+        }
+        settings.text.content.push('文');
+        assert!(cache
+            .get_or_update(1, || Err("fixture failure".into()))
+            .is_err());
+        let updated = cache
+            .get_or_update(1, || live_preview(&doc, settings.clone()))
+            .unwrap();
+        let mut committed = doc.clone();
+        committed.set_text_object(settings.clone()).unwrap();
+        assert_eq!(
+            updated.svg_layers().next().unwrap().source,
+            committed.svg_layers().next().unwrap().source
+        );
+        assert_eq!(doc.encode().unwrap(), before);
+        settings.text.content.clear();
+        settings.text.box_height = None;
+        settings.text.clear_measured_layout();
+        let empty = cache
+            .get_or_update(2, || live_preview(&doc, settings.clone()))
+            .unwrap();
+        assert_eq!(
+            empty.clone().encode().unwrap(),
+            doc.text_edit_preview(settings.id.as_deref())
+                .unwrap()
+                .encode()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn new_text_preview_reuses_identity_and_recovers_after_empty_or_invalid_input() {
+        let doc = Document::default();
+        let original = doc.clone().encode().unwrap();
+        let mut settings = TextSettings {
+            id: None,
+            text: VectorText {
+                content: "".into(),
+                box_height: None,
+                ..Default::default()
+            },
+            position: [40., 80.],
+            color: [10, 20, 30],
+        };
+        let mut cache = PreviewCache::default();
+        cache.update_new(0, &doc, || settings.clone()).unwrap();
+        assert!(cache.new_object_id.is_none());
+        settings.text.content = "新規 English 简体中文".into();
+        cache.update_new(1, &doc, || settings.clone()).unwrap();
+        let id = cache.new_object_id.clone().unwrap();
+        let instance = cache
+            .value
+            .as_ref()
+            .unwrap()
+            .1
+            .scene_journal()
+            .instance_id();
+        for generation in 2..8 {
+            settings.text.content.push('文');
+            let preview = cache
+                .update_new(generation, &doc, || settings.clone())
+                .unwrap();
+            assert_eq!(preview.scene_journal().instance_id(), instance);
+            let fresh = live_preview(&doc, settings.clone()).unwrap();
+            assert_eq!(
+                preview.svg_layers().next().unwrap().source,
+                fresh.svg_layers().next().unwrap().source
+            );
+        }
+        let mut invalid = settings.clone();
+        invalid.position[0] = f32::NAN;
+        assert!(cache.update_new(8, &doc, || invalid).is_err());
+        cache
+            .update_new(7, &doc, || panic!("last valid generation"))
+            .unwrap();
+        settings.text.content.clear();
+        let hidden = cache.update_new(8, &doc, || settings.clone()).unwrap();
+        assert!(!hidden.svg_layers().next().unwrap().vector_objects[0].visible);
+        settings.text.content = "復帰".into();
+        let restored = cache.update_new(9, &doc, || settings.clone()).unwrap();
+        assert!(restored.svg_layers().next().unwrap().vector_objects[0].visible);
+        assert_eq!(restored.scene_journal().instance_id(), instance);
+        assert_eq!(cache.new_object_id.as_deref(), Some(id.as_str()));
+        assert_eq!(doc.clone().encode().unwrap(), original);
+    }
+
+    #[test]
+    fn retained_editor_updates_keep_document_identity_across_content_changes() {
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "初期".into(),
+                ..Default::default()
+            },
+            position: [10., 20.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let text = doc.snapshot().text_objects.remove(0);
+        let mut settings = TextSettings {
+            id: Some(text.id),
+            text: text.text,
+            position: text.position,
+            color: text.color,
+        };
+        let mut cache = PreviewCache::default();
+        let id = cache
+            .update_existing(0, &doc, || settings.clone())
+            .unwrap()
+            .scene_journal()
+            .instance_id();
+        for generation in 1..20 {
+            settings.text.content = format!("日本語 English 简体中文 {generation}");
+            let preview = cache
+                .update_existing(generation, &doc, || settings.clone())
+                .unwrap();
+            assert_eq!(preview.scene_journal().instance_id(), id);
+            cache
+                .update_existing(generation, &doc, || panic!("unchanged generation"))
+                .unwrap();
+        }
+        let mut invalid = settings.clone();
+        invalid.position[0] = f32::NAN;
+        assert!(cache.update_existing(20, &doc, || invalid).is_err());
+        assert_eq!(
+            cache
+                .update_existing(19, &doc, || panic!("last valid cache"))
+                .unwrap()
+                .scene_journal()
+                .instance_id(),
+            id
+        );
+        cache.update_existing(20, &doc, || settings).unwrap();
+    }
+
     #[test]
     fn gpu_inline_preview_matches_commit_without_changing_original() {
         for mode in [

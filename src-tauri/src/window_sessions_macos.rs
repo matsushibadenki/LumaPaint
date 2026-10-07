@@ -247,13 +247,17 @@ pub(super) fn shared_checkpoint() -> bool {
         let Some(recovery) = &record.recovery else {
             return true;
         };
-        let snapshot = ACTIVE_TILED_DOCUMENT.with(|slot| {
+        let key = ACTIVE_TILED_DOCUMENT.with(|slot| {
             slot.borrow().as_ref().map_or_else(
-                || DOCUMENT.with(|doc| doc.borrow().snapshot()),
-                TiledSession::snapshot,
+                || {
+                    DOCUMENT.with(|doc| {
+                        let doc = doc.borrow();
+                        (doc.revision(), doc.is_dirty())
+                    })
+                },
+                |session| (session.document.revision(), session.dirty()),
             )
         });
-        let key = (snapshot.revision, snapshot.dirty);
         if record.checkpoint == Some(key) {
             return true;
         }

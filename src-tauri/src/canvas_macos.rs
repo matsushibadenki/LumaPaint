@@ -169,11 +169,17 @@ pub fn initialize(app: tauri::AppHandle) {
                 let before_rasterized = frame_cache.rasterized_frames;
                 let before_reused = frame_cache.reused_frames;
                 let before_evicted = frame_cache.stats().evicted_entries;
-                let result: Result<Vec<PreparedSvgLayer>, String> = job
-                    .layers
-                    .iter()
-                    .map(|layer| frame_cache.prepare_layer(layer, job.size.0, job.size.1))
-                    .collect();
+                let mut result = Ok(Vec::with_capacity(job.layers.len()));
+                for layer in &job.layers {
+                    if receiver.superseded(job.key.canvas_token) { break; }
+                    match frame_cache.prepare_layer(layer, job.size.0, job.size.1) {
+                        Ok(layer) => result.as_mut().unwrap().push(layer),
+                        Err(error) => { result = Err(error); break; }
+                    }
+                }
+                // Keep completed frame-cache entries, but do not upload stale
+                // pixels or report obsolete errors. The newest job is queued.
+                if receiver.superseded(job.key.canvas_token) { continue; }
                 let cpu_time = started.elapsed();
                 if render_metrics_enabled() {
                     let stats = frame_cache.stats();
@@ -8199,8 +8205,10 @@ fn checkpoint() {
         });
         return;
     }
-    let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
-    let key = (snapshot.revision, snapshot.dirty);
+    let key = DOCUMENT.with(|doc| {
+        let doc = doc.borrow();
+        (doc.revision(), doc.is_dirty())
+    });
     if CHECKPOINT_REVISION.with(|last| last.get() == Some(key)) {
         return;
     }

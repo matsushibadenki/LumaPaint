@@ -39,6 +39,12 @@ impl PixelPaintPreview {
         std::mem::take(&mut self.uploads)
     }
 
+    /// Transfer the final raster and dirty uploads to the commit path without
+    /// copying the document-sized RGBA buffer.
+    pub fn into_parts(self) -> (Vec<u8>, Vec<TileUpload>) {
+        (self.pixels, self.uploads)
+    }
+
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -48,6 +54,37 @@ impl PixelPaintPreview {
 mod tests {
     use super::*;
     use lumapaint_core::document::{Brush, CanvasColor, DocumentSettings, DocumentUnit};
+
+    #[test]
+    fn final_raster_moves_without_copy_and_png_matches_previous_encoder() {
+        let mut doc = Document::default();
+        doc.begin(
+            Point { x: 20., y: 20. },
+            Brush {
+                hardness: 0.5,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut preview = PixelPaintPreview::new(doc.dimensions()).unwrap();
+        preview.update(&doc).unwrap();
+        let pointer = preview.pixels().as_ptr();
+        let (pixels, uploads) = preview.into_parts();
+        assert_eq!(pixels.as_ptr(), pointer);
+        assert!(!uploads.is_empty());
+        let (w, h) = doc.dimensions();
+        let expected = resvg::tiny_skia::Pixmap::from_vec(
+            pixels.clone(),
+            resvg::tiny_skia::IntSize::from_wh(w, h).unwrap(),
+        )
+        .unwrap()
+        .encode_png()
+        .unwrap();
+        let png = vector::document_png_ref(w, h, &pixels).unwrap();
+        assert_eq!(png, expected);
+        assert_eq!(pixels.as_ptr(), pointer);
+        assert!(vector::document_png_ref(w, h, &pixels[..pixels.len() - 1]).is_err());
+    }
 
     #[test]
     fn a4_preview_transfers_changed_tiles_and_preserves_curve() {

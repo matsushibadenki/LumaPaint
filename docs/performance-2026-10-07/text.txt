@@ -1,0 +1,7 @@
+5 lines, 2048, Resvg: 37.3 ms
+5 lines, 1024, Resvg: 35.6 ms
+5 lines, 512, Resvg: 34.7 ms
+45 lines, 2048, Resvg: 327.9 ms
+45 lines, 1024, Resvg: 312.1 ms
+45 lines, 512, Resvg: 369.2 ms
+two frames, edit one: full 302.8 ms, cached 157.1 ms; rerasterized 5 frames

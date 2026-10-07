@@ -184,11 +184,12 @@ impl Recovery {
         wake.notify_one();
     }
     pub fn checkpoint(&self, document: Document) {
-        let snapshot = document.snapshot();
+        let revision = document.revision();
+        let dirty = document.is_dirty();
         self.checkpoint_project(
             project_file::ProjectData::Legacy(Box::new(document)),
-            snapshot.revision,
-            snapshot.dirty,
+            revision,
+            dirty,
         );
     }
     pub fn checkpoint_project(

@@ -1,0 +1,7 @@
+5 lines, 2048, Resvg: cold 51.8 ms, warm 2.6 ms
+5 lines, 1024, Resvg: cold 50.3 ms, warm 1.3 ms
+5 lines, 512, Resvg: cold 50.3 ms, warm 0.5 ms
+45 lines, 2048, Resvg: cold 455.3 ms, warm 22.1 ms
+45 lines, 1024, Resvg: cold 433.7 ms, warm 10.1 ms
+45 lines, 512, Resvg: cold 428.5 ms, warm 4.6 ms
+two frames, edit one: full 393.0 ms, cached 203.7 ms; rerasterized 5 frames

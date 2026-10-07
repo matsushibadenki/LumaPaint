@@ -43,13 +43,23 @@ fn main() {
             .unwrap();
         let source = &document.svg_layers().next().unwrap().source;
         for size in [2048, 1024, 512] {
+            // Unique comments force cold parsing without changing visible content.
+            let backend = rasterize_svg(source, size, size).unwrap().backend;
+            let mut cold = 0.0;
+            for revision in 0..3 {
+                let changed = format!("{source}<!-- benchmark {size}/{revision} -->");
+                let start = Instant::now();
+                rasterize_svg(&changed, size, size).unwrap();
+                cold += start.elapsed().as_secs_f64() * 1000.0;
+            }
             rasterize_svg(source, size, size).unwrap();
             let start = Instant::now();
             for _ in 0..3 {
                 rasterize_svg(source, size, size).unwrap();
             }
             println!(
-                "{lines} lines, {size}: {:.1} ms",
+                "{lines} lines, {size}, {backend:?}: cold {:.1} ms, warm {:.1} ms",
+                cold / 3.0,
                 start.elapsed().as_secs_f64() * 1000.0 / 3.0
             );
         }

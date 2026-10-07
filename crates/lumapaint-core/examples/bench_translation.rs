@@ -97,6 +97,32 @@ fn main() {
             document.undo();
         }
         let canonical = document.svg_layers().next().unwrap().source.clone();
+        // Host-side work surrounding an edit can exceed the differential move itself.
+        // Time construction only; drop outputs outside each measured interval.
+        for phase in ["ui_snapshot", "document_clone", "edit_target"] {
+            let mut samples = Vec::new();
+            for _ in 0..20 {
+                let started = Instant::now();
+                if phase == "ui_snapshot" {
+                    let value = std::hint::black_box(document.snapshot());
+                    samples.push(started.elapsed().as_secs_f64() * 1e6);
+                    drop(value);
+                } else if phase == "edit_target" {
+                    std::hint::black_box((
+                        document.selected_layer_id(),
+                        document.revision(),
+                        document.is_dirty(),
+                    ));
+                    samples.push(started.elapsed().as_secs_f64() * 1e6);
+                } else {
+                    let value = std::hint::black_box(document.clone());
+                    samples.push(started.elapsed().as_secs_f64() * 1e6);
+                    drop(value);
+                }
+            }
+            report(count, 0, phase, samples);
+        }
+
         for run in 1..=runs {
             let (mut moved, mut undone, mut redone) = (vec![], vec![], vec![]);
             let end = Instant::now() + duration;

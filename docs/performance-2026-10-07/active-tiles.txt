@@ -1,0 +1,4 @@
+Command: cargo test --release --offline -p lumapaint-renderer active_tile_update_timing -- --ignored --nocapture
+Control: force whole active stroke and tile uploads on every update; not a historical binary.
+4096x512, 64 updates, full median/p95 5.280/9.815 ms, partial 1.070/1.753 ms, tile rasterizations 511->95
+Pixel equality checked at every update. No UI, GPU transfer or input latency measurement.
