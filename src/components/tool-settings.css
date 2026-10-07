@@ -18,3 +18,9 @@
 .clone-stamp-controls input[type=checkbox]{width:14px;height:14px;flex:none;margin:0}.clone-stamp-details{grid-template-columns:minmax(0,1fr)}.clone-stamp-details label:has(input[type=checkbox]){justify-content:flex-start}.clone-stamp-details select{max-width:210px;color:inherit;background:var(--color-field);border:1px solid var(--color-rule);padding:5px}.clone-stamp-details p{line-height:1.6;margin:0}
 .clone-stamp-details{gap:8px}.tool-settings-dialog .clone-stamp-details label{margin:0}.clone-stamp-value{display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;min-width:76px}
 .options-bar .paint-bucket-controls{flex:1;min-width:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin}.options-bar .paint-bucket-controls>label{flex:none}
+
+.paint-bucket-references { min-width:0; margin:0; padding:8px; border:1px solid var(--color-rule); border-radius:4px; }
+.paint-bucket-reference-list { display:flex; flex-direction:column; gap:6px; max-height:160px; overflow:auto; }
+.paint-bucket-reference-list label { min-width:0; }
+.paint-bucket-reference-list label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.paint-bucket-references p { margin:8px 0; }

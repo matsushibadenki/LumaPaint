@@ -1,25 +1,61 @@
 use super::*;
 use lumapaint_core::{document::Point, paint_bucket::Settings};
-thread_local! {static SETTINGS:RefCell<std::collections::BTreeMap<String,Settings>>=const{RefCell::new(std::collections::BTreeMap::new())};}
+fn settings_for(doc: &Document) -> Settings {
+    doc.paint_bucket_settings()
+}
 pub(super) fn settings() -> Settings {
-    SETTINGS.with(|s| *s.borrow_mut().entry(current_label()).or_default())
+    DOCUMENT.with(|d| settings_for(&d.borrow()))
 }
 pub(super) fn configure(settings: Settings) -> Result<(), String> {
     settings.validate()?;
-    SETTINGS.with(|s| {
-        s.borrow_mut().insert(current_label(), settings);
-    });
-    if let Some(app) = APP.get() {
-        let _ = app.emit("paint-bucket-settings-changed", ());
+    if !DOCUMENT_OPEN.with(|open| open.get())
+        || ACTIVE_TILED_DOCUMENT.with(|doc| doc.borrow().is_some())
+    {
+        return Err("Open an editable document / 編集可能なドキュメントを開いてください / 请打开可编辑的文档".into());
+    }
+    let changed = DOCUMENT.with(|doc| doc.borrow_mut().set_paint_bucket_settings(settings))?;
+    if changed {
+        emit_document();
+        if let Some(app) = APP.get() {
+            let _ = app.emit("paint-bucket-settings-changed", ());
+        }
     }
     Ok(())
 }
 pub(super) fn pointer(doc: &mut Document, point: Point, phase: u8) -> Result<(), String> {
-    pixel_paint::fill_pointer(doc, point, phase, settings()).map(|_| ())
+    let settings = settings_for(doc);
+    pixel_paint::fill_pointer(doc, point, phase, settings).map(|_| ())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reference_settings_are_isolated_by_document_and_page() {
+        let mut doc = Document::default();
+        doc.edit_pages(lumapaint_core::document::PageEdit {
+            action: "add".into(),
+            index: None,
+            facing: None,
+            binding: None,
+        })
+        .unwrap();
+        doc.set_paint_bucket_settings(Settings {
+            use_reference_layers: true,
+            reference_layers: vec!["layer-1".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(settings_for(&doc).use_reference_layers);
+        assert!(!settings_for(&Document::default()).use_reference_layers);
+        doc.edit_pages(lumapaint_core::document::PageEdit {
+            action: "select".into(),
+            index: Some(1),
+            facing: None,
+            binding: None,
+        })
+        .unwrap();
+        assert!(!settings_for(&doc).use_reference_layers);
+    }
     #[test]
     fn bucket_alpha_locked_targets_preserve_alpha_save_and_history() {
         for base in [true, false] {
@@ -53,7 +89,7 @@ mod tests {
                     ..Default::default()
                 }
             });
-            configure(Settings {
+            doc.set_paint_bucket_settings(Settings {
                 tolerance: 255,
                 anti_alias: false,
                 all_layers: true,
@@ -136,8 +172,11 @@ mod tests {
                 ..Default::default()
             }
         });
-        configure(Settings {
-            all_layers: true,
+        let mut doc = Document::default();
+        doc.crop_canvas([0., 0., 15., 15.]).unwrap();
+        doc.set_paint_bucket_settings(Settings {
+            use_reference_layers: true,
+            reference_layers: vec!["layer-1".into()],
             close_gap: 1,
             area_offset: 1,
             anti_alias: false,
@@ -145,10 +184,12 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let mut doc = Document::default();
-        doc.crop_canvas([0., 0., 15., 15.]).unwrap();
+
         doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><path d="M3 3H7 M8 3H12V12H3Z" fill="none" stroke="black" stroke-width="1"/></svg>"#.into(), None).unwrap();
         let source = doc.paint_source().unwrap().to_string();
+        let sketch = doc.add_paint_layer().unwrap();
+        doc.select_layer(sketch).unwrap();
+        doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect width="15" height="15" fill="black"/></svg>"#.into(), None).unwrap();
         let layer = doc.add_paint_layer().unwrap();
         doc.select_layer(layer.clone()).unwrap();
         let before = serde_json::to_value(doc.document_state()).unwrap();
@@ -181,13 +222,14 @@ mod tests {
                 ..Default::default()
             }
         });
-        configure(Settings {
+        let mut doc = Document::default();
+        doc.crop_canvas([0., 0., 5., 1.]).unwrap();
+        doc.set_paint_bucket_settings(Settings {
             all_layers: true,
             ..Default::default()
         })
         .unwrap();
-        let mut doc = Document::default();
-        doc.crop_canvas([0., 0., 5., 1.]).unwrap();
+
         doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="5" height="1"><rect x="2" width="1" height="1" fill="black"/></svg>"#.into(),None).unwrap();
         let source = doc.paint_source().unwrap().to_string();
         let layer = doc.add_paint_layer().unwrap();

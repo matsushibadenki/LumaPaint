@@ -76,6 +76,47 @@ mod tests {
         );
     }
     #[test]
+    fn native_codec_preserves_page_fill_settings_and_rejects_invalid_references() {
+        use lumapaint_core::{document::PageEdit, paint_bucket::Settings};
+        let mut doc = Document::default();
+        let layer = doc.add_paint_layer().unwrap();
+        let settings = Settings {
+            use_reference_layers: true,
+            reference_layers: vec![layer],
+            exclude_text: true,
+            close_gap: 4,
+            area_offset: 2,
+            ..Default::default()
+        };
+        doc.set_paint_bucket_settings(settings.clone()).unwrap();
+        doc.edit_pages(PageEdit {
+            action: "duplicate".into(),
+            index: Some(0),
+            facing: None,
+            binding: None,
+        })
+        .unwrap();
+        let bytes = encode_state(&doc.document_state()).unwrap();
+        let mut loaded = decode(&bytes).unwrap();
+        assert_eq!(loaded.paint_bucket_settings(), settings);
+        loaded
+            .edit_pages(PageEdit {
+                action: "select".into(),
+                index: Some(1),
+                facing: None,
+                binding: None,
+            })
+            .unwrap();
+        assert_eq!(loaded.paint_bucket_settings(), settings);
+        assert_eq!(
+            encode_state(&decode(&bytes).unwrap().document_state()).unwrap(),
+            bytes
+        );
+        let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        invalid["paintBucketSettings"]["referenceLayers"] = serde_json::json!(["missing"]);
+        assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    }
+    #[test]
     fn legacy_defaults_and_invalid_envelopes() {
         let legacy = br#"{"format":"LumaPaint","version":1,"width":960,"height":640,"layerVisible":true,"strokes":[]}"#;
         assert_eq!(decode(legacy).unwrap().dimensions(), (960, 640));

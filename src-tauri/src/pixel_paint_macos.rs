@@ -415,8 +415,8 @@ pub(super) fn fill_pointer(
     PIXEL_PAINT.with(|slot| slot.borrow_mut().take());
     doc.finish();
     let workspace = doc.retouch_workspace()?;
-    let sample_doc = if settings.all_layers {
-        Some(doc.clone_stamp_sampling_document(lumapaint_core::clone_stamp::Sample::AllLayers)?)
+    let sample_doc = if settings.use_reference_layers || settings.all_layers {
+        Some(doc.paint_bucket_sampling_document(&settings)?)
     } else {
         None
     };

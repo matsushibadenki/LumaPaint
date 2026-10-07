@@ -560,6 +560,7 @@ struct PathEditing {
 
 #[derive(Clone)]
 struct VectorHistoryState {
+    paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
     crop_dimensions: Option<(u32, u32)>,
     compound_shapes: Vec<CompoundShape>,
@@ -602,6 +603,7 @@ pub struct TranslationMetrics {
 /// the existing complete-state contract until their delta transactions migrate.
 #[derive(Clone)]
 enum VectorHistoryEntry {
+    PaintBucket(crate::paint_bucket::Settings),
     Animation(std::sync::Arc<animation::Animation>),
     SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
     PixelSelection(Option<Selection>),
@@ -684,6 +686,7 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
     saved_vector_selections: std::sync::Arc<Vec<SavedVectorSelection>>,
     previous_vector_selection: Vec<String>,
@@ -747,6 +750,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            paint_bucket_settings: Default::default(),
             animation: Default::default(),
             saved_vector_selections: std::sync::Arc::new(Vec::new()),
             previous_vector_selection: Vec::new(),
@@ -810,6 +814,57 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Independent current-page artwork for transient rendering and sampling.
+    /// Omits Undo/Redo, inactive pages, picking/transform caches and change logs.
+    /// This is not a project backup: use the original document for saving/editing.
+    pub fn clone_for_rendering(&self) -> Self {
+        Self {
+            paint_bucket_settings: self.paint_bucket_settings.clone(),
+            animation: self.animation.clone(),
+            compound_shapes: self.compound_shapes.clone(),
+            layer_groups: self.layer_groups.clone(),
+            guides: self.guides.clone(),
+            locked_objects: self.locked_objects.clone(),
+            locked_artwork_layers: self.locked_artwork_layers.clone(),
+            svg_geometry_backend: self.svg_geometry_backend.clone(),
+            saved_paths: self.saved_paths.clone(),
+            clipping_path_id: self.clipping_path_id.clone(),
+            selection: self.selection.clone(),
+            name: self.name.clone(),
+            width: self.width,
+            height: self.height,
+            unit: self.unit,
+            resolution: self.resolution,
+            artboards: self.artboards,
+            canvas_color: self.canvas_color,
+            pixel_aspect_ratio: self.pixel_aspect_ratio,
+            layer_effects: self.layer_effects.clone(),
+            paint_source: self.paint_source.clone(),
+            strokes: self.strokes.clone(),
+            active: self.active.clone(),
+            visible: self.visible,
+            layer_name: self.layer_name.clone(),
+            layer_opacity: self.layer_opacity,
+            layer_locked: self.layer_locked,
+            layer_alpha_locked: self.layer_alpha_locked,
+            layer_mask_enabled: self.layer_mask_enabled,
+            layer_mask_inverted: self.layer_mask_inverted,
+            layer_mask_density: self.layer_mask_density,
+            svg_layers: self.svg_layers.clone(),
+            selected_layer: self.selected_layer.clone(),
+            selected_vector_objects: self.selected_vector_objects.clone(),
+            color_mode: self.color_mode,
+            color_profile: self.color_profile,
+            bit_depth: self.bit_depth,
+            revision: self.revision,
+            point_count: self.point_count,
+            saved_revision: self.saved_revision,
+            text_change_generation: self.text_change_generation,
+            noncanonical_vector_sources: self.noncanonical_vector_sources.clone(),
+            file_name: self.file_name.clone(),
+            ..Self::default()
+        }
+    }
     /// Attach or detach the optional SVG runtime adapter. This is not saved or added to history.
     pub fn set_svg_geometry_backend(
         &mut self,
@@ -1111,6 +1166,7 @@ impl Document {
             layer_groups.roots.retain(|id| id != &edit.layer_id);
         }
         DocumentState {
+            paint_bucket_settings: self.paint_bucket_settings(),
             animation: self.animation.as_ref().clone(),
             saved_vector_selections: self.saved_vector_selections.as_ref().clone(),
             pixel_selection: self.selection.clone(),
@@ -1251,6 +1307,15 @@ impl Document {
         {
             return Err("Invalid paint image".into());
         }
+        file.paint_bucket_settings.validate()?;
+        if file
+            .paint_bucket_settings
+            .reference_layers
+            .iter()
+            .any(|id| id != "layer-1" && !file.svg_layers.iter().any(|layer| &layer.id == id))
+        {
+            return Err("Invalid paint bucket reference layers".into());
+        }
         file.layer_groups.validate(&file.svg_layers)?;
         file.guides.validate()?;
         file.guides.selected.clear();
@@ -1282,6 +1347,7 @@ impl Document {
             .collect();
         let stroke_count = file.strokes.len();
         Ok(Self {
+            paint_bucket_settings: file.paint_bucket_settings,
             animation: std::sync::Arc::new(file.animation),
             saved_vector_selections: std::sync::Arc::new(file.saved_vector_selections),
             previous_vector_selection: Vec::new(),
@@ -1932,6 +1998,14 @@ impl Document {
         self.replace_image_source(source, false)
     }
     fn replace_image_source(&mut self, source: String, preserve_alpha: bool) -> Result<(), String> {
+        self.replace_image_source_inner(source, preserve_alpha, true)
+    }
+    fn replace_image_source_inner(
+        &mut self,
+        source: String,
+        preserve_alpha: bool,
+        record_history: bool,
+    ) -> Result<(), String> {
         let id = self
             .selected_layer
             .as_ref()
@@ -1962,9 +2036,17 @@ impl Document {
         if total > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much image data".into());
         }
-        let before = self.vector_history_state();
-        self.svg_layers[index] = layer;
-        self.record_vector_edit(before);
+        if record_history {
+            let before = self.vector_history_state();
+            self.svg_layers[index] = layer;
+            self.record_vector_edit(before);
+        } else {
+            self.scene_journal.layers_changed(
+                std::slice::from_ref(&self.svg_layers[index]),
+                std::slice::from_ref(&layer),
+            );
+            self.svg_layers[index] = layer;
+        }
         self.revision += 1;
         Ok(())
     }
@@ -2137,14 +2219,8 @@ impl Document {
                 }
             })
             .unwrap_or_default();
-        let had_locks = removed_ids.iter().any(|id| self.object_is_locked(id))
-            || self.locked_artwork_layers.contains(id);
         let before_state = self.vector_history_state();
         let before = self.svg_layers.len();
-        let was_vector = self
-            .svg_layers
-            .iter()
-            .any(|layer| layer.id == id && layer.vector_layer);
         self.svg_layers.retain(|layer| layer.id != id);
         if self.svg_layers.len() == before {
             return Err("Layer not found".into());
@@ -2152,18 +2228,16 @@ impl Document {
         self.locked_objects.retain(|id| !removed_ids.contains(id));
         self.locked_artwork_layers.remove(id);
         self.layer_groups.reconcile(&self.svg_layers);
-        if was_vector || had_locks || !before_state.layer_groups.groups.is_empty() {
-            let layers = &self.svg_layers;
-            self.selected_vector_objects.retain(|selected| {
-                layers.iter().any(|layer| {
-                    layer
-                        .vector_objects
-                        .iter()
-                        .any(|object| &object.id == selected)
-                })
-            });
-            self.record_vector_edit(before_state);
-        }
+        let layers = &self.svg_layers;
+        self.selected_vector_objects.retain(|selected| {
+            layers.iter().any(|layer| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .any(|object| &object.id == selected)
+            })
+        });
+        self.record_vector_edit(before_state);
         self.revision += 1;
         Ok(())
     }
@@ -2412,7 +2486,7 @@ impl Document {
         Ok(id)
     }
     pub fn text_edit_preview(&self, id: Option<&str>) -> Result<Self, String> {
-        let mut preview = self.clone();
+        let mut preview = self.clone_for_rendering();
         preview.selected_vector_objects.clear();
         if let Some(id) = id {
             let layer = preview
@@ -6854,6 +6928,9 @@ impl Document {
     }
     fn exchange_vector_history(&mut self, entry: VectorHistoryEntry) -> VectorHistoryEntry {
         match entry {
+            VectorHistoryEntry::PaintBucket(previous) => VectorHistoryEntry::PaintBucket(
+                std::mem::replace(&mut self.paint_bucket_settings, previous),
+            ),
             VectorHistoryEntry::Animation(previous) => {
                 VectorHistoryEntry::Animation(std::mem::replace(&mut self.animation, previous))
             }
@@ -6936,6 +7013,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            paint_bucket_settings: self.paint_bucket_settings.clone(),
             animation: self.animation.clone(),
             crop_dimensions: None,
             compound_shapes: self.compound_shapes.clone(),
@@ -6958,6 +7036,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.paint_bucket_settings = state.paint_bucket_settings;
         self.animation = state.animation;
         if let Some((width, height)) = state.crop_dimensions {
             self.width = width;
@@ -7070,6 +7149,9 @@ impl Document {
             }
         });
         self.prune_compound_shapes();
+        self.paint_bucket_settings
+            .reference_layers
+            .retain(|id| id == "layer-1" || self.svg_layers.iter().any(|layer| &layer.id == id));
         self.scene_journal
             .layers_changed(&previous.layers, &self.svg_layers);
         self.vector_undo
@@ -8949,6 +9031,11 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::paint_bucket::Settings::is_default"
+    )]
+    pub paint_bucket_settings: crate::paint_bucket::Settings,
     #[serde(default)]
     pub animation: animation::Animation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

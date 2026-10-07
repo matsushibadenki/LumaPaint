@@ -81,7 +81,9 @@ fn evaluate(runtime: &mut Runtime) -> bool {
             return false;
         }
         runtime.rendered_frame = Some(runtime.frame);
-        let preview = runtime.preview.get_or_insert_with(|| doc.clone());
+        let preview = runtime
+            .preview
+            .get_or_insert_with(|| doc.clone_for_rendering());
         preview.evaluate_animation(&doc, runtime.frame);
         true
     })

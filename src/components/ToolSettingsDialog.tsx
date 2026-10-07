@@ -64,7 +64,7 @@ export function ToolSettingsDialog({tool,locale,document:doc,brush:initialBrush,
     {!isPathSelection(tool)&&!shape&&!view&&!textTool&&!sample&&<>
       {tool!=='paintBucket'&&number(t.size,brush.size,1,MAX_BRUSH_SIZE,size=>setBrush(v=>({...v,size})))}
       {tool!=='paintBucket'&&number(t.hardness,brush.hardness*100,0,100,n=>setBrush(v=>({...v,hardness:n/100})))}
-      {tool==='paintBucket'&&<PaintBucketControls locale={locale} details onError={setError} onChange={setBucketSettings}/>}
+      {tool==='paintBucket'&&<PaintBucketControls locale={locale} layers={doc.layers} details onError={setError} onChange={setBucketSettings}/>}
 
       {isRetouch(tool)?<RetouchControls tool={tool} locale={locale} details onError={setError} onChange={setRetouchSettings}/>:tool==='cloneStamp'?<CloneStampControls locale={locale} details onError={setError} onChange={setStampSettings}/>:<div className="tool-settings-color"><span>{t.color}</span><ColorPickerPopover locale={locale} color={brush.color} label={t.color} noColor={brush.noColor} onNone={()=>setBrush(v=>({...v,noColor:true}))} onChange={color=>setBrush(v=>({...v,color,noColor:false}))}/></div>}
     </>}

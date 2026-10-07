@@ -165,3 +165,64 @@ fn animation_imported_svg_and_affine_scale_rotation_keep_original_artwork() {
     );
     assert_eq!(imported.svg_layers().next().unwrap().source, original);
 }
+
+#[test]
+fn rendering_forks_match_full_clones_for_sampling_and_animation() {
+    let (mut doc, id) = vector_document();
+    doc.set_animation_key(
+        &id,
+        Property::X,
+        Keyframe {
+            frame: 8,
+            value: 12.,
+            interpolation: Interpolation::Linear,
+        },
+    )
+    .unwrap();
+    let mut effects = doc.layer_effects(&id);
+    effects.enabled = true;
+    effects.values[0] = 0.5;
+    doc.set_layer_effects(&id, effects).unwrap();
+    let mut expected = doc.clone();
+    expected.finish();
+    assert_eq!(
+        document_pixels(&doc.clone_for_rendering()).unwrap(),
+        document_pixels(&expected).unwrap()
+    );
+    let sample = doc
+        .clone_stamp_sampling_document(lumapaint_core::clone_stamp::Sample::AllLayers)
+        .unwrap();
+    assert_eq!(
+        document_pixels(&sample).unwrap(),
+        document_pixels(&expected).unwrap()
+    );
+    let mut preview = doc.clone_for_rendering();
+    for frame in [0, 4, 8, 20] {
+        preview.evaluate_animation(&doc, frame);
+        expected.evaluate_animation(&doc, frame);
+        assert_eq!(
+            document_pixels(&preview).unwrap(),
+            document_pixels(&expected).unwrap()
+        );
+    }
+}
+
+#[test]
+fn history_free_pixel_preview_matches_committed_image_without_mutating_source() {
+    let (mut doc, _) = vector_document();
+    let id = doc.add_paint_layer().unwrap();
+    doc.select_layer(id.clone()).unwrap();
+    let source = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"20\" y=\"20\" width=\"24\" height=\"24\" fill=\"#0000ff\" opacity=\"0.5\"/></svg>";
+    let original = document_pixels(&doc).unwrap();
+    let before = serde_json::to_value(doc.document_state()).unwrap();
+    let preview = doc.clone_stamp_preview_document(source.into()).unwrap();
+    let retouch = doc.retouch_preview_document(source.into()).unwrap();
+    let mut committed = doc.clone();
+    committed.replace_moved_pixels(source.into(), None).unwrap();
+    let expected = document_pixels(&committed).unwrap();
+    assert_eq!(document_pixels(&preview).unwrap(), expected);
+    assert_eq!(document_pixels(&retouch).unwrap(), expected);
+    assert_ne!(expected, original);
+    assert_eq!(doc.snapshot().layer_id, id);
+    assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+}
