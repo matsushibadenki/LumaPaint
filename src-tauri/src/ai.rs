@@ -334,8 +334,8 @@ pub async fn ai_generate(window: tauri::WebviewWindow, request: Request) -> Resu
     .await?;
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, request, prompt, key);
-        return Err("Native image editing currently requires macOS".into());
+        let _ = (window, request.edit, request, prompt, key);
+        Err("Native image editing currently requires macOS".into())
     }
     #[cfg(target_os = "macos")]
     {
