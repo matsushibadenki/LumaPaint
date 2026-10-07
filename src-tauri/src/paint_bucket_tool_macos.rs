@@ -57,6 +57,7 @@ mod tests {
                 tolerance: 255,
                 anti_alias: false,
                 all_layers: true,
+                area_offset: 2,
                 ..Default::default()
             })
             .unwrap();
@@ -125,6 +126,51 @@ mod tests {
         assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
         doc.redo();
         assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), after);
+    }
+    #[test]
+    fn gap_fill_on_reference_line_art_preserves_source_and_round_trips_history() {
+        ACTIVE_DOCUMENT_ID.with(|id| id.set(886));
+        BRUSH.with(|b| {
+            *b.borrow_mut() = Brush {
+                color: [255, 0, 0],
+                ..Default::default()
+            }
+        });
+        configure(Settings {
+            all_layers: true,
+            close_gap: 1,
+            area_offset: 1,
+            anti_alias: false,
+            tolerance: 0,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut doc = Document::default();
+        doc.crop_canvas([0., 0., 15., 15.]).unwrap();
+        doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><path d="M3 3H7 M8 3H12V12H3Z" fill="none" stroke="black" stroke-width="1"/></svg>"#.into(), None).unwrap();
+        let source = doc.paint_source().unwrap().to_string();
+        let layer = doc.add_paint_layer().unwrap();
+        doc.select_layer(layer.clone()).unwrap();
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let point = Point { x: 7., y: 7. };
+        pointer(&mut doc, point, 0).unwrap();
+        pointer(&mut doc, point, 2).unwrap();
+        PIXEL_PAINT_COMMIT.with(|p| p.borrow_mut().take());
+        let pixels = clipboard::raw_selected_pixels(&doc).unwrap().2;
+        assert_eq!(
+            &pixels[(7 * 15 + 7) * 4..(7 * 15 + 7) * 4 + 4],
+            [255, 0, 0, 255]
+        );
+        assert_eq!(&pixels[..4], [0; 4]);
+        assert_eq!(doc.paint_source().unwrap(), source);
+        let after = serde_json::to_value(doc.document_state()).unwrap();
+        doc.undo();
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        doc.redo();
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), after);
+        let mut loaded = Document::decode(&doc.encode().unwrap()).unwrap();
+        loaded.select_layer(layer).unwrap();
+        assert_eq!(clipboard::raw_selected_pixels(&loaded).unwrap().2, pixels);
     }
     #[test]
     fn all_layers_samples_boundaries_but_only_paints_selected_empty_image_layer() {

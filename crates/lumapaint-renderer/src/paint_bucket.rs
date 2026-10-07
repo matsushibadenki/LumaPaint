@@ -28,6 +28,53 @@ fn difference(p: &[u8], seed: [f32; 4]) -> f32 {
         .map(|(a, b)| (a - b).abs())
         .fold(0., f32::max)
 }
+/// Separable square morphology. Sliding extrema keep work O(width * height),
+/// independent of the requested radius. No image bytes leave the worker.
+fn morphology(mask: &[u8], width: usize, radius: usize, grow: bool) -> Vec<u8> {
+    if radius == 0 {
+        return mask.to_vec();
+    }
+    let height = mask.len() / width;
+    let pass = |input: &[u8], length: usize, lines: usize, vertical: bool| {
+        let mut output = vec![0; input.len()];
+        for line in 0..lines {
+            let index = |position: usize| {
+                if vertical {
+                    position * width + line
+                } else {
+                    line * width + position
+                }
+            };
+            let mut queue: VecDeque<usize> = VecDeque::new();
+            let mut end = 0;
+            for position in 0..length {
+                let right = (position + radius + 1).min(length);
+                while end < right {
+                    while queue.back().is_some_and(|last| {
+                        if grow {
+                            input[index(*last)] <= input[index(end)]
+                        } else {
+                            input[index(*last)] >= input[index(end)]
+                        }
+                    }) {
+                        queue.pop_back();
+                    }
+                    queue.push_back(end);
+                    end += 1;
+                }
+                let left = position.saturating_sub(radius);
+                while queue.front().is_some_and(|first| *first < left) {
+                    queue.pop_front();
+                }
+                output[index(position)] = input[index(*queue.front().unwrap())];
+            }
+        }
+        output
+    };
+    let horizontal = pass(mask, width, height, false);
+    pass(&horizontal, height, width, true)
+}
+
 pub fn fill(
     size: (u32, u32),
     original: Vec<u8>,
@@ -127,13 +174,48 @@ fn fill_impl(
             },
         ]
     };
+    // Open the matching region to close narrow passages. Re-expand only the
+    // reached component, bounded by original matching pixels: line art stays intact.
+    let gap = if settings.contiguous {
+        settings.close_gap as usize
+    } else {
+        0
+    };
+    let candidates = (gap > 0).then(|| {
+        let region: Vec<u8> = (0..mask.len())
+            .map(|i| if matches(i) { 255 } else { 0 })
+            .collect();
+        morphology(&region, w as usize, gap, false)
+    });
+    let seed_at = if let Some(candidates) = &candidates {
+        if candidates[start] != 0 {
+            Some(start)
+        } else {
+            let sx = start % w as usize;
+            let sy = start / w as usize;
+            (sy.saturating_sub(gap)..=(sy + gap).min(h as usize - 1))
+                .flat_map(|y| {
+                    (sx.saturating_sub(gap)..=(sx + gap).min(w as usize - 1))
+                        .map(move |x| y * w as usize + x)
+                })
+                .filter(|i| candidates[*i] != 0)
+                .min_by_key(|i| {
+                    (i % w as usize).abs_diff(sx).pow(2) + (i / w as usize).abs_diff(sy).pow(2)
+                })
+        }
+    } else {
+        Some(start)
+    };
     if settings.contiguous {
+        let Some(seed_at) = seed_at else {
+            return Ok(empty());
+        };
         let mut visited = vec![false; bytes / 4];
         let mut queue = VecDeque::new();
-        queue.push_back(start);
-        visited[start] = true;
+        queue.push_back(seed_at);
+        visited[seed_at] = true;
         while let Some(i) = queue.pop_front() {
-            if !matches(i) {
+            if !matches(i) || candidates.as_ref().is_some_and(|c| c[i] == 0) {
                 continue;
             }
             mask[i] = 255;
@@ -148,6 +230,14 @@ fn fill_impl(
         for (i, value) in mask.iter_mut().enumerate() {
             if matches(i) {
                 *value = 255;
+            }
+        }
+    }
+    if gap > 0 {
+        mask = morphology(&mask, w as usize, gap, true);
+        for (i, coverage) in mask.iter_mut().enumerate() {
+            if !matches(i) {
+                *coverage = 0;
             }
         }
     }
@@ -166,6 +256,19 @@ fn fill_impl(
         }
         for (i, a) in edges {
             mask[i] = a;
+        }
+    }
+    if settings.area_offset != 0 {
+        mask = morphology(
+            &mask,
+            w as usize,
+            settings.area_offset.unsigned_abs() as usize,
+            settings.area_offset > 0,
+        );
+        for (i, coverage) in mask.iter_mut().enumerate() {
+            if !allowed(i) {
+                *coverage = 0;
+            }
         }
     }
     let mut dirty = BTreeSet::new();
@@ -289,6 +392,139 @@ mod tests {
             [255, 255, 255, 255],
         ]
         .concat()
+    }
+    #[test]
+    fn sliding_morphology_matches_brute_force_at_edges_and_large_radii() {
+        for (w, h) in [(1usize, 1usize), (1, 7), (7, 1), (8, 5)] {
+            let mask: Vec<u8> = (0..w * h).map(|i| ((i * 71 + 19) % 256) as u8).collect();
+            for radius in [0, 1, 3, 16, 32] {
+                for grow in [true, false] {
+                    let expected: Vec<u8> = (0..w * h)
+                        .map(|i| {
+                            let x = i % w;
+                            let y = i / w;
+                            let values = (y.saturating_sub(radius)..=(y + radius).min(h - 1))
+                                .flat_map(|yy| {
+                                    let mask = &mask;
+                                    (x.saturating_sub(radius)..=(x + radius).min(w - 1))
+                                        .map(move |xx| mask[yy * w + xx])
+                                });
+                            if grow {
+                                values.max().unwrap()
+                            } else {
+                                values.min().unwrap()
+                            }
+                        })
+                        .collect();
+                    assert_eq!(morphology(&mask, w, radius, grow), expected);
+                }
+            }
+        }
+    }
+    fn broken_outline(transparent: bool) -> Vec<u8> {
+        let mut sample = vec![if transparent { 0 } else { 255 }; 15 * 15 * 4];
+        for y in 3..=11 {
+            for x in 3..=11 {
+                if (x == 3 || x == 11 || y == 3 || y == 11) && !(x == 7 && y == 3) {
+                    let i = (y * 15 + x) * 4;
+                    sample[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        sample
+    }
+    #[test]
+    fn close_gap_stops_leak_without_modifying_white_or_transparent_reference() {
+        for transparent in [false, true] {
+            let sample = broken_outline(transparent);
+            let reference = sample.clone();
+            let run = |close_gap, contiguous| {
+                fill(
+                    (15, 15),
+                    vec![0; sample.len()],
+                    &sample,
+                    Point { x: 7., y: 7. },
+                    [255, 0, 0],
+                    Settings {
+                        close_gap,
+                        contiguous,
+                        anti_alias: false,
+                        tolerance: 0,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap()
+            };
+            assert_eq!(run(0, true).pixels[3], 255);
+            let closed = run(1, true);
+            assert_eq!(closed.pixels[3], 0);
+            assert_eq!(closed.pixels[(7 * 15 + 7) * 4 + 3], 255);
+            assert_eq!(closed.pixels[(3 * 15 + 3) * 4 + 3], 0);
+            assert_eq!(run(1, false).pixels, run(0, false).pixels);
+            assert_eq!(sample, reference);
+        }
+    }
+    #[test]
+    fn area_offset_grows_and_shrinks_but_respects_selection_and_alpha_lock() {
+        let sample = broken_outline(false);
+        let selection = Selection::new(
+            lumapaint_core::selection::SelectionShape::Rectangle,
+            [3., 3., 9., 9.],
+        );
+        let run = |area_offset| {
+            fill(
+                (15, 15),
+                vec![0; sample.len()],
+                &sample,
+                Point { x: 7., y: 7. },
+                [255, 0, 0],
+                Settings {
+                    close_gap: 1,
+                    area_offset,
+                    anti_alias: false,
+                    tolerance: 0,
+                    ..Default::default()
+                },
+                Some(&selection),
+            )
+            .unwrap()
+        };
+        let grown = run(2);
+        assert_eq!(grown.pixels[(3 * 15 + 3) * 4 + 3], 255);
+        assert_eq!(grown.pixels[(2 * 15 + 7) * 4 + 3], 0);
+        let shrunk = run(-1);
+        assert_eq!(shrunk.pixels[(4 * 15 + 4) * 4 + 3], 0);
+        assert_eq!(shrunk.pixels[(7 * 15 + 7) * 4 + 3], 255);
+        assert!(!run(-32).changed);
+        let mut original = vec![0; sample.len()];
+        original[(7 * 15 + 7) * 4..(7 * 15 + 7) * 4 + 4].copy_from_slice(&[32, 32, 32, 64]);
+        let result = fill_alpha_locked(
+            (15, 15),
+            original.clone(),
+            &sample,
+            Point { x: 7., y: 7. },
+            [255, 0, 0],
+            Settings {
+                close_gap: 1,
+                area_offset: 2,
+                ..Default::default()
+            },
+            Some(&selection),
+        )
+        .unwrap();
+        for (pixel, old) in result
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(original.as_chunks::<4>().0)
+        {
+            assert_eq!(pixel[3], old[3]);
+            if old[3] == 0 {
+                assert_eq!(pixel, old);
+            }
+        }
     }
     #[test]
     fn locked_fill_keeps_alpha_and_unselected_pixels_for_every_blend_mode() {
