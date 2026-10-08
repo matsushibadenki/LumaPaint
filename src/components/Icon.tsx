@@ -1,5 +1,5 @@
 type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-type PanelIconName = 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+type PanelIconName = 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   animationRecord: 'M4 4h16v16H4z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
   animationDuplicate: 'M3 3h12v12H3z M9 15v6h12V9h-6 M12 12h6 M15 9v6',
@@ -16,6 +16,7 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   paintBucket: 'M4 4l10 10 M5 7l7-5 8 8-10 10-8-8 3-5z M3 12h15 M19 15c0 0-3 4-3 5a3 3 0 0 0 6 0c0-1-3-5-3-5z',
   cloneStamp: 'M4 17h16v4H4z M7 17v-4h10v4 M10 13V8a3 3 0 1 1 4 0v5',
   crop: 'M6 2v16h16 M2 6h16v16 M6 6h12v12H6',
+  screentone: 'M3 3h18v18H3z M7 7h.01 M12 7h.01 M17 7h.01 M7 12h.01 M12 12h.01 M17 12h.01 M7 17h.01 M12 17h.01 M17 17h.01',
   effects: 'M4 5h16 M4 12h16 M4 19h16 M8 3v4 M16 10v4 M10 17v4',
   folder: 'M3 6h6l2 2h10v12H3Z',
   links:'M9 14l6-4M8 6H6a4 4 0 0 0 0 8h3M16 18h2a4 4 0 0 0 0-8h-3',

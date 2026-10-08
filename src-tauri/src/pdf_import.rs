@@ -39,7 +39,7 @@ pub(crate) fn prepare(
     path: std::path::PathBuf,
     target: Option<u64>,
 ) {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let result = (|| -> Result<Pending, String> {
             use std::io::Read;
             let mut bytes = Vec::new();
@@ -122,7 +122,7 @@ pub(crate) async fn pdf_import_thumbnail(
         })
         .map(|p| p.bytes.clone())
         .ok_or("PDF import is no longer pending")?;
-    tauri::async_runtime::spawn_blocking(move || thumbnail(&bytes, page_index))
+    crate::diagnostic_jobs::spawn_blocking(move || thumbnail(&bytes, page_index))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -181,7 +181,7 @@ pub(crate) async fn pdf_import_apply(
     }
     #[cfg(target_os = "macos")]
     let result = async {
-        let decoded = tauri::async_runtime::spawn_blocking(move || {
+        let decoded = crate::diagnostic_jobs::spawn_blocking(move || {
             let options = lumapaint_formats::io::ReadOptions {
                 page_index,
                 raster_dpi: dpi,

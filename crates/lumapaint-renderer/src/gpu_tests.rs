@@ -2471,6 +2471,7 @@ fn verify_object_texture_moves(shared: bool) {
             geometry_buffer: bounds_buffer,
             geometry,
             cached: CachedSvg {
+                _capacity_lease: gpu_metrics::CachedTextureLease::new(&texture),
                 source_identity: None,
                 gpu_effects: false,
                 comparison_pixels: vec![],
@@ -2695,6 +2696,14 @@ fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
 #[test]
 #[ignore = "requires a real GPU"]
 fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
+    for opacity in [1.0, 0.5, 0.01, 0.0] {
+        retained_text_frames_comparison(opacity, false, false);
+        retained_text_frames_comparison(opacity, true, false);
+        retained_text_frames_comparison(opacity, true, true);
+    }
+}
+
+fn retained_text_frames_comparison(opacity: f32, overlap: bool, tiled: bool) {
     use frame_cache::{FrameRasterCache, PreparedDisplayLayer};
     use lumapaint_core::document::TextSettings;
     use lumapaint_core::vector::VectorText;
@@ -2724,7 +2733,10 @@ fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
         "Retained text comparison",
     );
     let mut document = Document::default();
-    for (index, y) in [80., 240.].into_iter().enumerate() {
+    for (index, y) in [80., if overlap { 90. } else { 240. }]
+        .into_iter()
+        .enumerate()
+    {
         if index > 0 {
             let id = document.svg_layers().next().unwrap().id.clone();
             document.select_layer(id).unwrap();
@@ -2744,7 +2756,9 @@ fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
             })
             .unwrap();
     }
-    let layer = document.svg_layers().next().unwrap();
+    let mut layer = document.svg_layers().next().unwrap().clone();
+    layer.opacity = opacity;
+    let layer = &layer;
     let full = prepare_svg_layer(layer, 960, 640).unwrap();
     let PreparedDisplayLayer::Text(prepared) = FrameRasterCache::default()
         .prepare_display_layer(layer, 960, 640)
@@ -3041,15 +3055,82 @@ fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
                     (texture, *rect)
                 }
             });
-            update_retained_text_gpu(
-                &gpu.device,
-                &gpu.queue,
-                &composite,
-                incoming,
-                Some(&plan),
-                &mut scratch,
-            );
-            if performance::enabled() {
+            if overlap {
+                let left = plan.clears.iter().map(|r| r[0]).min().unwrap();
+                let top = plan.clears.iter().map(|r| r[1]).min().unwrap();
+                let right = plan.clears.iter().map(|r| r[0] + r[2]).max().unwrap();
+                let bottom = plan.clears.iter().map(|r| r[1] + r[3]).max().unwrap();
+                // Extra columns exercise unaligned row strides and ignored trailing pixels.
+                let padded_right = right + 3;
+                let padded_left = left - 2;
+                let mut patch_pixels = Vec::new();
+                for y in top..bottom {
+                    patch_pixels.extend_from_slice(
+                        &expected[((y * 960 + padded_left) * 4) as usize
+                            ..((y * 960 + padded_right) * 4) as usize],
+                    );
+                }
+                let frame = frame_cache::CroppedFrame {
+                    pixels: patch_pixels,
+                    origin: (padded_left as usize, top as usize),
+                    width: (padded_right - padded_left) as usize,
+                };
+                let uploaded = if tiled {
+                    let image = tiled_rgba::TiledRgba::from_rgba(
+                        frame.width as u32,
+                        bottom - top,
+                        &frame.pixels,
+                    )
+                    .unwrap();
+                    image
+                        .upload_region(
+                            &gpu.queue,
+                            &composite,
+                            tiled_rgba::Region {
+                                x: left - padded_left,
+                                y: 0,
+                                width: right - left,
+                                height: bottom - top,
+                            },
+                            [left, top],
+                        )
+                        .unwrap()
+                } else {
+                    upload_text_patch_gpu(
+                        &gpu.queue,
+                        &composite,
+                        &frame,
+                        [left as usize, top as usize, right as usize, bottom as usize],
+                    )
+                    .unwrap()
+                };
+                assert_eq!(uploaded, ((right - left) * (bottom - top) * 4) as usize);
+                if performance::enabled() && !tiled {
+                    let stats = performance::take();
+                    assert_eq!(
+                        stats.counts.get("text_overlap_patch_uploaded_bytes"),
+                        Some(&(uploaded as u64))
+                    );
+                    assert_eq!(
+                        stats
+                            .counts
+                            .get("retained_text_gpu_full_clears")
+                            .copied()
+                            .unwrap_or(0),
+                        0
+                    );
+                }
+            } else {
+                update_retained_text_gpu(
+                    &gpu.device,
+                    &gpu.queue,
+                    &composite,
+                    incoming,
+                    Some(&plan),
+                    &mut scratch,
+                );
+            }
+            if performance::enabled() && !overlap {
                 let stats = performance::take();
                 assert_eq!(
                     stats
@@ -3108,5 +3189,92 @@ fn gpu_retained_text_frames_match_full_layer_at_multiple_zooms() {
                 mismatches.first()
             );
         }
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn gpu_tiled_text_replacement_clears_old_bounds_without_materialization() {
+    let gpu = Gpu::new();
+    let (width, height) = (512, 384);
+    let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    for (crop, origin, color) in [
+        ((259, 131), [40, 30], [80, 20, 10, 128]),
+        ((131, 259), [130, 10], [5, 50, 30, 100]),
+        ((1, 1), [511, 383], [0, 0, 0, 0]),
+    ] {
+        let rgba = color.repeat(crop.0 as usize * crop.1 as usize);
+        let image = tiled_rgba::TiledRgba::from_rgba(crop.0, crop.1, &rgba).unwrap();
+        assert_eq!(
+            replace_tiled_text_gpu(&gpu.device, &gpu.queue, &target, &image, origin).unwrap(),
+            rgba.len()
+        );
+        // Invalid replacement must leave the valid submitted/staged image intact.
+        assert!(
+            replace_tiled_text_gpu(&gpu.device, &gpu.queue, &target, &image, [u32::MAX, 0])
+                .is_err()
+        );
+        let stride = width * 4;
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(stride * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = readback.slice(..).get_mapped_range().unwrap();
+        for y in 0..height {
+            for x in 0..width {
+                let inside = x >= origin[0]
+                    && x < origin[0] + crop.0
+                    && y >= origin[1]
+                    && y < origin[1] + crop.1;
+                let expected = if inside { color } else { [0; 4] };
+                let offset = (y * stride + x * 4) as usize;
+                assert_eq!(pixels[offset..offset + 4], expected, "pixel {x},{y}");
+            }
+        }
+        drop(pixels);
+        readback.unmap();
     }
 }

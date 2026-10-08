@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "Non-destructive illustration, comics, and animation workspace"
 
+[features]
+heap-profile = ["lumapaint-core/heap-profile", "lumapaint-renderer/heap-profile"]
+
 [lib]
 name = "lumapaint_app"
 crate-type = ["staticlib", "cdylib", "rlib"]

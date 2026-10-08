@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerEffects {
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screentone: Option<crate::screentone::Screentone>,
     /// Red, orange, yellow, green, aqua, blue, purple, magenta H/S/L offsets.
     #[serde(default)]
     pub mixer: [[f32; 3]; 8],
@@ -27,6 +29,7 @@ impl Default for LayerEffects {
     fn default() -> Self {
         Self {
             enabled: false,
+            screentone: None,
             mixer: [[0.; 3]; 8],
             grading: [[0.; 3]; 3],
             grading_blend: 50.,
@@ -50,6 +53,17 @@ pub struct PreparedEffects<'a> {
 }
 impl PreparedEffects<'_> {
     /// Read-only execution tables for alternate batch backends; not document state.
+    pub fn apply_at(&self, pixel: [u8; 4], point: [f32; 2]) -> [u8; 4] {
+        let adjusted = self.apply(pixel);
+        if self.effects.enabled {
+            self.effects
+                .screentone
+                .as_ref()
+                .map_or(adjusted, |t| t.apply(adjusted, point))
+        } else {
+            adjusted
+        }
+    }
     pub fn tone_tables(&self) -> &[[f32; 256]; 3] {
         &self.tone
     }
@@ -91,6 +105,9 @@ fn tone_channel(c: u8, i: usize, values: &[f32; 10], v: &[f32; 10]) -> f32 {
 }
 impl LayerEffects {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(tone) = &self.screentone {
+            tone.validate()?;
+        }
         if !self.grading_blend.is_finite()
             || !(0. ..=100.).contains(&self.grading_blend)
             || !self.grading_balance.is_finite()

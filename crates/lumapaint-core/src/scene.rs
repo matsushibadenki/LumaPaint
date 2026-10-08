@@ -69,6 +69,7 @@ pub struct Journal {
     instance_id: u64,
     sequence: u64,
     generations: BTreeMap<Target, Generations>,
+    layer_sequences: BTreeMap<String, u64>,
     events: VecDeque<Change>,
 }
 fn next_journal_id() -> u64 {
@@ -81,6 +82,7 @@ impl Default for Journal {
             instance_id: next_journal_id(),
             sequence: 0,
             generations: BTreeMap::new(),
+            layer_sequences: BTreeMap::new(),
             events: VecDeque::new(),
         }
     }
@@ -91,6 +93,7 @@ impl Clone for Journal {
             instance_id: next_journal_id(),
             sequence: self.sequence,
             generations: self.generations.clone(),
+            layer_sequences: self.layer_sequences.clone(),
             events: self.events.clone(),
         }
     }
@@ -102,6 +105,12 @@ impl Journal {
     }
     pub fn cursor(&self) -> u64 {
         self.sequence
+    }
+    /// Last event affecting this layer or any of its objects. Unlike `read`,
+    /// this lookup neither clones the journal nor allocates an owned target ID.
+    /// Removed layers return zero; recreating them receives a new sequence.
+    pub fn layer_sequence(&self, layer: &str) -> u64 {
+        self.layer_sequences.get(layer).copied().unwrap_or(0)
     }
     pub fn generations(&self, target: &Target) -> Generations {
         self.generations.get(target).copied().unwrap_or_default()
@@ -135,6 +144,14 @@ impl Journal {
             .sequence
             .checked_add(1)
             .expect("scene sequence exhausted");
+        if removed && target.object.is_none() {
+            self.layer_sequences.remove(&target.layer);
+        } else if let Some(sequence) = self.layer_sequences.get_mut(&target.layer) {
+            *sequence = self.sequence;
+        } else {
+            self.layer_sequences
+                .insert(target.layer.clone(), self.sequence);
+        }
         let generations = self.generations.entry(target.clone()).or_default();
         // Monotonic sequence values prevent delete/recreate ABA and Undo rollback.
         if changes.geometry {
@@ -446,5 +463,56 @@ mod tests {
             journal.read(last + 1),
             JournalRead::Rebuild { .. }
         ));
+    }
+    #[test]
+    fn layer_sequences_include_objects_and_survive_history_rollover_without_retaining_deleted_layers(
+    ) {
+        let mut journal = Journal::default();
+        let a = Target {
+            layer: "a".into(),
+            object: Some("shape".into()),
+        };
+        journal.push(
+            a.clone(),
+            Changes {
+                transform: true,
+                ..Default::default()
+            },
+            false,
+        );
+        let sequence = journal.layer_sequence("a");
+        assert_eq!(sequence, journal.cursor());
+        for _ in 0..=JOURNAL_CAPACITY {
+            journal.push(
+                Target {
+                    layer: "b".into(),
+                    object: None,
+                },
+                Changes::all(),
+                false,
+            );
+        }
+        assert!(matches!(
+            journal.read(sequence),
+            JournalRead::Rebuild { .. }
+        ));
+        assert_eq!(journal.layer_sequence("a"), sequence);
+        let fork = journal.clone();
+        assert_ne!(fork.instance_id(), journal.instance_id());
+        assert_eq!(fork.layer_sequence("a"), sequence);
+        journal.push(a.clone(), Changes::all(), true);
+        assert!(journal.layer_sequence("a") > sequence);
+        journal.push(
+            Target {
+                layer: "a".into(),
+                object: None,
+            },
+            Changes::all(),
+            true,
+        );
+        assert_eq!(journal.layer_sequence("a"), 0);
+        assert_eq!(journal.layer_sequences.len(), 1);
+        journal.push(a, Changes::all(), false);
+        assert!(journal.layer_sequence("a") > sequence);
     }
 }

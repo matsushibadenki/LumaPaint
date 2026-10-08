@@ -301,7 +301,7 @@ pub(super) fn pointer(
                     .with(|c| c.borrow().as_ref().map(|c| c.token))
                     .ok_or("Missing canvas")?;
                 let app = APP.get().ok_or("Missing application")?.clone();
-                tauri::async_runtime::spawn_blocking(move || {
+                crate::diagnostic_jobs::spawn_blocking(move || {
                     let expected_gradient = gradient.clone();
                     let result = render_pixel_gradient(job, gradient);
                     let _ = app.run_on_main_thread(move || {
@@ -406,7 +406,7 @@ fn schedule_preview(axis: &Axis, token: u64) {
     let id = axis.id;
     let revision = axis.revision;
     let serial = axis.serial;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let selection = job.selection.clone();
         let result = render_pixel_gradient(job, gradient);
         let _ = app.run_on_main_thread(move || {

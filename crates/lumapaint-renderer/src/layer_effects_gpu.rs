@@ -5,7 +5,7 @@ use std::{
     num::NonZeroU64,
     sync::{Mutex, OnceLock},
 };
-pub(super) const CONFIG_LEN: usize = 1096;
+pub(super) const CONFIG_LEN: usize = 1132;
 const BUDGET: u64 = 64 * 1024 * 1024;
 const MIN_PIXELS: usize = 262144;
 pub(super) fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
@@ -40,6 +40,29 @@ pub(super) fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
         out[1072 + c * 4..1075 + c * 4].copy_from_slice(&e.grading[c]);
         out[1084 + c * 4..1087 + c * 4].copy_from_slice(&plan.grading_tints()[c]);
     }
+    if let Some(t) = &e.screentone {
+        out[1096..1115].copy_from_slice(&[
+            t.kind as u32 as f32 + 1.,
+            t.variant as f32,
+            t.frequency,
+            t.dpi,
+            t.density,
+            t.size,
+            t.angle,
+            t.offset[0],
+            t.offset[1],
+            t.gradient_end,
+            t.extent,
+            t.seed as f32,
+            t.color[0] as f32,
+            t.color[1] as f32,
+            t.color[2] as f32,
+            0.,
+            f32::from(t.paper),
+            f32::from(t.luminance),
+            f32::from(t.inverted),
+        ]);
+    }
     Some(out)
 }
 fn capacity(bytes: u64, limits: &wgpu::Limits) -> Option<u64> {
@@ -61,6 +84,7 @@ struct Buffers {
     capacity: u64,
 }
 struct Gpu {
+    job_timing: crate::gpu_timing::JobTiming,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
@@ -74,11 +98,18 @@ impl Gpu {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).ok()?;
+            pollster::block_on(crate::gpu_timing::request_job_device(&adapter)).ok()?;
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Layer effects"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("layer_effects.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("layer_effects.wgsl"),
+                    "\n",
+                    include_str!("screentone.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Layer effects batch"),
@@ -96,6 +127,7 @@ impl Gpu {
             return None;
         }
         Some(Self {
+            job_timing: crate::gpu_timing::JobTiming::new("layer_effects", &device, &queue),
             device,
             queue,
             pipeline,
@@ -122,12 +154,15 @@ impl Gpu {
         let result = (|| {
             if self.buffers.as_ref().is_none_or(|b| b.capacity < size) {
                 let make = |label, size, usage| {
-                    self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some(label),
-                        size,
-                        usage,
-                        mapped_at_creation: false,
-                    })
+                    crate::gpu_metrics::create_buffer!(
+                        self.device,
+                        &wgpu::BufferDescriptor {
+                            label: Some(label),
+                            size,
+                            usage,
+                            mapped_at_creation: false,
+                        }
+                    )
                 };
                 self.buffers = Some(Buffers {
                     input: make(
@@ -156,15 +191,19 @@ impl Gpu {
             let b = self.buffers.as_ref()?;
             let identity = source.map(|id| (id, pixels.len()));
             if identity.is_none() || self.source != identity {
-                self.queue.write_buffer(&b.input, 0, pixels);
+                crate::gpu_metrics::write_buffer!(self.queue, &b.input, 0, pixels);
                 #[cfg(test)]
                 {
                     self.uploaded_bytes += pixels.len();
                 }
             }
             self.source = identity;
-            self.queue
-                .write_buffer(&b.config, 0, bytemuck::cast_slice(config));
+            crate::gpu_metrics::write_buffer!(
+                self.queue,
+                &b.config,
+                0,
+                bytemuck::cast_slice(config)
+            );
             let binding = |buffer| {
                 wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer,
@@ -190,15 +229,25 @@ impl Gpu {
                     },
                 ],
             });
+            let mut job = self.job_timing.start(&self.device);
             let mut encoder = self.device.create_command_encoder(&Default::default());
             {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    timestamp_writes: job.as_ref().map(|sample| sample.writes()),
+                    ..Default::default()
+                });
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &group, &[]);
                 pass.dispatch_workgroups((size as u32 / 4).div_ceil(256), 1, 1);
             }
-            encoder.copy_buffer_to_buffer(&b.output, 0, &b.readback, 0, size);
+            crate::gpu_metrics::copy_buffer_to_buffer!(encoder, &b.output, 0, &b.readback, 0, size);
+            if let Some(sample) = &mut job {
+                sample.resolve(&mut encoder);
+            }
             self.queue.submit([encoder.finish()]);
+            if let Some(sample) = job {
+                sample.submitted();
+            }
             let (send, recv) = std::sync::mpsc::channel();
             b.readback
                 .slice(..size)
@@ -206,8 +255,11 @@ impl Gpu {
                     let _ = send.send(r);
                 });
             self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+            self.job_timing.collect(&self.device);
             recv.recv().ok()?.ok()?;
-            let bytes = b.readback.slice(..size).get_mapped_range().ok()?.to_vec();
+            let bytes = crate::gpu_metrics::mapped_read!(b.readback.slice(..size))
+                .ok()?
+                .to_vec();
             b.readback.unmap();
             Some(bytes)
         })();
@@ -227,7 +279,7 @@ impl Gpu {
 enum State {
     Idle,
     Starting,
-    Ready(Gpu),
+    Ready(Box<Gpu>),
     Unavailable,
 }
 static GPU: OnceLock<Mutex<State>> = OnceLock::new();
@@ -236,6 +288,25 @@ pub(super) fn apply(pixels: &mut [u8], effects: &LayerEffects) -> bool {
 }
 // A revision identifies immutable source pixels, never adjusted output.
 pub(super) fn apply_source(pixels: &mut [u8], effects: &LayerEffects, source: Option<u64>) -> bool {
+    apply_mapped(pixels, effects, source, None)
+}
+pub(super) fn apply_region(
+    pixels: &mut [u8],
+    effects: &LayerEffects,
+    width: u32,
+    mapping: [f32; 4],
+) -> bool {
+    apply_mapped(pixels, effects, None, Some((width, mapping)))
+}
+fn apply_mapped(
+    pixels: &mut [u8],
+    effects: &LayerEffects,
+    source: Option<u64>,
+    region: Option<(u32, [f32; 4])>,
+) -> bool {
+    if effects.screentone.is_some() && region.is_none() {
+        return false;
+    }
     if !effects.enabled
         || pixels.len() / 4 < MIN_PIXELS
         || !pixels.len().is_multiple_of(4)
@@ -254,7 +325,7 @@ pub(super) fn apply_source(pixels: &mut [u8], effects: &LayerEffects, source: Op
         std::thread::spawn(|| {
             let ready = Gpu::new();
             if let Ok(mut state) = GPU.get().unwrap().lock() {
-                *state = ready.map_or(State::Unavailable, State::Ready);
+                *state = ready.map_or(State::Unavailable, |gpu| State::Ready(Box::new(gpu)));
             }
         });
         return false;
@@ -265,9 +336,13 @@ pub(super) fn apply_source(pixels: &mut [u8], effects: &LayerEffects, source: Op
     if capacity(pixels.len() as u64, &gpu.device.limits()).is_none() {
         return false;
     }
-    let Some(config) = config(effects) else {
+    let Some(mut config) = config(effects) else {
         return false;
     };
+    if let Some((width, mapping)) = region {
+        config[1120] = width as f32;
+        config[1121..1125].copy_from_slice(&mapping);
+    }
     let result = gpu.render_source(pixels, &config, source);
     if let Some(result) = result {
         pixels.copy_from_slice(&result);
@@ -283,8 +358,12 @@ mod tests {
     use super::*;
     #[test]
     fn shader_and_capacity_contract_are_valid_without_a_gpu() {
-        let module =
-            wgpu::naga::front::wgsl::parse_str(include_str!("layer_effects.wgsl")).unwrap();
+        let module = wgpu::naga::front::wgsl::parse_str(concat!(
+            include_str!("layer_effects.wgsl"),
+            "\n",
+            include_str!("screentone.wgsl")
+        ))
+        .unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
@@ -460,8 +539,11 @@ mod tests {
     fn benchmark_direct_effect_display_against_readback_upload() {
         use std::time::Instant;
         let mut gpu = Gpu::new().expect("GPU required");
-        let mut direct =
-            pollster::block_on(crate::effects_display::EffectsDisplay::new(&gpu.device)).unwrap();
+        let mut direct = pollster::block_on(crate::effects_display::EffectsDisplay::new(
+            &gpu.device,
+            &gpu.queue,
+        ))
+        .unwrap();
         for dimension in [1024, 2048] {
             let input = pixels(dimension as usize * dimension as usize);
             let effects = effects(3);
@@ -506,6 +588,7 @@ mod tests {
                     &gpu.device,
                     &gpu.queue,
                     crate::effects_display::Request {
+                        mapping: None,
                         pixels: &input,
                         size: (dimension, dimension),
                         revision: 1,
@@ -577,6 +660,91 @@ mod tests {
             cpu.sort_by(f64::total_cmp);
             times.sort_by(f64::total_cmp);
             eprintln!("effects case={case}, pixels={count}: CPU median {:.3} ms; GPU median {:.3} ms (upload/dispatch/readback included)",cpu[2],times[2]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod screentone_tests {
+    use super::*;
+    use lumapaint_core::screentone::{Screentone, ToneKind};
+    #[test]
+    #[ignore = "requires hardware GPU"]
+    fn gpu_screentone_all_52_designs_match_document_reference() {
+        let mut gpu = Gpu::new().expect("GPU required");
+        let kinds = [
+            ToneKind::Dot,
+            ToneKind::Gradient,
+            ToneKind::Line,
+            ToneKind::Pattern,
+            ToneKind::Cg,
+            ToneKind::Sand,
+            ToneKind::Crosshatch,
+            ToneKind::Effect,
+            ToneKind::Background,
+            ToneKind::White,
+            ToneKind::Transfer,
+            ToneKind::Color,
+            ToneKind::Copy,
+        ];
+        let (width, height) = (192u32, 96u32);
+        let mut sheet = image::RgbaImage::new(width * 4, height * 13);
+        for (row, kind) in kinds.into_iter().enumerate() {
+            for variant in 0..4 {
+                let tone = Screentone {
+                    kind,
+                    variant,
+                    angle: 17.,
+                    density: 47.,
+                    extent: 100.,
+                    offset: [13., 11.],
+                    color: [26, 74, 153],
+                    ..Default::default()
+                };
+                let effects = LayerEffects {
+                    enabled: true,
+                    screentone: Some(tone),
+                    ..Default::default()
+                };
+                let input: Vec<u8> = (0..width * height)
+                    .flat_map(|i| {
+                        let a = [0u8, 64, 128, 255][(i / width % 4) as usize];
+                        let c = (i % width) as u8 / 3;
+                        [c.min(a), c.min(a), c.min(a), a]
+                    })
+                    .collect();
+                let mapping = [-10., -8., 1.2, 0.9];
+                let mut params = config(&effects).unwrap();
+                params[1120] = width as f32;
+                params[1121..1125].copy_from_slice(&mapping);
+                let actual = gpu.render_source(&input, &params, None).unwrap();
+                let mut expected = input.clone();
+                crate::screentone::apply_cpu(&mut expected, &effects, width, mapping);
+                let mismatches = actual
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(expected.as_chunks::<4>().0.iter())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                assert!(
+                    mismatches < actual.len() / 4 / 200,
+                    "{kind:?}/{variant}: {mismatches} differing pixels"
+                );
+                for (i, p) in actual.as_chunks::<4>().0.iter().enumerate() {
+                    let bg = if kind == ToneKind::White { 32 } else { 255 };
+                    let color = [0, 1, 2]
+                        .map(|c| (p[c] as u32 + bg * (255 - p[3] as u32) / 255).min(255) as u8);
+                    sheet.put_pixel(
+                        variant * width + i as u32 % width,
+                        row as u32 * height + i as u32 / width,
+                        image::Rgba([color[0], color[1], color[2], 255]),
+                    );
+                }
+            }
+        }
+        if let Ok(path) = std::env::var("LUMAPAINT_TONE_SHEET") {
+            sheet.save(path).unwrap();
         }
     }
 }

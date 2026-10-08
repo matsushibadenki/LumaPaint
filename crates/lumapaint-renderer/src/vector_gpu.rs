@@ -3,6 +3,7 @@ use metal::foreign_types::ForeignType;
 use skia_safe::{gpu, ImageInfo, Surface};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 enum State {
     Uninitialized,
@@ -14,6 +15,70 @@ thread_local! {
     // Ganesh contexts may not be shared concurrently across rendering workers.
     static CONTEXT: RefCell<State> = const { RefCell::new(State::Uninitialized) };
     static SHARED_CONTEXTS: RefCell<HashMap<(usize, usize), State>> = RefCell::new(HashMap::new());
+    static LAST_CACHE_SAMPLE: RefCell<Option<Instant>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug, Default)]
+struct CacheUsage {
+    contexts: usize,
+    resources: usize,
+    bytes: usize,
+    purgeable_bytes: usize,
+    budget_bytes: usize,
+}
+
+fn cache_usage() -> Option<CacheUsage> {
+    let mut usage = CacheUsage::default();
+    let mut add = |state: &State| {
+        if let State::Ready(context) = state {
+            let resources = context.resource_cache_usage();
+            usage.contexts += 1;
+            usage.resources = usage.resources.saturating_add(resources.resource_count);
+            usage.bytes = usage.bytes.saturating_add(resources.resource_bytes);
+            usage.purgeable_bytes = usage
+                .purgeable_bytes
+                .saturating_add(context.resource_cache_purgeable_bytes());
+            usage.budget_bytes = usage
+                .budget_bytes
+                .saturating_add(context.resource_cache_limit());
+        }
+    };
+    CONTEXT.with(|slot| {
+        let state = slot.try_borrow().ok()?;
+        add(&state);
+        Some(())
+    })?;
+    SHARED_CONTEXTS.with(|slot| {
+        for context in slot.try_borrow().ok()?.values() {
+            add(context);
+        }
+        Some(())
+    })?;
+    Some(usage)
+}
+
+fn report_cache() {
+    if !crate::performance::enabled() {
+        return;
+    }
+    let now = Instant::now();
+    let sample = LAST_CACHE_SAMPLE.with(|slot| {
+        let mut last = slot.borrow_mut();
+        if last.is_some_and(|last| now.duration_since(last) < Duration::from_secs(1)) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    });
+    if sample {
+        if let Some(usage) = cache_usage() {
+            eprintln!(
+                "lumapaint-skia-cache thread={:?} {:?}",
+                std::thread::current().id(),
+                usage
+            );
+        }
+    }
 }
 
 /// The texture is allocated on wgpu's exact Metal device. Skia finishes writing
@@ -41,7 +106,7 @@ pub(super) fn rasterize_shared(
     // Windows can use the same physical device with different serial queues.
     // Reusing a context across queues would lose producer/consumer ordering.
     let key = (raw_device.as_ptr() as usize, raw_queue.as_ptr() as usize);
-    SHARED_CONTEXTS.with(|slot| {
+    let result = SHARED_CONTEXTS.with(|slot| {
         let mut contexts = slot.try_borrow_mut().ok()?;
         // Bound thread-local contexts even when many windows/devices are opened.
         if !contexts.contains_key(&key) && contexts.len() >= 4 {
@@ -79,6 +144,14 @@ pub(super) fn rasterize_shared(
                 | metal::MTLTextureUsage::PixelFormatView,
         );
         let raw = raw_device.new_texture(&descriptor);
+        crate::gpu_metrics::external_texture_created(
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::Extent3d {
+                width: info.width() as u32,
+                height: info.height() as u32,
+                depth_or_array_layers: 1,
+            },
+        );
         // TextureInfo retains raw; all wrappers live until rendering completes.
         let texture_info = unsafe { gpu::mtl::TextureInfo::new(raw.as_ptr().cast()) };
         let backend = unsafe {
@@ -148,7 +221,9 @@ pub(super) fn rasterize_shared(
                 wgpu::TextureUses::COLOR_TARGET,
             )
         })
-    })
+    });
+    report_cache();
+    result
 }
 
 fn context() -> Option<gpu::DirectContext> {
@@ -166,7 +241,7 @@ fn context() -> Option<gpu::DirectContext> {
 }
 
 pub(super) fn rasterize(info: &ImageInfo, draw: impl FnOnce(&mut Surface)) -> Option<Vec<u8>> {
-    CONTEXT.with(|slot| {
+    let result = CONTEXT.with(|slot| {
         let mut state = slot.try_borrow_mut().ok()?;
         if matches!(*state, State::Uninitialized) {
             *state = context().map_or(State::Unavailable, State::Ready);
@@ -199,7 +274,9 @@ pub(super) fn rasterize(info: &ImageInfo, draw: impl FnOnce(&mut Surface)) -> Op
             *state = State::Unavailable;
             None
         }
-    })
+    });
+    report_cache();
+    result
 }
 
 #[cfg(test)]
@@ -579,10 +656,24 @@ mod tests {
     #[ignore = "requires a real Metal device"]
     fn metal_cache_renders_paths_and_text_with_premultiplied_pixels() {
         CONTEXT.with(|state| *state.borrow_mut() = State::Uninitialized);
+        SHARED_CONTEXTS.with(|slot| slot.borrow_mut().clear());
+        assert_eq!(cache_usage().unwrap().contexts, 0);
+        CONTEXT.with(|slot| {
+            let _borrow = slot.borrow_mut();
+            assert!(cache_usage().is_none());
+        });
         let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="red" fill-opacity="0.5"/></svg>"#;
         let gpu = super::super::rasterize_svg(source, 64, 64).unwrap();
         assert_eq!(gpu.backend, super::super::SvgBackend::SkiaGpu);
+        let usage = cache_usage().unwrap();
+        assert_eq!(usage.contexts, 1);
+        assert_eq!(usage.budget_bytes, 64 * 1024 * 1024);
+        assert!(usage.resources > 0);
+        assert!(usage.bytes > 0);
         CONTEXT.with(|state| *state.borrow_mut() = State::Unavailable);
+        let released = cache_usage().unwrap();
+        assert_eq!(released.contexts, 0);
+        assert_eq!(released.bytes, 0);
         let cpu = super::super::rasterize_svg(source, 64, 64).unwrap();
         for (actual, expected) in gpu.pixels.iter().zip(&cpu.pixels) {
             assert!(actual.abs_diff(*expected) <= 1);

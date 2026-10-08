@@ -118,11 +118,14 @@ pub(crate) fn buffer_highlighted(
         )
         .collect();
     (
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Frame guide vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        }),
+        crate::gpu_metrics::create_buffer_init!(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Frame guide vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }
+        ),
         vertices.len() as u32,
     )
 }

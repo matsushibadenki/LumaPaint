@@ -10,6 +10,10 @@ use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};
 use std::sync::{Arc, OnceLock};
 
+pub(crate) fn parse_for_glyph_atlas(source: &str) -> Result<Arc<usvg::Tree>, String> {
+    parsed_text::parse(source)
+}
+
 pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS

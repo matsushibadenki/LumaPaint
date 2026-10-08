@@ -1,0 +1,24 @@
+.screentone-panel { padding: 12px 16px; min-width: 0; }
+.screentone-panel h3 { margin: 0 0 8px; font-size: 13px; }
+.screentone-panel header p { overflow-wrap: anywhere; opacity: .7; }
+.screentone-panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.screentone-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, 46%); align-items: center; gap: 8px; margin-block: 10px; font-size: 11px; }
+.screentone-row input, .screentone-row select { width: 100%; min-width: 0; box-sizing: border-box; }
+.screentone-designs { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; margin-block: 12px; }
+.screentone-designs button { min-height: 32px; white-space: normal; word-break: normal; }
+.screentone-designs button[aria-pressed=true] { border-color: #7194c4; background: #35455c; color: #fff; }
+.screentone-check { display: flex; gap: 6px; align-items: center; margin-block: 10px; font-size: 11px; }
+.screentone-note { font-size: 11px; line-height: 1.65; opacity: .7; overflow-wrap: anywhere; }
+.screentone-actions { display: grid; gap: 7px; }
+.screentone-actions button { min-height: 30px; white-space: normal; }
+.screentone-panel [role=alert] { color: #e5a394; overflow-wrap: anywhere; }
+
+.screentone-panel { color: var(--color-ink); font-size: 12px; }
+.screentone-panel header { display: block; padding: 0; margin: 0 0 12px; border: 0; }
+.screentone-panel header p { font-size: 11px; line-height: 1.5; }
+.screentone-category { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.screentone-row input[type=number] { padding: 4px 6px; font-variant-numeric: tabular-nums; }
+.screentone-check input[type=checkbox] { min-height: 0; width: 13px; height: 13px; flex: 0 0 13px; margin: 0; }
+.screentone-panel details { padding-block: 8px; border-block: 1px solid var(--color-rule); }
+.screentone-panel summary { cursor: pointer; }
+.screentone-note { margin-block: 10px; }

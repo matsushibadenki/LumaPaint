@@ -26,6 +26,7 @@ fn capacities(required: [u64; 3], limits: &wgpu::Limits) -> Option<[u64; 3]> {
     Some(capacities)
 }
 struct Gpu {
+    job_timing: crate::gpu_timing::JobTiming,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
@@ -38,7 +39,7 @@ impl Gpu {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).ok()?;
+            pollster::block_on(crate::gpu_timing::request_job_device(&adapter)).ok()?;
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Retouch"),
@@ -60,6 +61,7 @@ impl Gpu {
             return None;
         }
         Some(Self {
+            job_timing: crate::gpu_timing::JobTiming::new("retouch", &device, &queue),
             device,
             queue,
             pipeline,
@@ -93,12 +95,15 @@ impl Gpu {
             .is_none_or(|b| b.capacities.iter().zip(required).any(|(c, r)| *c < r))
         {
             let create = |label, size, usage| {
-                self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(label),
-                    size,
-                    usage,
-                    mapped_at_creation: false,
-                })
+                crate::gpu_metrics::create_buffer!(
+                    self.device,
+                    &wgpu::BufferDescriptor {
+                        label: Some(label),
+                        size,
+                        usage,
+                        mapped_at_creation: false,
+                    }
+                )
             };
             #[cfg(test)]
             {
@@ -134,12 +139,24 @@ impl Gpu {
             });
         }
         let buffers = self.buffers.as_ref()?;
-        self.queue
-            .write_buffer(&buffers.input, 0, bytemuck::cast_slice(values));
-        self.queue
-            .write_buffer(&buffers.source, 0, bytemuck::cast_slice(source));
-        self.queue
-            .write_buffer(&buffers.params, 0, bytemuck::cast_slice(&params));
+        crate::gpu_metrics::write_buffer!(
+            self.queue,
+            &buffers.input,
+            0,
+            bytemuck::cast_slice(values)
+        );
+        crate::gpu_metrics::write_buffer!(
+            self.queue,
+            &buffers.source,
+            0,
+            bytemuck::cast_slice(source)
+        );
+        crate::gpu_metrics::write_buffer!(
+            self.queue,
+            &buffers.params,
+            0,
+            bytemuck::cast_slice(&params)
+        );
         let binding = |buffer, size| {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer,
@@ -169,15 +186,32 @@ impl Gpu {
                 },
             ],
         });
+        let mut job = self.job_timing.start(&self.device);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                timestamp_writes: job.as_ref().map(|sample| sample.writes()),
+                ..Default::default()
+            });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups((values.len() as u32).div_ceil(256), 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&buffers.output, 0, &buffers.readback, 0, size);
+        crate::gpu_metrics::copy_buffer_to_buffer!(
+            encoder,
+            &buffers.output,
+            0,
+            &buffers.readback,
+            0,
+            size
+        );
+        if let Some(sample) = &mut job {
+            sample.resolve(&mut encoder);
+        }
         self.queue.submit([encoder.finish()]);
+        if let Some(sample) = job {
+            sample.submitted();
+        }
         let (send, recv) = std::sync::mpsc::channel();
         buffers
             .readback
@@ -186,11 +220,9 @@ impl Gpu {
                 let _ = send.send(r);
             });
         self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        self.job_timing.collect(&self.device);
         recv.recv().ok()?.ok()?;
-        let bytes = buffers
-            .readback
-            .slice(..size)
-            .get_mapped_range()
+        let bytes = crate::gpu_metrics::mapped_read!(buffers.readback.slice(..size))
             .ok()?
             .to_vec();
         buffers.readback.unmap();

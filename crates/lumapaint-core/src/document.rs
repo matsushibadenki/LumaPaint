@@ -3376,6 +3376,55 @@ impl Document {
         gradient: crate::gradient::Gradient,
         engine: &dyn crate::vector::VectorPathEngine,
     ) -> Result<String, String> {
+        self.add_procedural_fill_layer(gradient, engine, None)
+    }
+
+    pub fn add_screentone_layer(
+        &mut self,
+        mut tone: crate::screentone::Screentone,
+        engine: &dyn crate::vector::VectorPathEngine,
+    ) -> Result<String, String> {
+        tone.validate()?;
+        tone.dpi = self.resolution as f32;
+        let gradient = crate::gradient::Gradient {
+            geometry: None,
+            pixel_style: None,
+            kind: crate::gradient::GradientKind::Linear,
+            angle: 0.,
+            aspect: 1.,
+            dither: false,
+            method: crate::gradient::GradientMethod::Classic,
+            stops: vec![
+                crate::gradient::GradientStop {
+                    position: 0.,
+                    color: [0, 0, 0, 255],
+                    midpoint: 0.5,
+                },
+                crate::gradient::GradientStop {
+                    position: 1.,
+                    color: [0, 0, 0, 255],
+                    midpoint: 0.5,
+                },
+            ],
+        };
+        self.add_procedural_fill_layer(gradient, engine, Some(tone))
+    }
+    fn add_procedural_fill_layer(
+        &mut self,
+        gradient: crate::gradient::Gradient,
+        engine: &dyn crate::vector::VectorPathEngine,
+        tone: Option<crate::screentone::Screentone>,
+    ) -> Result<String, String> {
+        let title = if tone.is_some() {
+            "Screentone"
+        } else {
+            "Gradient Fill"
+        };
+        let prefix = if tone.is_some() {
+            "tone-layer"
+        } else {
+            "gradient-layer"
+        };
         gradient.validate()?;
         if gradient.pixel_style.is_some() {
             return Err("Gradient fill layers currently support linear and radial / グラデーションレイヤーは線形・円形に対応しています / 渐变填充图层目前支持线性和径向".into());
@@ -3442,15 +3491,15 @@ impl Document {
         while self
             .svg_layers
             .iter()
-            .any(|l| l.id == format!("gradient-layer-{serial}"))
+            .any(|l| l.id == format!("{prefix}-{serial}"))
         {
             serial += 1;
         }
-        let id = format!("gradient-layer-{serial}");
+        let id = format!("{prefix}-{serial}");
         let object_id = format!("{id}-fill");
         let object = VectorObject {
             id: object_id.clone(),
-            name: "Gradient Fill".into(),
+            name: title.into(),
             path,
             transform: [1., 0., 0., 1., 0., 0.],
             opacity: 1.,
@@ -3465,7 +3514,7 @@ impl Document {
             stroke: None,
             stroke_width: 0.,
             stroke_style: Default::default(),
-            fill_gradient: Some(gradient),
+            fill_gradient: if tone.is_some() { None } else { Some(gradient) },
             stroke_gradient: None,
             live_corners: None,
             rectangle_radii: None,
@@ -3480,7 +3529,7 @@ impl Document {
         let source = vector_svg(self.width, self.height, &objects);
         let layer = SvgLayer {
             id: id.clone(),
-            name: "Gradient Fill".into(),
+            name: title.into(),
             source,
             vector_objects: objects,
             vector_layer: true,
@@ -3507,6 +3556,16 @@ impl Document {
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers.push(layer);
+        if let Some(tone) = tone {
+            self.layer_effects.insert(
+                id.clone(),
+                crate::layer_effects::LayerEffects {
+                    enabled: true,
+                    screentone: Some(tone),
+                    ..Default::default()
+                },
+            );
+        }
         self.layer_groups.reconcile(&self.svg_layers);
         self.selected_layer = Some(id.clone());
         self.selected_vector_objects = vec![object_id];

@@ -14,7 +14,7 @@ struct RetainedLayer {
 
 pub(super) struct WorkspaceImage {
     pub image: PreparedSvgLayer,
-    pub effect: Option<(lumapaint_core::layer_effects::LayerEffects, u64)>,
+    pub effect: Option<(lumapaint_core::layer_effects::LayerEffects, u64, [f32; 4])>,
 }
 
 #[derive(Default)]
@@ -190,7 +190,11 @@ impl WorkspaceCache {
                 let mut pixels = old.pixels;
                 if !deferred {
                     pixels.copy_from_slice(&source_pixels);
-                    crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    if effects.screentone.is_some() {
+                        crate::screentone::apply(&mut pixels, &effects, size[0], rect);
+                    } else {
+                        crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    }
                     apply_opacity(&mut pixels, opacity);
                 }
                 (source_pixels, pixels)
@@ -226,7 +230,7 @@ impl WorkspaceCache {
                             .copy_from_slice(&tile[from..from + width as usize * 4]);
                     }
                     if !deferred {
-                        crate::apply_layer_effects(&mut tile, &effects);
+                        crate::screentone::apply(&mut tile, &effects, right - left, tile_rect);
                         apply_opacity(&mut tile, opacity);
                     }
                     for row in y..y + height {
@@ -250,7 +254,11 @@ impl WorkspaceCache {
                 )?;
                 let mut pixels = source_pixels.clone();
                 if !deferred {
-                    crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    if effects.screentone.is_some() {
+                        crate::screentone::apply(&mut pixels, &effects, size[0], rect);
+                    } else {
+                        crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                    }
                     apply_opacity(&mut pixels, opacity);
                 }
                 (source_pixels, pixels)
@@ -268,7 +276,16 @@ impl WorkspaceCache {
                 },
             );
             prepared.push(WorkspaceImage {
-                effect: deferred.then_some((effects, source_revision)),
+                effect: deferred.then_some((
+                    effects,
+                    source_revision,
+                    [
+                        rect[0],
+                        rect[1],
+                        rect[2] / size[0] as f32,
+                        rect[3] / size[1] as f32,
+                    ],
+                )),
                 image: PreparedSvgLayer {
                     id: layer.id.clone(),
                     source: layer.id.clone(),

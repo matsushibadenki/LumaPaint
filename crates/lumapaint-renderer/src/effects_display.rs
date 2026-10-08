@@ -41,6 +41,7 @@ struct Buffers {
 }
 
 pub(super) struct EffectsDisplay {
+    job_timing: crate::gpu_timing::JobTiming,
     pipeline: wgpu::ComputePipeline,
     buffers: Option<Buffers>,
     source: Option<(u64, usize)>,
@@ -49,12 +50,19 @@ pub(super) struct EffectsDisplay {
 }
 
 impl EffectsDisplay {
-    pub async fn new(device: &wgpu::Device) -> Option<Self> {
+    pub async fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
         let memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Direct display effects"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("layer_effects.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("layer_effects.wgsl"),
+                    "\n",
+                    include_str!("screentone.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Direct display effects"),
@@ -70,12 +78,17 @@ impl EffectsDisplay {
             return None;
         }
         Some(Self {
+            job_timing: crate::gpu_timing::JobTiming::new("display_effects", device, queue),
             pipeline,
             buffers: None,
             source: None,
             #[cfg(test)]
             uploaded_bytes: 0,
         })
+    }
+
+    pub fn collect_timings(&self, device: &wgpu::Device) {
+        self.job_timing.collect(device);
     }
 
     pub fn render(
@@ -91,20 +104,26 @@ impl EffectsDisplay {
             effects,
             opacity,
             previous,
+            mapping,
         } = request;
         let (bytes, capacity, stride) = layout(size, &device.limits())?;
         if pixels.len() as u64 != bytes || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
             return None;
         }
-        let plan = config(effects)?;
+        let mut plan = config(effects)?;
+        plan[1120] = size.0 as f32;
+        plan[1121..1125].copy_from_slice(&mapping.unwrap_or([0., 0., 1., 1.]));
         if self.buffers.as_ref().is_none_or(|b| b.capacity < capacity) {
             let make = |label, size, usage| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(label),
-                    size,
-                    usage,
-                    mapped_at_creation: false,
-                })
+                crate::gpu_metrics::create_buffer!(
+                    device,
+                    &wgpu::BufferDescriptor {
+                        label: Some(label),
+                        size,
+                        usage,
+                        mapped_at_creation: false,
+                    }
+                )
             };
             self.buffers = Some(Buffers {
                 input: make(
@@ -129,7 +148,7 @@ impl EffectsDisplay {
         let buffers = self.buffers.as_ref()?;
         let identity = (revision, pixels.len());
         if self.source != Some(identity) {
-            queue.write_buffer(&buffers.input, 0, pixels);
+            crate::gpu_metrics::write_buffer!(queue, &buffers.input, 0, pixels);
             #[cfg(test)]
             {
                 self.uploaded_bytes += pixels.len();
@@ -141,27 +160,35 @@ impl EffectsDisplay {
         parameters[CONFIG_LEN] = size.0 as f32;
         parameters[CONFIG_LEN + 1] = (stride / 4) as f32;
         parameters[CONFIG_LEN + 2] = opacity;
-        queue.write_buffer(&buffers.config, 0, bytemuck::cast_slice(&parameters));
+        crate::gpu_metrics::write_buffer!(
+            queue,
+            &buffers.config,
+            0,
+            bytemuck::cast_slice(&parameters)
+        );
         let texture = previous
             .filter(|texture| texture.width() == size.0 && texture.height() == size.1)
             .cloned()
             .unwrap_or_else(|| {
-                device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Direct effects texture"),
-                    size: wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                })
+                crate::gpu_metrics::create_texture!(
+                    device,
+                    &wgpu::TextureDescriptor {
+                        label: Some("Direct effects texture"),
+                        size: wgpu::Extent3d {
+                            width: size.0,
+                            height: size.1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::COPY_DST
+                            | wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    }
+                )
             });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Direct effects buffers"),
@@ -185,14 +212,19 @@ impl EffectsDisplay {
                 },
             ],
         });
+        let mut job = self.job_timing.start(device);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                timestamp_writes: job.as_ref().map(|sample| sample.writes()),
+                ..Default::default()
+            });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups((bytes / 4).div_ceil(256) as u32, 1, 1);
         }
-        encoder.copy_buffer_to_texture(
+        crate::gpu_metrics::copy_buffer_to_texture!(
+            encoder,
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffers.output,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -206,12 +238,19 @@ impl EffectsDisplay {
         );
         // The compositor submits after this on the same queue, so the copy is visible
         // without a CPU fence. Later writes to reused buffers are ordered by submission.
+        if let Some(sample) = &mut job {
+            sample.resolve(&mut encoder);
+        }
         queue.submit([encoder.finish()]);
+        if let Some(sample) = job {
+            sample.submitted();
+        }
         Some(texture)
     }
 }
 
 pub(super) struct Request<'a> {
+    pub mapping: Option<[f32; 4]>,
     pub pixels: &'a [u8],
     pub size: (u32, u32),
     pub revision: u64,
@@ -248,7 +287,8 @@ mod tests {
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_buffer(
+        crate::gpu_metrics::copy_texture_to_buffer!(
+            encoder,
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
@@ -267,9 +307,7 @@ mod tests {
             .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         rx.recv().unwrap().unwrap();
-        let mapped = buffer
-            .slice(..)
-            .get_mapped_range()
+        let mapped = crate::gpu_metrics::mapped_read!(buffer.slice(..))
             .expect("GPU buffer mapped after successful map callback");
         mapped
             .chunks(stride as usize)
@@ -283,9 +321,9 @@ mod tests {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let mut gpu =
-            pollster::block_on(EffectsDisplay::new(&device)).expect("effect display pipeline");
+            pollster::block_on(crate::gpu_timing::request_job_device(&adapter)).unwrap();
+        let mut gpu = pollster::block_on(EffectsDisplay::new(&device, &queue))
+            .expect("effect display pipeline");
         let mut previous = None;
         for (version, size) in [(1, (513, 512)), (2, (1024, 512)), (3, (512, 512))] {
             let pixels: Vec<_> = (0..size.0 * size.1)
@@ -313,6 +351,7 @@ mod tests {
                         &device,
                         &queue,
                         Request {
+                            mapping: None,
                             pixels: &pixels,
                             size,
                             revision: version,
@@ -361,6 +400,7 @@ mod tests {
                     &device,
                     &queue,
                     Request {
+                        mapping: None,
                         pixels: &input,
                         size: (512, 512),
                         revision,
@@ -378,5 +418,58 @@ mod tests {
             let actual = read(&device, &queue, &texture);
             assert!(actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
         }
+    }
+    #[test]
+    #[ignore = "requires hardware GPU"]
+    fn screentone_direct_display_matches_export_coordinates_and_opacity() {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(crate::gpu_timing::request_job_device(&adapter)).unwrap();
+        let mut gpu = pollster::block_on(EffectsDisplay::new(&device, &queue)).unwrap();
+        let effects = LayerEffects {
+            enabled: true,
+            screentone: Some(lumapaint_core::screentone::Screentone {
+                frequency: 37.,
+                angle: 13.,
+                color: [30, 80, 200],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let input = [40, 40, 40, 128].repeat(512 * 512);
+        let mapping = [-19., 27., 0.5, 0.75];
+        let texture = gpu
+            .render(
+                &device,
+                &queue,
+                Request {
+                    mapping: Some(mapping),
+                    pixels: &input,
+                    size: (512, 512),
+                    revision: 900,
+                    effects: &effects,
+                    opacity: 0.7,
+                    previous: None,
+                },
+            )
+            .unwrap();
+        let actual = read(&device, &queue, &texture);
+        let mut expected = input;
+        crate::screentone::apply_cpu(&mut expected, &effects, 512, mapping);
+        for v in &mut expected {
+            *v = (*v as f32 * 0.7).round() as u8;
+        }
+        let mismatch = actual
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            mismatch < 512 * 512 / 1000,
+            "{mismatch} display/export mismatches"
+        );
     }
 }

@@ -1,3 +1,5 @@
+import { ScreentonePanel } from './ScreentonePanel';
+import { screentoneLabels } from '../screentone';
 import {colorProfiles} from '../document-color-modes';
 import { LayerEffectsPanel, effectLabels } from './LayerEffectsPanel';
 import { LayerOpacityControl } from './LayerOpacityControl';
@@ -29,7 +31,7 @@ import { TextPanel } from './TextPanel';
 import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
-const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'pathfinder', 'pages', 'links', 'effects', 'text', 'layers', 'document'] as const;
+const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'pathfinder', 'pages', 'links', 'screentone', 'effects', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -63,7 +65,7 @@ function initialPanelOrder(): PanelId[] {
   return [...panelIds];
 }
 
-const panelIcons = { effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
+const panelIcons = { screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
 export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   onLayerEffects: (id: string, effects: import('../bridge').LayerEffects) => void;
@@ -133,7 +135,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
       setLayerPanelMode(mode);
     } catch (cause) { setPathTabError(String(cause)); }
   };
-  const labels: Record<PanelId, string> = { effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
+  const labels: Record<PanelId, string> = { screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
   useEffect(() => {
@@ -186,6 +188,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
   return <aside className={`inspector${draggedPanel?' panel-drag-active':''}`} aria-label={t.properties}>
     <div className="dock-resizer" role="separator" aria-orientation="vertical" aria-label={locale==='ja'?'パネルの幅':locale==='en'?'Panel width':'面板宽度'} aria-valuemin={260} aria-valuemax={600} aria-valuenow={dockWidth} tabIndex={0} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeDock.current={x:e.clientX,width:dockWidth};}} onPointerMove={e=>{if(resizeDock.current)setDockWidth(Math.max(260,Math.min(600,window.innerWidth*.6,resizeDock.current.width+resizeDock.current.x-e.clientX)));}} onPointerUp={()=>{resizeDock.current=null;}} onPointerCancel={()=>{resizeDock.current=null;}} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setDockWidth(w=>Math.max(260,Math.min(600,w+(e.key==='ArrowLeft'?16:-16))));}}}/>
     <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}><strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong><button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
+    {panelView('screentone', <section id="inspector-panel-screentone" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-screentone"><ScreentonePanel key={thumbnailDocumentKey} locale={locale} layer={selectedLayer} resolution={document.resolution} enabled={enabled || rasterEnabled} canCreate={enabled} onUpdate={onTransformUpdate} /></section>)}
     {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
     <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
       {order.map(panel => <Fragment key={panel}><button

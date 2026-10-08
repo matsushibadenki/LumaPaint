@@ -122,7 +122,15 @@ fn render_sized_inner(
     for y in 0..height {
         for x in 0..width {
             let input = tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]);
-            let mut pixel = effects.as_ref().map_or(input, |e| e.apply(input));
+            let mut pixel = effects.as_ref().map_or(input, |e| {
+                e.apply_at(
+                    input,
+                    [
+                        (x as f32 + 0.5) * snapshot.width as f32 / width as f32,
+                        (y as f32 + 0.5) * snapshot.height as f32 / height as f32,
+                    ],
+                )
+            });
             for c in 0..3 {
                 pixel[c] = (pixel[c] as u16 * pixel[3] as u16 / 255) as u8;
             }
@@ -153,7 +161,12 @@ fn render_sized_inner(
         .filter(|layer| snapshot.layers.iter().any(|l| l.id == layer.id))
     {
         let mut pixels = rasterize_svg(&layer.source, width, height)?.pixels;
-        crate::apply_layer_effects(&mut pixels, &document.layer_effects(&layer.id));
+        crate::screentone::apply(
+            &mut pixels,
+            &document.layer_effects(&layer.id),
+            width,
+            [0., 0., snapshot.width as f32, snapshot.height as f32],
+        );
         if layer.visible {
             over(&mut composite, &pixels, layer.effective_opacity());
         }

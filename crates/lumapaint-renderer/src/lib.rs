@@ -11,15 +11,25 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 pub mod frame_cache;
 mod frame_overlay;
+pub mod glyph_atlas;
+mod glyph_display;
+pub mod glyph_draw;
+pub mod glyph_run;
+mod gpu_metrics;
+mod gpu_timing;
 pub mod gradient_raster;
+mod input_latency;
 #[cfg(feature = "skia")]
 mod native_bezier;
+mod native_composite;
 mod object_cache_state;
 pub mod performance;
 pub mod portable_paths;
+mod process_memory;
 mod text_copy_plan;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
+pub mod tiled_rgba;
 mod workspace;
 pub use frame_overlay::FrameOverlay;
 pub mod clone_stamp;
@@ -318,11 +328,14 @@ fn selection_bind_group(
             info: [4., 0., 0., 0.],
         });
     }
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Selection regions"),
-        contents: bytemuck::cast_slice(&regions),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
+    let buffer = crate::gpu_metrics::create_buffer_init!(
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Selection regions"),
+            contents: bytemuck::cast_slice(&regions),
+            usage: wgpu::BufferUsages::STORAGE,
+        }
+    );
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Selection regions"),
         layout,
@@ -847,23 +860,26 @@ impl TileTexture {
         {
             return Err("Invalid tile texture dimensions".into());
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Tile composite"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        let texture = crate::gpu_metrics::create_texture!(
+            device,
+            &wgpu::TextureDescriptor {
+                label: Some("Tile composite"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }
+        );
         let view = texture.create_view(&Default::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -909,7 +925,8 @@ impl TileTexture {
             return Err("Tile upload dimensions changed".into());
         }
         for write in &batch.writes {
-            queue.write_texture(
+            crate::gpu_metrics::write_texture!(
+                queue,
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
                     mip_level: 0,
@@ -938,7 +955,8 @@ impl TileTexture {
 
     fn upload_unchecked(&self, queue: &wgpu::Queue, uploads: &[TileUpload]) {
         for upload in uploads {
-            queue.write_texture(
+            crate::gpu_metrics::write_texture!(
+                queue,
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
                     mip_level: 0,
@@ -977,7 +995,8 @@ fn upload_pixel_tiles(
                 *value = (f32::from(*value) * opacity).round() as u8;
             }
         }
-        queue.write_texture(
+        crate::gpu_metrics::write_texture!(
+            queue,
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
@@ -1327,6 +1346,9 @@ pub struct Renderer {
     channel_target: Option<(wgpu::Texture, wgpu::BindGroup)>,
     composite_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
+    gpu_timing: Option<gpu_timing::FrameTiming>,
+    input_latency: Option<Box<input_latency::Tracker>>,
+    memory_sampler: Option<process_memory::Sampler>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -1334,6 +1356,7 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     frame_overlay_pipeline: wgpu::RenderPipeline,
     frame_overlay: Option<FrameOverlay>,
+    glyph_display: Option<glyph_display::Display>,
     guide_draft: Vec<FrameOverlay>,
     image_frame_guides_visible: bool,
     selection_overlay_visible: bool,
@@ -1567,7 +1590,8 @@ fn upload_svg_rect(
         performance::count("svg_uploaded_bytes", (width * height * 4) as u64);
         performance::count("svg_texture_writes", 1);
         let packed = pack_svg_rect(pixels, stride, [x, y, width, height]);
-        queue.write_texture(
+        crate::gpu_metrics::write_texture!(
+            queue,
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
@@ -1594,6 +1618,7 @@ fn upload_svg_rect(
 }
 
 struct CachedSvg {
+    _capacity_lease: gpu_metrics::CachedTextureLease,
     source_identity: Option<object_cache_state::SourceIdentity>,
     gpu_effects: bool,
     comparison_pixels: Vec<u8>,
@@ -1750,7 +1775,8 @@ impl ObjectLayerCache {
             if run.selected && offset != [0., 0.] {
                 run.rectangle[0] += offset[0];
                 run.rectangle[1] += offset[1];
-                queue.write_buffer(
+                crate::gpu_metrics::write_buffer!(
+                    queue,
                     &run.geometry_buffer,
                     0,
                     bytemuck::cast_slice(&run.rectangle),
@@ -1815,7 +1841,8 @@ fn compose_retained_text_gpu<'a>(
             let mut row = 0;
             while row < height {
                 let count = rows.min(height - row);
-                encoder.copy_buffer_to_texture(
+                crate::gpu_metrics::copy_buffer_to_texture!(
+                    encoder,
                     wgpu::TexelCopyBufferInfo {
                         buffer: zero,
                         layout: wgpu::TexelCopyBufferLayout {
@@ -1869,7 +1896,8 @@ fn compose_retained_text_gpu<'a>(
             "retained_text_gpu_copied_bytes",
             u64::from(texture.width()) * u64::from(texture.height()) * 4,
         );
-        encoder.copy_texture_to_texture(
+        crate::gpu_metrics::copy_texture_to_texture!(
+            encoder,
             texture.as_image_copy(),
             wgpu::TexelCopyTextureInfo {
                 texture: target,
@@ -1935,12 +1963,15 @@ fn update_retained_text_gpu<'a>(
     let clear = if let Some(plan) = plan {
         let buffer = scratch.get_or_insert_with(|| {
             performance::count("retained_text_gpu_zero_buffer_allocations", 1);
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Zero source for local text clearing"),
-                size: 4 * 1024 * 1024,
-                usage: wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
+            crate::gpu_metrics::create_buffer!(
+                device,
+                &wgpu::BufferDescriptor {
+                    label: Some("Zero source for local text clearing"),
+                    size: 4 * 1024 * 1024,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }
+            )
         });
         Some((&*buffer, plan.clears.as_slice()))
     } else {
@@ -2105,7 +2136,125 @@ pub fn prepare_svg_layer(
     })
 }
 
+/// Borrow strided rows directly; queue staging is managed by wgpu.
+fn upload_text_patch_gpu(
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    frame: &frame_cache::CroppedFrame,
+    bounds: [usize; 4],
+) -> Result<usize, String> {
+    let rows = frame_cache::patch_rows(frame, bounds)?;
+    if rows.origin[0].saturating_add(rows.size[0]) > target.width()
+        || rows.origin[1].saturating_add(rows.size[1]) > target.height()
+    {
+        return Err("Text patch exceeds GPU target".into());
+    }
+    let _timer = performance::time("text_overlap_patch_write_host");
+    crate::gpu_metrics::write_texture!(
+        queue,
+        wgpu::TexelCopyTextureInfo {
+            texture: target,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: rows.origin[0],
+                y: rows.origin[1],
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        rows.pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(rows.stride),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: rows.size[0],
+            height: rows.size[1],
+            depth_or_array_layers: 1,
+        },
+    );
+    let uploaded = rows.size[0] as usize * rows.size[1] as usize * 4;
+    performance::count("text_overlap_patch_uploaded_bytes", uploaded as u64);
+    performance::count(
+        "text_overlap_patch_borrowed_span_bytes",
+        rows.pixels.len() as u64,
+    );
+    Ok(uploaded)
+}
+
+/// Replace a tiled crop in an existing document texture without CPU materialization.
+fn replace_tiled_text_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::Texture,
+    image: &tiled_rgba::TiledRgba,
+    origin: [u32; 2],
+) -> Result<usize, String> {
+    let (width, height) = image.dimensions();
+    if !target
+        .usage()
+        .contains(wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT)
+        || !matches!(
+            target.format(),
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+        )
+        || target.dimension() != wgpu::TextureDimension::D2
+        || target.sample_count() != 1
+        || origin[0]
+            .checked_add(width)
+            .is_none_or(|n| n > target.width())
+        || origin[1]
+            .checked_add(height)
+            .is_none_or(|n| n > target.height())
+    {
+        return Err("Invalid tiled text replacement target".into());
+    }
+    let _timer = performance::time("text_tiled_replace_host");
+    let view = target.create_view(&Default::default());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Clear replaced tiled text"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+    // Submit the clear before staging replacement writes; the next render submit
+    // flushes those writes after this command, including transparent tile pixels.
+    queue.submit([encoder.finish()]);
+    performance::count("text_tiled_full_gpu_clears", 1);
+    let uploaded = image.upload_region(
+        queue,
+        target,
+        tiled_rgba::Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        origin,
+    )?;
+    performance::count("text_tiled_replace_uploaded_bytes", uploaded as u64);
+    Ok(uploaded)
+}
+
 impl Renderer {
+    /// Capture a host event only when it schedules rendering. Diagnostic builds
+    /// retain the marker through deferred frames; ordinary builds do no timing work.
+    pub fn mark_input(&mut self, marker: (u64, std::time::Instant)) {
+        if let Some(input) = self.input_latency.as_mut() {
+            input.mark(marker);
+        }
+    }
     /// Install a generation-checked worker result. Independent text textures are retained
     /// across edits; unmodified frames keep their GPU resource and rectangle buffer.
     pub fn install_prepared_display(
@@ -2141,11 +2290,152 @@ impl Renderer {
             .find(|layer| layer.id == prepared.id)
             .ok_or("Prepared text layer no longer exists")?;
         if layer.source != prepared.source
-            || layer.effective_opacity() != 1.0
+            || layer.effective_opacity() != prepared.opacity
             || document.dimensions() != prepared.size
             || document.has_layer_effects(&layer.id)
         {
             return Err("Prepared text layer is stale or incompatible".into());
+        }
+        if !prepared.independent
+            && self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                cached.matches_source(document, layer)
+                    && cached.opacity == prepared.opacity
+                    && cached.size == prepared.size
+            })
+        {
+            performance::count("text_overlap_gpu_install_noop", 1);
+            return Ok(0);
+        }
+        if let Some(image) = &prepared.tiled {
+            if let Some(patch) = &prepared.patch {
+                if self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                    cached.source_identity.is_some()
+                        && !cached.gpu_effects
+                        && cached.source == patch.base_source
+                        && cached.opacity == prepared.opacity
+                        && cached.size == prepared.size
+                }) {
+                    let [left, top, right, bottom] = patch.bounds;
+                    let origin = prepared.frames[0].frame.origin;
+                    if left < origin.0 || top < origin.1 || right <= left || bottom <= top {
+                        return Err("Invalid tiled text patch".into());
+                    }
+                    let region = tiled_rgba::Region {
+                        x: (left - origin.0) as u32,
+                        y: (top - origin.1) as u32,
+                        width: (right - left) as u32,
+                        height: (bottom - top) as u32,
+                    };
+                    let cached = self.svg_cache.get_mut(&layer.id).unwrap();
+                    let uploaded = image.upload_region(
+                        &self.queue,
+                        &cached._texture,
+                        region,
+                        [left as u32, top as u32],
+                    )?;
+                    cached.source = prepared.source;
+                    cached.source_identity =
+                        Some(object_cache_state::SourceIdentity::capture(document, layer));
+                    cached.comparison_pixels.clear();
+                    self.object_cache.remove(&layer.id);
+                    performance::count("text_tiled_patch_uploaded_bytes", uploaded as u64);
+                    return Ok(uploaded);
+                }
+            }
+            let origin = prepared.frames[0].frame.origin;
+            let (image_width, image_height) = image.dimensions();
+            if origin
+                .0
+                .checked_add(image_width as usize)
+                .is_none_or(|n| n > prepared.size.0 as usize)
+                || origin
+                    .1
+                    .checked_add(image_height as usize)
+                    .is_none_or(|n| n > prepared.size.1 as usize)
+            {
+                return Err("Invalid tiled text crop bounds".into());
+            }
+            let mut cached = self
+                .svg_cache
+                .remove(&layer.id)
+                .filter(|cached| cached.size == prepared.size)
+                .unwrap_or_else(|| {
+                    performance::count("text_tiled_gpu_target_creations", 1);
+                    let texture = crate::gpu_metrics::create_texture!(
+                        self.device,
+                        &wgpu::TextureDescriptor {
+                            label: Some("Retained tiled text target"),
+                            size: wgpu::Extent3d {
+                                width: prepared.size.0,
+                                height: prepared.size.1,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                | wgpu::TextureUsages::COPY_DST
+                                | wgpu::TextureUsages::COPY_SRC
+                                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            view_formats: &[],
+                        }
+                    );
+                    self.cached_svg_texture(
+                        texture,
+                        PreparedSvgLayer {
+                            id: layer.id.clone(),
+                            source: String::new(),
+                            opacity: prepared.opacity,
+                            size: prepared.size,
+                            fully_contained: true,
+                            pixels: Vec::new(),
+                        },
+                    )
+                });
+            let uploaded = replace_tiled_text_gpu(
+                &self.device,
+                &self.queue,
+                &cached._texture,
+                image,
+                [origin.0 as u32, origin.1 as u32],
+            )?;
+            cached.source = prepared.source;
+            cached.source_identity =
+                Some(object_cache_state::SourceIdentity::capture(document, layer));
+            cached.opacity = prepared.opacity;
+            cached.fully_contained = true;
+            cached.gpu_effects = false;
+            cached.comparison_pixels.clear();
+            self.object_cache.remove(&layer.id);
+            self.svg_cache.insert(layer.id.clone(), cached);
+            return Ok(uploaded);
+        }
+        if !prepared.independent {
+            if let Some(patch) = &prepared.patch {
+                if self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                    cached.source_identity.is_some()
+                        && !cached.gpu_effects
+                        && cached.source == patch.base_source
+                        && cached.opacity == prepared.opacity
+                        && cached.size == prepared.size
+                }) {
+                    let cached = self.svg_cache.get_mut(&layer.id).unwrap();
+                    let uploaded = upload_text_patch_gpu(
+                        &self.queue,
+                        &cached._texture,
+                        &prepared.frames[0].frame,
+                        patch.bounds,
+                    )?;
+                    cached.source = prepared.source;
+                    cached.source_identity =
+                        Some(object_cache_state::SourceIdentity::capture(document, layer));
+                    cached.comparison_pixels.clear();
+                    self.object_cache.remove(&layer.id);
+                    return Ok(uploaded);
+                }
+                performance::count("fallback.text_overlap_patch_base_mismatch", 1);
+            }
         }
         let frame_bytes: usize = prepared
             .frames
@@ -2160,8 +2450,9 @@ impl Renderer {
             .filter(|(id, _)| **id != layer.id)
             .map(|(_, cache)| cache.bytes)
             .sum();
-        let retain_frames = bytes <= (64usize * 1024 * 1024).saturating_sub(other_bytes);
-        if !retain_frames {
+        let retain_frames =
+            prepared.independent && bytes <= (64usize * 1024 * 1024).saturating_sub(other_bytes);
+        if prepared.independent && !retain_frames {
             performance::count("fallback.retained_text_gpu_budget", 1);
         }
         for frame in &prepared.frames {
@@ -2179,7 +2470,9 @@ impl Renderer {
         let partial_plan = previous
             .as_ref()
             .filter(|cache| {
-                cache.document_size == prepared.size
+                prepared.independent
+                    && cache.document_size == prepared.size
+                    && cache.opacity == prepared.opacity
                     && !cache.runs.is_empty()
                     && cache.runs.iter().all(|run| run.object_id.is_some())
                     && self.svg_cache.get(&layer.id).is_some_and(|composite| {
@@ -2227,10 +2520,11 @@ impl Renderer {
                 height as f32,
             ];
             let selected = selected_ids.contains(&frame.id);
-            if let Some(mut old) = old_runs
-                .remove(&frame.id)
-                .filter(|run| run.cached.source == frame.source && run.rectangle == rectangle)
-            {
+            if let Some(mut old) = old_runs.remove(&frame.id).filter(|run| {
+                run.cached.source == frame.source
+                    && run.rectangle == rectangle
+                    && run.cached.opacity == prepared.opacity
+            }) {
                 old.selected = selected;
                 crate::performance::count("retained_text_gpu_reuses", 1);
                 runs.push(old);
@@ -2240,18 +2534,19 @@ impl Renderer {
             let cached = self.make_cached_svg(PreparedSvgLayer {
                 id: layer.id.clone(),
                 source: frame.source,
-                opacity: 1.0,
+                opacity: prepared.opacity,
                 size: (frame.frame.width as u32, height as u32),
                 fully_contained: true,
                 pixels: frame.frame.pixels.clone(),
             })?;
-            let buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = crate::gpu_metrics::create_buffer_init!(
+                self.device,
+                &wgpu::util::BufferInitDescriptor {
                     label: Some("Retained text bounds"),
                     contents: bytemuck::cast_slice(&rectangle),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+                }
+            );
             let geometry = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Retained text geometry"),
                 layout: &self.object_layout,
@@ -2281,22 +2576,25 @@ impl Renderer {
             })
             .unwrap_or_else(|| {
                 performance::count("retained_text_gpu_composite_allocations", 1);
-                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("Retained text GPU composite"),
-                    size: wgpu::Extent3d {
-                        width: prepared.size.0,
-                        height: prepared.size.1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                });
+                let texture = crate::gpu_metrics::create_texture!(
+                    self.device,
+                    &wgpu::TextureDescriptor {
+                        label: Some("Retained text GPU composite"),
+                        size: wgpu::Extent3d {
+                            width: prepared.size.0,
+                            height: prepared.size.1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_DST
+                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    }
+                );
                 self.cached_svg_texture(
                     texture,
                     PreparedSvgLayer {
@@ -2317,11 +2615,16 @@ impl Renderer {
             partial_plan.as_ref(),
             &mut self.text_clear_buffer,
         );
-        composite.source.clear();
+        if prepared.independent {
+            composite.source.clear();
+        } else {
+            composite.source = prepared.source.clone();
+        }
         composite.source_identity =
             Some(object_cache_state::SourceIdentity::capture(document, layer));
         composite.comparison_pixels.clear();
-        composite.opacity = 1.0;
+        composite.gpu_effects = false;
+        composite.opacity = prepared.opacity;
         composite.fully_contained = true;
         self.svg_cache.insert(layer.id.clone(), composite);
         if retain_frames {
@@ -2332,7 +2635,7 @@ impl Renderer {
                     objects: layer.vector_objects.clone(),
                     source: prepared.source,
                     selected_ids,
-                    opacity: 1.0,
+                    opacity: prepared.opacity,
                     document_size: prepared.size,
                     runs,
                     bytes,
@@ -2500,9 +2803,13 @@ impl Renderer {
         }
         let size = document.dimensions();
         document.visible_svg_layers().all(|layer| {
-            self.object_cache
-                .get(&layer.id)
-                .is_some_and(|cached| cached.ready(document, layer))
+            self.glyph_display
+                .as_ref()
+                .is_some_and(|display| display.ready(layer))
+                || self
+                    .object_cache
+                    .get(&layer.id)
+                    .is_some_and(|cached| cached.ready(document, layer))
                 || self.svg_cache.get(&layer.id).is_some_and(|cached| {
                     cached.matches_source(document, layer)
                         && cached.opacity == layer.effective_opacity()
@@ -2520,6 +2827,13 @@ impl Renderer {
         document
             .visible_svg_layers()
             .filter(|layer| {
+                if self
+                    .glyph_display
+                    .as_ref()
+                    .is_some_and(|display| display.ready(layer))
+                {
+                    return false;
+                }
                 #[cfg(feature = "skia")]
                 if self.native_geometry.ready(layer) {
                     return false;
@@ -2627,13 +2941,7 @@ impl Renderer {
             cached.comparison_pixels = if keep { prepared.pixels } else { Vec::new() };
             return Ok(());
         }
-        let pixels = if keep {
-            prepared.pixels.clone()
-        } else {
-            Vec::new()
-        };
-        let mut cached = self.make_cached_svg(prepared)?;
-        cached.comparison_pixels = pixels;
+        let cached = self.make_cached_svg_retaining_pixels(prepared, keep)?;
         self.svg_cache.insert(id, cached);
         Ok(())
     }
@@ -2651,13 +2959,14 @@ impl Renderer {
             .into_iter()
             .map(|item| {
                 let mut image = item.image;
-                if let Some((effects, revision)) = item.effect {
+                if let Some((effects, revision, mapping)) = item.effect {
                     if let Some(display) = &mut self.effects_display {
                         let old_texture = previous.get(&image.source).map(|old| &old._texture);
                         if let Some(texture) = display.render(
                             &self.device,
                             &self.queue,
                             effects_display::Request {
+                                mapping: Some(mapping),
                                 pixels: &image.pixels,
                                 size: image.size,
                                 revision,
@@ -2672,7 +2981,7 @@ impl Renderer {
                         }
                     }
                     // Unsupported dimensions/configuration keep the portable CPU path.
-                    apply_layer_effects_cpu(&mut image.pixels, &effects);
+                    screentone::apply_cpu(&mut image.pixels, &effects, image.size.0, mapping);
                     if image.opacity != 1.0 {
                         for value in &mut image.pixels {
                             *value = (*value as f32 * image.opacity).round() as u8;
@@ -2700,17 +3009,22 @@ impl Renderer {
                     cached.opacity = image.opacity;
                     Ok(cached)
                 } else {
-                    let pixels = std::mem::take(&mut image.pixels);
-                    image.pixels = pixels.clone();
-                    let mut cached = self.make_cached_svg(image)?;
-                    cached.comparison_pixels = pixels;
-                    Ok(cached)
+                    self.make_cached_svg_retaining_pixels(image, true)
                 }
             })
             .collect()
     }
 
     fn make_cached_svg(&self, prepared: PreparedSvgLayer) -> Result<CachedSvg, String> {
+        self.make_cached_svg_retaining_pixels(prepared, false)
+    }
+
+    // Upload by borrow, then move the original allocation into the comparison cache.
+    fn make_cached_svg_retaining_pixels(
+        &self,
+        mut prepared: PreparedSvgLayer,
+        retain_pixels: bool,
+    ) -> Result<CachedSvg, String> {
         let (width, height) = prepared.size;
         let expected = usize::try_from(width)
             .ok()
@@ -2728,7 +3042,8 @@ impl Renderer {
         let _timer = performance::time("svg_texture_create_upload_host");
         performance::count("svg_texture_creations", 1);
         performance::count("svg_uploaded_bytes", prepared.pixels.len() as u64);
-        let texture = self.device.create_texture_with_data(
+        let texture = crate::gpu_metrics::create_texture_with_data!(
+            self.device,
             &self.queue,
             &wgpu::TextureDescriptor {
                 label: Some("SVG layer texture"),
@@ -2750,7 +3065,14 @@ impl Renderer {
             wgpu::util::TextureDataOrder::LayerMajor,
             &prepared.pixels,
         );
-        Ok(self.cached_svg_texture(texture, prepared))
+        let pixels = if retain_pixels {
+            std::mem::take(&mut prepared.pixels)
+        } else {
+            Vec::new()
+        };
+        let mut cached = self.cached_svg_texture(texture, prepared);
+        cached.comparison_pixels = pixels;
+        Ok(cached)
     }
 
     fn cached_svg_texture(&self, texture: wgpu::Texture, prepared: PreparedSvgLayer) -> CachedSvg {
@@ -2773,6 +3095,7 @@ impl Renderer {
             ],
         });
         CachedSvg {
+            _capacity_lease: gpu_metrics::CachedTextureLease::new(&texture),
             source_identity: None,
             gpu_effects: false,
             comparison_pixels: Vec::new(),
@@ -2863,13 +3186,14 @@ impl Renderer {
             if bytes + in_use > 64 * 1024 * 1024 {
                 return Err("Object cache budget exceeded".into());
             }
-            let buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = crate::gpu_metrics::create_buffer_init!(
+                self.device,
+                &wgpu::util::BufferInitDescriptor {
                     label: Some("Object bounds"),
                     contents: bytemuck::cast_slice(&rect),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+                }
+            );
             let geometry = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Object bounds"),
                 layout: &self.object_layout,
@@ -2977,11 +3301,16 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("LumaPaint preview device"),
+                required_features: if performance::enabled() {
+                    adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+                } else {
+                    wgpu::Features::empty()
+                },
                 ..Default::default()
             })
             .await
             .map_err(|e| e.to_string())?;
-        let effects_display = effects_display::EffectsDisplay::new(&device).await;
+        let effects_display = effects_display::EffectsDisplay::new(&device, &queue).await;
         let capabilities = surface.get_capabilities(&adapter);
         let device_error = Arc::new(Mutex::new(None));
         let errors = Arc::clone(&device_error);
@@ -3149,11 +3478,14 @@ impl Renderer {
         if let Some(error) = validation_scope.pop().await {
             return Err(error.to_string());
         }
-        let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Preview viewport"),
-            contents: bytemuck::bytes_of(&Self::uniforms(viewport)),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let uniforms = crate::gpu_metrics::create_buffer_init!(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Preview viewport"),
+                contents: bytemuck::bytes_of(&Self::uniforms(viewport)),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Preview viewport"),
             layout: &bind_layout,
@@ -3165,7 +3497,18 @@ impl Renderer {
         surface.configure(&device, &config);
         #[cfg(feature = "skia")]
         let native_geometry = native_bezier::Cache::new(&device, format);
+        let gpu_timing = performance::enabled()
+            .then(|| gpu_timing::FrameTiming::new(&device, &queue))
+            .flatten();
+        if performance::enabled() && gpu_timing.is_none() {
+            performance::count("gpu_timestamps_unsupported", 1);
+        }
+        let glyph_display = glyph_display::Display::opt_in(&device, format);
         Ok(Self {
+            memory_sampler: performance::enabled().then(process_memory::Sampler::default),
+            gpu_timing,
+            input_latency: performance::enabled()
+                .then(|| Box::new(input_latency::Tracker::default())),
             channel: 0,
             channel_pipeline,
             channel_target: None,
@@ -3178,6 +3521,7 @@ impl Renderer {
             selection_pipeline,
             frame_overlay_pipeline,
             frame_overlay: None,
+            glyph_display,
             guide_draft: Vec::new(),
             image_frame_guides_visible: false,
             selection_overlay_visible: true,
@@ -3270,13 +3614,14 @@ impl Renderer {
         self.brush_cache.truncate(unchanged);
         for stroke in committed.into_iter().skip(unchanged) {
             let samples = segments(stroke, opacity);
-            let buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = crate::gpu_metrics::create_buffer_init!(
+                self.device,
+                &wgpu::util::BufferInitDescriptor {
                     label: Some("Cached brush dabs"),
                     contents: bytemuck::cast_slice(&samples),
                     usage: wgpu::BufferUsages::VERTEX,
-                });
+                }
+            );
             self.brush_cache.push(CachedBrushGpu {
                 source: stroke.clone(),
                 opacity,
@@ -3353,6 +3698,7 @@ impl Renderer {
         defer_svg: bool,
     ) -> Result<(), String> {
         let frame_timer = performance::time("render_frame_host");
+        let host_frame_start = performance::enabled().then(std::time::Instant::now);
         let clipped;
         let document = if document.has_document_clipping() {
             clipped = document.clipping_view();
@@ -3504,29 +3850,36 @@ impl Renderer {
                 )
             })
             .collect();
-        self.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        crate::gpu_metrics::write_buffer!(
+            self.queue,
+            &self.uniforms,
+            0,
+            bytemuck::bytes_of(&uniforms)
+        );
         let surface_view = frame.texture.create_view(&Default::default());
         if (self.channel != 0 || grayscale || self.composite_format != self.config.format)
             && self.channel_target.as_ref().is_none_or(|(texture, _)| {
                 texture.width() != viewport.width || texture.height() != viewport.height
             })
         {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Linear high precision composite"),
-                size: wgpu::Extent3d {
-                    width: viewport.width,
-                    height: viewport.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.composite_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
+            let texture = crate::gpu_metrics::create_texture!(
+                self.device,
+                &wgpu::TextureDescriptor {
+                    label: Some("Linear high precision composite"),
+                    size: wgpu::Extent3d {
+                        width: viewport.width,
+                        height: viewport.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.composite_format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                }
+            );
             let texture_view = texture.create_view(&Default::default());
             let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Linear high precision composite"),
@@ -3592,12 +3945,12 @@ impl Renderer {
         {
             self.native_geometry.begin_frame();
             self.native_geometry.synchronize(document);
-            if !self.outline_view && viewport.screen_zoom() > 1.5 {
+            if !self.outline_view {
                 for layer in document.visible_svg_layers() {
                     if document.has_layer_effects(&layer.id) {
                         continue;
                     }
-                    if self.native_geometry.prepare(
+                    if self.native_geometry.prepare_display(
                         &self.device,
                         &self.queue,
                         layer,
@@ -3611,12 +3964,35 @@ impl Renderer {
                 }
             }
         }
+        let mut glyph_layers = std::collections::HashSet::new();
+        if let Some(display) = &mut self.glyph_display {
+            let visible = document
+                .visible_svg_layers()
+                .map(|l| l.id.clone())
+                .collect();
+            display.begin_frame(&visible);
+            if !self.outline_view
+                && offset == [0., 0.]
+                && !document.has_document_clipping()
+                && !document.has_active_saved_path()
+            {
+                for layer in document.visible_svg_layers() {
+                    if !native_layers.contains(&layer.id)
+                        && !document.has_layer_effects(&layer.id)
+                        && display.prepare(&self.device, &self.queue, layer, viewport)
+                    {
+                        glyph_layers.insert(layer.id.clone());
+                        object_layers.insert(layer.id.as_str());
+                    }
+                }
+            }
+        }
         let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
             if document.has_layer_effects(&original.id) {
                 continue;
             }
-            if native_layers.contains(&original.id) {
+            if native_layers.contains(&original.id) || glyph_layers.contains(&original.id) {
                 continue;
             }
             if (original.vector_layer || cfg!(all(feature = "skia", target_os = "macos")))
@@ -3970,13 +4346,14 @@ impl Renderer {
             let mut moved = uniforms;
             moved.document[2] = offset[0];
             moved.document[3] = offset[1];
-            let buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let buffer = crate::gpu_metrics::create_buffer_init!(
+                self.device,
+                &wgpu::util::BufferInitDescriptor {
                     label: Some("Vector drag offset"),
                     contents: bytemuck::bytes_of(&moved),
                     usage: wgpu::BufferUsages::UNIFORM,
-                });
+                }
+            );
             Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Vector drag uniforms"),
                 layout: &self.uniform_layout,
@@ -4005,12 +4382,14 @@ impl Renderer {
             )
         });
         let active_buffer = active_samples.as_ref().map(|samples| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            crate::gpu_metrics::create_buffer_init!(
+                self.device,
+                &wgpu::util::BufferInitDescriptor {
                     label: Some("Live brush dabs"),
                     contents: bytemuck::cast_slice(samples),
                     usage: wgpu::BufferUsages::VERTEX,
-                })
+                }
+            )
         });
         let mut brush_buffers: Vec<(&wgpu::Buffer, u32)> = self
             .brush_cache
@@ -4022,21 +4401,24 @@ impl Renderer {
             brush_buffers.push((buffer, samples.len() as u32));
         }
         let brush_mask = (!brush_buffers.is_empty()).then(|| {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Brush paint mask"),
-                size: wgpu::Extent3d {
-                    width: viewport.width,
-                    height: viewport.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: BRUSH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
+            let texture = crate::gpu_metrics::create_texture!(
+                self.device,
+                &wgpu::TextureDescriptor {
+                    label: Some("Brush paint mask"),
+                    size: wgpu::Extent3d {
+                        width: viewport.width,
+                        height: viewport.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: BRUSH_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                }
+            );
             let mask_view = texture.create_view(&Default::default());
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Brush paint mask"),
@@ -4054,9 +4436,29 @@ impl Renderer {
             });
             (texture, mask_view, bind_group)
         });
+        if let Some(effects) = &self.effects_display {
+            effects.collect_timings(&self.device);
+        }
+        let timing_slot = self.gpu_timing.as_mut().and_then(|timing| {
+            for sample in timing.collect(&self.device).into_iter().flatten() {
+                performance::count("gpu_frame_nanoseconds", sample.gpu_ns);
+                eprintln!("lumapaint-gpu-frame stream={} id={} gpu_ns={} host_ns={}", timing.stream_id, sample.frame_id, sample.gpu_ns, sample.host_ns);
+                performance::count("gpu_frame_samples", 1);
+            }
+            if let Some(summary) = timing.take_summary() {
+                eprintln!("lumapaint-gpu-window stream={} samples={} attempts={} completed={} busy={} failed={} gpu={:?} host={:?}", timing.stream_id, summary.samples, summary.attempts, summary.completed, summary.busy, summary.failed, summary.gpu, summary.host);
+            }
+            let slot = timing.reserve();
+            if slot.is_none() {
+                performance::count("gpu_timestamp_busy_frames", 1);
+            }
+            slot
+        });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                timestamp_writes: timing_slot
+                    .map(|slot| self.gpu_timing.as_ref().unwrap().writes(slot, true)),
                 label: Some("Preview render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -4139,6 +4541,11 @@ impl Renderer {
                 composite_pass.draw(0..6, 0..1);
             }
         }
+        #[cfg(feature = "skia")]
+        self.native_geometry.encode(&mut encoder);
+        if let Some(display) = &self.glyph_display {
+            display.encode(&mut encoder);
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("SVG layer render pass"),
@@ -4162,6 +4569,13 @@ impl Renderer {
                 }
             }
             for layer in document.visible_svg_layers() {
+                if glyph_layers.contains(&layer.id) {
+                    self.glyph_display
+                        .as_ref()
+                        .unwrap()
+                        .draw(&mut pass, &layer.id);
+                    continue;
+                }
                 #[cfg(feature = "skia")]
                 if native_layers.contains(&layer.id) {
                     self.native_geometry.draw(&mut pass, layer);
@@ -4263,6 +4677,8 @@ impl Renderer {
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Channel independent selection overlays"),
+                timestamp_writes: timing_slot
+                    .map(|slot| self.gpu_timing.as_ref().unwrap().writes(slot, false)),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &surface_view,
                     resolve_target: None,
@@ -4287,13 +4703,33 @@ impl Renderer {
                 pass.draw(0..*count, 0..1);
             }
         }
+        if let Some(slot) = timing_slot {
+            self.gpu_timing
+                .as_ref()
+                .unwrap()
+                .resolve(slot, &mut encoder);
+        }
         {
             let _timer = performance::time("queue_submit_host");
             self.queue.submit(Some(encoder.finish()));
         }
+        if let Some(slot) = timing_slot {
+            self.gpu_timing.as_ref().unwrap().submitted(slot);
+        }
         {
             let _timer = performance::time("queue_present_host");
             self.queue.present(frame);
+        }
+        if let Some(input) = self.input_latency.as_mut() {
+            input.presented(
+                timing_slot.map(|slot| self.gpu_timing.as_ref().unwrap().correlation(slot)),
+            );
+        }
+        if let (Some(slot), Some(start)) = (timing_slot, host_frame_start) {
+            self.gpu_timing.as_mut().unwrap().record_host(
+                slot,
+                start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            );
         }
         #[cfg(feature = "skia")]
         if render_metrics_enabled() {
@@ -4313,9 +4749,35 @@ impl Renderer {
             performance::count("object_cache_reuses", drag_metrics.object_reuse as u64);
             performance::count("object_cache_builds", drag_metrics.cache_builds as u64);
         }
+        if let Some(memory) = self
+            .memory_sampler
+            .as_mut()
+            .and_then(|sampler| sampler.sample())
+        {
+            eprintln!(
+                "lumapaint-process-memory rss_bytes={} peak_rss_bytes={:?}",
+                memory.rss_bytes, memory.peak_rss_bytes
+            );
+            eprintln!(
+                "lumapaint-process-published-profile {:?}",
+                performance::process_total()
+            );
+            let (textures, bytes, unknown) = gpu_metrics::cached_texture_capacity();
+            #[cfg(feature = "heap-profile")]
+            eprintln!(
+                "lumapaint-rust-heap {:?}",
+                lumapaint_core::heap_profile::snapshot()
+            );
+            eprintln!("lumapaint-cache-textures count={textures} logical_bytes={bytes} unmeasured={unknown}");
+            let (allocations, bytes, allocated, released) = tiled_rgba::pixel_capacity();
+            eprintln!("lumapaint-cpu-composite-tiles allocations={allocations} capacity_bytes={bytes} cumulative_allocated_bytes={allocated} cumulative_released_bytes={released}");
+        }
         drop(frame_timer);
         if render_metrics_enabled() {
-            eprintln!("lumapaint-render-profile {:?}", performance::take());
+            eprintln!(
+                "lumapaint-render-profile {:?}",
+                performance::take_and_publish()
+            );
         }
         #[cfg(feature = "skia")]
         if render_metrics_enabled() {
@@ -5531,6 +5993,7 @@ mod object_translation_tests {
 
 mod effects_display;
 mod layer_effects_gpu;
+pub mod screentone;
 
 /// Adjust premultiplied renderer pixels without changing alpha or model source data.
 pub fn apply_layer_effects(

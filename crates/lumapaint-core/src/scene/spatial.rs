@@ -81,34 +81,57 @@ impl SpatialIndex {
     }
     /// Returns false only when the known/unknown membership changes.
     pub fn refit(&mut self, item: usize, bounds: Option<Bounds>) -> bool {
+        let _timer = crate::performance::time("spatial_refit_host");
         let Some(bounds) = bounds.filter(|b| valid(*b)) else {
             return self.unknown.contains(&item);
         };
         let Some(&position) = self.leaves.get(&item) else {
             return false;
         };
+        if self.nodes[position].bounds == bounds {
+            crate::performance::count("spatial_refit_unchanged_leaf", 1);
+            return true;
+        }
         self.nodes[position].bounds = bounds;
         let mut parent = self.nodes[position].parent;
         while let Some(position) = parent {
             let [a, b] = self.nodes[position].children.unwrap();
-            self.nodes[position].bounds = union(self.nodes[a].bounds, self.nodes[b].bounds);
+            crate::performance::count("spatial_refit_parent_visits", 1);
+            let bounds = union(self.nodes[a].bounds, self.nodes[b].bounds);
+            // Ancestors depend only on this union. Once it is unchanged, all
+            // remaining ancestors are unchanged too, even if the leaf moved.
+            if self.nodes[position].bounds == bounds {
+                crate::performance::count("spatial_refit_early_stops", 1);
+                break;
+            }
+            self.nodes[position].bounds = bounds;
             parent = self.nodes[position].parent;
         }
         true
     }
     pub fn query(&self, bounds: Bounds) -> Candidates {
+        let mut candidates = Candidates::default();
+        candidates.visited_nodes = self.query_into(bounds, &mut candidates.items, &mut Vec::new());
+        candidates
+    }
+
+    /// Reuse caller-owned result and traversal buffers on repeated viewport queries.
+    pub fn query_into(
+        &self,
+        bounds: Bounds,
+        items: &mut Vec<usize>,
+        stack: &mut Vec<usize>,
+    ) -> usize {
+        items.clear();
+        items.extend_from_slice(&self.unknown);
+        stack.clear();
+        if !self.nodes.is_empty() {
+            stack.push(0);
+        }
+        let mut visited_nodes = 0;
         // Invalid queries cannot safely reject anything.
-        let mut candidates = Candidates {
-            items: self.unknown.as_ref().clone(),
-            visited_nodes: 0,
-        };
-        let mut stack = if self.nodes.is_empty() {
-            vec![]
-        } else {
-            vec![0]
-        };
         while let Some(position) = stack.pop() {
-            candidates.visited_nodes += 1;
+            visited_nodes += 1;
             let node = &self.nodes[position];
             if valid(bounds) && !intersects(node.bounds, bounds) {
                 continue;
@@ -116,17 +139,61 @@ impl SpatialIndex {
             if let Some([a, b]) = node.children {
                 stack.extend([a, b]);
             } else {
-                candidates.items.push(node.item);
+                items.push(node.item);
             }
         }
-        candidates.items.sort_unstable();
-        candidates
+        items.sort_unstable();
+        visited_nodes
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scratch_queries_match_allocating_queries_and_reuse_capacity() {
+        let tree =
+            SpatialIndex::build((0..1000).map(|i| (i, Some([i as f64, 0., i as f64 + 1., 1.]))));
+        let mut items = Vec::with_capacity(1000);
+        let mut stack = Vec::with_capacity(64);
+        let item_address = items.as_ptr();
+        let stack_address = stack.as_ptr();
+        for bounds in [
+            [0., 0., 999., 1.],
+            [100., 0., 110., 1.],
+            [2000., 0., 2001., 1.],
+            [f64::NAN; 4],
+        ] {
+            let expected = tree.query(bounds);
+            let visited = tree.query_into(bounds, &mut items, &mut stack);
+            assert_eq!(items, expected.items);
+            assert_eq!(visited, expected.visited_nodes);
+            assert!(stack.is_empty());
+            assert_eq!(items.as_ptr(), item_address);
+            assert_eq!(stack.as_ptr(), stack_address);
+        }
+        SpatialIndex::default().query_into([0.; 4], &mut items, &mut stack);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn contained_refit_stops_without_changing_ancestor_bounds() {
+        let mut tree = SpatialIndex::build([
+            (0, Some([0., 0., 100., 100.])),
+            (1, Some([10., 10., 20., 20.])),
+        ]);
+        let root = tree.nodes[0].bounds;
+        assert!(tree.refit(1, Some([70., 70., 80., 80.])));
+        assert_eq!(tree.nodes[0].bounds, root);
+        assert_eq!(tree.query([11., 11., 12., 12.]).items, vec![0]);
+        assert_eq!(tree.query([71., 71., 72., 72.]).items, vec![0, 1]);
+        let published = tree.clone();
+        assert!(tree.refit(1, Some([70., 70., 80., 80.])));
+        assert_eq!(published.query([71., 71., 72., 72.]).items, vec![0, 1]);
+        assert!(tree.refit(1, Some([170., 170., 180., 180.])));
+        assert_eq!(tree.query([171., 171., 172., 172.]).items, vec![1]);
+    }
+
     #[test]
     fn published_index_retains_old_bounds_after_refit() {
         let mut tree = SpatialIndex::build((0..100_000).map(|i| {

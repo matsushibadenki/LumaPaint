@@ -112,7 +112,7 @@ pub(crate) fn open(
 ) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let permit = app.state::<Gate>().claim()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let result = decode(&path);
         let callback_app = app.clone();
         let _ = app.run_on_main_thread(move || {

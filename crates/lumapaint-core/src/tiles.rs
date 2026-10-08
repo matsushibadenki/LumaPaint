@@ -123,25 +123,28 @@ pub fn composite_raster_layers_tile(
     layers: &[RasterLayerState],
     coord: TileCoord,
 ) -> Option<Vec<u8>> {
-    composite_sources(layers.iter().filter_map(|layer| {
-        if !layer.visible || layer.opacity <= 0.0 {
-            return None;
-        }
-        Some(CompositeSource {
-            effects: &layer.effects,
-            blend_mode: layer.blend_mode,
-            pixels: &layer.tiles.iter().find(|tile| tile.coord == coord)?.pixels,
-            opacity: layer.opacity,
-            mask: layer
-                .mask_tiles
-                .iter()
-                .find(|tile| tile.coord == coord)
-                .map(|tile| tile.values.as_slice()),
-            mask_enabled: layer.mask_enabled,
-            mask_inverted: layer.mask_inverted,
-            mask_density: layer.mask_density,
-        })
-    }))
+    composite_sources(
+        coord,
+        layers.iter().filter_map(|layer| {
+            if !layer.visible || layer.opacity <= 0.0 {
+                return None;
+            }
+            Some(CompositeSource {
+                effects: &layer.effects,
+                blend_mode: layer.blend_mode,
+                pixels: &layer.tiles.iter().find(|tile| tile.coord == coord)?.pixels,
+                opacity: layer.opacity,
+                mask: layer
+                    .mask_tiles
+                    .iter()
+                    .find(|tile| tile.coord == coord)
+                    .map(|tile| tile.values.as_slice()),
+                mask_enabled: layer.mask_enabled,
+                mask_inverted: layer.mask_inverted,
+                mask_density: layer.mask_density,
+            })
+        }),
+    )
 }
 struct CompositeSource<'a> {
     effects: &'a crate::layer_effects::LayerEffects,
@@ -153,7 +156,10 @@ struct CompositeSource<'a> {
     mask_inverted: bool,
     mask_density: f32,
 }
-fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> Option<Vec<u8>> {
+fn composite_sources<'a>(
+    coord: TileCoord,
+    sources: impl Iterator<Item = CompositeSource<'a>>,
+) -> Option<Vec<u8>> {
     let mut sources = sources.peekable();
     sources.peek()?;
     let mut result = vec![0u8; TILE_BYTES];
@@ -166,7 +172,15 @@ fn composite_sources<'a>(sources: impl Iterator<Item = CompositeSource<'a>>) -> 
             .zip(source.pixels.as_chunks::<4>().0.iter())
             .enumerate()
         {
-            let adjusted = effects.as_ref().map_or(*pixel, |e| e.apply(*pixel));
+            let adjusted = effects.as_ref().map_or(*pixel, |e| {
+                e.apply_at(
+                    *pixel,
+                    [
+                        (coord.x * TILE_SIZE + index as u32 % TILE_SIZE) as f32 + 0.5,
+                        (coord.y * TILE_SIZE + index as u32 / TILE_SIZE) as f32 + 0.5,
+                    ],
+                )
+            });
             let pixel = &adjusted;
             let mask_value = source.mask.map_or(255, |tile| tile[index]);
             let coverage = source.mask_density * f32::from(mask_value) / 255.0;
@@ -1227,21 +1241,24 @@ impl TiledRasterDocument {
         if coord.x >= self.width.div_ceil(TILE_SIZE) || coord.y >= self.height.div_ceil(TILE_SIZE) {
             return None;
         }
-        composite_sources(self.layers.iter().filter_map(|layer| {
-            if !layer.visible || layer.opacity <= 0.0 {
-                return None;
-            }
-            Some(CompositeSource {
-                effects: &layer.effects,
-                blend_mode: layer.blend_mode,
-                pixels: layer.tiles.tile(coord)?,
-                opacity: layer.opacity,
-                mask: layer.mask.tiles.get(&coord).map(Vec::as_slice),
-                mask_enabled: layer.mask_enabled,
-                mask_inverted: layer.mask_inverted,
-                mask_density: layer.mask_density,
-            })
-        }))
+        composite_sources(
+            coord,
+            self.layers.iter().filter_map(|layer| {
+                if !layer.visible || layer.opacity <= 0.0 {
+                    return None;
+                }
+                Some(CompositeSource {
+                    effects: &layer.effects,
+                    blend_mode: layer.blend_mode,
+                    pixels: layer.tiles.tile(coord)?,
+                    opacity: layer.opacity,
+                    mask: layer.mask.tiles.get(&coord).map(Vec::as_slice),
+                    mask_enabled: layer.mask_enabled,
+                    mask_inverted: layer.mask_inverted,
+                    mask_density: layer.mask_density,
+                })
+            }),
+        )
     }
 
     pub fn add_layer(&mut self, id: String, name: String) -> Result<(), String> {

@@ -274,7 +274,7 @@ pub async fn sync_canvas(
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -390,7 +390,7 @@ pub async fn edit_document(
                 let _ = tx.send(platform::edit(action));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -416,6 +416,22 @@ pub async fn toggle_layer(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn create_screentone_layer(
+    window: tauri::WebviewWindow,
+    tone: lumapaint_core::screentone::Screentone,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::create_screentone_layer(tone)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, tone);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
@@ -909,7 +925,7 @@ pub async fn set_color_mode(
                 let _ = tx.send(platform::set_color_mode(mode));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -944,7 +960,7 @@ pub async fn set_bit_depth(
                 let _ = tx.send(platform::set_bit_depth(depth));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -979,7 +995,7 @@ pub async fn set_color_profile(
                 let _ = tx.send(platform::set_color_profile(profile));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -1112,7 +1128,7 @@ pub async fn project_action(
                 let _ = tx.send(platform::file_action(action));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }
@@ -1156,7 +1172,7 @@ pub async fn import_raster_layer(
         let Some(path) = path else {
             return on_main(window, platform::raster_import_snapshot).await;
         };
-        let (name, bytes, info) = tauri::async_runtime::spawn_blocking(move || -> Result<_,String> {
+        let (name, bytes, info) = crate::diagnostic_jobs::spawn_blocking(move || -> Result<_,String> {
             // Embedded raster data shares the current document storage limit.
             if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 3 * 1024 * 1024 - 1024 {
                 return Err("Image exceeds the current 3 MiB import limit / 現在の読み込み上限は約3MiBです / 当前导入上限约为3MiB".into());
@@ -1193,9 +1209,10 @@ pub async fn place_image(
         let Some(path) = path else {
             return on_main(window, platform::raster_import_snapshot).await;
         };
-        let image = tauri::async_runtime::spawn_blocking(move || crate::image_frames::load(&path))
-            .await
-            .map_err(|e| e.to_string())??;
+        let image =
+            crate::diagnostic_jobs::spawn_blocking(move || crate::image_frames::load(&path))
+                .await
+                .map_err(|e| e.to_string())??;
         on_main(window, move || {
             platform::place_frame_image(target, image, document_id, revision)
         })
@@ -1214,7 +1231,7 @@ pub async fn image_links(
     #[cfg(target_os = "macos")]
     {
         let images = on_main(window, platform::frame_links).await?;
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostic_jobs::spawn_blocking(move || {
             images
                 .into_iter()
                 .map(|(id, image)| crate::image_frames::status(id, image))
@@ -1256,7 +1273,7 @@ pub async fn image_frame_action(
                 return on_main(window, platform::raster_import_snapshot).await;
             };
             let image =
-                tauri::async_runtime::spawn_blocking(move || crate::image_frames::load(&path))
+                crate::diagnostic_jobs::spawn_blocking(move || crate::image_frames::load(&path))
                     .await
                     .map_err(|e| e.to_string())??;
             on_main(window, move || {
@@ -1313,7 +1330,7 @@ pub async fn manage_image_links(
         } else {
             None
         };
-        let updates = tauri::async_runtime::spawn_blocking(move || {
+        let updates = crate::diagnostic_jobs::spawn_blocking(move || {
             let mut cache = std::collections::HashMap::new();
             let mut updates = Vec::new();
             for (id, (image, _, _)) in ids.into_iter().zip(contexts) {
@@ -1404,7 +1421,7 @@ pub(crate) async fn on_main<T: Send + 'static>(
             let _ = tx.send(action());
         })
         .map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+    crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
         .await
         .map_err(|e| e.to_string())??
 }
@@ -1745,7 +1762,7 @@ pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailS
     #[cfg(target_os = "macos")]
     {
         let document = on_main(window, platform::thumbnail_document).await?;
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostic_jobs::spawn_blocking(move || {
             use base64::Engine;
             let previews = match document {
                 ThumbnailDocument::Standard(document) => {
@@ -1870,7 +1887,7 @@ pub async fn apply_gradient(
                 platform::prepare_pixel_gradient(&ids)
             })
             .await?;
-            let job = tauri::async_runtime::spawn_blocking(move || {
+            let job = crate::diagnostic_jobs::spawn_blocking(move || {
                 platform::render_pixel_gradient(job, gradient)
             })
             .await
@@ -2154,7 +2171,7 @@ pub async fn page_thumbnails(
     {
         let documents =
             on_main(window, move || platform::page_thumbnail_documents(indices)).await?;
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostic_jobs::spawn_blocking(move || {
             use base64::Engine;
             documents
                 .into_iter()

@@ -98,9 +98,10 @@ impl PaintCache {
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        self.tiles.layers()[0]
-            .effects
-            .apply(self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]))
+        self.tiles.layers()[0].effects.prepare().apply_at(
+            self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]),
+            [x as f32 + 0.5, y as f32 + 0.5],
+        )
     }
 
     pub fn dimensions(&self) -> (u32, u32) {

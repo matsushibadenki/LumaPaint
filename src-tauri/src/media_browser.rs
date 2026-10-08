@@ -160,7 +160,7 @@ pub async fn media_scan(
         .or_insert_with(|| Arc::new(std::sync::atomic::AtomicU64::new(0)))
         .clone();
     let request = generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let state = browser()?;
         let home = app.path().home_dir().map_err(|e| e.to_string())?;
         if let Some(ref path) = path {
@@ -287,7 +287,7 @@ pub async fn media_pick_folder(app: tauri::AppHandle) -> Result<Option<String>, 
             );
         })
         .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -337,7 +337,7 @@ pub async fn media_page(
     sort: String,
     offset: usize,
 ) -> Result<Page, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let state = browser()?;
         let catalogue = state
             .catalogues
@@ -654,7 +654,7 @@ pub fn serve(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriScheme
     };
     if variant == "video" {
         let state = state.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostic_jobs::spawn_blocking(move || {
             let result = entry(&state, session, index).and_then(|file| video(&file, &request));
             responder.respond(result.unwrap_or_else(|_| response(404, "text/plain", vec![])));
         });

@@ -39,9 +39,11 @@ pub async fn new_editor_window(window: WebviewWindow) -> Result<String, String> 
             let _ = sender.send(create(&app));
         })
         .map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|error| error.to_string()))
-        .await
-        .map_err(|error| error.to_string())??
+    crate::diagnostic_jobs::spawn_blocking(move || {
+        receiver.recv().map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??
 }
 
 #[tauri::command]

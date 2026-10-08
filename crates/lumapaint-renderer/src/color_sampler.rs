@@ -94,7 +94,7 @@ impl ColorSampler {
         }
         for layer in document.visible_svg_layers() {
             let mut pixel = rasterize_svg_workspace(&layer.source, [width, height], [1, 1], rect)?;
-            crate::apply_layer_effects(&mut pixel, &document.layer_effects(&layer.id));
+            crate::screentone::apply(&mut pixel, &document.layer_effects(&layer.id), 1, rect);
             over(
                 &mut result,
                 pixel[..4].try_into().unwrap(),

@@ -173,6 +173,26 @@ impl Gradient {
             r#"<filter id="{id}" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency=".73" numOctaves="1" seed="7" result="noise"/><feColorMatrix in="noise" type="matrix" values="8 0 0 0 -3.5 0 8 0 0 -3.5 0 0 8 0 -3.5 0 0 0 0 .5" result="grain"/><feComposite in="SourceGraphic" in2="grain" operator="arithmetic" k1="0" k2="1" k3=".0156862745" k4="-.00784313725" result="colored"/><feComposite in="colored" in2="SourceGraphic" operator="atop"/></filter>"#
         )
     }
+    /// Baked midpoint/interpolation stops shared by SVG and native GPU paint.
+    pub fn svg_stops(&self) -> impl Iterator<Item = (f32, [u8; 4])> + '_ {
+        self.stops
+            .iter()
+            .enumerate()
+            .flat_map(move |(index, stop)| {
+                let next = self.stops.get(index + 1);
+                (0..if next.is_some() { 32 } else { 1 }).map(move |j| {
+                    let p = next.map_or(stop.position, |n| {
+                        let middle = stop.position + (n.position - stop.position) * stop.midpoint;
+                        if j < 16 {
+                            stop.position + (middle - stop.position) * j as f32 / 16.
+                        } else {
+                            middle + (n.position - middle) * (j - 16) as f32 / 16.
+                        }
+                    });
+                    (p, if j == 0 { stop.color } else { self.sample(p) })
+                })
+            })
+    }
     pub fn svg_definition(&self, id: &str) -> String {
         self.svg_definition_in_bounds(id, [0., 0., 1., 1.])
     }
@@ -197,29 +217,16 @@ impl Gradient {
                 GradientKind::Radial => format!("<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"0\" cy=\"0\" r=\"1\" gradientTransform=\"{transform}\">"),
             };
         }
-        // Bake midpoint and interpolation into standard SVG stops for independent exporters.
-        for (index, stop) in self.stops.iter().enumerate() {
-            let next = self.stops.get(index + 1);
-            let count = if next.is_some() { 32 } else { 1 };
-            for j in 0..count {
-                let p = next.map_or(stop.position, |n| {
-                    let middle = stop.position + (n.position - stop.position) * stop.midpoint;
-                    if j < 16 {
-                        stop.position + (middle - stop.position) * j as f32 / 16.
-                    } else {
-                        middle + (n.position - middle) * (j - 16) as f32 / 16.
-                    }
-                });
-                let c = if j == 0 { stop.color } else { self.sample(p) };
-                let _ = write!(
-                    svg,
-                    "<stop offset=\"{p}\" stop-color=\"#{:02x}{:02x}{:02x}\" stop-opacity=\"{}\"/>",
-                    c[0],
-                    c[1],
-                    c[2],
-                    c[3] as f32 / 255.
-                );
-            }
+        // Share the exact exported stop sequence with retained GPU paint.
+        for (p, c) in self.svg_stops() {
+            let _ = write!(
+                svg,
+                "<stop offset=\"{p}\" stop-color=\"#{:02x}{:02x}{:02x}\" stop-opacity=\"{}\"/>",
+                c[0],
+                c[1],
+                c[2],
+                c[3] as f32 / 255.
+            );
         }
         svg.push_str(match self.kind {
             GradientKind::Linear => "</linearGradient>",

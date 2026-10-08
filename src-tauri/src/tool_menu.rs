@@ -53,7 +53,7 @@ pub async fn icon_tool_menu(
                 let _ = tx.send(macos::show(webview.inner(), request));
             })
             .map_err(|e| e.to_string())?;
-        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
             .await
             .map_err(|e| e.to_string())??
     }

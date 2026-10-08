@@ -667,6 +667,7 @@ pub(super) fn ensure_shared_editable(id: u64) -> Result<(), String> {
 /// Exchange never clones documents or pixel payloads.
 pub(in crate::canvas) struct SessionGuard {
     previous: String,
+    _metrics: lumapaint_core::performance::Batch,
 }
 impl SessionGuard {
     pub(super) fn enter_render(label: &str) -> Result<Self, String> {
@@ -677,7 +678,10 @@ impl SessionGuard {
         }
         let previous = current_label();
         activate(label);
-        Ok(Self { previous })
+        Ok(Self {
+            previous,
+            _metrics: lumapaint_core::performance::batch("host.render_session"),
+        })
     }
     pub(in crate::canvas) fn enter(label: &str) -> Result<Self, String> {
         if SHUTTING_DOWN.with(|flag| flag.get())
@@ -707,7 +711,10 @@ impl SessionGuard {
             activate(&previous);
             return Err(error);
         }
-        Ok(Self { previous })
+        Ok(Self {
+            previous,
+            _metrics: lumapaint_core::performance::batch("host.edit_session"),
+        })
     }
 }
 impl Drop for SessionGuard {
@@ -746,7 +753,10 @@ pub(in crate::canvas) fn for_canvas(token: u64) -> Option<SessionGuard> {
     }
     let previous = current_label();
     activate(&label);
-    Some(SessionGuard { previous })
+    Some(SessionGuard {
+        previous,
+        _metrics: lumapaint_core::performance::batch("host.canvas_session"),
+    })
 }
 
 /// Move the authoritative document value; no serialization or pixel cloning.
@@ -928,7 +938,14 @@ fn close(label: &str, discard: bool) {
         return;
     }
     {
-        let Ok(_session) = SessionGuard::enter(label) else {
+        // Teardown must also reach a shared view whose document is being edited
+        // elsewhere. The edit guard may reject it and leave its GPU state alive.
+        let session = if discard {
+            SessionGuard::enter(label)
+        } else {
+            SessionGuard::enter_render(label)
+        };
+        let Ok(_session) = session else {
             return;
         };
         if discard {
@@ -965,16 +982,27 @@ fn close(label: &str, discard: bool) {
     }
 }
 pub(in crate::canvas) fn shutdown_all() {
-    let labels = APP
-        .get()
-        .map(|app| app.webview_windows().into_keys().collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![current_label()]);
+    if SHUTTING_DOWN.with(|flag| flag.get()) {
+        return;
+    }
+    // Tauri may have removed windows before RunEvent::Exit. Enumerate the Rust
+    // owners, not the native window registry, or their renderers survive until
+    // TLS destruction (after wgpu's own thread-local lock tracing is gone).
+    let mut labels = PARKED.with(|sessions| sessions.borrow().keys().cloned().collect::<Vec<_>>());
+    labels.push(current_label());
     for label in labels {
-        if crate::editor_windows::is_editor(&label) {
-            close(&label, false);
-        }
+        close(&label, false);
     }
     SHUTTING_DOWN.with(|flag| flag.set(true));
+    // Block queued callbacks/SessionGuard restoration before the final drain.
+    // Drop outside RefCell borrows: detaching native views may reenter AppKit.
+    let parked = PARKED.with(|sessions| std::mem::take(&mut *sessions.borrow_mut()));
+    let mut live = Runtime::default();
+    live.exchange();
+    drop(live);
+    drop(parked);
+    let shared = SHARED.with(|shared| std::mem::take(&mut *shared.borrow_mut()));
+    drop(shared);
 }
 
 pub(in crate::canvas) fn discard_all() {
@@ -1013,6 +1041,54 @@ pub(super) fn fork_recovery() -> Option<Result<crate::recovery::Recovery, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumapaint_core::document::Point;
+
+    #[test]
+    fn shutdown_drains_owned_sessions_without_registered_windows() {
+        // No AppHandle/window registry exists here. Ownership must be sufficient
+        // to clean up both the current runtime and parked runtimes on exit.
+        let directory = tempfile::tempdir().unwrap();
+        let previous = SessionGuard::enter("editor-90201").unwrap();
+        new_document(preset("Parked on exit")).unwrap();
+        let recovery = crate::recovery::Recovery::start(directory.path().into()).unwrap();
+        DOCUMENT.with(|slot| {
+            let mut document = slot.borrow_mut();
+            document
+                .begin(Point { x: 10.0, y: 10.0 }, Brush::default())
+                .unwrap();
+            document.finish();
+            recovery.checkpoint(document.clone());
+        });
+        RECOVERY.with(|slot| *slot.borrow_mut() = Some(recovery));
+        let current = SessionGuard::enter("editor-90202").unwrap();
+        new_document(preset("Current on exit")).unwrap();
+        assert!(PARKED.with(|sessions| !sessions.borrow().is_empty()));
+
+        shutdown_all();
+        // Nested callbacks must not restore a runtime after shutdown.
+        drop(current);
+        drop(previous);
+        shutdown_all();
+        assert!(PARKED.with(|sessions| sessions.borrow().is_empty()));
+        assert!(CANVAS.with(|slot| slot.borrow().is_none()));
+        assert!(!DOCUMENT_OPEN.with(|open| open.get()));
+        assert!(RECOVERY.with(|slot| slot.borrow().is_none()));
+        assert!(SessionGuard::enter("editor-90203").is_err());
+        assert!(SessionGuard::enter_render("editor-90203").is_err());
+        let recovered = crate::recovery::Recovery::start(directory.path().into()).unwrap();
+        let candidates = recovered.info().unwrap().candidates;
+        assert_eq!(candidates.len(), 2);
+        let mut strokes = candidates
+            .iter()
+            .map(|candidate| {
+                let mut document = Document::default();
+                document.replace_recovered(recovered.read_candidate(&candidate.id).unwrap());
+                document.snapshot().stroke_count
+            })
+            .collect::<Vec<_>>();
+        strokes.sort_unstable();
+        assert_eq!(strokes, [0, 1]);
+    }
 
     fn preset(name: &str) -> NewDocumentSettings {
         NewDocumentSettings {

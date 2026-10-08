@@ -22,7 +22,7 @@ fn curve(channel:u32,x:f32)->f32{
  let m0=config[p+2u];let m1=config[p+6u];let t2=t*t;let t3=t2*t;
  return clamp((2.*t3-3.*t2+1.)*y0+(t3-2.*t2+t)*h*m0+(-2.*t3+3.*t2)*y1+(t3-t2)*h*m1,0.,1.);
 }
-fn adjust(packed:u32)->u32 {
+fn adjust(packed:u32,i:u32)->u32 {
  let a=packed>>24u;if a==0u {return packed;}
  let rgba=vec3(packed&255u,(packed>>8u)&255u,(packed>>16u)&255u);let straight=min((rgba*255u+vec3(a/2u))/a,vec3(255u));
  var rgb=vec3(config[8u+straight.x],config[264u+straight.y],config[520u+straight.z]);
@@ -41,21 +41,22 @@ fn adjust(packed:u32)->u32 {
   if config[6]<0.5 {weights=pow(weights,vec3(config[2]));weights/=weights.x+weights.y+weights.z;}
   let original=rgb;for(var z=0u;z<3u;z++){let b=1072u+z*4u;let tint=vec3(config[1084u+z*4u],config[1085u+z*4u],config[1086u+z*4u]);rgb+=weights[z]*(config[b+1u]/100.*(tint-original)+vec3(config[b+2u]/100.));}
  }
- let adjusted=vec3<u32>(floor(clamp(rgb,vec3(0.),vec3(1.))*255.+0.5));let result=(adjusted*a+127u)/255u;return result.x|result.y<<8u|result.z<<16u|a<<24u;
+ let adjusted=vec3<u32>(floor(clamp(rgb,vec3(0.),vec3(1.))*255.+0.5));if config[1096]>0.5 {return tone_pixel(adjusted.x|adjusted.y<<8u|adjusted.z<<16u|a<<24u,i);}
+ let result=(adjusted*a+127u)/255u;return result.x|result.y<<8u|result.z<<16u|a<<24u;
 }
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id:vec3<u32>){
- let i=id.x;if i>=arrayLength(&input){return;}output[i]=adjust(input[i]);
+ let i=id.x;if i>=arrayLength(&input){return;}output[i]=adjust(input[i],i);
 }
 // Display-only output has aligned rows for copy_buffer_to_texture. Quantize
 // opacity exactly where the CPU workspace path does, before sRGB texture sampling.
 @compute @workgroup_size(256)
 fn display(@builtin(global_invocation_id) id:vec3<u32>){
  let i=id.x;if i>=arrayLength(&input){return;}
- let packed=adjust(input[i]);let opacity=config[1098u];
+ let packed=adjust(input[i],i);let opacity=config[1134u];
  let rgba=vec4<f32>(f32(packed&255u),f32((packed>>8u)&255u),f32((packed>>16u)&255u),f32(packed>>24u));
  let result=vec4<u32>(floor(rgba*opacity+0.5));
- let width=u32(config[1096u]);let stride=u32(config[1097u]);
+ let width=u32(config[1132u]);let stride=u32(config[1133u]);
  output[(i/width)*stride+i%width]=result.x|result.y<<8u|result.z<<16u|result.w<<24u;
 }

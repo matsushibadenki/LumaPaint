@@ -157,14 +157,17 @@ pub fn initialize(app: tauri::AppHandle) {
     // Optional prewarming: rendering still initializes fonts if the worker cannot start.
     let _ = std::thread::Builder::new()
         .name("text-fonts".into())
-        .spawn(lumapaint_renderer::vector::prepare_text_fonts);
+        .spawn(|| {
+            let _metrics = lumapaint_core::performance::batch("host.font_prewarm_job");
+            lumapaint_renderer::vector::prepare_text_fonts();
+        });
     let (sender, receiver) = crate::render_queue::channel::<RasterJob>();
     if std::thread::Builder::new()
         .name("svg-raster".into())
         .spawn(move || {
             let mut frame_cache = FrameRasterCache::default();
             while let Ok(job) = receiver.recv() {
-                if render_metrics_enabled() { lumapaint_renderer::performance::take(); }
+                let _metrics = lumapaint_renderer::performance::batch("host.svg_worker_job");
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
                 let before_rasterized = frame_cache.rasterized_frames;
@@ -185,10 +188,13 @@ pub fn initialize(app: tauri::AppHandle) {
                 }
                 // Keep completed frame-cache entries, but do not upload stale
                 // pixels or report obsolete errors. The newest job is queued.
-                if receiver.superseded(job.key.canvas_token) { continue; }
+                if receiver.superseded(job.key.canvas_token) {
+                    lumapaint_renderer::performance::count("host.svg_worker_cancelled", 1);
+                    continue;
+                }
                 let cpu_time = started.elapsed();
                 if render_metrics_enabled() {
-                    eprintln!("lumapaint-svg-worker-profile {:?}", lumapaint_renderer::performance::take());
+                    eprintln!("lumapaint-svg-worker-profile {:?}", lumapaint_renderer::performance::take_and_publish());
                     let stats = frame_cache.stats();
                     eprintln!(
                         "LumaPaint text-frame cache rasterized={} reused={} entries={} payload_bytes={} payload_budget_bytes={} evicted={}",
@@ -216,6 +222,7 @@ pub fn initialize(app: tauri::AppHandle) {
         .name("tile-project".into())
         .spawn(move || {
             while let Ok(job) = receiver.recv() {
+                let _metrics = lumapaint_renderer::performance::batch("host.tile_worker_job");
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
                 let result = match job.work {
@@ -821,6 +828,7 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
+        let _input = (phase != 3).then(lumapaint_core::performance::input_event);
         if phase == 0
             && timeline::active()
             && !matches!(
@@ -3446,6 +3454,7 @@ fn emit_document() {
     window_sessions::shared_changed();
 }
 fn report_edit(action: DocumentAction) {
+    let _input = lumapaint_core::performance::input_event();
     if let Err(error) = edit(action) {
         emit_error(error);
     }
@@ -4191,6 +4200,13 @@ thread_local! {
     static FRAME_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn request_redraw() -> Result<(), String> {
+    if let Some(marker) = lumapaint_core::performance::input_started() {
+        CANVAS.with(|slot| {
+            if let Some(canvas) = slot.borrow_mut().as_mut() {
+                canvas.renderer.mark_input(marker);
+            }
+        });
+    }
     let view = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.view.clone()));
     if let Some(view) = view {
         FRAME_REQUESTED.with(|requested| requested.set(true));
@@ -4240,6 +4256,9 @@ fn emit_ruler_viewport(viewport: Viewport) {
 }
 
 fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
+    if let Some(marker) = lumapaint_core::performance::input_started() {
+        canvas.renderer.mark_input(marker);
+    }
     let started = Instant::now();
     let draft = GUIDE_DRAFT
         .with(|g| g.borrow().clone())
@@ -5337,9 +5356,10 @@ pub fn destroy() {
     let _ = text_editor::finish(false);
     DOCUMENT.with(|doc| doc.borrow_mut().finish());
     checkpoint();
-    CANVAS.with(|slot| {
-        slot.borrow_mut().take();
-    });
+    // Native view teardown can call back into the canvas. Release the slot's
+    // borrow before dropping the renderer/view, while wgpu's TLS is still alive.
+    let canvas = CANVAS.with(|slot| slot.borrow_mut().take());
+    drop(canvas);
 }
 
 fn suspend() {
@@ -7867,7 +7887,7 @@ fn export_tiled_psd() -> Result<DocumentSnapshot, String> {
     })?;
     let label = current_label();
     let app = APP.get().ok_or("Application unavailable")?.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         let result = lumapaint_formats::export::export_raster(
             format,
             &state,
@@ -7922,7 +7942,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             let document = DOCUMENT.with(|doc| doc.borrow().clone());
             let label = current_label();
             let app = APP.get().ok_or("Application unavailable")?.clone();
-            tauri::async_runtime::spawn_blocking(move || {
+            crate::diagnostic_jobs::spawn_blocking(move || {
                 let result = if path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
@@ -8830,6 +8850,23 @@ pub(super) fn prepare_modal() -> Result<DocumentWorkspaceSnapshot, String> {
 fn modal_input_blocked(label: &str) -> bool {
     APP.get()
         .is_some_and(|app| crate::modal_windows::blocked(app, label))
+}
+
+pub fn create_screentone_layer(
+    tone: lumapaint_core::screentone::Screentone,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    finish_open_pen()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|d| {
+        d.borrow_mut().add_screentone_layer(
+            tone,
+            &lumapaint_renderer::vector::skia_paths::SkiaPathEngine,
+        )
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
 
 pub fn create_gradient_fill_layer(

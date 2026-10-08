@@ -177,8 +177,16 @@ pub fn write(
             if layer.effects.enabled {
                 let effects = layer.effects.prepare();
                 for tile in &mut layer.tiles {
-                    for pixel in tile.pixels.as_chunks_mut::<4>().0 {
-                        *pixel = effects.apply(*pixel);
+                    for (index, pixel) in tile.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate()
+                    {
+                        let edge = lumapaint_core::tiles::TILE_SIZE;
+                        *pixel = effects.apply_at(
+                            *pixel,
+                            [
+                                (tile.coord.x * edge + index as u32 % edge) as f32 + 0.5,
+                                (tile.coord.y * edge + index as u32 / edge) as f32 + 0.5,
+                            ],
+                        );
                     }
                 }
             }

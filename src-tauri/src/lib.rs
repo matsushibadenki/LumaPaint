@@ -1,3 +1,4 @@
+mod diagnostic_jobs;
 mod font_viewer;
 mod image_frames;
 mod measurement_units;
@@ -54,7 +55,7 @@ fn runtime_info() -> lumapaint_core::RuntimeInfo {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let exit_code = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("media", |_context, request, responder| {
             media_browser::serve(request, responder)
         })
@@ -164,6 +165,7 @@ pub fn run() {
             canvas::set_layer_settings,
             canvas::set_raster_blend_mode,
             canvas::set_layer_effects,
+            canvas::create_screentone_layer,
             canvas::delete_layer,
             canvas::add_paint_layer,
             canvas::add_vector_layer,
@@ -288,7 +290,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build LumaPaint")
-        .run(|app, event| {
+        .run_return(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 EXIT.finish(canvas::shutdown);
             }
@@ -307,6 +309,10 @@ pub fn run() {
                 }
             }
         });
+    // Also clean up when the native event loop returns without an Exit event.
+    // GPU resources must be dropped before the main thread's TLS destructors.
+    EXIT.finish(canvas::shutdown);
+    std::process::exit(exit_code);
 }
 mod ai;
 #[cfg(any(target_os = "macos", test))]

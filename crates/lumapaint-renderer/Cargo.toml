@@ -5,6 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
+heap-profile = ["lumapaint-core/heap-profile"]
 skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]

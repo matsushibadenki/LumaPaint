@@ -30,7 +30,7 @@
 
 - [Done] 変形パネル：9点の基準点、X/Y、W/H、縦横比固定、回転・シアーの絶対値入力とプリセット、mm/cm/in/px/pt表示。長方形の寸法・回転と4隅の角半径を個別／連動編集し、角・線幅と効果の拡大縮小設定、Undo/Redo、保存・再編集、英語・日本語・简体中文に対応。入力途中は更新せず確定時にRustのDocument Modelへ反映。
 
-表記：`[Done]` 現在のコードに実装済み / `[Next]` 優先度の高い未完了作業 / `[Later]` 後続の計画 / `[Pending]` 保留中。
+表記：`[Done]` 現在のコードに実装済み / `[Next]` 優先度の高い未完了作業 / `[Later]` 後続の計画 / `[Pending]` 開発環境で検証できないため保留中。
 macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再開指示があるまで着手しない。既存の共通コードやCIの`[Done]`は実装済みの事実を示す。
 
 ## 色なし（None）
@@ -67,6 +67,8 @@ macOSを優先する。macOS以外の未完了作業は`[Pending]`とし、再�
 - [Next] 読み込みSVGのrepeat／reflectと偏心した円形焦点を編集可能なGradient Modelへ拡張。現在は元SVGとして描画を保持するが、対応するパネル値としては解決しない。
 
 ## 開発基盤
+
+- [Done] 2026-10-08のmacOS終了時クラッシュ対策。Tauriのウインドウ一覧から消えたキャンバスもRustの現行／待機セッションから回収し、wgpuのスレッドローカル破棄前にGPU資源を解放する。共有文書の編集制限による終了処理の取りこぼしを防ぎ、イベントループ復帰後にも終了処理を保証。複数セッション・終了の重複呼出し・遅延コールバック拒否・復旧コピー保持の回帰テスト、ホストテスト156件、macOSビルド、Apple M4で効果付き文書を2ウインドウに表示した後の正常終了（終了コード0）を確認。
 
 - [Done] 2026-10-07の依存ライブラリ更新。直接依存を最新安定版へ揃え、TypeScript 7・wgpu 30・usvg/resvg 0.48のAPI変更とMetal共有テクスチャに対応。SVG独自修正を保持し、PDF変換のSVG依存も統一。npm/pnpm/Cargoのロックファイルを同期。通常テスト772件、Metal/GPU描画、Clippy、macOSビルドで確認。上流に固定された間接依存の制約は[更新記録](dependency-update-2026-10-07.md)に記載。
 
@@ -783,7 +785,10 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Next] **線画用の参照レイヤーと高度な塗りつぶし（残り）**：下描きレイヤーの属性指定、未変換SVG／画像へ焼き込まれた文字の扱いを整備する。ベクター中心線までの塗り、囲って塗る、塗り残し補正を追加。細線・半透明線・交差線・高解像度で白い縁と意図しない塗り漏れを比較検証し、現在の固定ピクセル半径による隙間閉じを改善する。参考：[CLIP STUDIO PAINT Advanced Fill](https://help.clip-studio.com/en-us/manual_en/420_fill/Advanced_Fill.htm)。
 - [Next] **オニオンスキンとライトテーブル**：前後のコマの枚数・間隔・色・不透明度、任意の参照コマの固定、原画のフリップ確認を追加。まず前後表示を実装し、その後に参照画像だけを移動・回転・拡縮するShift and Trace型の補助へ拡張する。参照変形は原画を変更せず、通常の書き出しにも含めない。同一のホールド画像を重複表示しない。参考：[OpenToonz Drawing Animation Levels](https://opentoonz.readthedocs.io/en/latest/drawing_animation_levels.html)、[CLIP STUDIO PAINT Light table](https://help.clip-studio.com/en-us/manual_en/600_animation/Using_light_table_layers.htm)。
 - [Next] **筆圧付きベクター線画と線修正**：線ごとの安定IDと幅プロファイルを先に定義し、筆圧で太さが変わる描画、描画後の部分的な線幅変更、線のつまみ・接続・単純化へ接続する。消しゴムは「触れた部分」「交点まで」「線全体」の3方式を用意。透明なパスを大量に追加する方法を避け、変形後の交点、筆圧幅、Undo／Redo、SVGへ変換した外観を検証する。参考：[CLIP STUDIO PAINT Vector layers](https://help.clip-studio.com/en-us/manual_en/180_layers/Vector_layers.htm)、[Vector eraser](https://help.clip-studio.com/en-us/manual_en/240_brushes/Eraser_tools.htm)。
-- [Next] **非破壊スクリーントーン**：線数・濃度・角度・網点形状・位置を再編集できる専用のトーン設定とマスクを追加。選択範囲から作成し、元画像を保持したままグレースケールやグラデーションをトーン化する。表示用の縮小プレビューと印刷解像度での生成を分離し、位相ずれ、縮小時のモアレ、書き出し時の意図しないグレー化を検証する。カラー用のColor Tone Studioとは別用途として既存のレイヤー／スウォッチへ統合する。参考：[CLIP STUDIO PAINT Screentones](https://help.clip-studio.com/en-us/manual_en/540_comic/Screentones.htm)。
+- [Done] **非破壊スクリーントーン（13分類・52デザイン）**：アミ／グラデーション／万線／柄／CG／砂目／カケアミ／効果／背景／ホワイト／転写／カラー／コピーを各4デザインで実装。線数・濃度・サイズ・角度・位置・インク色・乱数・白地・明暗変換をRustのレイヤー設定として保持。選択範囲／原稿全体からの新規作成、既存レイヤーへの適用・解除、Undo／Redo、Native Format保存に対応。原稿座標を共有するwgpu描画・Rustフォールバック・書き出し、3言語のドッキング／フローティングパネルを追加。仕様と検証は `docs/screentones.md`。
+- [Next] **スクリーントーンの縮小表示品質**：低倍率での面積平均・モアレ抑制を追加し、印刷用二値出力と表示用縮小を分離する。現在の原稿座標の位相保持に加え、高線数を縮小した際のちらつきを改善する。
+- [Later] **トーン素材ライブラリの拡張**：ユーザープリセット、画像素材の登録、プレビュー一覧、トーン専用の削りブラシ、CMYKの版別カラートーン。
+- [Pending] **スクリーントーンの実制作検証**：ネイティブアプリでの複数ウインドウ同時編集と、実プリンター／商業印刷での高線数・重ね貼り・出力サイズ変更の検証。
 - [Next] **作画補助定規**：1点／2点／3点透視、対称、平行、放射、同心円、曲線に沿う描画補助を追加。消失点・対称軸・適用レイヤーを編集可能にし、ピクセルとベクターの筆圧描画で共通のスナップ判定を使う。既存の上辺／左辺の計測用定規やガイドと区別し、スナップの一時解除、回転／ズーム時の追従、複数ウインドウでの設定保持を検証する。参考：[CLIP STUDIO PAINT Drawing while snapping to a ruler](https://help.clip-studio.com/en-us/manual_en/510_ruler/Drawing_while_snapping_to_a_ruler.htm)。
 - [Next] **コマ枠・フキダシの編集モデル**：漫画用のコマ分割、コマ間隔、斜めの境界、枠線幅、コマ単位のグループとクリップを既存ページ機能へ追加。フキダシは形状・しっぽ・余白・線と塗りを個別に再編集し、縦組み／横組みのセリフと関連付ける。順序はコマ枠、基本フキダシ、文字連動とし、見開き・左右の開き・コマ外にはみ出す演出・保存後の再編集を検証する。参考：[CLIP STUDIO PAINT Comics and Webtoons](https://help.clip-studio.com/en-us/manual_en/540_comic/540_comic.htm)。
 
@@ -814,3 +819,146 @@ AIが観察・操作・結果確認・修正・保存まで完結できるよう
 - [Later] **実制作の合格シナリオ**：漫画は見開きのコマ分割→線画→参照塗り→トーン→縦組みセリフ→印刷／Webtoon出力、アニメーションは原画→オニオンスキンで中割り→2／3コマ打ち→音声／口パク→連番／映像出力を検証する。各段階で取消・Undo／Redo・保存再読込・復旧・複数ウインドウと三言語UIを確認。画質は同じ設定の全描画と比較し、入力遅延・p95／p99・コピー量・CPU／GPUメモリを測定する。
 
 - [Done] 改修指示書の追加改善：文書の文字編集・ベクター確定／プレビュー移動・縦横組版・Journal更新を描画側と共通の任意計測に接続。保持済み文字合成画像をJournal世代とソース識別情報で照合し、対応する整数移動でレイヤー全SVGの照合用コピーを省略。古い移動・Undo／Redo・別文書のキャッシュを拒否する回帰テストを追加。GPU時間とアプリ実操作の遅延測定は残作業。[検証記録](vector-text-performance-2026-10-07.md)。
+
+- [Done] 2026-10-08：独立した文字ボックスの保持描画を半透明レイヤーへ拡張。不透明度変更は元の字形画像を再利用し、小領域のRGBAだけ補正して全文書サイズのCPU画像生成を省略。不透明度をGPUキャッシュ再利用条件に加え、変更時は合成画像を初期化する。重なり・効果・依存グループと一部の移動プレビューは従来経路を維持。[範囲と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 2026-10-08：重なる文字の互換合成を軽量化。透明画素の計算を省略し、不透明画素を直接コピー。不透明度補正は文字画像が覆う行区間だけに限定し、重複区間を統合して二重補正を防止。従来の丸めと画素一致を検証。全文書CPU画像確保と重なりのGPU合成は残作業。[検証・測定範囲](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なる文字の表示準備を小領域合成へ変更。元の字形画像を再利用し、積み重ね順と整数の丸めを保って文字全体の外接範囲だけをCPU合成。不透明度は合成後に適用し、GPUの保持画像へ転送。編集・Undo／Redoと三言語・倍率・半透明の画素一致を検証。個別選択／移動、依存グループ・効果は従来経路、GPU合成画像は全文書サイズのまま。[範囲と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なる文字の合成結果に8件／計上16MiBのLRU保持を追加。SVG・レイヤーID・寸法・不透明度で一致を確認し、再準備と保持範囲内のUndo／Redoでは同じ小領域画像を共有して再合成を省略。表示済みGPU画像も一致する場合は再転送・クリアを省略。上限超過の結果は保持せず、古い結果を破棄。字形キャッシュとは別予算であり、全体メモリ予算は残作業。[検証記録](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なる文字のCPU合成を局所更新へ拡張。外接範囲・不透明度・オブジェクト数／順序が同じ場合、変更前後の領域だけをクリアし、交差する文字を順に再合成。保持済み画像を変更せずUndo／Redoを維持。構造・外接範囲変更は全小領域合成へ戻す。小領域全体のコピーとGPU全転送は残作業。[条件と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なる文字の局所更新をGPU差分転送へ接続。元の合成SVG・不透明度・寸法が保持画像と一致する場合だけ変更領域を転送・置換し、全GPU画像のクリアを省略。元画像不一致・構造／寸法／不透明度変更は全更新へ戻す。透明画素を含めて置換し、消えた文字の跡を除去。CPU小領域全体のコピーと全文書GPUターゲットは残る。[検証範囲](vector-text-performance-2026-10-07.md)。
+
+- [Done] CPU文字キャッシュの予算を統合。字形画像と重なり合成画像の保持量を1キャッシュあたり合計64MiBに制限し、両カテゴリを比較して古い項目から破棄。合成画像の16MiB／8件上限は維持。字形のレイヤー／オブジェクトIDも計上し、合計量と破棄数を照会可能にした。外部で共有中の画像を変更せず維持。GPU・他キャッシュ・全ワーカー共通の予算は残作業。[計上範囲と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なる文字の局所更新で、予算／件数上限に余裕がなく他処理から参照されていない旧画像をキャッシュから外し、画素バッファを再利用。共有中の画像はコピーし、通常時は旧合成画像も保持。局所更新条件を満たさない場合は旧項目を復元して全合成へ戻す。実際の画素アドレス再利用と画素一致・共有画像保持・計上量を検証。共有中の全コピーとタイル化は残作業。[条件と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なり文字のGPU差分転送を行データの直接書き込みへ変更。保持画像から変更領域の行を借用し、画素の詰め直し・一時GPUテクスチャ・コピーコマンド生成を省略。行間隔と最終行の境界を検証し、実GPUで余分な列を転送しないことと倍率／半透明の画素一致を確認。wgpu内部の転送用コピーと共有中の全CPU画像コピーは残る。[範囲と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 共有中の表示画像を局所コピーできるRustタイル保持基盤を追加。128角のタイルを共有し、変更に触れるタイルだけコピー。同一画素の更新ではコピーせず、借用した行をGPUへ転送。境界・端タイル・旧画像保持・実GPU画素一致を検証。現在の文字キャッシュには未接続。[範囲と検証](vector-text-performance-2026-10-07.md)。
+- [Done] 大きな重なり文字の合成キャッシュ・局所更新・GPU転送へタイル保持を接続。コピー量・予算計上・Undo／Redo・互換画像生成を検証（下記）。
+
+- [Done] 256KiB以上の重なり文字画像を共有タイルで保持。小さな変更は領域内だけを再合成し、変更タイルだけコピー。元GPU画像一致時はタイルの行を直接転送し、不一致／初回は正しい連続画像へ再構成して全更新。旧画像・Undo／Redoと半透明／範囲変更を検証。2048角試料では合成画像2.19MBに対しタイルコピー128KiB＋領域一時画像24.8KB（アプリ全体の速度比較ではない）。小画像・構造変更の全合成と全GPUターゲットは残る。[範囲と検証](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なり文字の局所合成を追加・削除・重なり順変更へ拡張。外接範囲と不透明度が同じ場合、存続IDの相対順序を比較し、変更した領域だけを再合成。小画像と共有タイルの両経路で透明度・旧画像保持・全合成との一致を検証。挿入による番号ずれで無関係な文字を更新対象にしない。重複ID／範囲変更は全合成へ戻す。[検証範囲](vector-text-performance-2026-10-07.md)。
+- [Next] 外接範囲が変わる編集の局所更新、アプリ全体のCPU／GPUキャッシュ予算と入力から表示までの実測。
+
+- [Done] 大きな重なり文字の初回表示・外接範囲変更・不透明度変更で、連続画像全体を作ってからタイルへコピーする経路を除去。128角以下の領域を直接合成して保持タイルにし、全画像分の一時画素バッファを省略。範囲変更時の全再合成・GPU全更新は継続。[検証範囲](vector-text-performance-2026-10-07.md)。
+
+- [Done] 重なり文字の外接範囲変更時に、位置と形が一致する未変更タイルを共有。局所編集もタイルごとに直接合成し、大きな変更領域の一時画像と旧タイル画素のコピーを省略。範囲変更・旧画像保持・透明度・全合成との一致を検証。
+- [Done] タイル保持画像の初回／互換更新元不一致時のGPU転送を直接化。全CPU画像への再構成を除去し、文書寸法が同じGPUターゲットを再利用。GPUクリア後のタイル行転送と旧領域消去を実GPUで検証。[条件と残項目](vector-text-performance-2026-10-07.md)。
+- [Done] ネイティブ描画のTransformDirtyによるBVH refitで、保持済み局所境界を使用してパス再解析を除去。検索結果／探索スタックを再利用し、ドラッグ選択IDの全オブジェクト走査を除去。100万件までの空間インデックス単体Release測定を追加。
+- [Next] 指示書全体の残項目は[最新のPhase別状況](vector-text-performance-2026-10-07.md)を参照。通常倍率のネイティブ描画は輪郭差の検証・改善が必要。線・グラデーション・クリップ・保持glyph・全描画経路の差分化・アプリ全体の測定は未完了。
+
+- [Done] 通常表示の文字フレーム上限を64から4,096へ拡張し、字形キャッシュ件数も4,096へ変更。合計64MiBの保持予算は維持。65個以上の重なり判定を空間インデックス化し、1,000文字ボックスの画素一致・再利用と4,096矩形の判定を検証。[詳細](vector-text-performance-2026-10-07.md)。
+- [Pending] 指示書のAdobe実出力との比較、および開発環境にないOS／GPUの品質・性能検証。対応する実出力・フォント・色条件と環境が揃うまで保留。
+
+- [Done] ネイティブ線描画の限定対応を追加。単一・不透明の水平／垂直直線で、中央揃えの一定線幅・平型／角型線端・破線を保持GPU形状で描画。整数移動は互換描画と完全一致、半ピクセル移動は各チャンネル差1以内を実GPUで検証。移動時にパス再解析・形状再生成を行わない。既存の高倍率条件は維持。[詳細](vector-text-performance-2026-10-07.md)。
+- [Next] 曲線・折れ線・丸い線端と結合・透明／重複線・塗りと線の同時描画・回転／傾斜への対応と品質検証。
+
+- [Done] ネイティブ描画同期の静止時レイヤー一覧生成とID複製を除去。未対応理由を検証時に保持し、診断時の毎フレーム全オブジェクト走査を除去。互換SVG／workspace初回転送では画素バッファを比較キャッシュへ移し、全画像複製を省略。[詳細](vector-text-performance-2026-10-07.md)。
+
+- [Done] 単一・不透明の水平／垂直直線と破線を通常倍率のネイティブGPU描画へ移行。25%〜400%の6倍率、平型／角型線端で互換画素完全一致を検証。ズーム時の形状再生成・形状転送・SVG生成・BVH再構築ゼロを確認。回転で対応条件を外れる変更は再検証して互換描画へ戻す。[詳細](vector-text-performance-2026-10-07.md)。
+- [Next] 通常倍率の曲線輪郭品質、一般の線・グラデーション・クリップ対応、全経路の差分化と大規模アプリ測定は継続。
+
+- [Done] 指示書の画面描画GPU時間を非同期タイムスタンプで計測。診断時のみ有効化し、固定3枠の読み戻しを再利用。満杯時は待たずに計測をスキップ。実GPUで取得・満杯・再利用を検証。[範囲と使い方](vector-text-performance-2026-10-07.md)。
+- [Next] 別submitの画像処理／転送GPU時間、フレームとの対応付けとp95／p99、メモリ使用量、入力から表示までの遅延を順に計測する。
+
+- [Done] GPUタイムスタンプを描画ストリーム／フレームIDと同じフレームのCPU描画時間へ対応付け。直近512サンプルのp50／p95／p99と60Hz／120Hzの処理予算超過件数を固定容量で集計。計測スキップ・読み戻し失敗もID付きで記録。単体・実GPUの対応付けと再利用を検証。[詳細](vector-text-performance-2026-10-07.md)。
+- [Next] 次の計測項目はメモリ使用量とリソース確保／転送量の網羅。入力から表示までの遅延、別GPU処理、60秒×5回のアプリ測定は継続。
+
+- [Done] rendererの明示的なwgpuバッファ／テクスチャ作成・初期データ・書き込みを共通計測へ接続。容量、論理画素サイズ、入力スライス長、書き込み画素量を区別。共有Metalテクスチャの生成も計上し、計測漏れの回帰チェックを追加。実GPUでパディング付き転送量と画素一致を検証。[詳細](vector-text-performance-2026-10-07.md)。
+- [Done] macOSのRustホストプロセスの現在／ピークRSSを診断時に最大1秒間隔で取得。実測と頻度制限を検証。Linuxのstatus読み取り・単位／欠損／オーバーフロー処理を追加。
+- [Next] リソース解放後の生存容量、CPU確保量、worker集計、内部GPUコピー／読み戻し、WebViewを含むメモリ、Windows RSS、入力から表示までの遅延は未完了。
+- [Pending] Linux RSSの実取得と他OS／GPUの検証は該当環境で確認する。
+
+- [Done] SVG・テキスト・ワークスペース合成キャッシュの保持テクスチャ容量を診断時に計測。共有ハンドルを重複計上せず、最後の保持解除で登録を削除。入れ替え・共有・別スレッドでの解放を実GPU回帰テストで確認。[計測範囲](vector-text-performance-2026-10-07.md)。
+- [Next] 全描画リソースの生存容量、CPU確保量、Skia／ドライバー内部容量、GPU処理終了後の実解放を含む測定は継続。今回の値はキャッシュ保持の論理容量。
+
+- [Done] CPU合成タイルのVec保持容量・保持件数・累計確保／解放容量を診断時に計測。共有タイルは一度だけ計上し、編集による複製と別スレッドでの解放を追跡。余剰容量と共有・複製・解放・診断なしの回帰テストを追加。[範囲](vector-text-performance-2026-10-07.md)。
+- [Next] 文書・フォント・画像の他のCPU確保／コピー量、全GPUリソースの生存容量、workerの処理時間集計は継続。
+
+- [Done] 描画フレームとmacOS SVG workerの診断スナップショットをプロセス累計へ集約。通常の計測呼び出しはスレッド内に保持し、処理境界でのみ集計。飽和加算・二重計上防止を検証。
+- [Done] Windowsの現在／ピークワーキングセット取得を実装し、実プロセス取得テストをWindowsでも有効化。
+- [Pending] Windowsでのリンク／実取得とLinux実取得は該当OSで検証する。
+- [Next] 指示書の全完了には、一般ストローク・グラデーション・クリップ、全経路の差分更新、通常倍率の曲線品質、全メモリ／遅延計測、大規模アプリ検証が残る。最新の範囲は[状態表](vector-text-performance-2026-10-07.md)で管理する。
+
+- [Done] BVH refitで同一境界の変更を省略し、親境界が変わらない時点で祖先更新を停止。包含移動・境界拡張・公開済みインデックス維持を回帰検証。
+
+- [Done] 通常倍率で単一・不透明・画素境界に一致する矩形塗りを保持GPU描画へ接続。25〜400%の6倍率・整数移動・復帰で互換描画との完全一致を確認し、移動時のパス再解析／SVG生成／形状再構築ゼロを検証。
+- [Next] 小数境界の矩形は最大1階調差が検出されたため互換描画を維持。一般曲線・線・グラデーション・クリップと全経路差分化、大規模アプリ検証は引き続き未完了。
+
+- [Done] 診断用 `heap-profile` ビルドでRustグローバルアロケータの保持／ピーク容量、確保／再確保／失敗、累計増加／解放をworkerを含めて計測。通常ビルドには組み込まない。ゼロ初期化・拡大縮小・失敗・別スレッドの検証を追加。
+- [Done] GPU内部コピーとマップした読み戻し容量を共通計測へ接続。論理画素量とパディング付き読み戻しを区別し、実GPUでコピー4種と画素保持を検証。
+- [Done] Skia Metalのキャッシュ容量・件数・予算・破棄を診断時に観測。実GPUで破棄・日本語・半透明描画を確認。
+- [Done] レイヤー効果・画面効果・グラデーション・コピースタンプ・レタッチの別submitのcompute時間を非同期計測。処理種別／IDとCPUエンコード時間を対応付け、固定枠・パーセンタイル・途中終了時の枠解放を実装。
+- [Next] 全GPUリソースの生存容量、Skia内部／ドライバー／WebViewの全体計測、入力から表示までの遅延、および描画指示書の後続フェーズは未完了。[現在の状態表](vector-text-performance-2026-10-07.md)を参照。
+
+- [Done] First reproducible Illustrator 2026 geometry export fixture and pixel-difference tool; actual macOS Adobe PNG recorded with export settings and measured Resvg comparison.
+- [Next] Extend Adobe quality comparisons to native curves/strokes, confirmed fonts, transforms, masks and effects; retain existing quality fallback until these pass.
+
+- [Done] Publish completed and cancelled host diagnostic work using nested thread-bound batches; cover all 35 Tauri blocking jobs, macOS editor sessions, SVG/tile workers and font prewarm. Early returns and unwinds preserve measured work; empty batches avoid process locks.
+
+- [Done] Native retained rendering skips idle SVG-source walks and unchanged-layer journal copies; journal-driven object/layer removal prunes only cached IDs belonging to affected layers. GPU move/Undo/Redo and deletion/restoration pixel checks pass. Local 16-layer synchronization microbenchmark: 1,367,167 → 143,875 ns per 20,000 calls; this is not an application FPS measurement.
+- [Done] Opt-in handler-to-present-call latency tracking with first/latest coalesced input IDs, bounded p50/p95/p99 windows and GPU frame correlation; controlled full-app and physical display measurements remain unfinished.
+
+- [Done] Native cubic edge coverage integrates the square pixel footprint and fixes encoded-sRGB premultiplication. Six-zoom GPU comparison improves 100% mean alpha error from 0.327393 to 0.129272 LSB while preserving retained geometry; remaining edge-quality errors still prevent general cubic normal-zoom routing.
+
+- [Done] Native rational-conic storage/evaluation and retained round-cap opaque straight strokes above 150% zoom; actual GPU edge comparison, premultiplication and warm-cache reuse checked.
+- [Next] General curve/polyline strokes and normal-zoom round caps retain compatibility rendering because measured edge differences remain; see the current specification status and recorded limits.
+
+
+## Vector/text performance checkpoint — 2026-10-08
+
+Implementation is paused at the user's request after the bounded native-stroke change and its verification. This checkpoint concerns the attached performance specification, not completion of the entire product roadmap. Resume from the priorities below; do not treat implemented subsets as completed phases.
+
+| Status | Verified progress / remaining scope |
+| --- | --- |
+| [Done] | Retained text crops and immutable local tiles reduce eligible full-canvas composition and uploads. |
+| [Done] | Native idle synchronization skips source walks; transform refits and journal-based removal reuse retained resources. Move/Undo/Redo and removal/restoration pixel checks pass. |
+| [Done] | Qualified opaque rectangular fills and straight rectangular strokes render natively at normal zoom. Rational conics and undashed opaque round-cap straight strokes render above 150% zoom within documented limits. |
+| [Done] | Opt-in CPU/Rust heap/RSS/GPU resource, transfer, cache and timing diagnostics; handler-to-present-call input correlation. |
+| [Done] | Latest verification: 231 renderer unit tests passed, 47 GPU tests ignored in the ordinary suite; the targeted native-rendering test separately passed on actual GPU. Renderer all-target Clippy, host check with heap profiling and diff checks passed. |
+| [Next] | Correct general curve/stroke edge quality; retain compatibility fallback until accepted. Extend local updates to mixed text, masks/effects, fractional transforms and every rendering route. |
+| [Next] | Local insertion/deletion spatial-index updates, full-application capacity changes and 100k–1M save/reload/selection/history benchmarks; controlled Release frame/input measurements and broader Adobe comparisons. |
+| [Later] | Native gradients, clipping/group composition and optional retained glyph geometry. |
+| [Pending] | Windows/Linux runtime validation of OS-specific memory diagnostics, requiring those environments. |
+
+All eight specification phases still have remaining acceptance work. Scene-only million-object benchmarks do not establish million-object application support; no 60/120 fps or complete Adobe-parity claim is made. Detailed scope, measurements and limitations: [current specification status](vector-text-performance-2026-10-07.md).
+
+
+### Performance implementation resumed — 2026-10-08
+
+- [Done] Resumed after the checkpoint. Fixed-precision retained stroke outlines reduce the original 200% cubic mean alpha difference by about 60%; a fully visible 400% cubic improves by about 44%. Added contained-geometry quality regression checks and cold-outline timing.
+- [Next] General cubic/polyline strokes still use compatibility display until residual edge differences are resolved. Next priorities remain normal-zoom quality, mixed-content local updates and application-scale validation. This supersedes the checkpoint's paused state, not its recorded verification results.
+
+
+- [Done] Native retained display reuses viewport candidates when source, journal/layer revision and viewport bounds are unchanged; stable BVH query count is zero. Drag, pan/zoom and structural/source changes invalidate reuse. Actual GPU regression includes offscreen drag/return and retained pixel checks.
+- [Done] Qualified uniform-scale fill coverage uses analytic normals; six-zoom comparison records a small edge improvement. Stroke coverage remains unchanged because the same experiment worsened joins.
+- [Next] General normal-zoom curves/strokes, all rendering-route incremental updates and large-application acceptance remain unfinished; see the detailed performance status.
+
+
+### Phase 6 completed — 2026-10-08
+
+- [Done] Retained GPU linear/radial gradients with shared SVG interpolation stops; nested clips, canonical group/object order and isolated layer opacity. Curved/fractional clips use bounded cached compatibility alpha masks to preserve edge quality. Unsupported appearance and capacity limits retain fallback.
+- [Done] Actual GPU compatibility comparisons and warm-resource reuse checks pass. One-pixel gradient movement preparation: median 0.661 → 0.017 ms, upload 65,536 → 80 bytes per move in a 50-sample renderer microbenchmark; this excludes GPU execution and application input latency.
+- [Done] 291 core / 231 renderer tests, separately executed native GPU regression, all-target Clippy and Tauri heap-profile check pass. Detailed scope and limits: [Phase 6 results](vector-text-performance-2026-10-07.md#phase-6-completed--retained-paints-and-clipping-2026-10-08).
+- [Next] Remaining normal-zoom curve/stroke quality gates, broader incremental rendering and end-to-end scale/Adobe verification remain open. This entry supersedes Phase 6's earlier deferred checkpoint; it does not mark the full specification complete.
+
+
+### Glyph Atlas foundation — 2026-10-08
+
+- [Done] Renderer-owned bounded R8 coverage atlas, exact outline/transform/fill-rule keys, transparent gutters, miss-only rasterization/uploads and generation-based reset. Texture capacity is at most 4 MiB; exact-key retention is separately bounded to 4 MiB and 16,384 entries. Capacity/invalid-mask failures preserve resident slots.
+- [Done] Actual GPU upload/readback matches the compatibility coverage bytes, including gutters; warm lookup avoids rasterization and reset invalidates prior generations. Raster identity includes fractional phase; packing/failure behavior is tested.
+- [Next] Connect shaped glyph runs to atlas instances and GPU composition, preserve vertical/rotated text, frame clipping, decoration and encoded-sRGB opacity/order. Add multilingual document pixel comparisons and editing/zoom benchmarks before enabling display routing. Current application text display still uses its existing retained frame/tile route; no application speedup is claimed.
+
+
+### Glyph Atlas display pilot — 2026-10-08
+
+- [Done] Use the existing usvg positioned glyphs and resolved fonts to prepare monochrome outline masks; instanced GPU glyph drawing preserves fractional raster identity, rectangular frame clips and fill opacity. Static glyphs retain their masks, instance buffers and encoded-sRGB layer composition.
+- [Done] Connect an opt-in document rendering route (`LUMAPAINT_GLYPH_ATLAS=1`). Initial application eligibility requires one physical pixel per document pixel, integer canvas placement, supported all-text appearance and no document effects/clipping or active drag. Native text is composited in existing layer order with effective layer opacity; eligible ready layers skip redundant SVG worker preparation. The default route remains unchanged.
+- [Done] Actual GPU multilingual/vertical/translucent glyph comparisons and final sRGB composition show at most 1 RGBA LSB difference on local fixtures. Source/view/opacity changes, return to previous content, warm composition reuse and fallback invalidation are tested. This is renderer validation, not completed GUI input-latency or Adobe parity acceptance.
+- [Next] Validate full document editing/Undo/Redo and representative fonts, handle variable/color glyphs and decorations, extend fractional zoom/pan and selection dragging, remove remaining broad key scans and measure application latency before enabling by default.

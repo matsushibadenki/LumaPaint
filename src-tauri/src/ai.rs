@@ -36,7 +36,7 @@ pub async fn ai_open_key_page(provider: Provider) -> Result<(), String> {
         Provider::Openai => "https://platform.openai.com/api-keys",
         Provider::Gemini => "https://aistudio.google.com/api-keys",
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::diagnostic_jobs::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
         let mut command = std::process::Command::new("open");
         #[cfg(target_os = "windows")]
@@ -339,7 +339,7 @@ pub async fn ai_generate(window: tauri::WebviewWindow, request: Request) -> Resu
     }
     #[cfg(target_os = "macos")]
     {
-        let mut target = tauri::async_runtime::spawn_blocking(move || {
+        let mut target = crate::diagnostic_jobs::spawn_blocking(move || {
             crate::canvas::platform::ai_input(target, workspace)
         })
         .await
@@ -383,7 +383,7 @@ pub async fn ai_generate(window: tauri::WebviewWindow, request: Request) -> Resu
         } else {
             request.prompt.name
         };
-        let prepared = tauri::async_runtime::spawn_blocking(move || target.finish(&data))
+        let prepared = crate::diagnostic_jobs::spawn_blocking(move || target.finish(&data))
             .await
             .map_err(|_| "Image processing failed")??;
         crate::canvas::on_main(window, move || {

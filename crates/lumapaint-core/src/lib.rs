@@ -6,9 +6,12 @@ pub mod clone_stamp;
 pub mod document;
 pub mod gradient;
 pub mod graph;
+#[cfg(feature = "heap-profile")]
+pub mod heap_profile;
 pub mod layer_effects;
 pub mod performance;
 pub mod scene;
+pub mod screentone;
 pub mod selection;
 pub mod stroke;
 pub mod svg_backend;

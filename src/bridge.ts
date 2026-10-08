@@ -1,3 +1,4 @@
+import type { Screentone } from './screentone';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -82,7 +83,7 @@ export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<D
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
-export interface LayerEffects { enabled: boolean; values: number[]; curves: [number, number][][]; curveSmooth: boolean[]; mixer: number[][]; grading: number[][]; gradingBlend: number; gradingBalance: number }
+export interface LayerEffects { screentone?: Screentone | null; enabled: boolean; values: number[]; curves: [number, number][][]; curveSmooth: boolean[]; mixer: number[][]; grading: number[][]; gradingBlend: number; gradingBalance: number }
 export const defaultLayerEffects = (): LayerEffects => ({ enabled: false, curveSmooth: Array(4).fill(true), gradingBlend: 50, gradingBalance: 0, mixer: Array.from({length:8},()=>[0,0,0]), grading: Array.from({length:3},()=>[0,0,0]), values: Array(10).fill(0), curves: Array.from({length: 4}, () => [[0,0],[1,1]]) });
 export function setLayerEffects(id: string, effects: LayerEffects): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_layer_effects', { id, effects }));
@@ -598,3 +599,5 @@ export function rulerOrigin(point:[number,number],phase:number):Promise<void>{re
 
 export type VectorSelectionRequest={action:string;criterion?:string;name?:string;newName?:string};
 export const vectorSelectionAction=(request:VectorSelectionRequest)=>invoke<DocumentSnapshot>('vector_selection_action',{request});
+
+export function createScreentoneLayer(tone: Screentone): Promise<DocumentSnapshot> { return textCommand("create_screentone_layer", {tone}); }
