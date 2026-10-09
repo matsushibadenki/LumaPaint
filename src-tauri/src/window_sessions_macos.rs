@@ -25,6 +25,8 @@ struct Runtime {
     paint_mouse_coalescing: Option<bool>,
     pixel_paint_commit: Option<PreparedSvgLayer>,
     pixel_paint: Option<pixel_paint::PixelPaint>,
+    channel_gesture: Option<channel_tools::ChannelGesture>,
+    mask_gesture: Option<mask_tools::MaskGesture>,
     pixel_drag: Option<pixel_move::PixelDrag>,
     box_draft: Option<BoxDraft>,
     rotate_draft: Option<RotateDraft>,
@@ -82,6 +84,8 @@ impl Default for Runtime {
             pixel_paint_commit: None,
             pixel_paint: None,
             pixel_drag: None,
+            mask_gesture: None,
+            channel_gesture: None,
             box_draft: None,
             rotate_draft: None,
             scale_draft: None,
@@ -140,6 +144,9 @@ impl Runtime {
         PIXEL_PAINT_COMMIT
             .with(|slot| std::mem::swap(&mut self.pixel_paint_commit, &mut *slot.borrow_mut()));
         PIXEL_PAINT.with(|slot| std::mem::swap(&mut self.pixel_paint, &mut *slot.borrow_mut()));
+        CHANNEL_GESTURE
+            .with(|slot| std::mem::swap(&mut self.channel_gesture, &mut *slot.borrow_mut()));
+        MASK_GESTURE.with(|slot| std::mem::swap(&mut self.mask_gesture, &mut *slot.borrow_mut()));
         PIXEL_DRAG.with(|slot| std::mem::swap(&mut self.pixel_drag, &mut *slot.borrow_mut()));
         BOX_DRAFT.with(|slot| std::mem::swap(&mut self.box_draft, &mut *slot.borrow_mut()));
         ROTATE_DRAFT.with(|slot| std::mem::swap(&mut self.rotate_draft, &mut *slot.borrow_mut()));

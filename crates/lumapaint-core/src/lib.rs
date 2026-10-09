@@ -9,6 +9,8 @@ pub mod graph;
 #[cfg(feature = "heap-profile")]
 pub mod heap_profile;
 pub mod layer_effects;
+pub mod layer_mask;
+mod layer_mask_paint;
 pub mod performance;
 pub mod scene;
 pub mod screentone;

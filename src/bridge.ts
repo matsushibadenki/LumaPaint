@@ -38,7 +38,10 @@ export interface LayerGroupsState {groups:LayerGroup[];roots:string[];members:{i
 export interface LayerGroupEdit {action:'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
 export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
 export interface CompoundShapeSnapshot { id: string; operation: PathfinderOperation; operands: {id:string;name:string;transform:[number,number,number,number,number,number]}[] }
+export type LayerEditTarget = 'content' | 'mask' | 'none';
 export interface DocumentSnapshot {
+  layerEditTarget: LayerEditTarget;
+  editingChannel: DisplayChannel;
   compoundShapes?: CompoundShapeSnapshot[];
   layerGroups:LayerGroupsState;
   guides:GuidesState;
@@ -83,7 +86,17 @@ export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<D
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
-export interface LayerEffects { screentone?: Screentone | null; enabled: boolean; values: number[]; curves: [number, number][][]; curveSmooth: boolean[]; mixer: number[][]; grading: number[][]; gradingBlend: number; gradingBalance: number }
+export type MaskKind = 'pixel' | 'vector';
+export interface LayerMask {kind:MaskKind;enabled:boolean;inverted:boolean;density:number;linked:boolean;transform:[number,number,number,number,number,number]}
+export function createLayerMask(id:string,kind:MaskKind):Promise<DocumentSnapshot> {
+  const result=canvasQueue.then(()=>invoke<DocumentSnapshot>('create_layer_mask',{id,kind}));
+  canvasQueue=result.then(()=>undefined,()=>undefined);return result;
+}
+export function transformLayerMask(id:string,matrix:LayerMask['transform']):Promise<DocumentSnapshot> {
+  const result=canvasQueue.then(()=>invoke<DocumentSnapshot>('transform_layer_mask',{id,matrix}));
+  canvasQueue=result.then(()=>undefined,()=>undefined);return result;
+}
+export interface LayerEffects { mask?:LayerMask|null; screentone?: Screentone | null; enabled: boolean; values: number[]; curves: [number, number][][]; curveSmooth: boolean[]; mixer: number[][]; grading: number[][]; gradingBlend: number; gradingBalance: number }
 export const defaultLayerEffects = (): LayerEffects => ({ enabled: false, curveSmooth: Array(4).fill(true), gradingBlend: 50, gradingBalance: 0, mixer: Array.from({length:8},()=>[0,0,0]), grading: Array.from({length:3},()=>[0,0,0]), values: Array(10).fill(0), curves: Array.from({length: 4}, () => [[0,0],[1,1]]) });
 export function setLayerEffects(id: string, effects: LayerEffects): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_layer_effects', { id, effects }));
@@ -157,7 +170,7 @@ export interface DocumentSettings { name: string; width: number; height: number;
 export type NewDocumentGuideLayout = {kind: 'print'; bleedMm: number} | {kind: 'manga'; trimWidthMm: number; trimHeightMm: number};
 export interface NewDocumentSettings { guideLayout?: NewDocumentGuideLayout; pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
 export const emptyDocument: DocumentSnapshot = {
-  savedVectorSelections:[],canReselectVectors:false,layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+  savedVectorSelections:[],canReselectVectors:false,layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerEditTarget: 'content', editingChannel: 0, layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -442,6 +455,18 @@ export async function subscribeCanvasColorSwap(onSwap: () => void) {
 export async function subscribeCanvasText(onEdit: () => void) {
   if (!isTauri()) return () => {};
   return listen('canvas-text-edit', onEdit);
+}
+
+export function selectChannel(channel: DisplayChannel): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_channel', { channel }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function selectLayerTarget(id: string, target: LayerEditTarget): Promise<DocumentSnapshot> {
+  const result = canvasQueue.then(() => invoke<DocumentSnapshot>('select_layer_target', { id, target }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 export function selectLayer(id: string, preserveObjects = false): Promise<DocumentSnapshot> {

@@ -29,7 +29,7 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
     let mut copy = document.clone();
     copy.finish();
     let mut snapshot = ExportSnapshot::capture(&copy);
-    if snapshot.state().layer_effects.values().any(|e| e.enabled) {
+    if snapshot.state().layer_effects.values().any(|e| e.active()) {
         snapshot = snapshot
             .with_document_png(lumapaint_renderer::thumbnails::document_png(&copy)?)
             .map_err(export_error)?;

@@ -1,3 +1,4 @@
+import { layerMaskDialogLabels } from './LayerMaskDialog';
 import { ScreentonePanel } from './ScreentonePanel';
 import { screentoneLabels } from '../screentone';
 import {colorProfiles} from '../document-color-modes';
@@ -67,7 +68,9 @@ function initialPanelOrder(): PanelId[] {
 
 const panelIcons = { screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
-export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+export function Inspector({ onSelectLayerTarget, onOpenLayerMask, onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
+  onSelectLayerTarget: (id: string, target: import('../bridge').LayerEditTarget) => void;
+  onOpenLayerMask: (id: string) => void;
   onLayerEffects: (id: string, effects: import('../bridge').LayerEffects) => void;
   rasterEnabled: boolean;
   onRasterBlendMode: (id: string, mode: import('../bridge').RasterBlendMode) => void;
@@ -125,7 +128,7 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
   const [settings, setSettings] = useState<DocumentSettings>(() => ({ name: document.name, width: document.width, height: document.height, unit: measurementUnit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio }));
   const [displayDimensions, setDisplayDimensions] = useState(() => ({ width: displaySize(document.width, measurementUnit, document.resolution), height: displaySize(document.height, measurementUnit, document.resolution) }));
   const selectedLayerId = document.layerId;
-  const thumbnails = usePanelThumbnails(thumbnailDocumentKey, document.revision);
+  const thumbnails = usePanelThumbnails(thumbnailDocumentKey, document.revision, `${document.layerId}:${document.layerEditTarget}`);
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels' | 'paths'>('layers');
   const [pathTabError, setPathTabError] = useState('');
   const switchLayerPanel = async (mode: 'layers' | 'channels' | 'paths') => {
@@ -146,13 +149,6 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
   const selectedLayer = selectedGroup ? undefined : document.layers.find(layer => layer.id === selectedLayerId) ?? document.layers.at(-1);
   const layerSettings = (layer: NonNullable<typeof selectedLayer>, changes: Partial<LayerSettings> = {}): LayerSettings => ({ id: layer.id, name: layer.name, opacity: layer.opacity, locked: layer.locked, alphaLocked: layer.alphaLocked, maskEnabled: layer.maskEnabled, maskInverted: layer.maskInverted, maskDensity: layer.maskDensity, ...changes });
   const maskTarget=selectedGroup??selectedLayer;
-  const tiledMaskTarget = !!selectedLayer?.rasterBlendMode;
-  const tiledMaskDensityLabel = { en: 'Mask coverage', ja: 'マスク被覆率', 'zh-CN': '蒙版覆盖率' }[locale];
-  const maskEnabledLabel = { en: 'Use layer mask', ja: 'マスクを有効にする', 'zh-CN': '启用图层蒙版' }[locale];
-  const changeMask=(patch:Partial<{maskEnabled:boolean;maskInverted:boolean;maskDensity:number}>)=>{
-    if(selectedGroup)onLayerGroupEdit({action:'mask',id:selectedGroup.id,mask:{enabled:patch.maskEnabled??selectedGroup.maskEnabled,inverted:patch.maskInverted??selectedGroup.maskInverted,density:patch.maskDensity??selectedGroup.maskDensity}});
-    else if(selectedLayer)onLayerSettings(layerSettings(selectedLayer,patch));
-  };
   function submitDocument(event: FormEvent) {
     event.preventDefault();
     const factor = pixelsPerUnit(settings.unit, settings.resolution);
@@ -251,16 +247,12 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
     {panelView('layers',<section className="inspector-panel layer-panel" role="tabpanel" id="inspector-panel-layers" aria-labelledby="inspector-tab-layers">
       <div className="layer-subtabs"><button className={layerPanelMode === 'layers' ? 'active' : ''} onClick={() => void switchLayerPanel('layers')}>{t.layers}</button><button className={layerPanelMode === 'channels' ? 'active' : ''} onClick={() => void switchLayerPanel('channels')}>{t.channels}</button><button className={layerPanelMode === 'paths' ? 'active' : ''} onClick={() => setLayerPanelMode('paths')}>{t.paths}</button></div>
       {pathTabError && <p role="alert">{pathTabError}</p>}
-      {layerPanelMode === 'paths' ? <PathsPanel document={document} locale={locale} enabled={enabled} onAction={onSavedPathAction} /> : layerPanelMode === 'channels' ? <ChannelsPanel thumbnails={thumbnails.channels} thumbnailError={thumbnails.error} locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
+      {layerPanelMode === 'paths' ? <PathsPanel document={document} locale={locale} enabled={enabled} onAction={onSavedPathAction} /> : layerPanelMode === 'channels' ? <ChannelsPanel target={document.layerEditTarget} layerName={document.layers.find(layer=>layer.id===document.layerId)?.name ?? ''} editable={document.layers.find(layer=>layer.id===document.layerId)?.kind === 'paint' && enabled} thumbnails={thumbnails.channels} thumbnailError={thumbnails.error} locale={locale} mode={document.colorMode} value={channel} enabled={enabled} onChange={onChannel} /> : <>
         <div className="layer-compositing"><label><span>{t.layerBlendMode}</span><select aria-label={t.layerBlendMode} disabled={!rasterEnabled || !selectedLayer?.rasterBlendMode || selectedLayer.locked} value={selectedLayer?.rasterBlendMode ?? 'normal'} onChange={event => selectedLayer && onRasterBlendMode(selectedLayer.id, event.target.value as import('../bridge').RasterBlendMode)}>{rasterBlendModes.map(mode => <option key={mode} value={mode}>{rasterBlendLabels[locale][mode]}</option>)}</select></label><label><span>{t.layerOpacity}</span><div><LayerOpacityControl key={selectedLayer?.id ?? ''} label={t.layerOpacity} disabled={!(enabled || rasterEnabled) || !selectedLayer} opacity={selectedLayer?.opacity ?? 1} onCommit={opacity => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { opacity }))} /></div></label></div>
         <div className="layer-lock-row"><span>{t.lockLayer}</span><button type="button" disabled={!(enabled || rasterEnabled) || !selectedLayer} className={selectedLayer?.locked ? 'active' : ''} aria-pressed={selectedLayer?.locked ?? false} title={selectedLayer?.locked ? t.unlockLayer : t.lockLayer} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { locked: !selectedLayer.locked }))}>▣</button><button type="button" disabled={!enabled || !selectedLayer || selectedLayer.kind !== 'paint'} className={selectedLayer?.alphaLocked ? 'active' : ''} aria-pressed={selectedLayer?.alphaLocked ?? false} title={t.lockAlpha} onClick={() => selectedLayer && onLayerSettings(layerSettings(selectedLayer, { alphaLocked: !selectedLayer.alphaLocked }))}>α</button><span className="layer-fill">{t.layerFill}: 100%</span></div>
-        {maskTarget && (maskTarget.maskEnabled || tiledMaskTarget) && <div className="mask-controls">
-          {tiledMaskTarget && <label className="mask-enabled-toggle"><input type="checkbox" disabled={!rasterEnabled} checked={maskTarget.maskEnabled} onChange={event => changeMask({ maskEnabled: event.currentTarget.checked })} />{maskEnabledLabel}</label>}
-          <label><span>{tiledMaskTarget ? tiledMaskDensityLabel : t.maskDensity}</span>{tiledMaskTarget ? <LayerOpacityControl key={`mask-${maskTarget.id}`} label={tiledMaskDensityLabel} disabled={!rasterEnabled || !maskTarget.maskEnabled || maskTarget.locked} opacity={maskTarget.maskDensity} onCommit={maskDensity => changeMask({ maskDensity })} /> : <><CompactSlider disabled={!enabled} min="0" max="100" value={Math.round(maskTarget.maskDensity*100)} onChange={event=>changeMask({maskDensity:Number(event.target.value)/100})}/><output>{Math.round(maskTarget.maskDensity*100)}%</output></>}</label>
-          <button disabled={tiledMaskTarget ? !rasterEnabled || !maskTarget.maskEnabled || maskTarget.locked : !enabled} className={maskTarget.maskInverted?'active':''} onClick={()=>changeMask({maskInverted:!maskTarget.maskInverted})}>{t.invertMask}</button>
-        </div>}
-        <LayerList groups={document.layerGroups} onGroupEdit={onLayerGroupEdit} thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} selectable={enabled || rasterEnabled} appearanceEnabled={enabled || rasterEnabled} reorderEnabled={enabled || rasterEnabled} locale={locale}
+        <LayerList editTarget={document.layerEditTarget ?? 'content'} onSelectTarget={onSelectLayerTarget} groups={document.layerGroups} onGroupEdit={onLayerGroupEdit} thumbnails={Object.fromEntries(thumbnails.layers)} thumbnailError={thumbnails.error} layers={document.layers} textObjects={document.textObjects} selectedId={selectedLayerId} enabled={enabled} selectable={enabled || rasterEnabled} appearanceEnabled={enabled || rasterEnabled} reorderEnabled={enabled || rasterEnabled} locale={locale}
           selectedObjects={document.selectedVectorObjects} onSelectObject={onSelectObject} onToggleObject={onToggleObject} onReorderObjects={onReorderObjects} onSelect={onSelectLayer} onToggle={onToggleLayer} onReorder={onReorderLayer}
+          onToggleMaskLink={layer => {if(layer.effects?.mask)onLayerEffects(layer.id,{...layer.effects,mask:{...layer.effects.mask,linked:!(layer.effects.mask.linked??true)}});}}
           onToggleLock={layer => onLayerSettings(layerSettings(layer, { locked: !layer.locked }))}
           onRename={(layer, name) => onLayerSettings(layerSettings(layer, { name }))} />
         <div className="layer-actions layer-folder-actions">
@@ -279,9 +271,9 @@ export function Inspector({ onLayerEffects, rasterEnabled, onRasterBlendMode, on
           <span className="layer-action-divider" aria-hidden="true" />
           <div className="layer-action-group">
             <button disabled={!selectedLayer?.effects} title={effectLabels[locale].title} aria-label={effectLabels[locale].title} onClick={() => setActivePanel('effects')}>fx</button>
-            <button disabled={!enabled || !maskTarget} className={maskTarget?.maskEnabled?'active':''} title={maskTarget?.maskEnabled?t.removeMask:t.addMask} aria-label={maskTarget?.maskEnabled?t.removeMask:t.addMask} onClick={()=>maskTarget&&changeMask({maskEnabled:!maskTarget.maskEnabled,maskDensity:1,maskInverted:false})}>◐</button>
+            <button type="button" disabled={!(enabled||rasterEnabled) || !maskTarget || maskTarget.locked} className={maskTarget?.maskEnabled||selectedLayer?.effects?.mask?'active':''} title={layerMaskDialogLabels[locale].title} aria-label={layerMaskDialogLabels[locale].title} aria-haspopup="dialog" onClick={()=>maskTarget&&onOpenLayerMask(maskTarget.id)}>◐</button>
           </div>
-        </div><p className="layer-group-hint">{layerGroupLabels[locale].hint}</p><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
+        </div><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
       </>}
     </section>)}
   </aside>;

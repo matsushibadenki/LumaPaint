@@ -163,7 +163,7 @@ pub fn write(
     // Reuse the independent model's complete validation before trusting pixel buffers.
     lumapaint_core::tiles::TiledRasterDocument::from_state(state.clone())
         .map_err(ExportError::InvalidDocument)?;
-    let effects_baked = state.layers.iter().any(|l| l.effects.enabled);
+    let effects_baked = state.layers.iter().any(|l| l.effects.active());
     let mut baked;
     let state = if effects_baked {
         for layer in &state.layers {
@@ -174,7 +174,7 @@ pub fn write(
         }
         baked = state.clone();
         for layer in &mut baked.layers {
-            if layer.effects.enabled {
+            if layer.effects.active() {
                 let effects = layer.effects.prepare();
                 for tile in &mut layer.tiles {
                     for (index, pixel) in tile.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate()

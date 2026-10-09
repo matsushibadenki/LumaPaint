@@ -1,3 +1,5 @@
+import {ShortcutDialog} from './components/ShortcutDialog';
+import { LayerMaskDialog } from './components/LayerMaskDialog';
 import {SavedSelectionsDialog} from './components/SavedSelectionsDialog';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -41,12 +43,12 @@ export function ModalPage() {
         const element=document.querySelector('dialog form, .settings-dialog');
         if(!element)return;
         // Viewport-based layouts must not be measured to resize their own viewport.
-        const fixedHeight=context.kind==='newDocument'?760:context.kind==='settings'?520:context.kind==='colorSettings'?480:context.kind==='pdfImport'?680:null;
+        const fixedHeight=context.kind==='shortcuts'?720:context.kind==='layerMask'?660:context.kind==='newDocument'?760:context.kind==='settings'?520:context.kind==='colorSettings'?480:context.kind==='pdfImport'?680:null;
         const height=Math.min(screen.availHeight-80,fixedHeight??Math.max(180,Math.ceil(element.scrollHeight+64)));
         if(height===last)return;
         const initial=last===0;
         last=height;
-        const width=context.kind==='newDocument'?1000:context.kind==='settings'?760:context.kind==='colorSettings'?620:context.kind==='directControls'?440:context.kind==='pdfImport'?740:400;
+        const width=context.kind==='shortcuts'?880:context.kind==='layerMask'?460:context.kind==='newDocument'?1000:context.kind==='settings'?760:context.kind==='colorSettings'?620:context.kind==='directControls'?440:context.kind==='pdfImport'?740:400;
         const nativeWindow=getCurrentWebviewWindow();
         void nativeWindow.setSize(new LogicalSize(Math.min(screen.availWidth-64,width),height)).then(()=>{if(initial)return nativeWindow.center();}).catch(()=>{});
       };
@@ -71,6 +73,8 @@ export function ModalPage() {
   if (!context) return error ? <div role="alert">{error}<button onClick={close}>Close</button></div> : null;
   let content;
   switch (context.kind) {
+    case 'shortcuts': content=<ShortcutDialog locale={context.locale} onClose={close}/>;break;
+    case 'layerMask': content=context.document&&<LayerMaskDialog locale={context.locale} document={context.document} targetId={context.action} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;
     case 'vectorSelections': content=context.document&&<SavedSelectionsDialog locale={context.locale} document={context.document} mode={context.action==='save'?'save':'edit'} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
     case 'toolSettings': content = context.document && <ToolSettingsDialog tool={context.action as CanvasTool} locale={context.locale} document={context.document} onClose={close} onUpdate={()=>{}}/>; break;
     case 'settings': content = <SettingsDialog locale={context.locale} theme={context.theme} onLocale={locale => preferences(locale, context.theme)} onTheme={theme => preferences(context.locale, theme)} onClose={close}/>; break;

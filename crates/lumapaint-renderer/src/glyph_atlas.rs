@@ -11,6 +11,8 @@ pub struct GlyphKey {
     transform: [u32; 6],
     size: [u32; 2],
     even_odd: bool,
+    clip: Option<[u32; 4]>,
+    canvas_clip: Option<[u32; 4]>,
 }
 impl GlyphKey {
     pub fn new(
@@ -57,7 +59,53 @@ impl GlyphKey {
             transform: matrix.map(f32::to_bits),
             size,
             even_odd,
+            clip: None,
+            canvas_clip: None,
         })
+    }
+
+    /// Bake a single rectangular clip into boundary coverage. Interior glyphs
+    /// retain the original key, so moving a distant frame edge does not upload them.
+    pub fn with_clip(mut self, bounds: [f32; 4]) -> Option<Self> {
+        if !bounds.iter().all(|v| v.is_finite()) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]
+        {
+            return None;
+        }
+        if bounds[0] > 0.
+            || bounds[1] > 0.
+            || bounds[2] < self.size[0] as f32
+            || bounds[3] < self.size[1] as f32
+        {
+            self.clip = Some(bounds.map(f32::to_bits));
+        }
+        Some(self)
+    }
+    /// Apply canvas coverage after the frame mask, without replacing it or
+    /// intersecting two fractional masks (their coverage must multiply).
+    pub(crate) fn set_canvas_clip(&mut self, bounds: [f32; 4]) -> Option<()> {
+        if !bounds.iter().all(|v| v.is_finite()) || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]
+        {
+            return None;
+        }
+        if bounds[0] > 0.
+            || bounds[1] > 0.
+            || bounds[2] < self.size[0] as f32
+            || bounds[3] < self.size[1] as f32
+        {
+            self.canvas_clip = Some(bounds.map(f32::to_bits));
+        } else {
+            self.canvas_clip = None;
+        }
+        Some(())
+    }
+    pub(crate) fn has_canvas_clip(&self) -> bool {
+        self.canvas_clip.is_some()
+    }
+    pub fn is_clipped(&self) -> bool {
+        self.clip.is_some() || self.canvas_clip.is_some()
+    }
+    pub fn mask_size(&self) -> [u32; 2] {
+        self.size
     }
 
     /// Rasterize the already shaped outline with the compatibility coverage engine.
@@ -116,6 +164,28 @@ impl GlyphKey {
             tiny_skia::Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]),
             None,
         );
+        for bits in [self.clip, self.canvas_clip].into_iter().flatten() {
+            let b = bits.map(f32::from_bits);
+            let rect = tiny_skia::Rect::from_ltrb(b[0], b[1], b[2], b[3])?;
+            // Match Resvg's clear-then-invert clip coverage and integer rounding.
+            let mut coverage = tiny_skia::Pixmap::new(self.size[0], self.size[1])?;
+            coverage.fill(tiny_skia::Color::BLACK);
+            let clear = tiny_skia::Paint {
+                blend_mode: tiny_skia::BlendMode::Clear,
+                ..Default::default()
+            };
+            coverage.fill_path(
+                &tiny_skia::PathBuilder::from_rect(rect),
+                &clear,
+                tiny_skia::FillRule::Winding,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            let mut mask =
+                tiny_skia::Mask::from_pixmap(coverage.as_ref(), tiny_skia::MaskType::Alpha);
+            mask.invert();
+            pixmap.apply_mask(&mask);
+        }
         Some(pixmap.pixels().iter().map(|p| p.alpha()).collect())
     }
 }
@@ -317,6 +387,29 @@ mod tests {
         let b = key(0.25).rasterize().unwrap();
         assert_ne!(a, b);
         assert!(b.iter().any(|&v| v > 0 && v < 255));
+        let clipped = key(0.).with_clip([1.5, 0., 8., 8.]).unwrap();
+        assert_ne!(clipped, key(0.));
+        let pixels = clipped.rasterize().unwrap();
+        assert!(pixels[9] > 0 && pixels[9] < 255);
+        assert_eq!(pixels[10], 255);
+        assert_eq!(key(0.).with_clip([-1., -1., 9., 9.]).unwrap(), key(0.));
+    }
+    #[test]
+    fn canvas_mask_multiplies_frame_coverage_and_preserves_identity() {
+        let frame = key(0.).with_clip([1.5, 0., 8., 8.]).unwrap();
+        let mut both = frame.clone();
+        both.set_canvas_clip([1.5, 0., 8., 8.]).unwrap();
+        assert_ne!(both, frame);
+        let a = frame.rasterize().unwrap();
+        let b = both.rasterize().unwrap();
+        // Two independent half-coverage masks multiply; intersecting their
+        // rectangles or replacing the frame would incorrectly retain half alpha.
+        assert!(b[9] > 0 && b[9] < a[9]);
+        assert_eq!(b[10], a[10]);
+        both.set_canvas_clip([-1., -1., 9., 9.]).unwrap();
+        assert_eq!(both, frame);
+        assert!(both.set_canvas_clip([0., 0., f32::NAN, 8.]).is_none());
+        assert_eq!(both, frame);
     }
     #[test]
     fn packing_checks_bounds_and_wraps_without_overlap() {

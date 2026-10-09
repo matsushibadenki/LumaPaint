@@ -59,7 +59,9 @@ impl EffectsDisplay {
                 concat!(
                     include_str!("layer_effects.wgsl"),
                     "\n",
-                    include_str!("screentone.wgsl")
+                    include_str!("screentone.wgsl"),
+                    "\n",
+                    include_str!("layer_mask.wgsl")
                 )
                 .into(),
             ),
@@ -113,7 +115,17 @@ impl EffectsDisplay {
         let mut plan = config(effects)?;
         plan[1120] = size.0 as f32;
         plan[1121..1125].copy_from_slice(&mapping.unwrap_or([0., 0., 1., 1.]));
-        if self.buffers.as_ref().is_none_or(|b| b.capacity < capacity) {
+        let config_bytes = (plan.len() * 4) as u64;
+        if config_bytes > device.limits().max_storage_buffer_binding_size
+            || capacity * 2 + config_bytes > BUDGET
+        {
+            return None;
+        }
+        if self
+            .buffers
+            .as_ref()
+            .is_none_or(|b| b.capacity < capacity || b.config.size() < config_bytes)
+        {
             let make = |label, size, usage| {
                 crate::gpu_metrics::create_buffer!(
                     device,
@@ -138,7 +150,7 @@ impl EffectsDisplay {
                 ),
                 config: make(
                     "Effect display configuration",
-                    CONFIG_BYTES,
+                    config_bytes,
                     wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 ),
                 capacity,
@@ -155,8 +167,7 @@ impl EffectsDisplay {
             }
             self.source = Some(identity);
         }
-        let mut parameters = [0.; CONFIG_LEN + 3];
-        parameters[..CONFIG_LEN].copy_from_slice(&plan);
+        let mut parameters = plan;
         parameters[CONFIG_LEN] = size.0 as f32;
         parameters[CONFIG_LEN + 1] = (stride / 4) as f32;
         parameters[CONFIG_LEN + 2] = opacity;
@@ -419,6 +430,71 @@ mod tests {
             assert!(actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
         }
     }
+    #[test]
+    #[ignore = "requires hardware GPU"]
+    fn layer_masks_direct_display_match_cpu() {
+        use lumapaint_core::{
+            layer_mask::{LayerMask, MaskKind},
+            selection::{Selection, SelectionShape},
+        };
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(crate::gpu_timing::request_job_device(&adapter)).unwrap();
+        let mut gpu = pollster::block_on(EffectsDisplay::new(&device, &queue)).unwrap();
+        let selection = Selection::new(SelectionShape::Ellipse, [4., 8., 24., 16.]);
+        for kind in [MaskKind::Pixel, MaskKind::Vector] {
+            let effects = LayerEffects {
+                mask: Some({
+                    let mut m = LayerMask::from_selection(kind, Some(&selection), 32, 32).unwrap();
+                    m.transform_by([1.2, 0.3, -0.2, 0.8, 4., -2.]).unwrap();
+                    m.paint_selection(
+                        &Selection::new(SelectionShape::Ellipse, [4., 4., 12., 12.]),
+                        Some(&Selection::new(
+                            SelectionShape::Rectangle,
+                            [6., 0., 20., 32.],
+                        )),
+                        false,
+                    )
+                    .unwrap();
+                    m.paint_selection(
+                        &Selection::new(SelectionShape::Rectangle, [10., 6., 5., 8.]),
+                        None,
+                        true,
+                    )
+                    .unwrap();
+                    m.transform_by([1., 0.1, 0., 1., 1., -1.]).unwrap();
+                    m
+                }),
+                ..Default::default()
+            };
+            let input = [31, 47, 63, 128].repeat(512 * 512);
+            let mapping = [-2., -3., 0.07, 0.09];
+            let texture = gpu
+                .render(
+                    &device,
+                    &queue,
+                    Request {
+                        pixels: &input,
+                        size: (512, 512),
+                        revision: 100,
+                        effects: &effects,
+                        opacity: 0.7,
+                        previous: None,
+                        mapping: Some(mapping),
+                    },
+                )
+                .unwrap();
+            let mut expected = input.clone();
+            crate::screentone::apply_cpu(&mut expected, &effects, 512, mapping);
+            for p in &mut expected {
+                *p = (*p as f32 * 0.7).round() as u8;
+            }
+            let actual = read(&device, &queue, &texture);
+            assert!(actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
+        }
+    }
+
     #[test]
     #[ignore = "requires hardware GPU"]
     fn screentone_direct_display_matches_export_coordinates_and_opacity() {

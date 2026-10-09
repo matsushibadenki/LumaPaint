@@ -1,3 +1,5 @@
+import {useShortcutCommands,useShortcuts,binding,accelerator,keyFromAccelerator,displayKey,type Command} from '../shortcuts';
+import {shortcutLabels} from '../shortcut-i18n';
 import {vectorSelectionLabels,sameCriteria,objectCriteria} from '../vector-selection-i18n';
 import type {VectorSelectionRequest} from '../bridge';
 import {colorModes as documentModes, modeLabels} from '../document-color-modes';
@@ -18,13 +20,14 @@ import { workspaceMessages } from '../workspace-i18n';
 import { menuMessages } from '../menu-i18n';
 import type { BitDepth, ColorMode, DocumentEditAction, DocumentSnapshot, PathEditAction } from '../bridge';
 
-type EntryItem = { label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
+type EntryItem = { id?: string; label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
 type Entry = EntryItem | null;
 type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | PredefinedMenuItemOptions;
 // New modes are registered here; both native and browser submenus derive from this list.
 
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onShortcuts:()=>void;
   onVectorSelection:(request:VectorSelectionRequest)=>void;
   onSavedSelections:(mode:'save'|'edit')=>void;
   onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
@@ -74,114 +77,129 @@ export function WorkspaceMenu(props: Props) {
   const vectorReady=canEdit&&!doc.activeSavedPath;
   const hasVectors=doc.layers.some(l=>l.kind==='vector'&&l.visible&&!l.locked&&l.objects.some(o=>o.visible&&!o.locked));
   const vectorAction=(action:string,criterion?:string,name?:string)=>()=>props.onVectorSelection({action,criterion,name});
-  const sameEntry=(index:number):Entry=>({label:vs.sameNames[index],enabled:index<9||selectedTexts.length>0,action:vectorAction('same',sameCriteria[index])});
-  const sameEntries:Entry[]=[sameEntry(0),sameEntry(1),future(vs.unavailable[3]),...sameCriteria.slice(2,8).map((_,i)=>sameEntry(i+2)),future(vs.unavailable[4]),sameEntry(8),future(vs.unavailable[5]),future(vs.unavailable[6]),null,{label:{ja:'テキスト',en:'Text','zh-CN':'文本'}[locale],enabled:false},...sameCriteria.slice(9).map((_,i)=>sameEntry(i+9))];
+  const sameEntry=(index:number):Entry=>({id:`vector.same.${sameCriteria[index]}`,label:vs.sameNames[index],enabled:index<9||selectedTexts.length>0,action:vectorAction('same',sameCriteria[index])});
+  const sameEntries:Entry[]=[sameEntry(0),sameEntry(1),future(vs.unavailable[3]),...sameCriteria.slice(2,8).map((_,i)=>sameEntry(i+2)),future(vs.unavailable[4]),sameEntry(8),future(vs.unavailable[5]),future(vs.unavailable[6]),null,{id:'command.text',label: {ja:'テキスト',en:'Text','zh-CN':'文本'}[locale],enabled:false},...sameCriteria.slice(9).map((_,i)=>sameEntry(i+9))];
+  const savedKey=(name:string)=>{let hash=0xcbf29ce484222325n;for(const byte of new TextEncoder().encode(name)){hash=BigInt.asUintN(64,(hash^BigInt(byte))*0x100000001b3n);}return hash.toString(16);};
   const vectorMenus:Entry[]=[
-    {label:t.selectAll,enabled:vectorReady&&hasVectors,shortcut:'CmdOrCtrl+A',action:vectorAction('all')},
-    {label:vs.artboard,enabled:vectorReady&&hasVectors,shortcut:'CmdOrCtrl+Alt+A',action:vectorAction('artboard')},
-    {label:t.deselect,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Shift+A',action:vectorAction('deselect')},
-    {label:vs.reselect,enabled:vectorReady&&doc.canReselectVectors,shortcut:'CmdOrCtrl+6',action:vectorAction('reselect')},
-    {label:t.invert,enabled:vectorReady&&hasVectors,action:vectorAction('invert')},null,
-    {label:vs.above,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+]',action:vectorAction('above')},
-    {label:vs.below,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+[',action:vectorAction('below')},null,
-    {label:vs.same,enabled:vectorReady&&selectedObjects.length>0,children:sameEntries},
-    {label:vs.object,enabled:vectorReady&&hasVectors,children:[{label:vs.objectNames[0],enabled:selectedObjects.length>0,action:vectorAction('object','sameLayers')},future(vs.unavailable[0]),null,future(vs.unavailable[1]),future(vs.unavailable[2]),...objectCriteria.slice(1,3).map((criterion,i)=>({label:vs.objectNames[i+1],action:vectorAction('object',criterion)})),null,...objectCriteria.slice(3).map((criterion,i)=>({label:vs.objectNames[i+3],action:vectorAction('object',criterion)}))]},
+    { id: 'vector.selectAll', label: t.selectAll,enabled:vectorReady&&hasVectors,shortcut:'',action:vectorAction('all')},
+    {id:'vector.artboard',label:vs.artboard,enabled:vectorReady&&hasVectors,shortcut:'CmdOrCtrl+Alt+A',action:vectorAction('artboard')},
+    { id: 'vector.deselect', label: t.deselect,enabled:vectorReady&&selectedObjects.length>0,shortcut:'',action:vectorAction('deselect')},
+    {id:'vector.reselect',label:vs.reselect,enabled:vectorReady&&doc.canReselectVectors,shortcut:'CmdOrCtrl+6',action:vectorAction('reselect')},
+    { id: 'vector.invert', label: t.invert,enabled:vectorReady&&hasVectors,action:vectorAction('invert')},null,
+    {id:'vector.above',label:vs.above,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+]',action:vectorAction('above')},
+    {id:'vector.below',label:vs.below,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+[',action:vectorAction('below')},null,
+    {id:'vector.same',label:vs.same,enabled:vectorReady&&selectedObjects.length>0,children:sameEntries},
+    {id:'vector.object',label:vs.object,enabled:vectorReady&&hasVectors,children:[{id:'vector.object.sameLayers',label:vs.objectNames[0],enabled:selectedObjects.length>0,action:vectorAction('object','sameLayers')},future(vs.unavailable[0]),null,future(vs.unavailable[1]),future(vs.unavailable[2]),...objectCriteria.slice(1,3).map((criterion,i)=>({id:`vector.object.${criterion}`,label:vs.objectNames[i+1],action:vectorAction('object',criterion)})),null,...objectCriteria.slice(3).map((criterion,i)=>({id:`vector.object.${criterion}`,label:vs.objectNames[i+3],action:vectorAction('object',criterion)}))]},
     future(vs.unavailable[7]),null,
-    {label:vs.save,enabled:vectorReady&&selectedObjects.length>0,action:()=>props.onSavedSelections('save')},
-    {label:vs.edit,enabled:vectorReady&&doc.savedVectorSelections.length>0,action:()=>props.onSavedSelections('edit')},
-    {label:vs.update,enabled:vectorReady&&selectedObjects.length>0&&doc.savedVectorSelections.length>0,children:doc.savedVectorSelections.map(item=>({label:item.name,action:vectorAction('update',undefined,item.name)}))},
-    ...(doc.savedVectorSelections.length?[null,...doc.savedVectorSelections.map(item=>({label:item.name,enabled:vectorReady,action:vectorAction('load',undefined,item.name)}))]:[]),
+    {id:'vector.save',label:vs.save,enabled:vectorReady&&selectedObjects.length>0,action:()=>props.onSavedSelections('save')},
+    {id:'vector.edit',label:vs.edit,enabled:vectorReady&&doc.savedVectorSelections.length>0,action:()=>props.onSavedSelections('edit')},
+    {id:'vector.update',label:vs.update,enabled:vectorReady&&selectedObjects.length>0&&doc.savedVectorSelections.length>0,children:doc.savedVectorSelections.map(item=>({id:`savedSelection.update.${savedKey(item.name)}`,label:item.name,action:vectorAction('update',undefined,item.name)}))},
+    ...(doc.savedVectorSelections.length?[null,...doc.savedVectorSelections.map(item=>({id:`savedSelection.load.${savedKey(item.name)}`,label:item.name,enabled:vectorReady,action:vectorAction('load',undefined,item.name)}))]:[]),
   ];
   const names=[...t.names.slice(0,6),vs.title,...t.names.slice(6)];
   const menus: Entry[][] = [
-    [{ label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
-      { label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
-      {label:{ja:'配置…',en:'Place…','zh-CN':'置入…'}[locale],enabled:canFile&&hasDocument&&canEdit,shortcut:'CmdOrCtrl+D',action:props.onPlace},
-      { label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
-      { label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
-      { label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, { label: { ja: '読み込み…', en: 'Import…', 'zh-CN': '导入…' }[locale], enabled: canFile && hasDocument && canEdit, action: props.onImportImage }, { label: t.export, enabled: canFile && hasDocument, action: () => onFile('export') }],
-    [{ label: w.undo, enabled: canHistory && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
-      { label: w.redo, enabled: canHistory && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
-      { label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, { label: t.cut, enabled: canEdit, shortcut: 'CmdOrCtrl+X', action: () => onEdit('cut') }, { label: t.copy, enabled: canEdit, shortcut: 'CmdOrCtrl+C', action: () => onEdit('copy') }, { label: t.paste, enabled: canEdit, shortcut: 'CmdOrCtrl+V', action: () => onEdit('paste') }, null,
-      { label: t.clearLayer, enabled: canEdit && !doc.layers.find(layer => layer.id === doc.layerId)?.locked, action: () => onEdit('clearLayer') }],
-    [{ label: t.colorMode, children: documentModes.map(mode => ({ label: modeLabels[locale][mode], checked: doc.colorMode === mode, enabled: canEdit, action: () => onColorMode(mode) })) },
-      { label: t.bitDepth, children: bitDepths.map(depth => ({ label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
+    [{ id: 'menu.new', label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { id: 'menu.open', label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
+      { id: 'menu.closeDocument', label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
+      {id:'command.place',label: {ja:'配置…',en:'Place…','zh-CN':'置入…'}[locale],enabled:canFile&&hasDocument&&canEdit,shortcut:'CmdOrCtrl+D',action:props.onPlace},
+      { id: 'menu.importSvg', label: t.importSvg, enabled: canFile && hasDocument, action: onImportSvg }, null,
+      { id: 'menu.save', label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
+      { id: 'menu.saveAs', label: w.saveAs + '…', enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+Shift+S', action: () => onFile('saveAs') }, null, {id:'command.import',label: {ja:'読み込み…',en:'Import…', 'zh-CN': '导入…' }[locale], enabled: canFile && hasDocument && canEdit, action: props.onImportImage }, { id: 'menu.export', label: t.export, enabled: canFile && hasDocument, action: () => onFile('export') }],
+    [{ id: 'menu.undo', label: w.undo, enabled: canHistory && doc.canUndo, shortcut: 'CmdOrCtrl+Z', action: () => onEdit('undo') },
+      { id: 'menu.redo', label: w.redo, enabled: canHistory && doc.canRedo, shortcut: 'CmdOrCtrl+Shift+Z', action: () => onEdit('redo') }, null,
+      { id: 'menu.colorSettings', label: t.colorSettings, enabled: hasDocument, action: onColorSettings }, null, { id: 'menu.cut', label: t.cut, enabled: canEdit, shortcut: 'CmdOrCtrl+X', action: () => onEdit('cut') }, { id: 'menu.copy', label: t.copy, enabled: canEdit, shortcut: 'CmdOrCtrl+C', action: () => onEdit('copy') }, { id: 'menu.paste', label: t.paste, enabled: canEdit, shortcut: 'CmdOrCtrl+V', action: () => onEdit('paste') }, null,
+      { id: 'menu.clearLayer', label: t.clearLayer, enabled: canEdit && !doc.layers.find(layer => layer.id === doc.layerId)?.locked, action: () => onEdit('clearLayer') }],
+    [{ id: 'menu.colorMode', label: t.colorMode, children: documentModes.map(mode => ({ id:`menu.colorMode.${mode}`,label: modeLabels[locale][mode], checked: doc.colorMode === mode, enabled: canEdit, action: () => onColorMode(mode) })) },
+      { id: 'menu.bitDepth', label: t.bitDepth, children: bitDepths.map(depth => ({ id:`menu.bitDepth.${depth.value}`,label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
       future(t.imageSize), future(t.canvasSize), future(t.rotate)],
-    [{ label: t.lock, enabled: canEdit && !doc.activeSavedPath, children: [
-      { label: t.lockSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+2', action: () => onEdit('lockSelection') },
-      { label: t.lockArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('lockArtworkAbove') },
-      { label: t.lockOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('lockOtherLayers') },
-    ]}, { label: t.unlockAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasLockedObjects, shortcut: 'CmdOrCtrl+Alt+2', action: () => onEdit('unlockAllObjects') }, null,
-    { label: t.hide, enabled: canEdit && !doc.activeSavedPath, children: [
-      { label: t.hideSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+3', action: () => onEdit('hideSelection') },
-      { label: t.hideArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('hideArtworkAbove') },
-      { label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
-    ]}, { label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
-    {label:{ja:'トリムマークを作成',en:'Create Trim Marks','zh-CN':'创建裁切标记'}[locale],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.length===1&&selectedObjects[0].object.kind==='rectangle'&&!selectedObjects[0].object.locked,action:()=>onEdit('createTrimMarks')}, null,
+    [{ id: 'menu.lock', label: t.lock, enabled: canEdit && !doc.activeSavedPath, children: [
+      { id: 'menu.lockSelection', label: t.lockSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+2', action: () => onEdit('lockSelection') },
+      { id: 'menu.lockArtworkAbove', label: t.lockArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('lockArtworkAbove') },
+      { id: 'menu.lockOtherLayers', label: t.lockOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('lockOtherLayers') },
+    ]}, { id: 'menu.unlockAllObjects', label: t.unlockAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasLockedObjects, shortcut: 'CmdOrCtrl+Alt+2', action: () => onEdit('unlockAllObjects') }, null,
+    { id: 'menu.hide', label: t.hide, enabled: canEdit && !doc.activeSavedPath, children: [
+      { id: 'menu.hideSelection', label: t.hideSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+3', action: () => onEdit('hideSelection') },
+      { id: 'menu.hideArtworkAbove', label: t.hideArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('hideArtworkAbove') },
+      { id: 'menu.hideOtherLayers', label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
+    ]}, { id: 'menu.showAllObjects', label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
+    {id:'command.create-trim-marks',label: {ja:'トリムマークを作成',en:'Create Trim Marks','zh-CN':'创建裁切标记'}[locale],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.length===1&&selectedObjects[0].object.kind==='rectangle'&&!selectedObjects[0].object.locked,action:()=>onEdit('createTrimMarks')}, null,
     { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
-      label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
-    })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { label: t.path, enabled: canEdit, children: [
-      { label: t.pathJoin, enabled: doc.selectedVectorObjects.length >= 1 && doc.selectedVectorObjects.length <= 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
-      { label: t.pathAverage, enabled: selectedObjects.length > 0, action: () => onPathEdit('average') }, null,
-      { label: t.pathOutline, enabled: selectedObjects.length > 0, action: () => onPathEdit('outline') },
-      { label: t.pathOffset, enabled: selectedObjects.length > 0, action: () => onPathEdit('offset') },
-      { label: t.pathReverse, enabled: selectedObjects.length > 0, action: () => onPathEdit('reverse') }, null,
-      { label: t.pathSimplify, enabled: selectedObjects.length > 0, action: () => onPathEdit('simplify') },
-      { label: t.pathSmooth, enabled: selectedObjects.length > 0, action: () => onPathEdit('smooth') },
-      { label: t.pathAddAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('addAnchors') },
-      { label: t.pathRemoveAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('removeAnchors') },
-      { label: t.pathDivideBelow, enabled: selectedObjects.length === 2, action: () => onPathEdit('divideBelow') }, null,
-      { label: t.pathSplitGrid, enabled: selectedObjects.length > 0, action: () => onPathEdit('splitGrid') }, null,
-      { label: t.pathCleanUp, enabled: selectedObjects.length > 0, action: () => onPathEdit('cleanUp') },
+      id:`arrange.${action}`,shortcut:({front:'CmdOrCtrl+Shift+]',forward:'CmdOrCtrl+]',backward:'CmdOrCtrl+[',back:'CmdOrCtrl+Shift+[',moveToLayer:''})[action], label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
+    })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({id:`transform.${action}`,label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { id: 'menu.path', label: t.path, enabled: canEdit, children: [
+      { id: 'menu.pathJoin', label: t.pathJoin, enabled: doc.selectedVectorObjects.length >= 1 && doc.selectedVectorObjects.length <= 2, shortcut: 'CmdOrCtrl+J', action: () => onPathEdit('join') },
+      { id: 'menu.pathAverage', label: t.pathAverage, enabled: selectedObjects.length > 0, action: () => onPathEdit('average') }, null,
+      { id: 'menu.pathOutline', label: t.pathOutline, enabled: selectedObjects.length > 0, action: () => onPathEdit('outline') },
+      { id: 'menu.pathOffset', label: t.pathOffset, enabled: selectedObjects.length > 0, action: () => onPathEdit('offset') },
+      { id: 'menu.pathReverse', label: t.pathReverse, enabled: selectedObjects.length > 0, action: () => onPathEdit('reverse') }, null,
+      { id: 'menu.pathSimplify', label: t.pathSimplify, enabled: selectedObjects.length > 0, action: () => onPathEdit('simplify') },
+      { id: 'menu.pathSmooth', label: t.pathSmooth, enabled: selectedObjects.length > 0, action: () => onPathEdit('smooth') },
+      { id: 'menu.pathAddAnchors', label: t.pathAddAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('addAnchors') },
+      { id: 'menu.pathRemoveAnchors', label: t.pathRemoveAnchors, enabled: selectedObjects.length > 0, action: () => onPathEdit('removeAnchors') },
+      { id: 'menu.pathDivideBelow', label: t.pathDivideBelow, enabled: selectedObjects.length === 2, action: () => onPathEdit('divideBelow') }, null,
+      { id: 'menu.pathSplitGrid', label: t.pathSplitGrid, enabled: selectedObjects.length > 0, action: () => onPathEdit('splitGrid') }, null,
+      { id: 'menu.pathCleanUp', label: t.pathCleanUp, enabled: selectedObjects.length > 0, action: () => onPathEdit('cleanUp') },
     ]}, { label: clip[0], enabled: canEdit, children: [
-      { label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onClipping('create') },
-      { label: clip[2], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('release') },
-      { label: clip[3], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('edit') },
-    ]}, { label: { ja: '複合パス', en: 'Compound Path', 'zh-CN': '复合路径' }[locale], enabled: canEdit, children: [
-      { label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onCompound(false) },
-      { label: clip[2], enabled: selectedObjects.length === 1 && selectedObjects[0].object.kind === 'compound', action: () => props.onCompound(true) },
+      {id:'clipping.create',shortcut:'CmdOrCtrl+7', label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onClipping('create') },
+      {id:'clipping.release',shortcut:'CmdOrCtrl+Alt+7', label: clip[2], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('release') },
+      {id:'clipping.edit', label: clip[3], enabled: selectedObjects.some(({ object }) => object.clippingMask), action: () => props.onClipping('edit') },
+    ]}, {id:'command.compound-path',label: {ja:'複合パス',en:'Compound Path', 'zh-CN': '复合路径' }[locale], enabled: canEdit, children: [
+      {id:'compound.create',shortcut:'CmdOrCtrl+8', label: clip[1], enabled: selectedObjects.length >= 2, action: () => props.onCompound(false) },
+      {id:'compound.release',shortcut:'CmdOrCtrl+Alt+8', label: clip[2], enabled: selectedObjects.length === 1 && selectedObjects[0].object.kind === 'compound', action: () => props.onCompound(true) },
     ]}],
     [future(t.newLayer), future(t.duplicateLayer), future(t.deleteLayer), null,
-      {label:layerGroupLabels[locale].create,enabled:canEdit,action:()=>props.onLayerGroupEdit({action:'createEmpty',name:layerGroupLabels[locale].name})},
-      {label:layerGroupLabels[locale].group,enabled:canEdit&&(doc.layerGroups.selected.some(id=>id!=='layer-1')),action:()=>props.onLayerGroupEdit({action:'create',ids:doc.layerGroups.selected.filter(id=>id!=='layer-1'),name:layerGroupLabels[locale].name})},
-      {label:layerGroupLabels[locale].ungroup,enabled:canEdit&&doc.layerGroups.selected.some(id=>doc.layerGroups.groups.some(g=>g.id===id)),action:()=>{const id=doc.layerGroups.selected.find(id=>doc.layerGroups.groups.some(g=>g.id===id));if(id)props.onLayerGroupEdit({action:'ungroup',id});}},null,
-      { label: t.group, enabled: canGroup, shortcut: 'CmdOrCtrl+G', action: () => onGroup('group') },
-      { label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
-      { label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
-      { label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
-    [{label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText}, null, { label: directionLabels[0], enabled: canEdit && selectedTexts.length > 0 && selectedTexts.every(text => text.editable), children: (['horizontal', 'vertical'] as const).map((mode, index) => ({ label: directionLabels[index + 1], checked: selectedTexts.length > 0 && selectedTexts.every(text => (text.text.writingMode ?? 'horizontal') === mode), action: () => props.onWritingMode(mode) })) }, null, future(t.font), future(t.fontSize), future(t.paragraph)],
-    [{ label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
-      { label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+A', action: () => onEdit('deselect') },
-      { label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
+      {id:'layerGroup.create',label:layerGroupLabels[locale].create,enabled:canEdit,action:()=>props.onLayerGroupEdit({action:'createEmpty',name:layerGroupLabels[locale].name})},
+      {id:'layerGroup.group',label:layerGroupLabels[locale].group,enabled:canEdit&&(doc.layerGroups.selected.some(id=>id!=='layer-1')),action:()=>props.onLayerGroupEdit({action:'create',ids:doc.layerGroups.selected.filter(id=>id!=='layer-1'),name:layerGroupLabels[locale].name})},
+      {id:'layerGroup.ungroup',label:layerGroupLabels[locale].ungroup,enabled:canEdit&&doc.layerGroups.selected.some(id=>doc.layerGroups.groups.some(g=>g.id===id)),action:()=>{const id=doc.layerGroups.selected.find(id=>doc.layerGroups.groups.some(g=>g.id===id));if(id)props.onLayerGroupEdit({action:'ungroup',id});}},null,
+      { id: 'menu.group', label: t.group, enabled: canGroup, shortcut: 'CmdOrCtrl+G', action: () => onGroup('group') },
+      { id: 'menu.ungroup', label: t.ungroup, enabled: canUngroup, shortcut: 'CmdOrCtrl+Shift+G', action: () => onGroup('ungroup') },
+      { id: 'menu.ungroupAll', label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
+      { id: 'menu.showLayer', label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
+    [{id:'command.create-outlines',shortcut:'CmdOrCtrl+Shift+O',label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText}, null, { label: directionLabels[0], enabled: canEdit && selectedTexts.length > 0 && selectedTexts.every(text => text.editable), children: (['horizontal', 'vertical'] as const).map((mode, index) => ({ id:`text.direction.${mode}`,label: directionLabels[index + 1], checked: selectedTexts.length > 0 && selectedTexts.every(text => (text.text.writingMode ?? 'horizontal') === mode), action: () => props.onWritingMode(mode) })) }, null, future(t.font), future(t.fontSize), future(t.paragraph)],
+    [{ id: 'menu.selectAll', label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
+      { id: 'menu.deselect', label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+A', action: () => onEdit('deselect') },
+      { id: 'menu.invert', label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
-    [{ label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
-      { label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
-      { label: common.zoomIn, enabled: canEdit && zoom < MAX_ZOOM - 0.0001, action: () => onZoom(stepZoom(zoom, 1)) },
-      { label: common.zoomOut, enabled: canEdit && zoom > MIN_ZOOM, action: () => onZoom(stepZoom(zoom, -1)) },
-      { label: common.fit, enabled: canEdit, action: () => onZoom(0) }, null,
+    [{id:'command.preview',label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
+      {id:'command.outline',label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
+      {id:'view.zoomIn',shortcut:'CmdOrCtrl+=', label: common.zoomIn, enabled: canEdit && zoom < MAX_ZOOM - 0.0001, action: () => onZoom(stepZoom(zoom, 1)) },
+      {id:'view.zoomOut',shortcut:'CmdOrCtrl+-', label: common.zoomOut, enabled: canEdit && zoom > MIN_ZOOM, action: () => onZoom(stepZoom(zoom, -1)) },
+      {id:'view.fit',shortcut:'CmdOrCtrl+0', label: common.fit, enabled: canEdit, action: () => onZoom(0) }, null,
       {label:guides[0],enabled:canEdit,children:[
-        {label:guides[doc.guides.visible?1:2],shortcut:'CmdOrCtrl+;',action:()=>props.onGuides('visibility')},
-        {label:guides[doc.guides.locked?3:4],shortcut:'CmdOrCtrl+Alt+;',action:()=>props.onGuides('lock')},null,
-        {label:{ja:'すべてのガイドを選択',en:'Select All Guides','zh-CN':'选择所有参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('selectAll')},
-        {label:{ja:'ガイドの選択を解除',en:'Deselect Guides','zh-CN':'取消选择参考线'}[locale],enabled:doc.guides.selected.length>0,action:()=>props.onGuides('deselect')},
-        {label:{ja:'ガイドの選択を反転',en:'Invert Guide Selection','zh-CN':'反选参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('invertSelection')},null,
-        {label:{ja:'ガイド配置',en:'Guide Layout','zh-CN':'参考线布局'}[locale],children:[
-          {label:{ja:'3等分',en:'Thirds','zh-CN':'三等分'}[locale],action:()=>props.onGuides('thirds')},
-          {label:{ja:'4等分',en:'Quarters','zh-CN':'四等分'}[locale],action:()=>props.onGuides('quarters')},
-          {label:{ja:'10%の余白',en:'10% Margins','zh-CN':'10% 边距'}[locale],action:()=>props.onGuides('margins')},null,
-          {label:{ja:'配置を保存…',en:'Save Layout…','zh-CN':'保存布局…'}[locale],enabled:doc.guides.items.length>0,action:()=>props.onGuides('saveLayout')},
-          {label:{ja:'配置を読み込み…',en:'Load Layout…','zh-CN':'加载布局…'}[locale],action:()=>props.onGuides('loadLayout')},
+        {id:'guides.visibility',label:guides[doc.guides.visible?1:2],shortcut:'CmdOrCtrl+;',action:()=>props.onGuides('visibility')},
+        {id:'guides.lock',label:guides[doc.guides.locked?3:4],shortcut:'CmdOrCtrl+Alt+;',action:()=>props.onGuides('lock')},null,
+        {id:'command.select-all-guides',label: {ja:'すべてのガイドを選択',en:'Select All Guides','zh-CN':'选择所有参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('selectAll')},
+        {id:'command.deselect-guides',label: {ja:'ガイドの選択を解除',en:'Deselect Guides','zh-CN':'取消选择参考线'}[locale],enabled:doc.guides.selected.length>0,action:()=>props.onGuides('deselect')},
+        {id:'command.invert-guide-selection',label: {ja:'ガイドの選択を反転',en:'Invert Guide Selection','zh-CN':'反选参考线'}[locale],enabled:doc.guides.visible&&!doc.guides.locked&&doc.guides.items.length>0,action:()=>props.onGuides('invertSelection')},null,
+        {id:'command.guide-layout',label: {ja:'ガイド配置',en:'Guide Layout','zh-CN':'参考线布局'}[locale],children:[
+          {id:'command.thirds',label: {ja:'3等分',en:'Thirds','zh-CN':'三等分'}[locale],action:()=>props.onGuides('thirds')},
+          {id:'command.quarters',label: {ja:'4等分',en:'Quarters','zh-CN':'四等分'}[locale],action:()=>props.onGuides('quarters')},
+          {id:'command.10-margins',label: {ja:'10%の余白',en:'10% Margins','zh-CN':'10% 边距'}[locale],action:()=>props.onGuides('margins')},null,
+          {id:'command.save-layout',label: {ja:'配置を保存…',en:'Save Layout…','zh-CN':'保存布局…'}[locale],enabled:doc.guides.items.length>0,action:()=>props.onGuides('saveLayout')},
+          {id:'command.load-layout',label: {ja:'配置を読み込み…',en:'Load Layout…','zh-CN':'加载布局…'}[locale],action:()=>props.onGuides('loadLayout')},
         ]},null,
-        {label:guides[5],enabled:selectedObjects.some(({object,layer})=>layer.kind==='vector'&&!layer.locked&&object.kind!=='text'),shortcut:'CmdOrCtrl+5',action:()=>props.onGuides('make')},
-        {label:guides[6],enabled:!doc.guides.locked&&doc.guides.selected.length>0,shortcut:'CmdOrCtrl+Alt+5',action:()=>props.onGuides('release')},
-        {label:guides[7],enabled:doc.guides.items.length>0,action:()=>props.onGuides('clear')},null,
-        {label:{ja:'ガイドにスナップ',en:'Snap to Guides','zh-CN':'对齐参考线'}[locale],checked:doc.guides.snap,action:()=>props.onGuides('snap')},
+        {id:'guides.make',label:guides[5],enabled:selectedObjects.some(({object,layer})=>layer.kind==='vector'&&!layer.locked&&object.kind!=='text'),shortcut:'CmdOrCtrl+5',action:()=>props.onGuides('make')},
+        {id:'guides.release',label:guides[6],enabled:!doc.guides.locked&&doc.guides.selected.length>0,shortcut:'CmdOrCtrl+Alt+5',action:()=>props.onGuides('release')},
+        {id:'guides.clear',label:guides[7],enabled:doc.guides.items.length>0,action:()=>props.onGuides('clear')},null,
+        {id:'command.snap-to-guides',label: {ja:'ガイドにスナップ',en:'Snap to Guides','zh-CN':'对齐参考线'}[locale],checked:doc.guides.snap,action:()=>props.onGuides('snap')},
       ]}],
     [future(t.managePlugins), future(t.browsePlugins)],
-    [{ label: { ja: '新規ウインドウ', en: 'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { label: w.panels, checked: panels, action: onPanels }, { label: t.resetWorkspace, action: onReset }],
-    [{ label: 'LumaPaint 0.1.0' }, null, { label: t.guide }, { label: t.drawHint }, { label: t.saveHint }, { label: t.recoveryHint }],
+    [{id:'command.new-window',label: {ja:'新規ウインドウ',en:'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { id: 'menu.panels', label: w.panels, checked: panels, action: onPanels }, { id: 'menu.resetWorkspace', label: t.resetWorkspace, action: onReset }],
+    [{ label: 'LumaPaint 0.1.0' }, null, { id: 'menu.guide', label: t.guide }, { id: 'menu.drawHint', label: t.drawHint }, { id: 'menu.saveHint', label: t.saveHint }, { id: 'menu.recoveryHint', label: t.recoveryHint }],
   ];
   menus.splice(6,0,vectorMenus);
+  menus[1].push(null,{id:'shortcuts.edit',label:shortcutLabels[locale].title+'…',shortcut:'CmdOrCtrl+Alt+Shift+K',action:props.onShortcuts});
+  const shortcutState=useShortcuts();
+  const commands:Command[]=[];
+  const collect=(entries:Entry[],category:string,path:string,parentEnabled=true)=>entries.forEach((entry,index)=>{
+    if(!entry)return;const id=entry.id??`${path}.${index}`;
+    if(entry.children)collect(entry.children,`${category} › ${entry.label}`,id,parentEnabled&&entry.enabled!==false);
+    else if(entry.action&&!entry.planned){
+      const command={id,label:entry.label,category,defaultKey:entry.shortcut?keyFromAccelerator(entry.shortcut):'',enabled:parentEnabled&&entry.enabled!==false,action:entry.action};
+      commands.push(command);entry.shortcut=accelerator(binding(shortcutState.settings,command));
+    }
+  });
+  menus.forEach((entries,index)=>collect(entries,names[index],`menu.${index}`));
+  useShortcutCommands('menus',commands);
+
   const [open, setOpen] = useState<number | null>(null);
   const [focused, setFocused] = useState(0);
   const [position, setPosition] = useState({ left: 0, top: 0 });
@@ -310,7 +328,7 @@ export function WorkspaceMenu(props: Props) {
       </div> : <button key={index} role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={entry.checked} aria-disabled={!entry.action || entry.enabled === false} tabIndex={-1}
           onClick={() => { if (!entry.action || entry.enabled === false) return; close(); entry.action(); }}>
           <span className="menu-check" aria-hidden="true">{entry.checked ? '✓' : ''}</span><span>{entry.label}</span>
-          {entry.planned ? <small>{t.unavailable}</small> : entry.shortcut && <kbd>{entry.shortcut.replace('CmdOrCtrl+', /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+').replace('Shift+', '⇧')}</kbd>}
+          {entry.planned ? <small>{t.unavailable}</small> : entry.shortcut && <kbd>{displayKey(keyFromAccelerator(entry.shortcut))}</kbd>}
         </button>)}
     </div>, document.body)}
   </>;

@@ -437,6 +437,55 @@ pub async fn create_screentone_layer(
 }
 
 #[tauri::command]
+pub async fn create_layer_mask(
+    window: tauri::WebviewWindow,
+    id: String,
+    kind: lumapaint_core::layer_mask::MaskKind,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let job = on_main(window.clone(), move || {
+            platform::prepare_layer_mask(id, kind)
+        })
+        .await?;
+        let job = crate::diagnostic_jobs::spawn_blocking(move || platform::render_layer_mask(job))
+            .await
+            .map_err(|e| e.to_string())??;
+        on_main(window, move || platform::commit_layer_mask(job)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, kind);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn transform_layer_mask(
+    window: tauri::WebviewWindow,
+    id: String,
+    matrix: [f32; 6],
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let job = on_main(window.clone(), move || {
+            platform::prepare_mask_transform(id, matrix)
+        })
+        .await?;
+        let job =
+            crate::diagnostic_jobs::spawn_blocking(move || platform::render_mask_transform(job))
+                .await
+                .map_err(|e| e.to_string())??;
+        on_main(window, move || platform::commit_mask_transform(job)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, matrix);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
 pub async fn set_layer_effects(
     window: tauri::WebviewWindow,
     id: String,
@@ -499,6 +548,37 @@ pub async fn delete_layer(
     {
         let _ = (window, id);
         Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+#[tauri::command]
+pub async fn select_channel(
+    window: tauri::WebviewWindow,
+    channel: u32,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::select_channel(channel)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, channel);
+        Err("Native editing is unavailable".into())
+    }
+}
+#[tauri::command]
+pub async fn select_layer_target(
+    window: tauri::WebviewWindow,
+    id: String,
+    target: lumapaint_core::layer_mask::LayerEditTarget,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::select_layer_target(id, target)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, target);
+        Err("Native editing is unavailable".into())
     }
 }
 #[tauri::command]

@@ -53,7 +53,91 @@ impl GlyphRun {
             tree,
             &mut result.glyphs,
         )?;
-        (!result.glyphs.is_empty()).then_some(result)
+        (!result.glyphs.is_empty() && result.clipped_ink_is_disjoint()).then_some(result)
+    }
+    pub(crate) fn ink_fits_viewport(&self) -> bool {
+        self.glyphs.iter().all(|g| {
+            let size = g.key.mask_size();
+            g.origin[0] + 1. >= 0.
+                && g.origin[1] + 1. >= 0.
+                && g.origin[0] + size[0] as f32 - 1. <= self.size[0] as f32
+                && g.origin[1] + size[1] as f32 - 1. <= self.size[1] as f32
+        })
+    }
+    /// Per-glyph clipping is safe only when affected ink cannot overlap another
+    /// glyph. Also used after adding root canvas masks to an existing run.
+    pub(crate) fn clipped_ink_is_disjoint(&self) -> bool {
+        let (eligible, comparisons) = self.check_clipped_ink();
+        crate::performance::count("glyph_clip_overlap_comparisons", comparisons);
+        eligible
+    }
+    fn check_clipped_ink(&self) -> (bool, u64) {
+        if !self.glyphs.iter().any(|g| g.key.is_clipped()) {
+            return (true, 0);
+        }
+        // Fractional group clipping occurs after glyph composition. Baking it
+        // per glyph is not equivalent at overlapping boundary ink. Use a bounded
+        // grid rather than a full pairwise scan; conservatively retain fallback.
+        #[derive(Default)]
+        struct Cell {
+            all: Vec<usize>,
+            clipped: Vec<usize>,
+        }
+        let mut grid: std::collections::HashMap<(i32, i32), Cell> = Default::default();
+        let mut comparisons = 0;
+        let mut boxes: Vec<[f32; 4]> = Vec::new();
+        let mut references = 0;
+        for g in &self.glyphs {
+            let size = g.key.mask_size();
+            let a = [
+                g.origin[0] + 1.,
+                g.origin[1] + 1.,
+                g.origin[0] + size[0] as f32 - 1.,
+                g.origin[1] + size[1] as f32 - 1.,
+            ];
+            for y in (a[1] / 64.).floor() as i32..=(a[3] / 64.).floor() as i32 {
+                for x in (a[0] / 64.).floor() as i32..=(a[2] / 64.).floor() as i32 {
+                    let cell = grid.entry((x, y)).or_default();
+                    // An unclipped glyph only needs to compare with earlier
+                    // clipped glyphs; other unclipped pairs cannot cause fallback.
+                    let candidates = if g.key.is_clipped() {
+                        &cell.all
+                    } else {
+                        &cell.clipped
+                    };
+                    for &index in candidates {
+                        comparisons += 1;
+                        if comparisons > 400_000 {
+                            crate::performance::count("glyph_clip_overlap_budget_fallback", 1);
+                            return (false, comparisons);
+                        }
+                        let b = boxes[index];
+                        if (g.key.is_clipped() || self.glyphs[index].key.is_clipped())
+                            && a[0] < b[2]
+                            && b[0] < a[2]
+                            && a[1] < b[3]
+                            && b[1] < a[3]
+                        {
+                            crate::performance::count(
+                                "glyph_run_ineligible.overlapping_ink_bounds",
+                                1,
+                            );
+                            return (false, comparisons);
+                        }
+                    }
+                    references += 1;
+                    if references > 400_000 {
+                        return (false, comparisons);
+                    }
+                    cell.all.push(boxes.len());
+                    if g.key.is_clipped() {
+                        cell.clipped.push(boxes.len());
+                    }
+                }
+            }
+            boxes.push(a);
+        }
+        (true, comparisons)
     }
 }
 fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -75,7 +159,12 @@ fn rectangle_clip(clip: &usvg::ClipPath, transform: tiny_skia::Transform) -> Opt
     let usvg::Node::Path(p) = &root.children()[0] else {
         return None;
     };
-    if !p.is_visible() || p.fill().is_none() {
+    if !p.is_visible()
+        || p.fill().is_none()
+        || p.rendering_mode() != usvg::ShapeRendering::GeometricPrecision
+        || p.fill()
+            .is_some_and(|f| f.opacity().get() != 1. || !matches!(f.paint(), usvg::Paint::Color(_)))
+    {
         return None;
     }
     let ts = transform
@@ -114,12 +203,9 @@ fn rectangle_clip(clip: &usvg::ClipPath, transform: tiny_skia::Transform) -> Opt
             return None;
         }
     }
-    // Fractional clip coverage needs a mask; retain compatibility for now.
+    // Fractional coverage is baked into boundary glyph masks below.
     let bounds = [b.left(), b.top(), b.right(), b.bottom()];
-    bounds
-        .iter()
-        .all(|v| v.is_finite() && v.fract() == 0.)
-        .then_some(bounds)
+    bounds.iter().all(|v| v.is_finite()).then_some(bounds)
 }
 fn collect(
     group: &usvg::Group,
@@ -137,7 +223,12 @@ fn collect(
     }
     let transform = parent.pre_concat(group.transform());
     let clip = if let Some(c) = group.clip_path() {
-        intersect(clip, rectangle_clip(c, transform)?)
+        let next = rectangle_clip(c, transform)?;
+        // Multiplying two fractional masks differs from intersecting rectangles.
+        if clip.iter().any(|v| v.fract() != 0.) && next.iter().any(|v| v.fract() != 0.) {
+            return None;
+        }
+        intersect(clip, next)
     } else {
         clip
     };
@@ -194,7 +285,10 @@ fn collect(
                         let Some(path) = path else {
                             continue;
                         };
-                        let ts = transform.pre_concat(glyph.outline_transform());
+                        // Match the compatibility renderer's two-stage transform:
+                        // layout font units first, then apply the outer SVG transform.
+                        let path = path.transform(glyph.outline_transform())?;
+                        let ts = transform;
                         let bounds = path.clone().transform(ts)?.bounds();
                         let origin = [bounds.left().floor() - 1., bounds.top().floor() - 1.];
                         let end = [bounds.right().ceil() + 1., bounds.bottom().ceil() + 1.];
@@ -214,12 +308,21 @@ fn collect(
                         }
                         let local = tiny_skia::Transform::from_translate(-origin[0], -origin[1])
                             .pre_concat(ts);
-                        let key = GlyphKey::new(
+                        let mut key = GlyphKey::new(
                             &path,
                             local,
                             [(end[0] - origin[0]) as u32, (end[1] - origin[1]) as u32],
                             fill.rule() == usvg::FillRule::EvenOdd,
                         )?;
+                        let fractional = clip.iter().any(|v| v.fract() != 0.);
+                        if fractional {
+                            key = key.with_clip([
+                                clip[0] - origin[0],
+                                clip[1] - origin[1],
+                                clip[2] - origin[0],
+                                clip[3] - origin[1],
+                            ])?;
+                        }
                         if out.len() >= 16384 {
                             return None;
                         }
@@ -227,7 +330,16 @@ fn collect(
                             key,
                             origin,
                             color: rgba,
-                            clip,
+                            clip: if fractional {
+                                [
+                                    clip[0].floor(),
+                                    clip[1].floor(),
+                                    clip[2].ceil(),
+                                    clip[3].ceil(),
+                                ]
+                            } else {
+                                clip
+                            },
                         });
                     }
                 }
@@ -237,4 +349,90 @@ fn collect(
         }
     }
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unclipped_pairs_are_not_compared_when_one_frame_boundary_is_present() {
+        let path =
+            tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(1., 1., 4., 4.).unwrap());
+        let key = GlyphKey::new(&path, tiny_skia::Transform::identity(), [6, 6], false).unwrap();
+        let mut run = GlyphRun {
+            glyphs: (0..4096)
+                .map(|_| GlyphPlacement {
+                    key: key.clone(),
+                    origin: [0., 0.],
+                    color: [1.; 4],
+                    clip: [0., 0., 64., 64.],
+                })
+                .collect(),
+            size: [64, 64],
+        };
+        assert_eq!(run.check_clipped_ink(), (true, 0));
+        let mut boundary = key.clone();
+        boundary.set_canvas_clip([1.5, 0., 6., 6.]).unwrap();
+        run.glyphs.push(GlyphPlacement {
+            key: boundary,
+            origin: [20., 0.],
+            color: [1.; 4],
+            clip: [0., 0., 64., 64.],
+        });
+        // Previously every unclipped pair in the cell was inspected (8,386,560
+        // comparisons), although only 4,096 boundary pairs are relevant.
+        assert_eq!(run.check_clipped_ink(), (true, 4096));
+        run.glyphs.last_mut().unwrap().origin = [2., 0.];
+        assert!(!run.check_clipped_ink().0);
+    }
+    #[test]
+    fn adversarial_empty_ink_candidates_have_a_comparison_budget() {
+        let path =
+            tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(0., 0., 1., 1.).unwrap());
+        let key = GlyphKey::new(&path, tiny_skia::Transform::identity(), [2, 2], false)
+            .unwrap()
+            .with_clip([0.5, 0., 2., 2.])
+            .unwrap();
+        let run = GlyphRun {
+            glyphs: (0..1000)
+                .map(|_| GlyphPlacement {
+                    key: key.clone(),
+                    origin: [0., 0.],
+                    color: [1.; 4],
+                    clip: [0., 0., 64., 64.],
+                })
+                .collect(),
+            size: [64, 64],
+        };
+        assert_eq!(run.check_clipped_ink(), (false, 400001));
+    }
+    #[test]
+    fn adding_canvas_clip_rechecks_overlapping_ink() {
+        let path =
+            tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(1., 1., 4., 4.).unwrap());
+        let key = GlyphKey::new(&path, tiny_skia::Transform::identity(), [6, 6], false).unwrap();
+        let mut run = GlyphRun {
+            glyphs: [0., 2.]
+                .into_iter()
+                .map(|x| GlyphPlacement {
+                    key: key.clone(),
+                    origin: [x, 0.],
+                    color: [1.; 4],
+                    clip: [0., 0., 16., 16.],
+                })
+                .collect(),
+            size: [16, 16],
+        };
+        assert!(run.clipped_ink_is_disjoint());
+        assert!(run.ink_fits_viewport());
+        run.glyphs[0]
+            .key
+            .set_canvas_clip([1.5, 0., 16., 16.])
+            .unwrap();
+        assert!(!run.clipped_ink_is_disjoint());
+        run.glyphs[1].origin = [8., 0.];
+        assert!(run.clipped_ink_is_disjoint());
+        run.glyphs[1].origin = [8., 12.];
+        assert!(!run.ink_fits_viewport());
+    }
 }

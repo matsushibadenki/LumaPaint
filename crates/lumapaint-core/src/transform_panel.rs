@@ -326,9 +326,11 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data / ベクターデータが上限を超えています / 矢量数据超过上限".into());
         }
+        let mask_updates = self.linked_mask_updates(&layers)?;
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers = layers;
+        self.layer_effects.extend(mask_updates);
         self.record_vector_edit(before);
         self.revision += 1;
         Ok(())

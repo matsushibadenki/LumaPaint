@@ -143,7 +143,7 @@ impl WorkspaceCache {
         for layer in &layers {
             let effects = document.layer_effects(&layer.id);
             let opacity = layer.effective_opacity();
-            let deferred = effects.enabled
+            let deferred = effects.active()
                 && gpu_limits.is_some_and(|limits| {
                     super::effects_display::layout((size[0], size[1]), limits).is_some()
                 });
@@ -190,7 +190,7 @@ impl WorkspaceCache {
                 let mut pixels = old.pixels;
                 if !deferred {
                     pixels.copy_from_slice(&source_pixels);
-                    if effects.screentone.is_some() {
+                    if effects.screentone.is_some() || effects.mask.is_some() {
                         crate::screentone::apply(&mut pixels, &effects, size[0], rect);
                     } else {
                         crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
@@ -254,7 +254,7 @@ impl WorkspaceCache {
                 )?;
                 let mut pixels = source_pixels.clone();
                 if !deferred {
-                    if effects.screentone.is_some() {
+                    if effects.screentone.is_some() || effects.mask.is_some() {
                         crate::screentone::apply(&mut pixels, &effects, size[0], rect);
                     } else {
                         crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);

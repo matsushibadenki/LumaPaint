@@ -1,3 +1,7 @@
+import {ShortcutDialog} from './components/ShortcutDialog';
+import {useShortcutCommands,useShortcutInputBlocked,useShortcuts,keyFromAccelerator,commandShortcut} from './shortcuts';
+import {toolCommands} from './tool-shortcuts';
+import { LayerMaskDialog } from './components/LayerMaskDialog';
 import {SavedSelectionsDialog} from './components/SavedSelectionsDialog';
 import {vectorSelectionAction} from './bridge';
 import {RetouchControls,retouchTools,isRetouch} from './components/RetouchControls';
@@ -8,7 +12,6 @@ import { setLayerEffects, setRasterBlendMode, type RasterBlendMode } from './bri
 import { invoke } from '@tauri-apps/api/core';
 import { DocumentTabMenu } from './components/DocumentTabMenu';
 import { moveDocumentToWindow, openDocumentView } from './bridge';
-import {layerGroupLabels} from './components/layer-group-labels';
 import { GuideOptions } from './components/GuideOptions';
 import { editGuides,editLayerGroups } from './bridge';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from './measurement-units';
@@ -31,7 +34,7 @@ import { TransformDialog, transformLabels } from './components/TransformDialog';
 import { transformObjects, type TransformAction } from './bridge';
 import { clippingPath, compoundPath, outlineText, outlineView, setTextWritingMode } from './bridge';
 import { IconToolMenu, type IconToolChoice } from './components/IconToolMenu';
-import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, addVectorLayer } from './bridge';
+import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, selectLayerTarget, selectChannel, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom, newEditorWindow } from './bridge';
@@ -92,6 +95,7 @@ export function Workspace() {
   const [zoomTool, setZoomTool] = useState<ZoomTool | null>(null);
   const [lastZoomTool, setLastZoomTool] = useState<ZoomTool>('zoomIn');
   const [transformTool, setTransformTool] = useState<'vectorScale' | 'vectorRotate' | 'vectorSelect' | 'vectorDirectSelect' | null>(null);
+  const [layerMaskTarget,setLayerMaskTarget]=useState<{id:string;documentId:number|null}|null>(null);
   const [savedSelectionDialog,setSavedSelectionDialog]=useState<'save'|'edit'|null>(null);
   const [selectionTool, setSelectionTool] = useState<SelectionTool | null>(null);
   const canvasTool: CanvasTool = cropTool ? 'crop' : gradientTool ? 'gradient' : sampling ? 'eyedropper' : zoomTool ?? transformTool ?? selectionTool ?? toolState.tools[toolMode];
@@ -166,8 +170,9 @@ export function Workspace() {
     if (next > 0) setZoom(next);
     setZoomCommand(current => ({ zoom: next, revision: current.revision + 1 }));
   }, []);
-  const [channel, setChannel] = useState<DisplayChannel>(0);
-  useEffect(() => setChannel(0), [activeDocumentId, documentState.colorMode]);
+  const channel: DisplayChannel = documentState.editingChannel ?? 0;
+  const [shortcutsOpen,setShortcutsOpen]=useState(false);
+  useShortcuts();
   const [panels, setPanels] = useState(() => window.innerWidth > 720);
   const [inlineText, setInlineText] = useState<TextSettings | null>(null);
   const textSessionActive = useRef(false);
@@ -523,6 +528,17 @@ export function Workspace() {
     finally { setBusy(false); }
   }, [ready, busy, fileBusy, updateDocument]);
 
+  useShortcutInputBlocked(placingImage||mediaBrowserOpen||toneStudioOpen||settingsOpen||colorSettingsOpen||newDocumentOpen||importImageOpen||directControlOpen||!!transformAction||shortcutsOpen||!!toolSettings||!!layerMaskTarget||!!savedSelectionDialog);
+  useShortcutCommands('tools',[
+    ...toolCommands(locale,documentEditable&&!placingImage&&!shortcutsOpen,tool=>{setTool(tool);if(tool==='text')showTextPanel();if(tool==='gradient')showGradientPanel();}),
+    {id:'layer.addPaint',label:{ja:'新規ピクセルレイヤー',en:'New Pixel Layer','zh-CN':'新建像素图层'}[locale],category:t.layers,defaultKey:'Primary+Alt+Shift+KeyN',enabled:documentEditable,action:()=>void createLayer('paint')},
+    {id:'layer.addVector',label:{ja:'新規ベクターレイヤー',en:'New Vector Layer','zh-CN':'新建矢量图层'}[locale],category:t.layers,defaultKey:'Primary+Alt+Shift+KeyV',enabled:documentEditable,action:()=>void createLayer('vector')},
+    {id:'layer.mask',label:{ja:'レイヤーマスク設定',en:'Layer Mask Settings','zh-CN':'图层蒙版设置'}[locale],category:t.layers,defaultKey:'Primary+Alt+Shift+KeyM',enabled:documentEditable,action:()=>setLayerMaskTarget({id:documentState.layerId,documentId:activeDocumentId})},
+    ...([0,1,2,3,4] as const).map(value=>({id:`channel.${value}`,label:({ja:['合成','レッド','グリーン','ブルー','アルファ'],en:['Composite','Red','Green','Blue','Alpha'],'zh-CN':['复合','红','绿','蓝','Alpha']}[locale])[value],category:t.channels,defaultKey:`Primary+Alt+Shift+Digit${value+1}`,enabled:documentEditable&&(documentState.layerEditTarget!=='mask'||value===0||value===4),action:()=>{void selectChannel(value).then(updateDocument).catch(e=>setError(String(e)));}})),
+    {id:'color.swap' ,label:t.swapColors,category:t.color,defaultKey:keyFromAccelerator('X'),enabled:documentAvailable&&!placingImage,action:swapColors},
+    {id:'app.settings',label:{ja:'環境設定',en:'Preferences','zh-CN':'首选项'}[locale],category:'LumaPaint',defaultKey:keyFromAccelerator('CmdOrCtrl+,'),action:()=>setSettingsOpen(true)},
+  ]);
+
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
       if (placingImage) {
@@ -532,47 +548,10 @@ export function Workspace() {
       }
       if (mediaBrowserOpen || toneStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
-      if ((event.metaKey || event.ctrlKey) && ['s', 'o', 'w', 'n', 'd'].includes(event.key.toLowerCase())) {
-        event.preventDefault();
-        const key = event.key.toLowerCase();
-        if ((event.metaKey || event.ctrlKey) && ['c', 'x', 'v'].includes(key)) { event.preventDefault(); void edit(key === 'c' ? 'copy' : key === 'x' ? 'cut' : 'paste'); return; }
-        if(key==='d'){void placeLinkedImage();return;}
-        if (key === 'n' && event.shiftKey) void newEditorWindow().catch(cause => setError(String(cause)));
-        else if (key === 'n') void documentAction('new');
-        else if (key === 'w' && activeDocumentId !== null) void documentAction('close', activeDocumentId);
-        else void file(key === 'o' ? 'open' : event.shiftKey ? 'saveAs' : 'save');
-        return;
-      }
       const target = event.target as HTMLElement;
       if (directControlOpen || target.closest('dialog[open]')) return;
       if (target.closest('input, textarea, select, [contenteditable=true]')) return;
-      if (documentAvailable && !settingsOpen && !colorSettingsOpen) {
-        const key = event.key.toLowerCase();
-        if ((event.metaKey || event.ctrlKey) && (event.code==='Digit5'||event.key===';')) {
-          event.preventDefault();void editGuides({action:event.code==='Digit5'?(event.altKey?'release':'make'):(event.altKey?'lock':'visibility')}).then(updateDocument).catch(e=>setError(String(e)));return;
-        }
-        if ((event.metaKey || event.ctrlKey) && event.code === 'Digit2') {
-          event.preventDefault(); void edit(event.altKey ? 'unlockAllObjects' : 'lockSelection'); return;
-        }
-        if ((event.metaKey || event.ctrlKey) && event.code === 'Digit3') {
-          event.preventDefault(); void edit(event.altKey ? 'showAllObjects' : 'hideSelection'); return;
-        }
-        if ((event.metaKey || event.ctrlKey) && key === 'g' && target.closest('.layer-panel')) {
-          event.preventDefault();
-          const id=documentState.layerGroups.selected.find(id=>documentState.layerGroups.groups.some(g=>g.id===id));
-          if(event.shiftKey){if(id)void editLayerGroups({action:'ungroup',id}).then(updateDocument).catch(cause=>setError(String(cause)));}
-          else void editLayerGroups({action:'create',ids:documentState.layerGroups.selected.filter(id=>id!=='layer-1'),name:layerGroupLabels[locale].name}).then(updateDocument).catch(cause=>setError(String(cause)));
-          return;
-        }
-        if ((event.metaKey || event.ctrlKey) && key === 'g') {
-          event.preventDefault(); void changeGroup(event.shiftKey ? 'ungroup' : 'group');
-          return;
-        }
-        if ((event.metaKey||event.ctrlKey)&&(event.code==='Digit6'||event.altKey&&['KeyA','BracketLeft','BracketRight'].includes(event.code))){event.preventDefault();void vectorSelectionAction({action:event.code==='Digit6'?'reselect':event.code==='KeyA'?'artboard':event.code==='BracketRight'?'above':'below'}).then(updateDocument).catch(e=>setError(String(e)));return;}
-        if ((event.metaKey || event.ctrlKey) && (key === 'a' || (key === 'i' && event.shiftKey))) {
-          event.preventDefault(); void edit(key === 'a' ? event.shiftKey?'deselect':'selectAll' : 'invertSelection');
-          return;
-        }
+      if (documentAvailable && !settingsOpen && !colorSettingsOpen && !shortcutsOpen) {
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
           if (!inlineText && documentEditable && documentState.guides.selected.length>0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) {
             event.preventDefault();const amount=documentState.guides.nudge[event.shiftKey?1:0];
@@ -583,34 +562,14 @@ export function Workspace() {
             const id=documentState.layerGroups.selected.find(id=>documentState.layerGroups.groups.some(g=>g.id===id));
             if(id){event.preventDefault();void editLayerGroups({action:'delete',id}).then(updateDocument).catch(cause=>setError(String(cause)));return;}
           }
-          if (!inlineText && (event.key === 'Delete' || event.key === 'Backspace')) {
-            event.preventDefault(); void edit('deleteSelectedObjects'); return;
-          }
-          if (key === 'f') {event.preventDefault();setTool(event.shiftKey?'imageFrameEllipse':'imageFrameRectangle');}
-          if (key === 'c') {event.preventDefault();setTool('crop');}
-          if (key === 'g') {event.preventDefault();setTool(event.shiftKey?'paintBucket':'gradient');if(!event.shiftKey)showGradientPanel();}
-          if (key === 'i') { event.preventDefault(); setTool('eyedropper'); }
-          if (key === 'e') { event.preventDefault(); setTool('eraser'); }
-          if(key==='l'){event.preventDefault();const index=pathSelectionTools.indexOf(canvasTool as typeof pathSelectionTools[number]);setTool(event.shiftKey?pathSelectionTools[(index+1)%pathSelectionTools.length]:'lasso');}
-          else if(key==='u'){event.preventDefault();const index=retouchTools.indexOf(canvasTool as typeof retouchTools[number]);setTool(event.shiftKey?retouchTools[(index+1)%retouchTools.length]:'blur');}
-          else if (key === 's') { event.preventDefault(); setTool('cloneStamp'); }
-          else if (key === 'b' || key === 'm') { event.preventDefault(); setTool(key === 'b' ? 'brush' : event.shiftKey ? 'ellipse' : 'rectangle'); }
-          if (key === 'a' || key === 'v' || key === 'p' || key === 'n' || key === 'u') {
-            event.preventDefault();
-            setTool(key === 'a' ? 'vectorDirectSelect' : key === 'v' ? 'vectorSelect' : key === 'p' ? 'vectorPen' : key === 'n' ? 'vectorPencil' : event.shiftKey ? 'vectorEllipse' : 'vectorRectangle');
-          }
-          if (key === 't') { event.preventDefault(); setTool('text'); showTextPanel(); }
-          if (key === 'x' && !event.repeat && !event.isComposing) { event.preventDefault(); swapColors(); }
-          if (key === 'escape') { event.preventDefault(); void edit('deselect'); }
+          if (!inlineText && (event.key==='Delete'||event.key==='Backspace')) {event.preventDefault();void edit('deleteSelectedObjects');return;}
+          if(event.key==='Escape'){event.preventDefault();void edit('deselect');}
         }
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
-        event.preventDefault(); void edit(event.shiftKey ? 'redo' : 'undo');
       }
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [shortcutsOpen, documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -627,10 +586,12 @@ export function Workspace() {
     return () => { void listener.then(unlisten => unlisten()); };
   }, []);
 
+  useEffect(()=>{setLayerMaskTarget(null);},[activeDocumentId]);
+
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
+      <WorkspaceMenu onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -668,6 +629,8 @@ export function Workspace() {
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
     <main className="editor-layout" inert={toneStudioOpen || mediaBrowserOpen}>
+      {shortcutsOpen && <NativeModal kind="shortcuts" locale={locale} theme={theme} onClose={()=>setShortcutsOpen(false)} onError={setError}><ShortcutDialog locale={locale} onClose={()=>setShortcutsOpen(false)}/></NativeModal>}
+      {layerMaskTarget && layerMaskTarget.documentId===activeDocumentId && <NativeModal kind="layerMask" action={layerMaskTarget.id} locale={locale} theme={theme} onClose={()=>setLayerMaskTarget(null)} onError={setError}><LayerMaskDialog locale={locale} document={documentState} targetId={layerMaskTarget.id} onClose={()=>setLayerMaskTarget(null)} onUpdate={updateDocument}/></NativeModal>}
       {savedSelectionDialog&&<NativeModal kind="vectorSelections" action={savedSelectionDialog} locale={locale} theme={theme} onClose={()=>setSavedSelectionDialog(null)} onError={setError}><SavedSelectionsDialog locale={locale} document={documentState} mode={savedSelectionDialog} onClose={()=>setSavedSelectionDialog(null)} onUpdate={updateDocument}/></NativeModal>}
       {toolSettings && <NativeModal kind="toolSettings" action={toolSettings} locale={locale} theme={theme} onClose={()=>setToolSettings(null)} onError={setError}><ToolSettingsDialog tool={toolSettings} locale={locale} document={documentState} brush={brush} onBrush={setBrush} onZoom={changeZoom} onUpdate={updateDocument} onClose={()=>setToolSettings(null)}/></NativeModal>}
       {directControlOpen && <NativeModal kind="directControls" locale={locale} theme={theme} onClose={()=>setDirectControlOpen(false)} onError={setError}><DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} /></NativeModal>}
@@ -694,14 +657,14 @@ export function Workspace() {
           <VectorShapeToolMenu key="vector-shapes" locale={locale} selected={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse' ? canvasTool : lastVectorShapeTool} active={canvasTool === 'vectorRectangle' || canvasTool === 'vectorEllipse'} enabled={documentEditable} onSelect={setTool} onError={setError} onSettings={openToolSettings} /> :
           item === 'imageFrameRectangle' ? <IconToolMenu key="image-frames" label={t.imageFrames} selected={canvasTool==='imageFrameRectangle'||canvasTool==='imageFrameEllipse'?canvasTool:lastFrameTool} active={canvasTool==='imageFrameRectangle'||canvasTool==='imageFrameEllipse'} enabled={documentEditable} choices={[{id:'imageFrameRectangle',label:t.imageFrameRectangle,icon:'imageFrameRectangle',shortcut:'F'},{id:'imageFrameEllipse',label:t.imageFrameEllipse,icon:'imageFrameEllipse',shortcut:'Shift+F'}]} onSelect={tool=>setTool(tool as CanvasTool)} onError={setError} onSettings={openToolSettings}/> :
           item === 'text' ? <IconToolMenu key="text-tools" label={t.textTool} selected={canvasTool === 'text' || canvasTool === 'textVertical' || (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical') ? canvasTool : lastTextTool} active={canvasTool === 'text' || canvasTool === 'textVertical' || (canvasTool === 'textFrame' || canvasTool === 'textFrameVertical')} enabled={documentEditable} choices={[{ id: 'text', label: t.text, icon: 'text', shortcut: 'T' }, { id: 'textVertical', label: t.textVertical, icon: 'textVertical' }, { id: 'textFrame', label: t.textFrame, icon: 'textFrame' }, { id: 'textFrameVertical', label: t.textFrameVertical, icon: 'textFrameVertical' }]} onSelect={tool => { setTool(tool as CanvasTool); showTextPanel(); }} onError={setError} onSettings={openToolSettings} /> :
-          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={item==='paintBucket'?`${t[item]} (Shift+G)`:t[item]} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={()=>{setTool(item);if(canvasTool===item)openToolSettings(item);}} onDoubleClick={()=>openToolSettings(item)}><Icon name={item} /></button>)}
+          <button key={item} className={`tool-button${canvasTool === item ? ' selected' : ''}`} aria-label={t[item]} title={`${t[item]}${commandShortcut(`tool.${item}`)?` (${commandShortcut(`tool.${item}`)})`:''}`} aria-pressed={canvasTool === item} disabled={!documentEditable} onClick={()=>{setTool(item);if(canvasTool===item)openToolSettings(item);}} onDoubleClick={()=>openToolSettings(item)}><Icon name={item} /></button>)}
         {(toolMode === 'vector' || toolMode === 'layout') && <button className="tool-button" aria-label={t.importVector} title={t.importVector} disabled={!documentEditable || fileBusy} onClick={() => void importSvg()}><Icon name="importVector" /></button>}
         {toolMode === 'animation' && <button className="tool-button" disabled aria-label={`${t.timelineTool} · ${t.toolPlanned}`} title={t.animationHint}><Icon name="timeline" /></button>}
         </div>
         <div className="tool-color-pickers" role="group" aria-label={`${t.foreground} · ${t.background}`}>
           <ColorPickerPopover locale={locale} color={vectorColors?.stroke ?? backgroundColor} label={t.background} noColor={vectorColors ? vectorColors.strokeStatus === 'none' : backgroundNone} onNone={changeBackgroundNone} target="background" onOpen={() => setActiveColor('background')} onChange={changePaintBackground} />
           <ColorPickerPopover locale={locale} color={vectorColors?.fill ?? brush.color} label={t.foreground} noColor={vectorColors ? vectorColors.fillStatus === 'none' : foregroundNone} onNone={changeForegroundNone} onOpen={() => setActiveColor('foreground')} onChange={changePaintForeground} />
-          <button type="button" className="tool-color-swap" onClick={swapColors} title={`${t.swapColors} (X)`} aria-label={t.swapColors}>↔</button>
+          <button type="button" className="tool-color-swap" onClick={swapColors} title={`${t.swapColors}${commandShortcut('color.swap')?` (${commandShortcut('color.swap')})`:''}`} aria-label={t.swapColors}>↔</button>
         </div>
         </div>
       </nav>
@@ -735,9 +698,9 @@ export function Workspace() {
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
           zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentDock>
       </div>
-      {panels && <Inspector onLayerEffects={(id, effects) => { if (!ready || busy || fileBusy) return; setBusy(true); setError(''); void setLayerEffects(id, effects).then(updateDocument).catch(cause => setError(String(cause))).finally(() => setBusy(false)); }} rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={setChannel} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
+      {panels && <Inspector onOpenLayerMask={id=>setLayerMaskTarget(current=>current??{id,documentId:activeDocumentId})} onLayerEffects={(id, effects) => { if (!ready || busy || fileBusy) return; setBusy(true); setError(''); void setLayerEffects(id, effects).then(updateDocument).catch(cause => setError(String(cause))).finally(() => setBusy(false)); }} rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={value => {void selectChannel(value).then(updateDocument).catch(cause=>setError(String(cause)));}} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changePaintForeground} onBackgroundChange={changePaintBackground} foregroundNone={foregroundNone} backgroundNone={backgroundNone} onForegroundNone={changeForegroundNone} onBackgroundNone={changeBackgroundNone} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}
-        onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
+        onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onDocumentSettings={settings => void setDocumentSettings(settings)} onColorMode={mode => void setColorMode(mode)} onBitDepth={depth => void setBitDepth(depth)} onColorProfile={profile => void setColorProfile(profile)} onToggleLayer={id => void setLayerVisibility(id)} onLayerSettings={settings => void setLayerSettings(settings)} onDeleteLayer={id => void removeLayer(id)} onSelectLayerTarget={(id,target) => {void selectLayerTarget(id,target).then(updateDocument).catch(cause=>setError(String(cause)));}} onSelectLayer={id => { void selectLayer(id, true).then(updateDocument).catch(cause => setError(String(cause))); }} onSelectObject={(layerId, objectId) => { void selectLayer(layerId).then(() => selectVectorObjects([objectId])).then(updateDocument).catch(cause => setError(String(cause))); }} onToggleObject={(layerId, objectId, visible) => { void setVectorObjectVisibility(layerId, objectId, visible).then(updateDocument).catch(cause => setError(String(cause))); }} onReorderObjects={(layerId, ids) => { void reorderVectorObjects(layerId, ids).then(updateDocument).catch(cause => setError(String(cause))); }} onAddLayer={() => void createLayer('paint')} onAddVectorLayer={() => void createLayer('vector')} onReorderLayer={ids => void moveLayer(ids)} />}
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {mediaBrowserOpen&&<Suspense fallback={null}><MediaBrowser locale={locale} onClose={closeMediaBrowser}/></Suspense>}

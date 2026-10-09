@@ -1,0 +1,27 @@
+.layer-mask-dialog { box-sizing: border-box; width: min(460px, calc(100dvw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid var(--color-rule); border-radius: 8px; background: var(--color-panel); color: var(--color-ink); box-shadow: 0 16px 48px #0005; overflow: hidden; }
+.layer-mask-dialog::backdrop { background: #0006; }
+.layer-mask-dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 34px); min-height: 0; }
+.layer-mask-dialog header { padding: 18px 20px 14px; border-bottom: 1px solid var(--color-rule); flex-shrink: 0; }
+.layer-mask-dialog h2 { margin: 0; font-size: 15px; line-height: 1.5; }
+.layer-mask-dialog header p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; color: var(--color-muted); }
+.layer-mask-dialog-body { flex: 1; overflow: auto; overscroll-behavior: contain; min-height: 0; padding: 16px 20px; }
+.layer-mask-dialog .layer-mask-controls { margin: 0; padding: 0; border: 0; gap: 12px; }
+.layer-mask-dialog .layer-mask-controls legend { display: none; }
+.layer-mask-dialog label { align-items: center; gap: 10px; }
+.layer-mask-dialog .layer-mask-controls p { font-size: 12px; line-height: 1.7; }
+.layer-mask-dialog .layer-mask-controls label, .layer-mask-dialog summary { font-size: 12px; line-height: 1.6; }
+.layer-mask-dialog select, .layer-mask-dialog input[type=number] { box-sizing: border-box; padding: 6px 8px; min-height: 30px; border: 1px solid var(--color-rule); border-radius: 4px; color: inherit; background: var(--color-field); font: inherit; }
+.layer-mask-dialog button { min-height: 32px; padding: 6px 12px; }
+.layer-mask-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--color-rule); flex-shrink: 0; }
+.layer-mask-dialog footer p { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.layer-mask-dialog footer button { flex-shrink: 0; }
+.legacy-mask-section { margin-top: 16px; border-top: 1px solid var(--color-rule); padding-top: 12px; }
+.legacy-mask-section summary { cursor: pointer; }
+.legacy-mask-settings { display: grid; gap: 12px; padding: 12px 0 0; margin: 0; border: 0; min-width: 0; }
+.legacy-mask-settings label { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); font-size: 12px; }
+.legacy-mask-settings input[type=number] { min-width: 0; width: 100%; }
+.legacy-mask-settings .mask-enabled-toggle { display: flex; gap: 8px; }
+.legacy-mask-settings input[type=checkbox] { width: 14px; height: 14px; margin: 0; flex: none; }
+.layer-mask-dialog [role=alert] { overflow-wrap: anywhere; color: #c45e50; }
+.native-modal-page .layer-mask-dialog { padding: 0; height: 100dvh; overflow: hidden; }
+.native-modal-page .layer-mask-dialog form { height: 100%; max-height: 100%; }

@@ -164,7 +164,7 @@ fn composite_sources<'a>(
     sources.peek()?;
     let mut result = vec![0u8; TILE_BYTES];
     for source in sources {
-        let effects = source.effects.enabled.then(|| source.effects.prepare());
+        let effects = source.effects.active().then(|| source.effects.prepare());
         for (index, (target, pixel)) in result
             .as_chunks_mut::<4>()
             .0
@@ -981,6 +981,7 @@ fn dab_density_on_tiles(
 /// project format and preview path; legacy stroke/SVG documents remain separate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiledRasterDocument {
+    layer_edit_selection: Option<(String, crate::layer_mask::LayerEditTarget)>,
     resolution: Option<RasterResolution>,
     width: u32,
     height: u32,
@@ -991,9 +992,45 @@ pub struct TiledRasterDocument {
 }
 
 impl TiledRasterDocument {
+    pub fn layer_edit_target(&self, id: &str) -> crate::layer_mask::LayerEditTarget {
+        use crate::layer_mask::LayerEditTarget;
+        let target = self
+            .layer_edit_selection
+            .as_ref()
+            .filter(|(layer, _)| layer == id)
+            .map_or(LayerEditTarget::Content, |(_, t)| *t);
+        if target == LayerEditTarget::Mask
+            && !self
+                .layers
+                .iter()
+                .any(|l| l.id == id && l.effects.mask.is_some())
+        {
+            LayerEditTarget::None
+        } else {
+            target
+        }
+    }
+    pub fn select_layer_target(
+        &mut self,
+        id: String,
+        target: crate::layer_mask::LayerEditTarget,
+    ) -> Result<(), String> {
+        let layer = self
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .ok_or("Layer not found")?;
+        if target == crate::layer_mask::LayerEditTarget::Mask && layer.effects.mask.is_none() {
+            return Err("Layer mask not found".into());
+        }
+        self.layer_edit_selection = Some((id, target));
+        Ok(())
+    }
+
     pub fn new(width: u32, height: u32) -> Result<Self, String> {
         SparseTiles::new(width, height)?;
         Ok(Self {
+            layer_edit_selection: None,
             resolution: None,
             width,
             height,
@@ -1335,8 +1372,15 @@ impl TiledRasterDocument {
     pub fn set_layer_effects(
         &mut self,
         id: &str,
-        effects: crate::layer_effects::LayerEffects,
+        mut effects: crate::layer_effects::LayerEffects,
     ) -> Result<Option<TileInvalidation>, String> {
+        let previous = &self
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .ok_or("Unknown raster layer")?
+            .effects;
+        effects.retain_mask_content(previous)?;
         effects.validate()?;
         let layer = self
             .layers

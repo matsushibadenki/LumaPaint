@@ -1,13 +1,15 @@
+import { MaskLinkButton } from './MaskLinkButton';
 import { layerGroupLabels } from './layer-group-labels';
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from 'react';
-import type { LayerSnapshot, TextObjectSnapshot, LayerGroup, LayerGroupsState, LayerGroupEdit } from '../bridge';
+import type { LayerEditTarget, LayerSnapshot, TextObjectSnapshot, LayerGroup, LayerGroupsState, LayerGroupEdit } from '../bridge';
 import type { Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
+export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onToggleMaskLink, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
+  editTarget: LayerEditTarget; onSelectTarget: (id: string, target: LayerEditTarget) => void;
   groups:LayerGroupsState; onGroupEdit:(edit:LayerGroupEdit)=>void;
   thumbnails?: Record<string,string>; thumbnailError?: string;
   layers: LayerSnapshot[]; textObjects: TextObjectSnapshot[]; selectedId: string; enabled: boolean; locale: Locale;
@@ -18,10 +20,16 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
   onToggleObject: (layerId: string, objectId: string, visible: boolean) => void;
   onReorderObjects: (layerId: string, ids: string[]) => void;
   onToggleLock: (layer: LayerSnapshot) => void;
+  onToggleMaskLink: (layer: LayerSnapshot) => void;
   onSelect: (id: string) => void; onToggle: (id: string) => void;
   onRename: (layer: LayerSnapshot, name: string) => void; onReorder: (ids: string[]) => void;
 }) {
   const t = workspaceMessages[locale];
+  const targetLabels = {ja: {content:'レイヤー本体を編集', mask:'マスクを編集', deselect:'選択解除'}, en: {content:'Edit layer content', mask:'Edit mask', deselect:'Deselect'}, 'zh-CN': {content:'编辑图层内容', mask:'编辑蒙版', deselect:'取消选择'}}[locale];
+  const targetSelected = (id: string, target: LayerEditTarget) => id === selectedId && editTarget === target;
+  const targetLabel = (id: string, target: 'content' | 'mask', name: string) => `${targetSelected(id, target) ? targetLabels.deselect : targetLabels[target]}: ${name}`;
+  const toggleTarget = (id: string, target: LayerEditTarget) => onSelectTarget(id, targetSelected(id, target) ? 'none' : target);
+
   const list = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -307,8 +315,9 @@ export function LayerList({ groups, onGroupEdit, thumbnails = {}, thumbnailError
       </div>
       <span className={`path-color-stripe${layer.kind === 'vector' ? '' : ' pixel-color-stripe'}`} aria-hidden="true" style={layer.kind === 'vector' ? { backgroundColor: `rgb(${(layer.guideColor ?? [48,144,255]).slice(0,3).join(',')})` } : undefined} />
       <div className="layer-row-content" style={{marginLeft:Math.min(layer.depth,4)*24}}>
-      <span className={`layer-thumb ${layer.kind}`} aria-hidden="true" title={thumbnailError}>{thumbnails[layer.id] && <img src={thumbnails[layer.id]} alt="" draggable={false} />}</span>
-      {layer.maskEnabled && <span className={`mask-thumb${layer.maskInverted ? ' inverted' : ''}`} style={{backgroundColor:layer.maskInverted?`rgb(${Math.round(255*(1-layer.maskDensity))} ${Math.round(255*(1-layer.maskDensity))} ${Math.round(255*(1-layer.maskDensity))})`:'#fff'}} aria-hidden="true" />}
+      <button type="button" className={`layer-thumb layer-edit-thumb ${layer.kind}`} disabled={!selectable} aria-pressed={targetSelected(layer.id,'content')} aria-label={targetLabel(layer.id,'content',displayName)} title={thumbnailError || targetLabel(layer.id,'content',displayName)} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();toggleTarget(layer.id,'content');}}>{thumbnails[layer.id] && <img src={thumbnails[layer.id]} alt="" draggable={false} />}</button>
+      {layer.effects?.mask && <MaskLinkButton locale={locale} linked={layer.effects.mask.linked??true} disabled={!appearanceEnabled||layer.locked} onToggle={()=>onToggleMaskLink(layer)}/>}
+      {layer.effects?.mask ? <button type="button" className={`mask-thumb layer-edit-thumb${layer.effects.mask.inverted ? ' inverted' : ''}${layer.effects.mask.enabled===false?' disabled':''}`} disabled={!selectable} aria-pressed={targetSelected(layer.id,'mask')} aria-label={targetLabel(layer.id,'mask',displayName)} title={targetLabel(layer.id,'mask',displayName)} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();toggleTarget(layer.id,'mask');}}><span aria-hidden="true">{layer.effects.mask.kind==='vector'?'◇':'▦'}</span></button> : layer.maskEnabled && <span className={`mask-thumb${layer.maskInverted?' inverted':''}`} aria-hidden="true"/>}
       <div className="layer-description">
       {editingId === layer.id ? <input className="layer-name" autoFocus maxLength={120} aria-label={t.renameLayer} value={name}
         onFocus={event => event.currentTarget.select()} onChange={event => setName(event.target.value)}

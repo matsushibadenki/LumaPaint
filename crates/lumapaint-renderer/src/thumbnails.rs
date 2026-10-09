@@ -30,7 +30,22 @@ fn over(dst: &mut [u8], src: &[u8], opacity: f32) {
     }
 }
 pub fn render(document: &Document) -> Result<Thumbnails, String> {
-    render_sized(document, 64., false)
+    let mut result = render_sized(document, 64., false)?;
+    let view = document.channel_view();
+    let selected = render_sized_inner(&view, 64., true, true)?
+        .channels
+        .remove(0);
+    let scale = (64. / document.dimensions().0.max(document.dimensions().1) as f32).min(1.);
+    let (w, h) = document.dimensions();
+    let channels = channel_pngs(
+        (w as f32 * scale).round().max(1.) as u32,
+        (h as f32 * scale).round().max(1.) as u32,
+        selected,
+    )?;
+    for (index, channel) in channels.into_iter().enumerate().skip(1) {
+        result.channels[index] = channel;
+    }
+    Ok(result)
 }
 pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, String> {
     Ok(
@@ -116,37 +131,28 @@ fn render_sized_inner(
         }
         tiles.discard_history();
     }
-    let effects = document.layer_effects("layer-1");
-    let effects = effects.enabled.then(|| effects.prepare());
+    let mut effects = document.layer_effects("layer-1");
+    let mask = effects.mask.take();
+    let effects = effects.prepare();
     let mut paint = vec![0; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
             let input = tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]);
-            let mut pixel = effects.as_ref().map_or(input, |e| {
-                e.apply_at(
-                    input,
-                    [
-                        (x as f32 + 0.5) * snapshot.width as f32 / width as f32,
-                        (y as f32 + 0.5) * snapshot.height as f32 / height as f32,
-                    ],
-                )
-            });
-            for c in 0..3 {
-                pixel[c] = (pixel[c] as u16 * pixel[3] as u16 / 255) as u8;
-            }
+            let pixel = crate::root_paint::composite(
+                input,
+                [
+                    (x as f32 + 0.5) * snapshot.width as f32 / width as f32,
+                    (y as f32 + 0.5) * snapshot.height as f32 / height as f32,
+                ],
+                &effects,
+                mask.as_ref(),
+                snapshot.canvas_color == CanvasColor::White,
+            );
             let index = ((y * width + x) * 4) as usize;
             paint[index..index + 4].copy_from_slice(&pixel);
         }
     }
-    let mut background = vec![
-        if snapshot.canvas_color == CanvasColor::White {
-            255
-        } else {
-            0
-        };
-        paint.len()
-    ];
-    over(&mut background, &paint, 1.);
+    let background = paint.clone();
     let mut composite = vec![0; paint.len()];
     if document.background_visible() {
         over(&mut composite, &background, document.paint_layer_opacity());
@@ -333,10 +339,76 @@ mod tests {
         assert_eq!(hidden.layers[0].1, thumbs.layers[0].1);
         assert_eq!(pixel(&hidden.channels[4], 32, 21), [0, 0, 0, 255]);
         doc.import_svg("Blue".into(),"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"960\" height=\"640\"><rect width=\"960\" height=\"640\" fill=\"blue\"/></svg>".into()).unwrap();
+        // Channel thumbnails inspect the selected layer target, not all layers.
+        let id = doc.svg_layers().last().unwrap().id.clone();
+        doc.select_layer(id).unwrap();
         let image = render(&doc).unwrap();
         assert_eq!(pixel(&image.layers[1].1, 32, 21), [0, 0, 255, 255]);
         assert_eq!(pixel(&image.channels[3], 32, 21), [255; 4]);
         assert_eq!(pixel(&image.channels[5], 32, 21), [0, 0, 0, 255]);
+    }
+    #[test]
+    fn selected_mask_alpha_is_visible_above_white_paper_and_updates_after_edit() {
+        use lumapaint_core::{
+            layer_effects::LayerEffects,
+            layer_mask::{LayerEditTarget, LayerMask, MaskKind},
+            selection::{Selection, SelectionShape},
+        };
+        let mut state = Document::default().document_state();
+        state.width = 32;
+        state.height = 32;
+        let mut doc = Document::from_document_state(state).unwrap();
+        let mask = LayerMask::from_selection(
+            MaskKind::Pixel,
+            Some(&Selection::new(
+                SelectionShape::Rectangle,
+                [0., 0., 16., 32.],
+            )),
+            32,
+            32,
+        )
+        .unwrap();
+        doc.set_layer_effects(
+            "layer-1",
+            LayerEffects {
+                mask: Some(mask),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The root mask covers the white paper too, in export and GPU tile uploads.
+        let pixels = document_pixels(&doc).unwrap();
+        assert_eq!(pixels[(8 * 32 + 24) * 4 + 3], 0);
+        assert_eq!(pixels[(8 * 32 + 8) * 4 + 3], 255);
+        let mut cache = crate::paint_cache::PaintCache::new((32, 32)).unwrap();
+        let uploads = cache.prepare(&doc, true).unwrap();
+        assert_eq!(uploads[0].pixels, pixels);
+        let upper = doc.add_paint_layer().unwrap();
+        doc.select_layer(upper).unwrap();
+        doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="red"/></svg>"#.into(),None).unwrap();
+        doc.select_layer_target("layer-1".into(), LayerEditTarget::Mask)
+            .unwrap();
+        let before = render(&doc).unwrap();
+        assert_eq!(pixel(&before.channels[4], 24, 8), [0, 0, 0, 255]);
+        assert_eq!(pixel(&before.channels[4], 8, 8), [255; 4]);
+        let mut effects = doc.layer_effects("layer-1");
+        effects
+            .mask
+            .as_mut()
+            .unwrap()
+            .paint_selection(
+                &Selection::new(SelectionShape::Rectangle, [4., 4., 8., 8.]),
+                None,
+                false,
+            )
+            .unwrap();
+        doc.set_layer_effects("layer-1", effects).unwrap();
+        assert_eq!(
+            pixel(&render(&doc).unwrap().channels[4], 8, 8),
+            [0, 0, 0, 255]
+        );
+        doc.undo();
+        assert_eq!(pixel(&render(&doc).unwrap().channels[4], 8, 8), [255; 4]);
     }
     #[test]
     fn tiled_thumbnails_average_pixels_and_apply_masks_to_channels() {

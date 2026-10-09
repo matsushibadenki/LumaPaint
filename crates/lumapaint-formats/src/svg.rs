@@ -127,7 +127,7 @@ impl DocumentExporter for SvgExporter {
             Document::from_document_state(state.clone()).map_err(ExportError::InvalidDocument)?;
         let mut report = ConversionReport::default();
         if state.layer_effects.iter().any(|(id, e)| {
-            e.enabled
+            e.active()
                 && if id == "layer-1" {
                     document.background_visible()
                 } else {

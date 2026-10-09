@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Kind {
+    Shortcuts,
     Settings,
     NewDocument,
     ColorSettings,
@@ -22,11 +23,13 @@ pub(crate) enum Kind {
     PdfImport,
     ToolSettings,
     VectorSelections,
+    LayerMask,
 }
 impl Kind {
     fn geometry(self) -> (f64, f64) {
         match self {
             Self::NewDocument => (1000., 660.),
+            Self::Shortcuts => (880., 720.),
             Self::Settings => (760., 480.),
             Self::ColorSettings => (620., 380.),
             Self::DirectControls => (440., 600.),
@@ -35,10 +38,16 @@ impl Kind {
             Self::PdfImport => (740., 680.),
             Self::ToolSettings => (440., 580.),
             Self::VectorSelections => (400., 320.),
+            Self::LayerMask => (460., 660.),
         }
     }
     fn title(self, locale: &str) -> &str {
         let titles = match self {
+            Self::Shortcuts => [
+                "Keyboard Shortcuts",
+                "キーボードショートカット",
+                "键盘快捷键",
+            ],
             Self::Settings => ["Settings", "設定", "设置"],
             Self::NewDocument => ["New Document", "新規ドキュメント", "新建文档"],
             Self::ColorSettings => ["Color Settings", "カラー設定", "颜色设置"],
@@ -52,6 +61,7 @@ impl Kind {
             Self::PdfImport => ["PDF Page", "PDFページ", "PDF页面"],
             Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
             Self::VectorSelections => ["Saved Selections", "選択範囲の保存・編集", "已保存的选择"],
+            Self::LayerMask => ["Layer mask", "レイヤーマスク", "图层蒙版"],
         };
         titles[match locale {
             "ja" => 1,
@@ -86,6 +96,11 @@ impl Request {
                     ))
                     .is_ok()
                 })
+            || matches!(self.kind, Kind::LayerMask)
+                && !self
+                    .action
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 256)
             || matches!(self.kind, Kind::Transform)
                 && !self.action.as_deref().is_some_and(|action| {
                     [

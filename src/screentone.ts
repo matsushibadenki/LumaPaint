@@ -18,3 +18,23 @@ const designs = {
   'zh-CN':[['圆形','方形','菱形','椭圆'],['线性','径向','反射','波形'],['直线','波线','虚线','双线'],['格子','菱格','花朵','棋盘'],['波浪','干涉','同心波','云纹'],['粗砂','中粒','细粒','微粒'],['交叉','三方向','手绘','编织'],['集中线','速度线','同心圆','放射闪光'],['雨','砖墙','云','木纹'],['圆形','方形','菱形','椭圆'],['斑驳网点','颗粒','斑驳线','布纹'],['圆点','方点','菱形点','椭圆点'],['圆网点','方网点','菱形网点','椭圆网点']],
 };
 export const toneDesigns = (locale:Locale,kind:ToneKind) => designs[locale][toneKinds.indexOf(kind)];
+
+export const tonePresetLabels = {
+  ja: { title:'漫画用プリセット', preview:'プレビュー', custom:'カスタム', hint:'見本を選び、適用または新規作成を押してください。', scale:'600 dpi相当の拡大見本。原稿では解像度・表示倍率により見え方が変わります。' },
+  en: { title:'Manga presets', preview:'Preview', custom:'Custom', hint:'Choose a sample, then Apply or create a new layer.', scale:'Enlarged sample at 600 dpi equivalent. Document appearance depends on resolution and zoom.' },
+  'zh-CN': { title:'漫画预设', preview:'预览', custom:'自定义', hint:'选择示例，然后应用或新建图层。', scale:'相当于600 dpi的放大示例。画布效果取决于分辨率和缩放。' },
+};
+export const tonePresets: { id:string; names:[string,string,string]; settings:Partial<Screentone> }[] = [
+  ...[10,20,30,40,50,60].map(density=>({id:`dot-60-${density}`,names:[`網点 60線・${density}%`,`Dots 60 lpi · ${density}%`,`网点 60线 · ${density}%`] as [string,string,string],settings:{kind:'dot' as const,frequency:60,density}})),
+  {id:'dot-40',names:['粗めの網点 40線','Coarse dots 40 lpi','粗网点 40线'],settings:{kind:'dot',frequency:40,density:20}},
+  {id:'dot-85',names:['細かい網点 85線','Fine dots 85 lpi','细网点 85线'],settings:{kind:'dot',frequency:85,density:20}},
+  {id:'gradient',names:['網点グラデーション','Dot gradient','网点渐变'],settings:{kind:'gradient',frequency:60,density:40,gradientEnd:0,extent:240,angle:0}},
+  {id:'lines',names:['万線','Parallel lines','平行线'],settings:{kind:'line',frequency:60,density:20,angle:45}},
+  {id:'sand',names:['細かい砂目','Fine grain','细砂目'],settings:{kind:'sand',variant:2,frequency:40,density:25}},
+  {id:'crosshatch',names:['カケアミ','Crosshatch','交叉排线'],settings:{kind:'crosshatch',frequency:40,density:20}},
+];
+export const presetScreentone = (settings:Partial<Screentone>, dpi:number):Screentone => ({...defaultScreentone(dpi),frequency:60,density:20,...settings,dpi});
+export const matchesTonePreset = (tone:Screentone,settings:Partial<Screentone>) => {
+  const preset = presetScreentone(settings,tone.dpi);
+  return (Object.keys(preset) as (keyof Screentone)[]).every(key=>JSON.stringify(preset[key])===JSON.stringify(tone[key]));
+};

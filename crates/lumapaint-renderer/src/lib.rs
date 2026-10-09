@@ -32,10 +32,12 @@ pub mod text_outlines;
 pub mod tiled_rgba;
 mod workspace;
 pub use frame_overlay::FrameOverlay;
+pub mod channel_paint;
 pub mod clone_stamp;
 pub mod color_sampler;
 mod paint_cache;
 pub mod pixel_paint;
+mod root_paint;
 pub use wgpu;
 use wgpu::util::DeviceExt;
 
@@ -3687,6 +3689,11 @@ impl Renderer {
         document: &Document,
         offset: [f32; 2],
     ) -> Result<(), String> {
+        if offset != [0., 0.] && document.selected_vectors_have_mask() {
+            let mut preview = document.clone_for_rendering();
+            preview.move_selected_vectors_preview(offset[0], offset[1])?;
+            return self.render_vector_drag_inner(viewport, &preview, [0., 0.], false);
+        }
         self.render_vector_drag_inner(viewport, document, offset, false)
     }
 
@@ -3699,6 +3706,13 @@ impl Renderer {
     ) -> Result<(), String> {
         let frame_timer = performance::time("render_frame_host");
         let host_frame_start = performance::enabled().then(std::time::Instant::now);
+        let channel_view;
+        let document = if self.channel != 0 {
+            channel_view = document.channel_view();
+            &channel_view
+        } else {
+            document
+        };
         let clipped;
         let document = if document.has_document_clipping() {
             clipped = document.clipping_view();
@@ -3808,14 +3822,15 @@ impl Renderer {
             error => return Err(format!("Surface acquisition failed: {error:?}")),
         };
         let mut background_viewport = viewport;
-        if !document.background_visible() {
+        if self.channel != 0 || root_paint::masked_paper(document) || !document.background_visible()
+        {
             background_viewport.canvas_color = CanvasColor::Transparent;
         }
         let mut uniforms = Self::uniforms(background_viewport);
         uniforms.appearance[0] += self.channel as f32 * 2.0;
         let grayscale = document.color_mode() == lumapaint_core::document::ColorMode::Grayscale;
         uniforms.document[3] = f32::from(grayscale);
-        if self.channel == 4 && background_viewport.canvas_color == CanvasColor::Transparent {
+        if self.channel != 0 && background_viewport.canvas_color == CanvasColor::Transparent {
             uniforms.appearance[3] = 2.0;
         }
         if self

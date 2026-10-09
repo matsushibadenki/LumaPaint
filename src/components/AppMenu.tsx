@@ -1,3 +1,4 @@
+import {useShortcuts,binding,accelerator,displayKey,keyFromAccelerator} from '../shortcuts';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
@@ -13,6 +14,8 @@ function AppMark() {
 
 export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSettings: () => void; onError: (error: string) => void }) {
   const t = settingsMessages[locale];
+  const shortcuts=useShortcuts();
+  const shortcut=accelerator(binding(shortcuts.settings,{id:'app.settings',label:t.settings,category:'LumaPaint',defaultKey:'Primary+Comma'}));
   const native = isTauri();
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
@@ -38,7 +41,7 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
       menu = await createNativeMenu({ items: [
         { text: 'LumaPaint 0.1.0', enabled: false },
         { item: 'Separator' as const },
-        { text: t.settings, accelerator: 'CmdOrCtrl+,', action: onSettings },
+        { text: t.settings, accelerator: shortcut || undefined, action: onSettings },
       ] });
       nativeMenu.current = menu;
       const rect = trigger.current!.getBoundingClientRect();
@@ -85,7 +88,7 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
     }}>
       <p>{t.about}<small>0.1.0</small></p>
       <div role="separator" />
-      <button role="menuitem" onClick={() => { setOpen(false); onSettings(); }}>{t.settings}<kbd>⌘,</kbd></button>
+      <button role="menuitem" onClick={() => { setOpen(false); onSettings(); }}>{t.settings}<kbd>{displayKey(keyFromAccelerator(shortcut))}</kbd></button>
     </div>, document.body)}
   </>;
 }

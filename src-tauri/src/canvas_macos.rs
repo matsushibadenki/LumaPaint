@@ -52,10 +52,14 @@ use std::time::{Duration, Instant};
 use std::{cell::RefCell, ffi::c_void, ptr::NonNull};
 use tauri::{Emitter, Manager};
 
+#[path = "channel_tools_macos.rs"]
+mod channel_tools;
 #[path = "clipboard_macos.rs"]
 mod clipboard;
 #[path = "clone_stamp_tool_macos.rs"]
 mod clone_stamp_tool;
+#[path = "mask_tools_macos.rs"]
+mod mask_tools;
 #[path = "paint_bucket_tool_macos.rs"]
 mod paint_bucket_tool;
 #[path = "pixel_move_macos.rs"]
@@ -585,34 +589,9 @@ impl PaintView {
                 }
                 return;
             }
+            if APP.get().is_some_and(|app|crate::shortcuts::dispatch(app,&current_label(),event)){return;}
+            if mask_tools::key(event) || channel_tools::key(event) { return; }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
-            else if event.keyCode() == 34 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
-                if let Err(error) = switch_canvas_tool(CanvasTool::Eyedropper) { emit_error(error); return; }
-                self.refresh_cursor();
-                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eyedropper); }
-            }
-            else if event.keyCode() == 5 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
-                let tool=if event.modifierFlags().contains(NSEventModifierFlags::Shift){CanvasTool::PaintBucket}else{CanvasTool::Gradient};if let Err(error)=switch_canvas_tool(tool){emit_error(error);return;}
-                self.refresh_cursor();
-                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",tool);}
-            }
-            else if event.keyCode()==3 && !event.modifierFlags().intersects(NSEventModifierFlags::Command|NSEventModifierFlags::Control|NSEventModifierFlags::Option){let tool=if event.modifierFlags().contains(NSEventModifierFlags::Shift){CanvasTool::ImageFrameEllipse}else{CanvasTool::ImageFrameRectangle};if let Err(e)=switch_canvas_tool(tool){emit_error(e);return;}
-            if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",tool);}}
-            else if event.keyCode() == 14 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
-                if let Err(error) = switch_canvas_tool(CanvasTool::Eraser) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", CanvasTool::Eraser); }
-            }
-            else if event.keyCode() == 7 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
-                if !event.isARepeat() {
-                    if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-swap-colors", ()); }
-                }
-            }
-            else if event.keyCode() == 17 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) {
-                if !event.isARepeat() {
-                    if let Err(error) = finish_open_pen() { emit_error(error); return; }
-                    if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-text-edit", ()); }
-                }
-            }
             else if [36, 76].contains(&event.keyCode()) && TOOL.with(|tool| tool.get()) == CanvasTool::VectorPen {
                 if let Err(error) = DOCUMENT.with(|doc| finish_pen(&mut doc.borrow_mut(), false)).and_then(|_| redraw()) { emit_error(error); }
                 emit_document();
@@ -633,13 +612,7 @@ impl PaintView {
             }
             else if [36,76].contains(&event.keyCode()) && selection_tools::active() {if let Err(e)=selection_tools::confirm(){emit_error(e);}}
             else if [51,117].contains(&event.keyCode()) && selection_tools::active() {if let Err(e)=selection_tools::remove_last().and_then(|_|redraw()){emit_error(e);}}
-            else if event.keyCode()==32 && !event.modifierFlags().intersects(NSEventModifierFlags::Command|NSEventModifierFlags::Control|NSEventModifierFlags::Option) {let current=TOOL.with(|t|t.get());let tool=if event.modifierFlags().contains(NSEventModifierFlags::Shift){match current{CanvasTool::Blur=>CanvasTool::Sharpen,CanvasTool::Sharpen=>CanvasTool::Smudge,_=>CanvasTool::Blur}}else{CanvasTool::Blur};if let Err(e)=switch_canvas_tool(tool){emit_error(e);}
-                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",tool);}}
-            else if event.keyCode()==37 && !event.modifierFlags().intersects(NSEventModifierFlags::Command|NSEventModifierFlags::Control|NSEventModifierFlags::Option) {let current=TOOL.with(|t|t.get());let tool=if event.modifierFlags().contains(NSEventModifierFlags::Shift){match current{CanvasTool::Lasso=>CanvasTool::PolygonLasso,CanvasTool::PolygonLasso=>CanvasTool::MagneticLasso,CanvasTool::MagneticLasso=>CanvasTool::SelectionBrush,_=>CanvasTool::Lasso}}else{CanvasTool::Lasso};if let Err(e)=switch_canvas_tool(tool){emit_error(e);}
-                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",tool);}}
             else if [36,76].contains(&event.keyCode()) && TOOL.with(|t|t.get())==CanvasTool::Crop { if let Err(e)=crop_tool::commit(){emit_error(e);} }
-            else if event.keyCode() == 8 && !event.modifierFlags().intersects(NSEventModifierFlags::Command|NSEventModifierFlags::Control|NSEventModifierFlags::Option) { if let Err(e)=switch_canvas_tool(CanvasTool::Crop){emit_error(e);return;}
-                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"canvas-tool-changed",CanvasTool::Crop);} }
             else if event.keyCode() == 53 {
                 if selection_tools::cancel() || crop_tool::cancel() || cancel_vector_drag() || DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
                     if let Err(error) = redraw() { emit_error(error); }
@@ -650,25 +623,6 @@ impl PaintView {
                 && !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option)
             {
                 report_edit(DocumentAction::DeleteSelectedObjects);
-            }
-            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [1, 11, 46].contains(&event.keyCode()) {
-                let tool = if event.keyCode() == 1 { CanvasTool::CloneStamp } else if event.keyCode() == 11 { CanvasTool::Brush }
-                    else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { CanvasTool::Ellipse }
-                    else { CanvasTool::Rectangle };
-                if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", tool); }
-            }
-            else if !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control | NSEventModifierFlags::Option) && [0, 9, 32, 35, 45].contains(&event.keyCode()) {
-                let tool = match event.keyCode() {
-                    0 => CanvasTool::VectorDirectSelect,
-                    9 => CanvasTool::VectorSelect,
-                    35 => CanvasTool::VectorPen,
-                    45 => CanvasTool::VectorPencil,
-                    _ if event.modifierFlags().contains(NSEventModifierFlags::Shift) => CanvasTool::VectorEllipse,
-                    _ => CanvasTool::VectorRectangle,
-                };
-                if let Err(error) = switch_canvas_tool(tool) { emit_error(error); return; }
-                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "canvas-tool-changed", tool); }
             }
             else { unsafe { msg_send![super(self), keyDown: event] } }
         }
@@ -701,44 +655,8 @@ impl PaintView {
             });
             if !focused { return false.into(); }
             if raster_import::active() { return event.modifierFlags().contains(NSEventModifierFlags::Command).into(); }
-            let command = event.modifierFlags().contains(NSEventModifierFlags::Command);
-            if command && event.keyCode() == 19 {
-                report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::UnlockAllObjects } else { DocumentAction::LockSelection }); true
-            } else if command && event.keyCode() == 20 {
-                report_edit(if event.modifierFlags().contains(NSEventModifierFlags::Option) { DocumentAction::ShowAllObjects } else { DocumentAction::HideSelection }); true
-            } else if command && [7,8,9].contains(&event.keyCode()) {
-                report_edit(match event.keyCode() { 7 => DocumentAction::Cut, 8 => DocumentAction::Copy, _ => DocumentAction::Paste }); true
-            } else if command && event.keyCode() == 2 {
-                if let Some(app)=APP.get(){let _=app.emit_to(current_label(),"place-image-requested",());} true
-            } else if command && (event.keyCode()==22 || event.modifierFlags().contains(NSEventModifierFlags::Option) && [0,30,33].contains(&event.keyCode())) {
-                let action=if event.keyCode()==22 {"reselect"} else if event.keyCode()==0 {"artboard"} else if event.keyCode()==30 {"above"} else {"below"};
-                if let Err(e)=vector_selection_action(lumapaint_core::document::VectorSelectionRequest{action:action.into(),criterion:None,name:None,new_name:None}){emit_error(e);}true
-            } else if command && event.keyCode() == 0 {
-                report_edit(if !event.modifierFlags().contains(NSEventModifierFlags::Shift) { DocumentAction::SelectAll } else { DocumentAction::Deselect }); true
-            } else if command && event.keyCode() == 34 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
-                report_edit(DocumentAction::InvertSelection); true
-            } else if command && event.keyCode() == 45 && event.modifierFlags().contains(NSEventModifierFlags::Shift) {
-                if let Some(app) = APP.get() { if let Err(error) = crate::editor_windows::create(app) { emit_error(error); } }
-                true
-            } else if command && event.keyCode() == 45 {
-                if let Some(app) = APP.get() { let _ = app.emit_to(current_label(), "new-document-requested", ()); }
-                true
-            } else if command && event.keyCode() == 13 {
-                if DOCUMENT_OPEN.with(|open| open.get()) {
-                    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
-                    if let Err(error) = close_document(id) { emit_error(error); }
-                }
-                true
-            } else if command && [1, 31].contains(&event.keyCode()) {
-                let action = if event.keyCode() == 31 { super::FileAction::Open }
-                    else if event.modifierFlags().contains(NSEventModifierFlags::Shift) { super::FileAction::SaveAs }
-                    else { super::FileAction::Save };
-                if let Err(error) = file_action(action) { emit_error(error); }
-                true
-            } else if command && event.keyCode() == 6 {
-                let action = if event.modifierFlags().contains(NSEventModifierFlags::Shift) { DocumentAction::Redo } else { DocumentAction::Undo };
-                report_edit(action); true
-            } else { unsafe { msg_send![super(self), performKeyEquivalent: event] } }
+            if APP.get().is_some_and(|app|crate::shortcuts::dispatch(app,&current_label(),event)){true}
+            else { unsafe { msg_send![super(self), performKeyEquivalent: event] } }
         }
         #[unsafe(method(undo:))]
         fn undo_action(&self, _sender: Option<&AnyObject>) {
@@ -858,6 +776,44 @@ impl PaintView {
                 emit_error(error);
             }
             return;
+        }
+        match channel_tools::pointer(
+            point,
+            phase,
+            if event.subtype() == NSEventSubtype::TabletPoint {
+                event.pressure().clamp(0., 1.)
+            } else {
+                1.
+            },
+        ) {
+            Ok(true) => {
+                if let Err(e) = request_redraw() {
+                    emit_error(e);
+                }
+                return;
+            }
+            Err(e) => {
+                CHANNEL_GESTURE.with(|s| s.borrow_mut().take());
+                emit_error(e);
+                let _ = redraw();
+                return;
+            }
+            Ok(false) => {}
+        }
+        match mask_tools::pointer(point, phase) {
+            Ok(true) => {
+                if let Err(e) = request_redraw() {
+                    emit_error(e);
+                }
+                return;
+            }
+            Err(e) => {
+                MASK_GESTURE.with(|s| s.borrow_mut().take());
+                emit_error(e);
+                let _ = redraw();
+                return;
+            }
+            Ok(false) => {}
         }
         if let Some((axis, _)) = GUIDE_DRAFT
             .with(|g| g.borrow().clone())
@@ -3386,9 +3342,13 @@ fn end_precise_paint_input() {
 fn paint_gesture_active() -> bool {
     DOCUMENT.with(|doc| doc.borrow().has_active_stroke())
         || PIXEL_PAINT.with(|draft| draft.borrow().is_some())
+        || MASK_GESTURE.with(|draft| draft.borrow().is_some())
+        || CHANNEL_GESTURE.with(|draft| draft.borrow().is_some())
 }
 
 fn cancel_vector_drag() -> bool {
+    let channel = CHANNEL_GESTURE.with(|s| s.borrow_mut().take().is_some());
+    let mask = MASK_GESTURE.with(|s| s.borrow_mut().take().is_some());
     let guides = GUIDE_DRAFT.with(|g| g.borrow_mut().take().is_some())
         | GUIDE_DRAG.with(|g| g.borrow_mut().take().is_some());
     GUIDE_OBJECT_DRAFT.with(|g| g.borrow_mut().clear());
@@ -3410,6 +3370,8 @@ fn cancel_vector_drag() -> bool {
     let text_frame = TEXT_FRAME_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     let text_resize = TEXT_RESIZE_DRAFT.with(|draft| draft.borrow_mut().take().is_some());
     painting
+        || channel
+        || mask
         || guides
         || gradient
         || pixels
@@ -3461,6 +3423,15 @@ fn report_edit(action: DocumentAction) {
 }
 
 pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
+    if let Some(result) = channel_tools::edit(action) {
+        return result;
+    }
+    if let Some(result) = mask_tools::edit(action) {
+        return result;
+    }
+    if matches!(action, DocumentAction::Undo | DocumentAction::Redo) {
+        cancel_vector_drag();
+    }
     if raster_import::active() {
         return Err("Confirm or cancel image placement / 画像の配置を確定またはキャンセルしてください / 请确认或取消图片放置".into());
     }
@@ -3583,7 +3554,9 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                 }
             }
             DocumentAction::SelectAll => {
-                if vector_selection_context() {
+                if doc.layer_edit_target() == lumapaint_core::layer_mask::LayerEditTarget::Content
+                    && vector_selection_context()
+                {
                     doc.vector_selection_action(
                         lumapaint_core::document::VectorSelectionRequest {
                             action: "all".into(),
@@ -3610,7 +3583,9 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                 doc.deselect();
             }
             DocumentAction::InvertSelection => {
-                if vector_selection_context() {
+                if doc.layer_edit_target() == lumapaint_core::layer_mask::LayerEditTarget::Content
+                    && vector_selection_context()
+                {
                     doc.vector_selection_action(
                         lumapaint_core::document::VectorSelectionRequest {
                             action: "invert".into(),
@@ -3718,6 +3693,186 @@ fn tiled_snapshot() -> Result<DocumentSnapshot, String> {
             .ok_or_else(|| "Missing tiled document".into())
     })
 }
+pub struct LayerMaskJob {
+    document_id: u64,
+    revision: u64,
+    tiled: bool,
+    id: String,
+    kind: lumapaint_core::layer_mask::MaskKind,
+    dimensions: (u32, u32),
+    selection: Option<lumapaint_core::selection::Selection>,
+    effects: lumapaint_core::layer_effects::LayerEffects,
+}
+pub fn prepare_layer_mask(
+    id: String,
+    kind: lumapaint_core::layer_mask::MaskKind,
+) -> Result<LayerMaskJob, String> {
+    let document_id = ACTIVE_DOCUMENT_ID.with(|d| d.get());
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        return ACTIVE_TILED_DOCUMENT.with(|d| {
+            let d = d.borrow();
+            let session = d.as_ref().ok_or("Missing tiled document")?;
+            let layer = session
+                .document
+                .layers()
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Unknown layer")?;
+            if layer.locked {
+                return Err("Layer is locked".into());
+            }
+            Ok(LayerMaskJob {
+                document_id,
+                revision: session.document.revision(),
+                tiled: true,
+                id,
+                kind,
+                dimensions: session.document.dimensions(),
+                selection: None,
+                effects: layer.effects.clone(),
+            })
+        });
+    }
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        let d = d.borrow();
+        let snapshot = d.snapshot();
+        let layer = snapshot
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .ok_or("Unknown layer")?;
+        if layer.locked {
+            return Err("Layer is locked".into());
+        }
+        Ok(LayerMaskJob {
+            document_id,
+            revision: snapshot.revision,
+            tiled: false,
+            kind,
+            dimensions: d.dimensions(),
+            selection: d.selection().cloned(),
+            effects: d.layer_effects(&id),
+            id,
+        })
+    })
+}
+pub fn render_layer_mask(mut job: LayerMaskJob) -> Result<LayerMaskJob, String> {
+    job.effects.mask = Some(lumapaint_core::layer_mask::LayerMask::from_selection(
+        job.kind,
+        job.selection.as_ref(),
+        job.dimensions.0,
+        job.dimensions.1,
+    )?);
+    Ok(job)
+}
+pub fn commit_layer_mask(job: LayerMaskJob) -> Result<DocumentSnapshot, String> {
+    let tiled = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some());
+    let revision = if tiled {
+        tiled_snapshot()?.revision
+    } else {
+        DOCUMENT.with(|d| d.borrow().snapshot().revision)
+    };
+    if ACTIVE_DOCUMENT_ID.with(|d| d.get()) != job.document_id
+        || tiled != job.tiled
+        || revision != job.revision
+    {
+        return Err("マスク生成中に原稿が変更されました。再実行してください。 / Document changed while generating the mask. Please retry. / 生成蒙版时文档已更改，请重试。".into());
+    }
+    set_layer_effects(job.id, job.effects)
+}
+
+pub struct MaskTransformJob {
+    document_id: u64,
+    revision: u64,
+    tiled: bool,
+    id: String,
+    matrix: [f32; 6],
+    document: Option<Document>,
+    root_source: Option<String>,
+}
+pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransformJob, String> {
+    lumapaint_core::layer_mask::validate_transform(matrix)?;
+    let tiled = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some());
+    let (revision, document) = if tiled {
+        ensure_tiled_open()?;
+        (tiled_snapshot()?.revision, None)
+    } else {
+        ensure_document_open()?;
+        DOCUMENT.with(|d| -> Result<_, String> {
+            let mut d = d.borrow_mut();
+            // Include the final in-progress stroke in the raw paint job.
+            d.finish();
+            let document = if id == "layer-1"
+                && d.committed_paint_strokes().next().is_some()
+                && d.layer_effects(&id).mask.as_ref().is_some_and(|m| m.linked)
+            {
+                let mut copy = d.clone_for_rendering();
+                copy.select_layer(id.clone())?;
+                Some(copy)
+            } else {
+                None
+            };
+            Ok((d.revision(), document))
+        })?
+    };
+    Ok(MaskTransformJob {
+        document_id: ACTIVE_DOCUMENT_ID.with(|d| d.get()),
+        revision,
+        tiled,
+        id,
+        matrix,
+        document,
+        root_source: None,
+    })
+}
+pub fn render_mask_transform(mut job: MaskTransformJob) -> Result<MaskTransformJob, String> {
+    if let Some(document) = job.document.take() {
+        let (w, h, pixels) = clipboard::raw_selected_pixels(&document)?;
+        let png = lumapaint_renderer::vector::document_png(w, h, pixels)?;
+        job.root_source = Some(clipboard::image_svg(w, h, &png));
+    }
+    Ok(job)
+}
+pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, String> {
+    let tiled = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some());
+    let revision = if tiled {
+        tiled_snapshot()?.revision
+    } else {
+        DOCUMENT.with(|d| d.borrow().revision())
+    };
+    if ACTIVE_DOCUMENT_ID.with(|d| d.get()) != job.document_id
+        || tiled != job.tiled
+        || revision != job.revision
+    {
+        return Err("Document changed. Please retry. / 原稿が変更されました。再実行してください。 / 文档已更改，请重试。".into());
+    }
+    if tiled {
+        let snapshot = tiled_snapshot()?;
+        let mut effects = snapshot
+            .layers
+            .iter()
+            .find(|l| l.id == job.id)
+            .and_then(|l| l.effects.clone())
+            .ok_or("Layer not found")?;
+        let mask = effects.mask.as_mut().ok_or("Layer mask not found")?;
+        if mask.linked {
+            return Err("Unlink the mask to transform it in tiled documents. / タイル文書ではリンクを解除してマスクを変形してください。 / 瓦片文档请先取消链接再变换蒙版。".into());
+        }
+        mask.transform_by(job.matrix)?;
+        return set_layer_effects(job.id, effects);
+    }
+    ensure_document_open()?;
+    DOCUMENT.with(|d| {
+        d.borrow_mut()
+            .transform_layer_mask(&job.id, job.matrix, job.root_source)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn set_layer_effects(
     id: String,
     effects: lumapaint_core::layer_effects::LayerEffects,
@@ -3802,6 +3957,39 @@ pub fn add_paint_layer() -> Result<DocumentSnapshot, String> {
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
+pub fn select_channel(channel: u32) -> Result<DocumentSnapshot, String> {
+    channel_tools::select(channel)
+}
+
+pub fn select_layer_target(
+    id: String,
+    target: lumapaint_core::layer_mask::LayerEditTarget,
+) -> Result<DocumentSnapshot, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        ensure_tiled_open()?;
+        ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+            let mut d = d.borrow_mut();
+            let s = d.as_mut().ok_or("Missing tiled document")?;
+            s.document.select_layer_target(id.clone(), target)?;
+            s.selected_layer = Some(id);
+            Ok(())
+        })?;
+        cancel_vector_drag();
+        redraw()?;
+        emit_document();
+        return tiled_snapshot();
+    }
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    finish_open_pen()?;
+    DOCUMENT.with(|d| d.borrow_mut().select_layer_target(id, target))?;
+    cancel_vector_drag();
+    selection_tools::cancel();
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn select_layer(id: String) -> Result<DocumentSnapshot, String> {
     if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
         ensure_tiled_open()?;
@@ -3811,6 +3999,10 @@ pub fn select_layer(id: String) -> Result<DocumentSnapshot, String> {
             if !session.document.layers().iter().any(|l| l.id == id) {
                 return Err("Unknown raster layer".into());
             }
+            session.document.select_layer_target(
+                id.clone(),
+                lumapaint_core::layer_mask::LayerEditTarget::Content,
+            )?;
             session.selected_layer = Some(id);
             Ok(())
         })?;
@@ -4304,6 +4496,9 @@ fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
 
 fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_none()) {
+        canvas.renderer.channel = DOCUMENT.with(|d| d.borrow().editing_channel());
+    }
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_none()) {
         let (width, height) = DOCUMENT.with(|d| d.borrow().dimensions());
         if canvas.viewport.document_width != width as f32
             || canvas.viewport.document_height != height as f32
@@ -4368,6 +4563,12 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return result;
     }
     if let Some(result) = pixel_paint::render(canvas) {
+        return result;
+    }
+    if let Some(result) = channel_tools::render(canvas) {
+        return result;
+    }
+    if let Some(result) = mask_tools::render(canvas) {
         return result;
     }
     if let Some(result) = pixel_move::render(canvas) {
@@ -5039,6 +5240,8 @@ thread_local! {
     static PAINT_MOUSE_COALESCING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static PIXEL_PAINT_COMMIT: RefCell<Option<PreparedSvgLayer>> = const { RefCell::new(None) };
     static PIXEL_PAINT: RefCell<Option<pixel_paint::PixelPaint>> = const { RefCell::new(None) };
+    static CHANNEL_GESTURE: RefCell<Option<channel_tools::ChannelGesture>> = const { RefCell::new(None) };
+    static MASK_GESTURE: RefCell<Option<mask_tools::MaskGesture>> = const { RefCell::new(None) };
     static PIXEL_DRAG: RefCell<Option<pixel_move::PixelDrag>> = const { RefCell::new(None) };
     static BOX_DRAFT: RefCell<Option<BoxDraft>> = const { RefCell::new(None) };
     static ROTATE_DRAFT: RefCell<Option<RotateDraft>> = const { RefCell::new(None) };
@@ -5079,6 +5282,21 @@ struct TiledSession {
 }
 
 impl TiledSession {
+    fn selected_layer_id(&self) -> &str {
+        self.selected_layer
+            .as_deref()
+            .or_else(|| {
+                self.document
+                    .layers()
+                    .iter()
+                    .rev()
+                    .find(|l| l.visible)
+                    .map(|l| l.id.as_str())
+            })
+            .or_else(|| self.document.layers().last().map(|l| l.id.as_str()))
+            .unwrap_or("")
+    }
+
     fn dirty(&self) -> bool {
         Some(self.document.revision()) != self.saved_revision
     }
@@ -5104,13 +5322,14 @@ impl TiledSession {
             })
             .or_else(|| self.document.layers().last().map(|l| l.id.clone()))
             .unwrap_or_default();
+        snapshot.layer_edit_target = self.document.layer_edit_target(&snapshot.layer_id);
         snapshot.layer_visible = self.document.layers().iter().any(|layer| layer.visible);
         snapshot.layers = self
             .document
             .layers()
             .iter()
             .map(|layer| LayerSnapshot {
-                effects: Some(layer.effects.clone()),
+                effects: Some(layer.effects.snapshot()),
                 raster_blend_mode: Some(layer.blend_mode),
                 guide_color: [48, 144, 255, 255],
                 objects: Vec::new(),
@@ -8473,6 +8692,9 @@ pub fn edit_transform_panel(
 
 pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
+    if let Some(result) = mask_tools::transform_action(action, values) {
+        return result;
+    }
     cancel_vector_drag();
     DOCUMENT.with(|d| d.borrow_mut().transform_selected_vectors(action, values))?;
     redraw()?;

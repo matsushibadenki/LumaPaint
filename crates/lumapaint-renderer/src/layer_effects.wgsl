@@ -22,7 +22,7 @@ fn curve(channel:u32,x:f32)->f32{
  let m0=config[p+2u];let m1=config[p+6u];let t2=t*t;let t3=t2*t;
  return clamp((2.*t3-3.*t2+1.)*y0+(t3-2.*t2+t)*h*m0+(-2.*t3+3.*t2)*y1+(t3-t2)*h*m1,0.,1.);
 }
-fn adjust(packed:u32,i:u32)->u32 {
+fn adjust_color(packed:u32,i:u32)->u32 {
  let a=packed>>24u;if a==0u {return packed;}
  let rgba=vec3(packed&255u,(packed>>8u)&255u,(packed>>16u)&255u);let straight=min((rgba*255u+vec3(a/2u))/a,vec3(255u));
  var rgb=vec3(config[8u+straight.x],config[264u+straight.y],config[520u+straight.z]);

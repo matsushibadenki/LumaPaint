@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 import { createScreentoneLayer, defaultLayerEffects, setLayerEffects, type DocumentSnapshot, type LayerSnapshot } from '../bridge';
 import type { Locale } from '../i18n';
 import { defaultScreentone, screentoneLabels, toneDesigns, toneKinds, type Screentone, type ToneKind } from '../screentone';
+import { tonePresetLabels, tonePresets, presetScreentone, matchesTonePreset } from '../screentone';
+import { ScreentoneSample } from './ScreentoneSample';
 import './screentone-panel.css';
 export function ScreentonePanel({locale,layer,resolution,enabled,canCreate,onUpdate}:{locale:Locale;layer?:LayerSnapshot;resolution:number;enabled:boolean;canCreate:boolean;onUpdate:(snapshot:DocumentSnapshot)=>void}) {
   const t=screentoneLabels[locale];
+  const samples=tonePresetLabels[locale];
+  const language=locale==='ja'?0:locale==='en'?1:2;
   const signature=JSON.stringify(layer?.effects?.screentone ?? defaultScreentone(resolution));
   const [draft,setDraft]=useState<Screentone>(()=>JSON.parse(signature));
   const [busy,setBusy]=useState(false);
@@ -25,6 +29,9 @@ export function ScreentonePanel({locale,layer,resolution,enabled,canCreate,onUpd
   return <div className="screentone-panel" aria-busy={busy}>
     <header><h3>{t.title}</h3><p>{layer?.name}</p></header>
     <fieldset disabled={!editable}>
+      <div className="screentone-preview"><strong>{samples.preview} · {tonePresets.find(p=>matchesTonePreset(draft,p.settings))?.names[language] ?? samples.custom}</strong><ScreentoneSample tone={draft} label={samples.preview}/><small>{samples.scale}</small></div>
+      <strong>{samples.title}</strong><p className="screentone-note">{samples.hint}</p>
+      <div className="screentone-preset-grid" role="group" aria-label={samples.title}>{tonePresets.map(preset=><button className="screentone-preset" key={preset.id} type="button" aria-pressed={matchesTonePreset(draft,preset.settings)} onClick={()=>setDraft(presetScreentone(preset.settings,resolution))}><ScreentoneSample tone={presetScreentone(preset.settings,resolution)} label={preset.names[language]}/><span>{preset.names[language]}</span></button>)}</div>
       <label className="screentone-row screentone-category"><span>{t.kind}</span><select value={draft.kind} aria-label={t.kind} onChange={e=>{const kind=e.currentTarget.value as ToneKind;patch({kind,variant:0,...(kind==='copy'?{density:100}:{}),...(kind==='color'?{color:[48,108,200] as [number,number,number]}:{color:[0,0,0] as [number,number,number]})});}}>{toneKinds.map((kind,i)=><option key={kind} value={kind}>{t.families[i]}</option>)}</select></label>
       <div className="screentone-designs" role="group" aria-label={t.design}>{toneDesigns(locale,draft.kind).map((name,i)=><button key={name} type="button" aria-pressed={draft.variant===i} onClick={()=>patch({variant:i})}>{name}</button>)}</div>
       {number('frequency',t.frequency,1,150)}{number('density',t.density,0,100)}{number('size',t.size,.1,4,.1)}{number('angle',t.angle,-360,360)}

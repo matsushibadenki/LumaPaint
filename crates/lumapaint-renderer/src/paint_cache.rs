@@ -13,6 +13,7 @@ pub(crate) struct PaintCache {
     pub active_tiles_rasterized: usize,
     uploaded: BTreeMap<TileCoord, Vec<u8>>,
     pub replayed: usize,
+    paper: bool,
 }
 
 // At most 8 MiB of dab payload retained per paint cache. Large tips / long strokes
@@ -94,14 +95,59 @@ impl PaintCache {
             active_tiles_rasterized: 0,
             uploaded: BTreeMap::new(),
             replayed: 0,
+            paper: false,
         })
     }
 
-    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        self.tiles.layers()[0].effects.prepare().apply_at(
-            self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4]),
-            [x as f32 + 0.5, y as f32 + 0.5],
-        )
+    pub fn raw_pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        self.tiles.layers()[0].tiles.pixel(x, y).unwrap_or([0; 4])
+    }
+    fn paper_uploads(
+        &self,
+        document: &Document,
+        coords: &BTreeSet<TileCoord>,
+    ) -> Result<Vec<TileUpload>, String> {
+        let (w, h) = document.dimensions();
+        let mut effects = document.layer_effects("layer-1");
+        let mask = effects.mask.take();
+        let effects = effects.prepare();
+        let opacity = if document.background_visible() {
+            document.paint_layer_opacity()
+        } else {
+            0.
+        };
+        Ok(coords
+            .iter()
+            .filter(|c| c.x * TILE_SIZE < w && c.y * TILE_SIZE < h)
+            .map(|coord| {
+                let origin = [coord.x * TILE_SIZE, coord.y * TILE_SIZE];
+                let extent = [TILE_SIZE.min(w - origin[0]), TILE_SIZE.min(h - origin[1])];
+                let mut pixels = vec![0; (extent[0] * extent[1] * 4) as usize];
+                for y in 0..extent[1] {
+                    for x in 0..extent[0] {
+                        let px = origin[0] + x;
+                        let py = origin[1] + y;
+                        let pixel = crate::root_paint::composite(
+                            self.raw_pixel(px, py),
+                            [px as f32 + 0.5, py as f32 + 0.5],
+                            &effects,
+                            mask.as_ref(),
+                            true,
+                        )
+                        .map(|v| (v as f32 * opacity).round() as u8);
+                        let at = ((y * extent[0] + x) * 4) as usize;
+                        pixels[at..at + 4].copy_from_slice(&pixel);
+                    }
+                }
+                TileUpload {
+                    coord: *coord,
+                    origin,
+                    extent,
+                    bytes_per_row: extent[0] * 4,
+                    pixels,
+                }
+            })
+            .collect())
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -260,10 +306,27 @@ impl PaintCache {
         if next.is_none() {
             dirty.extend(active_coords.iter().copied());
         }
-        let uploads = self.tiles.prepare_uploads(&TileInvalidation {
-            layer_id: "paint".into(),
-            coords: dirty.into_iter().collect(),
-        });
+        let paper = crate::root_paint::masked_paper(document);
+        if self.paper != paper || (paper && (!unchanged || force)) {
+            dirty.extend(self.uploaded.keys().copied());
+            if paper {
+                let (w, h) = document.dimensions();
+                for y in 0..h.div_ceil(TILE_SIZE) {
+                    for x in 0..w.div_ceil(TILE_SIZE) {
+                        dirty.insert(TileCoord { x, y });
+                    }
+                }
+            }
+        }
+        self.paper = paper;
+        let uploads = if paper {
+            self.paper_uploads(document, &dirty)
+        } else {
+            self.tiles.prepare_uploads(&TileInvalidation {
+                layer_id: "paint".into(),
+                coords: dirty.into_iter().collect(),
+            })
+        };
         // Roll back only the transient stroke, retaining the committed tile allocation.
         if changes.is_some() {
             self.tiles.undo()?;

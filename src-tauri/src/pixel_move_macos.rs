@@ -89,15 +89,23 @@ pub(super) fn pointer(
                     let source = doc
                         .translated_pixel_layer_source(dx as f32, dy as f32, d.copy)?
                         .ok_or("Image layer changed")?;
-                    doc.replace_moved_pixels(source, None)?;
+                    doc.replace_transformed_pixels(
+                        source,
+                        None,
+                        [1., 0., 0., 1., dx as f32, dy as f32],
+                        !d.copy,
+                    )?;
                 } else if let Some(pixels) = d.pixels {
                     let (w, h) = d.dimensions;
                     let moved = move_pixels(&pixels, w, h, d.selection.as_ref(), dx, dy, d.copy);
                     let png = lumapaint_renderer::vector::document_png(w, h, moved)?;
                     let source = clipboard::image_svg(w, h, &png);
-                    doc.replace_moved_pixels(
+                    let whole = d.selection.is_none() && !d.copy;
+                    doc.replace_transformed_pixels(
                         source,
                         d.selection.map(|s| s.translated(dx as f32, dy as f32)),
+                        [1., 0., 0., 1., dx as f32, dy as f32],
+                        whole,
                     )?;
                 } else {
                     doc.translate_pixel_selection(d.selection, dx as f32, dy as f32);
@@ -113,14 +121,19 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
         let slot = slot.borrow();
         let drag = slot.as_ref().filter(|d| d.retained_source)?;
         Some((|| {
-            let mut preview = DOCUMENT.with(|d| d.borrow().clone());
+            let mut preview = DOCUMENT.with(|d| d.borrow().clone_for_rendering());
             let dx = (drag.current.x - drag.start.x).round();
             let dy = (drag.current.y - drag.start.y).round();
             if dx != 0. || dy != 0. {
                 let source = preview
                     .translated_pixel_layer_source(dx, dy, drag.copy)?
                     .ok_or("Image layer changed")?;
-                preview.replace_moved_pixels(source, None)?;
+                preview.replace_transformed_pixels(
+                    source,
+                    None,
+                    [1., 0., 0., 1., dx, dy],
+                    !drag.copy,
+                )?;
             }
             canvas.renderer.set_frame_overlay(overlay());
             canvas.renderer.render(canvas.viewport, &preview)

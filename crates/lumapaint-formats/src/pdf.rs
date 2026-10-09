@@ -144,7 +144,7 @@ impl DocumentExporter for PdfExporter {
         options: ExportOptions,
     ) -> Result<ExportedDocument, ExportError> {
         let layout = print_layout::PrintLayout::capture(snapshot)?;
-        if layout.is_some() && snapshot.state().layer_effects.values().any(|e| e.enabled) {
+        if layout.is_some() && snapshot.state().layer_effects.values().any(|e| e.active()) {
             return Err(ExportError::UnsupportedFeature(
                 "pdf.print_bleed_requires_vector_content",
             ));

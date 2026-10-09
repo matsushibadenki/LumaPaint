@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct LayerEffects {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<crate::layer_mask::LayerMask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screentone: Option<crate::screentone::Screentone>,
     /// Red, orange, yellow, green, aqua, blue, purple, magenta H/S/L offsets.
     #[serde(default)]
@@ -29,6 +31,7 @@ impl Default for LayerEffects {
     fn default() -> Self {
         Self {
             enabled: false,
+            mask: None,
             screentone: None,
             mixer: [[0.; 3]; 8],
             grading: [[0.; 3]; 3],
@@ -55,15 +58,20 @@ impl PreparedEffects<'_> {
     /// Read-only execution tables for alternate batch backends; not document state.
     pub fn apply_at(&self, pixel: [u8; 4], point: [f32; 2]) -> [u8; 4] {
         let adjusted = self.apply(pixel);
-        if self.effects.enabled {
+        let mut output = if self.effects.enabled {
             self.effects
                 .screentone
                 .as_ref()
                 .map_or(adjusted, |t| t.apply(adjusted, point))
         } else {
             adjusted
+        };
+        if let Some(mask) = &self.effects.mask {
+            output[3] = (f32::from(output[3]) * mask.coverage(point)).round() as u8;
         }
+        output
     }
+
     pub fn tone_tables(&self) -> &[[f32; 256]; 3] {
         &self.tone
     }
@@ -104,7 +112,40 @@ fn tone_channel(c: u8, i: usize, values: &[f32; 10], v: &[f32; 10]) -> f32 {
     c
 }
 impl LayerEffects {
+    pub fn active(&self) -> bool {
+        self.enabled || self.mask.as_ref().is_some_and(|m| m.enabled)
+    }
+    pub fn snapshot(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            mask: self.mask.as_ref().map(|m| m.summary()),
+            screentone: self.screentone.clone(),
+            mixer: self.mixer,
+            grading: self.grading,
+            grading_blend: self.grading_blend,
+            grading_balance: self.grading_balance,
+            values: self.values,
+            curve_smooth: self.curve_smooth,
+            curves: self.curves.clone(),
+        }
+    }
+    pub fn retain_mask_content(&mut self, previous: &Self) -> Result<(), String> {
+        if let Some(mask) = &mut self.mask {
+            if mask.content.is_none() {
+                let old = previous
+                    .mask
+                    .as_ref()
+                    .filter(|old| old.kind == mask.kind)
+                    .ok_or("Mask content not found")?;
+                mask.content = old.content.clone();
+            }
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(mask) = &self.mask {
+            mask.validate()?;
+        }
         if let Some(tone) = &self.screentone {
             tone.validate()?;
         }

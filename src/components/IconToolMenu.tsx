@@ -1,3 +1,4 @@
+import {commandShortcut,useShortcuts} from '../shortcuts';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -5,11 +6,13 @@ import { Icon } from './Icon';
 import { toolMenuImages } from './toolMenuImages';
 
 export interface IconToolChoice { id: string; label: string; icon: keyof typeof import('./Icon').iconPaths; shortcut?: string; enabled?: boolean }
-export function IconToolMenu({ label, choices, selected, active, enabled, selectionShortcuts = false, onSelect, onError, onSettings }: {
+export function IconToolMenu({ label, choices:sourceChoices, selected, active, enabled, selectionShortcuts: _selectionShortcuts = false, onSelect, onError, onSettings }: {
   label: string; choices: readonly [IconToolChoice, ...IconToolChoice[]]; selected: string; active: boolean; enabled: boolean; selectionShortcuts?: boolean;
   onSettings?: (tool: string) => void;
   onSelect: (tool: string) => void; onError: (message: string) => void;
 }) {
+  useShortcuts();
+  const choices=sourceChoices.map(item=>({...item,shortcut:commandShortcut(`tool.${item.id}`)}));
   const selectedIndex = Math.max(0, choices.findIndex(choice => choice.id === selected));
   const choice = choices[selectedIndex];
   const [native, setNative] = useState(false);
@@ -35,7 +38,7 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
       const rect = trigger.current!.getBoundingClientRect();
       // AppKit hosts the horizontal picker above Metal; other platforms use the DOM picker.
       const result = await invoke<{ supported: boolean; index: number | null }>('icon_tool_menu', {
-        request: { x: rect.right + 4, y: rect.top + rect.height / 2, selected: selectedIndex, enabled: choices.map(item => item.enabled !== false), selectionShortcuts,
+        request: { x: rect.right + 4, y: rect.top + rect.height / 2, selected: selectedIndex, enabled: choices.map(item => item.enabled !== false), selectionShortcuts:false,
         labels: choices.map(item => item.shortcut ? `${item.label} (${item.shortcut})` : item.label),
         images: await toolMenuImages(trigger.current!, choices.map(item => item.icon), choices.map(item => item.enabled !== false)), },
       });
@@ -86,9 +89,6 @@ export function IconToolMenu({ label, choices, selected, active, enabled, select
     event.stopPropagation();
     if (event.key === 'Escape') { event.preventDefault(); close(true); }
     if (event.key === 'Tab') { close(true); }
-    if (selectionShortcuts && event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      event.preventDefault(); close(true); onSelect(choices[event.shiftKey ? 1 : 0].id);
-    }
     if (['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
       const items = [...popup.current!.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)')];

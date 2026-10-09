@@ -6,6 +6,7 @@ mod media_browser;
 mod pdf_import;
 #[cfg(any(target_os = "macos", test))]
 mod psd_import;
+mod shortcuts;
 mod timeline;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
@@ -107,7 +108,7 @@ pub fn run() {
                             "new-editor-window",
                             "New Window",
                             true,
-                            Some("CmdOrCtrl+Shift+N"),
+                            None::<&str>,
                         )?)?;
                     }
                 }
@@ -124,7 +125,11 @@ pub fn run() {
                 }
             }
         })
+        .manage(shortcuts::Store::default())
         .invoke_handler(tauri::generate_handler![
+            shortcuts::shortcut_catalog,
+            shortcuts::save_shortcuts,
+            shortcuts::export_shortcuts,
             media_browser::media_scan,
             media_browser::media_interest,
             media_browser::media_cancel_scan,
@@ -165,11 +170,15 @@ pub fn run() {
             canvas::set_layer_settings,
             canvas::set_raster_blend_mode,
             canvas::set_layer_effects,
+            canvas::create_layer_mask,
+            canvas::transform_layer_mask,
             canvas::create_screentone_layer,
             canvas::delete_layer,
             canvas::add_paint_layer,
             canvas::add_vector_layer,
             canvas::select_layer,
+            canvas::select_layer_target,
+            canvas::select_channel,
             canvas::upsert_vector_object,
             canvas::set_text_object,
             canvas::text_fonts,

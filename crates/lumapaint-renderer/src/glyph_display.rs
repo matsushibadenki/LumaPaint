@@ -54,6 +54,7 @@ impl Display {
         if prepared {
             self.ready.insert(layer.id.clone());
         } else {
+            self.ready.remove(&layer.id);
             crate::performance::count("glyph_display_fallbacks", 1);
         }
         prepared
@@ -82,9 +83,10 @@ impl Display {
             v.document_width.to_bits(),
             v.document_height.to_bits(),
         ];
-        // Initial application pilot only: one physical pixel per document pixel,
-        // integer canvas placement. Other densities retain established sampling.
-        if scale != 1. || left.fract() != 0. || top.fract() != 0. {
+        // Only the explicitly compared physical densities are qualified.
+        // Other densities keep compatibility. Fractional canvas edge masks are qualified
+        // only when boundary ink cannot overlap another glyph.
+        if !matches!(scale, 0.25 | 0.5 | 0.75 | 1. | 1.25 | 1.5 | 2.) {
             return false;
         }
         if !scale.is_finite()
@@ -118,13 +120,47 @@ impl Display {
             left + v.document_width * scale,
             top + v.document_height * scale,
         ];
-        for g in &mut run.glyphs {
-            g.clip = [
-                g.clip[0].max(canvas[0]),
-                g.clip[1].max(canvas[1]),
-                g.clip[2].min(canvas[2]),
-                g.clip[3].min(canvas[3]),
-            ];
+        if canvas.iter().any(|v| !v.is_finite()) {
+            return false;
+        }
+        if canvas.iter().any(|v| v.fract() != 0.) {
+            if !run.ink_fits_viewport() {
+                crate::performance::count("glyph_display_viewport_edge_fallback", 1);
+                return false;
+            }
+            let mut boundary_masks = 0;
+            for g in &mut run.glyphs {
+                let Some(()) = g.key.set_canvas_clip([
+                    canvas[0] - g.origin[0],
+                    canvas[1] - g.origin[1],
+                    canvas[2] - g.origin[0],
+                    canvas[3] - g.origin[1],
+                ]) else {
+                    return false;
+                };
+                boundary_masks += u64::from(g.key.has_canvas_clip());
+                // Keep partial boundary pixels; coverage is in the atlas mask.
+                g.clip = [
+                    g.clip[0].max(canvas[0].floor()),
+                    g.clip[1].max(canvas[1].floor()),
+                    g.clip[2].min(canvas[2].ceil()),
+                    g.clip[3].min(canvas[3].ceil()),
+                ];
+            }
+            if boundary_masks > 0 && !run.clipped_ink_is_disjoint() {
+                crate::performance::count("glyph_display_fractional_canvas_fallback", 1);
+                return false;
+            }
+            crate::performance::count("glyph_canvas_boundary_masks", boundary_masks);
+        } else {
+            for g in &mut run.glyphs {
+                g.clip = [
+                    g.clip[0].max(canvas[0]),
+                    g.clip[1].max(canvas[1]),
+                    g.clip[2].min(canvas[2]),
+                    g.clip[3].min(canvas[3]),
+                ];
+            }
         }
         let bytes = u64::from(v.width) * u64::from(v.height) * 4
             + run.glyphs.len() as u64 * 64
@@ -252,63 +288,69 @@ mod tests {
         display.encode(&mut encoder);
         queue.submit([encoder.finish()]);
         assert!(!display.layers[&layer.id].target.dirty.get());
-        // Exercise the same final sRGB layer composition used by the application.
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: 256,
-                height: 128,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&Default::default());
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let display_id = layer.id.clone();
+        let render = |display: &Display| {
+            let target = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            display.draw(&mut pass, &layer.id);
-        }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 256 * 128 * 4,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(1024),
-                    rows_per_image: Some(128),
+                size: wgpu::Extent3d {
+                    width: 256,
+                    height: 128,
+                    depth_or_array_layers: 1,
                 },
-            },
-            target.size(),
-        );
-        queue.submit([encoder.finish()]);
-        buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let actual = buffer.slice(..).get_mapped_range().unwrap();
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            display.encode(&mut encoder);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                display.draw(&mut pass, &display_id);
+            }
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 128 * 4,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(1024),
+                        rows_per_image: Some(128),
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let actual = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+            buffer.unmap();
+            actual
+        };
+        let actual = render(&display);
         let tree = crate::vector::parse_for_glyph_atlas(&layer.source).unwrap();
         let mut expected = tiny_skia::Pixmap::new(256, 128).unwrap();
         resvg::render(
@@ -324,11 +366,181 @@ mod tests {
             .unwrap();
         eprintln!("glyph display final sRGB composition rgba_max={max}");
         assert!(max <= 2);
-        drop(actual);
-        buffer.unmap();
 
+        for density in [0.25, 0.5, 0.75, 1., 1.25, 1.5, 2., 1.] {
+            let zoomed = v.with_screen_zoom(density);
+            display.begin_frame(&visible);
+            assert!(display.prepare(&device, &queue, &layer, zoomed));
+            let actual = render(&display);
+            let ts = tiny_skia::Transform::from_row(
+                density,
+                0.,
+                0.,
+                density,
+                (256. - 256. * density) * 0.5,
+                (128. - 128. * density) * 0.5,
+            );
+            let mut expected = tiny_skia::Pixmap::new(256, 128).unwrap();
+            resvg::render(&tree, ts, &mut expected.as_mut());
+            let max = actual
+                .iter()
+                .zip(expected.data())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            eprintln!("glyph display density={density} rgba_max={max}");
+            assert!(max <= 2);
+            display.begin_frame(&visible);
+            assert!(display.prepare(&device, &queue, &layer, zoomed));
+            assert!(!display.layers[&layer.id].target.dirty.get());
+        }
+        // Compare fractional root coverage after frame/glyph composition.
+        let base = layer.source.clone();
+        let mut boundary_comparisons = 0;
+        let mut boundary_densities = [0usize; 7];
+        for boundary in [0, 1, 2, 3] {
+            layer.source = if boundary > 0 {
+                crate::glyph_draw::source("A", "")
+                    .replace("<g clip-path='url(#c)'>", "<g>")
+                    .replace(
+                        "x='20' y='50'",
+                        if boundary != 2 {
+                            "x='-3' y='17'"
+                        } else {
+                            "x='245' y='132'"
+                        },
+                    )
+            } else {
+                base.clone()
+            };
+            if boundary == 3 {
+                layer.source = layer
+                    .source
+                    .replace("<g>", "<g clip-path='url(#c)'>")
+                    .replace(
+                        "x='10' y='10' width='230' height='108'",
+                        "x='-2.5' y='-2.5' width='15.5' height='25.5'",
+                    );
+            }
+            let tree = crate::vector::parse_for_glyph_atlas(&layer.source).unwrap();
+            for (density_index, density) in
+                [0.25, 0.5, 0.75, 1., 1.25, 1.5, 2.].into_iter().enumerate()
+            {
+                for alpha in [1., 0.6] {
+                    layer.opacity = alpha;
+                    for (dx, dy) in [
+                        (12.25, 20.5),
+                        (12.75, 20.125),
+                        (-12.25, -20.5),
+                        (12.25, 20.5),
+                    ] {
+                        let mut moved = v.with_screen_zoom(density);
+                        // Bring the document edge into view even at 2x density.
+                        let left = match boundary {
+                            0 => (256. - 256. * density) * 0.5 + dx,
+                            2 => 256. - 256. * density + dx,
+                            _ => dx,
+                        };
+                        let top = match boundary {
+                            0 => (128. - 128. * density) * 0.5 + dy,
+                            2 => 128. - 128. * density + dy,
+                            _ => dy,
+                        };
+                        moved.pan_x = left - (256. - 256. * density) * 0.5;
+                        moved.pan_y = top - (128. - 128. * density) * 0.5;
+                        let transform =
+                            tiny_skia::Transform::from_row(density, 0., 0., density, left, top);
+                        display.begin_frame(&visible);
+                        if GlyphRun::from_tree(&tree, [256, 128], transform)
+                            .is_none_or(|run| !run.ink_fits_viewport())
+                        {
+                            // Offscreen/partially viewport-clipped ink retains compatibility.
+                            assert!(!display.prepare(&device, &queue, &layer, moved));
+                            assert!(!display.ready(&layer));
+                            continue;
+                        }
+                        assert!(
+                            display.prepare(&device, &queue, &layer, moved),
+                            "density={density} pan=({dx},{dy}) boundary={boundary}"
+                        );
+                        boundary_comparisons += usize::from(boundary > 0);
+                        boundary_densities[density_index] += usize::from(boundary > 0);
+                        let actual = render(&display);
+                        let mut expected = tiny_skia::Pixmap::new(256, 128).unwrap();
+                        resvg::render(&tree, transform, &mut expected.as_mut());
+                        let mut clip = tiny_skia::Pixmap::new(256, 128).unwrap();
+                        clip.fill(tiny_skia::Color::BLACK);
+                        let clear = tiny_skia::Paint {
+                            blend_mode: tiny_skia::BlendMode::Clear,
+                            ..Default::default()
+                        };
+                        let rectangle = tiny_skia::PathBuilder::from_rect(
+                            tiny_skia::Rect::from_xywh(left, top, 256. * density, 128. * density)
+                                .unwrap(),
+                        );
+                        clip.fill_path(
+                            &rectangle,
+                            &clear,
+                            tiny_skia::FillRule::Winding,
+                            tiny_skia::Transform::identity(),
+                            None,
+                        );
+                        let mut mask =
+                            tiny_skia::Mask::from_pixmap(clip.as_ref(), tiny_skia::MaskType::Alpha);
+                        mask.invert();
+                        expected.apply_mask(&mask);
+                        let max = actual
+                            .iter()
+                            .zip(expected.data())
+                            .map(|(a, b)| a.abs_diff((f32::from(*b) * alpha).round() as u8))
+                            .max()
+                            .unwrap();
+                        eprintln!("glyph fractional density={density} pan=({dx},{dy}) opacity={alpha} boundary={boundary} rgba_max={max}");
+                        if max > 2 {
+                            for (i, (a, b)) in actual
+                                .iter()
+                                .zip(expected.data())
+                                .enumerate()
+                                .filter(|(_, (a, b))| {
+                                    a.abs_diff((f32::from(**b) * alpha).round() as u8) > 2
+                                })
+                                .take(8)
+                            {
+                                eprintln!("canvas mismatch x={} y={} channel={} actual={} expected={} root_alpha={}",
+                                    (i/4)%256, (i/4)/256, i%4, a, b, mask.data()[i/4]);
+                            }
+                        }
+                        assert!(max <= 2);
+                        display.begin_frame(&visible);
+                        assert!(display.prepare(&device, &queue, &layer, moved));
+                        assert!(!display.layers[&layer.id].target.dirty.get());
+                    }
+                }
+            }
+        }
+        assert!(boundary_comparisons >= 12);
+        assert!(
+            boundary_densities.iter().all(|&count| count >= 4),
+            "{boundary_densities:?}"
+        );
+        // Confirm the diagnosed viewport-bottom discrepancy is never qualified.
+        layer.source = crate::glyph_draw::source("A", "")
+            .replace("<g clip-path='url(#c)'>", "<g>")
+            .replace("x='20' y='50'", "x='245' y='132'");
+        let mut viewport_edge = v.with_screen_zoom(0.75);
+        viewport_edge.pan_x = 12.25;
+        viewport_edge.pan_y = 20.5;
+        display.begin_frame(&visible);
+        assert!(!display.prepare(&device, &queue, &layer, viewport_edge));
+        assert!(!display.ready(&layer));
+        eprintln!(
+            "qualified canvas comparisons={boundary_comparisons} densities={boundary_densities:?}"
+        );
+        layer.source = base;
+        layer.opacity = 1.;
         display.begin_frame(&visible);
         assert!(display.prepare(&device, &queue, &layer, v));
+        render(&display);
         assert!(!display.layers[&layer.id].target.dirty.get());
         layer.opacity = 0.6;
         assert!(!display.ready(&layer));
@@ -344,9 +556,16 @@ mod tests {
         assert!(display.prepare(&device, &queue, &layer, v));
         layer.source = crate::glyph_draw::source("ABC ABC", "");
         assert!(display.prepare(&device, &queue, &layer, v));
-        display.begin_frame(&visible);
-        assert!(!display.prepare(&device, &queue, &layer, v.with_screen_zoom(0.5)));
+        // Rejection must invalidate an already-ready layer in the same frame.
+        assert!(display.ready(&layer));
+        assert!(!display.prepare(&device, &queue, &layer, v.with_screen_zoom(0.8)));
         assert!(!display.ready(&layer));
+        display.begin_frame(&visible);
+        assert!(
+            display.prepare(&device, &queue, &layer, v.with_screen_zoom(1.25)),
+            "two-stage layout transforms must qualify 125%"
+        );
+        assert!(display.ready(&layer));
         display.begin_frame(&visible);
         layer.source = crate::glyph_draw::source("ABC ABC", "stroke='black'");
         assert!(!display.prepare(&device, &queue, &layer, v));

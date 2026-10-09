@@ -1,5 +1,9 @@
 #[path = "animation.rs"]
 pub mod animation;
+#[path = "document_channels.rs"]
+mod document_channels;
+#[path = "document_layer_masks.rs"]
+mod document_layer_masks;
 #[path = "document_vector_selection.rs"]
 mod vector_selection;
 pub use vector_selection::{
@@ -511,6 +515,8 @@ pub struct DocumentSnapshot {
     pub canvas_color: CanvasColor,
     pub pixel_aspect_ratio: f32,
     pub layer_id: String,
+    pub editing_channel: u32,
+    pub layer_edit_target: crate::layer_mask::LayerEditTarget,
     pub layer_visible: bool,
     pub color_mode: ColorMode,
     pub color_profile: ColorProfile,
@@ -729,6 +735,8 @@ pub struct Document {
     layer_mask_density: f32,
     svg_layers: Vec<SvgLayer>,
     selected_layer: Option<String>,
+    editing_channel: u32,
+    layer_edit_selection: Option<(String, crate::layer_mask::LayerEditTarget)>,
     selected_vector_objects: Vec<String>,
     vector_undo: Vec<VectorHistoryEntry>,
     vector_redo: Vec<VectorHistoryEntry>,
@@ -793,6 +801,8 @@ impl Default for Document {
             layer_mask_density: 1.0,
             svg_layers: Vec::new(),
             selected_layer: None,
+            editing_channel: 0,
+            layer_edit_selection: None,
             selected_vector_objects: Vec::new(),
             vector_undo: Vec::new(),
             vector_redo: Vec::new(),
@@ -853,6 +863,8 @@ impl Document {
             layer_mask_density: self.layer_mask_density,
             svg_layers: self.svg_layers.clone(),
             selected_layer: self.selected_layer.clone(),
+            editing_channel: self.editing_channel,
+            layer_edit_selection: self.layer_edit_selection.clone(),
             selected_vector_objects: self.selected_vector_objects.clone(),
             color_mode: self.color_mode,
             color_profile: self.color_profile,
@@ -950,8 +962,12 @@ impl Document {
             effects_key: {
                 use std::hash::Hasher;
                 let mut hash = std::collections::hash_map::DefaultHasher::new();
-                let effects = self.layer_effects("layer-1");
+                let neutral = crate::layer_effects::LayerEffects::default();
+                let effects = self.layer_effects.get("layer-1").unwrap_or(&neutral);
                 hash.write_u8(u8::from(effects.enabled));
+                if let Some(mask) = &effects.mask {
+                    mask.hash_state(&mut hash);
+                }
                 for smooth in effects.curve_smooth {
                     hash.write_u8(u8::from(smooth));
                 }
@@ -972,7 +988,12 @@ impl Document {
 
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut layers = vec![LayerSnapshot {
-            effects: Some(self.layer_effects("layer-1")),
+            effects: Some(
+                self.layer_effects
+                    .get("layer-1")
+                    .map(|e| e.snapshot())
+                    .unwrap_or_default(),
+            ),
             raster_blend_mode: None,
             guide_color: self.layer_guide_color("layer-1"),
             objects: Vec::new(),
@@ -1008,7 +1029,12 @@ impl Document {
                         Vec::new()
                     };
                     LayerSnapshot {
-                        effects: Some(self.layer_effects(&layer.id)),
+                        effects: Some(
+                            self.layer_effects
+                                .get(&layer.id)
+                                .map(|e| e.snapshot())
+                                .unwrap_or_default(),
+                        ),
                         raster_blend_mode: None,
                         guide_color: self.layer_guide_color(&layer.id),
                         objects: layer
@@ -1091,8 +1117,14 @@ impl Document {
             guides: self.guides.snapshot(),
             has_locked_objects: self.has_locked_objects(),
             has_hidden_objects: self.has_hidden_objects(),
-            selected_bounds: self.selected_vector_bounds(),
-            transform_panel: self.transform_panel_info(),
+            selected_bounds: (self.layer_edit_target()
+                == crate::layer_mask::LayerEditTarget::Content)
+                .then(|| self.selected_vector_bounds())
+                .flatten(),
+            transform_panel: (self.layer_edit_target()
+                == crate::layer_mask::LayerEditTarget::Content)
+                .then(|| self.transform_panel_info())
+                .flatten(),
             active_saved_path: self.path_editing.as_ref().map(|edit| edit.id.clone()),
             saved_paths: self
                 .saved_paths
@@ -1117,6 +1149,8 @@ impl Document {
             canvas_color: self.canvas_color,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
             layer_id: self.selected_layer_id().to_owned(),
+            layer_edit_target: self.layer_edit_target(),
+            editing_channel: self.editing_channel,
             layer_visible: self
                 .selected_layer
                 .as_ref()
@@ -1150,7 +1184,7 @@ impl Document {
                     })
                 })
                 .collect(),
-            selected_vector_objects: self.selected_vector_objects.clone(),
+            selected_vector_objects: self.selected_vector_ids().to_vec(),
             can_undo: !self.undo_order.is_empty(),
             can_redo: !self.redo_order.is_empty(),
             revision: self.revision,
@@ -1405,6 +1439,7 @@ impl Document {
         self.finish();
         if self.color_mode != mode {
             self.color_mode = mode;
+            self.editing_channel = 0;
             self.color_profile = match mode {
                 ColorMode::Rgb => ColorProfile::Srgb,
                 ColorMode::Cmyk => ColorProfile::JapanColor2001Coated,
@@ -1725,13 +1760,14 @@ impl Document {
         self.layer_effects.get(id).cloned().unwrap_or_default()
     }
     pub fn has_layer_effects(&self, id: &str) -> bool {
-        self.layer_effects.get(id).is_some_and(|e| e.enabled)
+        self.layer_effects.get(id).is_some_and(|e| e.active())
     }
     pub fn set_layer_effects(
         &mut self,
         id: &str,
-        effects: crate::layer_effects::LayerEffects,
+        mut effects: crate::layer_effects::LayerEffects,
     ) -> Result<(), String> {
+        effects.retain_mask_content(&self.layer_effects(id))?;
         effects.validate()?;
         let locked = if id == "layer-1" {
             self.layer_locked
@@ -2334,6 +2370,7 @@ impl Document {
         self.finish();
         self.layer_groups.selected = vec![id.clone()];
         self.selected_layer = Some(id);
+        self.layer_edit_selection = None;
         self.selected_vector_objects.clear();
         Ok(())
     }
@@ -2349,6 +2386,9 @@ impl Document {
     }
 
     pub fn selected_vector_target(&self) -> Result<Option<String>, String> {
+        if self.layer_edit_target() != crate::layer_mask::LayerEditTarget::Content {
+            return Err("Select the layer content thumbnail / レイヤー本体のサムネイルを選択してください / 请选择图层内容缩略图".into());
+        }
         let Some(id) = &self.selected_layer else {
             return Ok(None);
         };
@@ -5808,9 +5848,11 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
+        let mask_updates = self.linked_mask_updates(&layers)?;
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers = layers;
+        self.layer_effects.extend(mask_updates);
         self.record_vector_edit(before);
         self.revision += 1;
         Ok(true)
@@ -5835,19 +5877,20 @@ impl Document {
     }
 
     pub fn affine_selected_vectors(&mut self, matrix: [f32; 6]) -> Result<bool, String> {
-        self.affine_vectors(matrix, false)
+        self.affine_vectors(matrix, false, true)
     }
     pub fn resize_selected_image_frames(
         &mut self,
         matrix: [f32; 6],
         scale_content: bool,
     ) -> Result<bool, String> {
-        self.affine_vectors(matrix, !scale_content)
+        self.affine_vectors(matrix, !scale_content, true)
     }
     fn affine_vectors(
         &mut self,
         matrix: [f32; 6],
         preserve_frame_content: bool,
+        record_history: bool,
     ) -> Result<bool, String> {
         if matrix.iter().any(|v| !v.is_finite())
             || (matrix[0] * matrix[3] - matrix[1] * matrix[2]).abs() < 0.000001
@@ -5903,10 +5946,19 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
+        let mask_updates = self.linked_mask_updates(&layers)?;
         self.finish();
-        let before = self.vector_history_state();
+        let before = record_history.then(|| self.vector_history_state());
+        if !record_history {
+            self.scene_journal.layers_changed(&self.svg_layers, &layers);
+        }
         self.svg_layers = layers;
-        self.record_vector_edit(before);
+        self.layer_effects.extend(mask_updates);
+        if let Some(before) = before {
+            self.record_vector_edit(before);
+        } else {
+            self.sync_saved_path();
+        }
         self.revision += 1;
         Ok(true)
     }
@@ -5949,9 +6001,11 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
+        let mask_updates = self.linked_mask_updates(&layers)?;
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers = layers;
+        self.layer_effects.extend(mask_updates);
         self.record_vector_edit(before);
         self.revision += 1;
         Ok(true)
@@ -6001,9 +6055,11 @@ impl Document {
         if layers.iter().map(|l| l.source.len()).sum::<usize>() > MAX_SVG_TOTAL_BYTES {
             return Err("Project contains too much vector data".into());
         }
+        let mask_updates = self.linked_mask_updates(&layers)?;
         self.finish();
         let before = self.vector_history_state();
         self.svg_layers = layers;
+        self.layer_effects.extend(mask_updates);
         self.record_vector_edit(before);
         self.revision += 1;
         Ok(true)
@@ -6222,6 +6278,12 @@ impl Document {
         dy: f32,
         record_history: bool,
     ) -> Result<bool, String> {
+        if self.selected_vectors_have_mask() {
+            if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000. || dy.abs() >= 100_000. {
+                return Err("Invalid vector translation".into());
+            }
+            return self.affine_vectors([1., 0., 0., 1., dx, dy], false, record_history);
+        }
         let _timer = crate::performance::time("document_vector_move");
         crate::performance::count(
             if record_history {
@@ -6477,7 +6539,11 @@ impl Document {
     }
 
     pub fn selected_vector_ids(&self) -> &[String] {
-        &self.selected_vector_objects
+        if self.layer_edit_target() == crate::layer_mask::LayerEditTarget::Content {
+            &self.selected_vector_objects
+        } else {
+            &[]
+        }
     }
 
     /// Consecutive visible objects stay in painter order when a partial drag is

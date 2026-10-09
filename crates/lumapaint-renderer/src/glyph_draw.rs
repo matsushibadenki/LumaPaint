@@ -179,7 +179,14 @@ mod tests {
             .unwrap();
         let family = family.replace('&', "&amp;").replace('"', "&quot;");
         let source=format!("<svg xmlns='http://www.w3.org/2000/svg' width='256' height='128'><defs><clipPath id='c'><rect x='10' y='10' width='230' height='108'/></clipPath></defs><g clip-path='url(#c)'><text x='20' y='50' font-family=\"{family}\" font-size='24' fill='#395d91' {extra}>{text}</text></g></svg>");
-        source
+        if extra.contains("data-atlas-boundary") {
+            source.replace(
+                "x='10' y='10' width='230' height='108'",
+                "x='22.25' y='30.5' width='11.5' height='18.25'",
+            )
+        } else {
+            source
+        }
     }
     fn tree(text: &str, extra: &str) -> usvg::Tree {
         usvg::Tree::from_str(
@@ -200,6 +207,50 @@ mod tests {
             GlyphRun::from_tree(&t, [256, 128], tiny_skia::Transform::from_translate(3., 2.))
                 .unwrap();
         assert_eq!(first.glyphs.len(), 6);
+        assert!(GlyphRun::from_tree(
+            &t,
+            [256, 128],
+            tiny_skia::Transform::from_translate(0.5, 0.)
+        )
+        .is_some());
+        assert!(
+            GlyphRun::from_tree(&t, [256, 128], tiny_skia::Transform::from_scale(0.75, 0.75))
+                .is_some()
+        );
+        let single = source("A", "data-atlas-boundary='1'");
+        let start = single.find("<text ").unwrap();
+        let end = single.find("</text>").unwrap() + 7;
+        let duplicate = format!(
+            "{}{}{}",
+            &single[..end],
+            &single[start..end],
+            &single[end..]
+        );
+        let options = usvg::Options {
+            fontdb: crate::vector::system_fonts(),
+            font_resolver: crate::vector::font_resolver(),
+            ..Default::default()
+        };
+        let overlap = usvg::Tree::from_str(&duplicate, &options).unwrap();
+        assert!(
+            GlyphRun::from_tree(&overlap, [256, 128], tiny_skia::Transform::identity()).is_none(),
+            "overlapping glyph blending must keep compatibility"
+        );
+        let nested = single
+            .replace(
+                "<g clip-path='url(#c)'>",
+                "<g clip-path='url(#c)'><g clip-path='url(#c)'>",
+            )
+            .replace("</g></svg>", "</g></g></svg>");
+        assert!(
+            GlyphRun::from_tree(
+                &usvg::Tree::from_str(&nested, &options).unwrap(),
+                [256, 128],
+                tiny_skia::Transform::identity()
+            )
+            .is_none(),
+            "nested fractional masks must not be reduced to a rectangle intersection"
+        );
         for (a, b) in first.glyphs.iter().zip(&moved.glyphs) {
             assert_eq!(a.key, b.key);
             assert_eq!([a.origin[0] + 3., a.origin[1] + 2.], b.origin);
@@ -241,88 +292,114 @@ mod tests {
             view_formats: &[],
         });
         let view = target.create_view(&Default::default());
-        for (text, style, transform) in [
-            ("ABC ABC", "", tiny_skia::Transform::identity()),
-            (
-                "ABC ABC",
-                "fill-opacity='0.6'",
-                tiny_skia::Transform::identity(),
-            ),
-            ("日本語 中文 ABC", "", tiny_skia::Transform::identity()),
-            (
-                "ABC",
-                "writing-mode='vertical-rl'",
-                tiny_skia::Transform::identity(),
-            ),
-            ("ABC ABC", "", tiny_skia::Transform::from_translate(3., 2.)),
-        ] {
-            let t = tree(text, style);
-            let Some(run) = GlyphRun::from_tree(&t, [256, 128], transform) else {
-                panic!("unsupported fixture {text}/{style}");
-            };
-            let batch = pipeline.prepare(&device, &queue, &mut atlas, &run).unwrap();
-            let mut encoder = device.create_command_encoder(&Default::default());
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut compared = 0;
+        let mut boundary_compared = 0;
+        for density in [0.25, 0.5, 0.75, 1., 1.25, 1.5, 2.] {
+            for (text, style, transform) in [
+                ("ABC ABC", "", tiny_skia::Transform::identity()),
+                (
+                    "ABC ABC",
+                    "fill-opacity='0.6'",
+                    tiny_skia::Transform::identity(),
+                ),
+                ("日本語 中文 ABC", "", tiny_skia::Transform::identity()),
+                (
+                    "ABC",
+                    "writing-mode='vertical-rl'",
+                    tiny_skia::Transform::identity(),
+                ),
+                ("ABC ABC", "", tiny_skia::Transform::from_translate(3., 2.)),
+                (
+                    "A",
+                    "data-atlas-boundary='1'",
+                    tiny_skia::Transform::identity(),
+                ),
+                (
+                    "A",
+                    "data-atlas-boundary='1' fill-opacity='0.6'",
+                    tiny_skia::Transform::identity(),
+                ),
+            ] {
+                let transform =
+                    transform.pre_concat(tiny_skia::Transform::from_scale(density, density));
+                let t = tree(text, style);
+
+                let Some(run) = GlyphRun::from_tree(&t, [256, 128], transform) else {
+                    eprintln!("glyph atlas density={density} fixture={text}/{style} conservative overlapping-ink fallback");
+                    continue;
+                };
+                compared += 1;
+                if style.contains("data-atlas-boundary") {
+                    boundary_compared += 1;
+                }
+                let batch = pipeline.prepare(&device, &queue, &mut atlas, &run).unwrap();
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    assert!(pipeline.draw(&mut pass, &atlas, &batch));
+                }
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                     label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
+                    size: 256 * 128 * 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
                 });
-                assert!(pipeline.draw(&mut pass, &atlas, &batch));
-            }
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 256 * 128 * 4,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            encoder.copy_texture_to_buffer(
-                target.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(1024),
-                        rows_per_image: Some(128),
+                encoder.copy_texture_to_buffer(
+                    target.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(1024),
+                            rows_per_image: Some(128),
+                        },
                     },
-                },
-                target.size(),
-            );
-            queue.submit([encoder.finish()]);
-            buffer
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            let actual = buffer.slice(..).get_mapped_range().unwrap();
-            let mut expected = tiny_skia::Pixmap::new(256, 128).unwrap();
-            resvg::render(&t, transform, &mut expected.as_mut());
-            let max = actual
-                .iter()
-                .zip(expected.data())
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap();
-            let mean = actual
-                .iter()
-                .zip(expected.data())
-                .map(|(a, b)| u64::from(a.abs_diff(*b)))
-                .sum::<u64>() as f64
-                / actual.len() as f64;
-            eprintln!("glyph atlas fixture={text}/{style} rgba_max={max} mean={mean}");
-            assert!(
-                max <= 2,
-                "glyph atlas quality gate {text}/{style}: max={max}, mean={mean}"
-            );
-            drop(actual);
-            buffer.unmap();
+                    target.size(),
+                );
+                queue.submit([encoder.finish()]);
+                buffer
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let actual = buffer.slice(..).get_mapped_range().unwrap();
+                let mut expected = tiny_skia::Pixmap::new(256, 128).unwrap();
+                resvg::render(&t, transform, &mut expected.as_mut());
+                let max = actual
+                    .iter()
+                    .zip(expected.data())
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                let mean = actual
+                    .iter()
+                    .zip(expected.data())
+                    .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                    .sum::<u64>() as f64
+                    / actual.len() as f64;
+                eprintln!("glyph atlas density={density} fixture={text}/{style} rgba_max={max} mean={mean}");
+                assert!(
+                    max <= 2,
+                    "glyph atlas quality gate {text}/{style}: max={max}, mean={mean}"
+                );
+                drop(actual);
+                buffer.unmap();
+            }
         }
+        assert!(
+            compared >= 25 && boundary_compared >= 8,
+            "quality suite must exercise actual GPU clips, not only fallback"
+        );
     }
 }

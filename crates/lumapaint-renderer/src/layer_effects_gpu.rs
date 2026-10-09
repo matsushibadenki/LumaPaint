@@ -8,10 +8,14 @@ use std::{
 pub(super) const CONFIG_LEN: usize = 1132;
 const BUDGET: u64 = 64 * 1024 * 1024;
 const MIN_PIXELS: usize = 262144;
-pub(super) fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
+pub(super) fn config(e: &LayerEffects) -> Option<Vec<f32>> {
     e.validate().ok()?;
-    let plan = e.prepare();
-    let mut out = [0.; CONFIG_LEN];
+    let neutral = LayerEffects::default();
+    let color_effects = if e.enabled { e } else { &neutral };
+    let plan = color_effects.prepare();
+    let mask = e.mask.as_ref();
+    let e = color_effects;
+    let mut out = vec![0.; CONFIG_LEN + 3];
     out[0] = e.values[9] / 100.;
     out[1] = e.values[8] / 100.;
     out[2] = ((50. - e.grading_blend) / 25.).exp2();
@@ -63,6 +67,70 @@ pub(super) fn config(e: &LayerEffects) -> Option<[f32; CONFIG_LEN]> {
             f32::from(t.inverted),
         ]);
     }
+    if let Some(mask) = mask.filter(|m| m.enabled) {
+        use lumapaint_core::{
+            layer_mask::MaskContent,
+            selection::{Selection, SelectionOperation, SelectionShape},
+        };
+        out.extend(lumapaint_core::image_frame::inverse(mask.transform).ok()?);
+        out[1126] = f32::from(mask.inverted);
+        out[1127] = mask.density;
+        match mask.content.as_ref()? {
+            MaskContent::Pixel {
+                width,
+                height,
+                runs,
+            } => {
+                out[1125] = 1.;
+                out[1128] = *width as f32;
+                out[1129] = *height as f32;
+                out[1130] = runs.len() as f32;
+                for run in runs {
+                    out.extend(run.map(f32::from_bits));
+                }
+            }
+            MaskContent::Vector { selection, edits } => {
+                out[1125] = 2.;
+                out[1130] = selection.regions.len() as f32;
+                fn append(out: &mut Vec<f32>, selection: &Selection) {
+                    for region in &selection.regions {
+                        let shape = match region.shape {
+                            SelectionShape::Rectangle => 0.,
+                            SelectionShape::Ellipse => 1.,
+                            SelectionShape::Polygon => 2.,
+                            SelectionShape::Stroke => 3.,
+                        };
+                        let op = match region.operation {
+                            SelectionOperation::Replace => 0.,
+                            SelectionOperation::Add => 1.,
+                            SelectionOperation::Subtract => 2.,
+                            SelectionOperation::Intersect => 3.,
+                            SelectionOperation::Invert => 4.,
+                        };
+                        out.extend([shape, op, region.radius, region.points.len() as f32]);
+                        out.extend(region.bounds);
+                        for p in &region.points {
+                            out.extend([p.x, p.y]);
+                        }
+                    }
+                }
+                append(&mut out, selection);
+                out[1131] = edits.len() as f32;
+                for edit in edits {
+                    out.push(f32::from(edit.reveal));
+                    out.extend(edit.to_geometry);
+                    out.extend([
+                        edit.selection.regions.len() as f32,
+                        edit.clip.as_ref().map_or(0, |c| c.regions.len()) as f32,
+                    ]);
+                    append(&mut out, &edit.selection);
+                    if let Some(clip) = &edit.clip {
+                        append(&mut out, clip);
+                    }
+                }
+            }
+        }
+    }
     Some(out)
 }
 fn capacity(bytes: u64, limits: &wgpu::Limits) -> Option<u64> {
@@ -106,7 +174,9 @@ impl Gpu {
                 concat!(
                     include_str!("layer_effects.wgsl"),
                     "\n",
-                    include_str!("screentone.wgsl")
+                    include_str!("screentone.wgsl"),
+                    "\n",
+                    include_str!("layer_mask.wgsl")
                 )
                 .into(),
             ),
@@ -138,21 +208,31 @@ impl Gpu {
         })
     }
     #[cfg(test)]
-    fn render(&mut self, pixels: &[u8], config: &[f32; CONFIG_LEN]) -> Option<Vec<u8>> {
+    fn render(&mut self, pixels: &[u8], config: &[f32]) -> Option<Vec<u8>> {
         self.render_source(pixels, config, None)
     }
     fn render_source(
         &mut self,
         pixels: &[u8],
-        config: &[f32; CONFIG_LEN],
+        config: &[f32],
         source: Option<u64>,
     ) -> Option<Vec<u8>> {
         let size = pixels.len() as u64;
         let cap = capacity(size, &self.device.limits())?;
+        let config_bytes = (config.len() * 4) as u64;
+        if config_bytes > self.device.limits().max_storage_buffer_binding_size
+            || cap * 3 + config_bytes > BUDGET
+        {
+            return None;
+        }
         let memory_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let result = (|| {
-            if self.buffers.as_ref().is_none_or(|b| b.capacity < size) {
+            if self
+                .buffers
+                .as_ref()
+                .is_none_or(|b| b.capacity < size || b.config.size() < config_bytes)
+            {
                 let make = |label, size, usage| {
                     crate::gpu_metrics::create_buffer!(
                         self.device,
@@ -182,7 +262,7 @@ impl Gpu {
                     ),
                     config: make(
                         "Effect tables",
-                        CONFIG_LEN as u64 * 4,
+                        config_bytes,
                         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     ),
                     capacity: cap,
@@ -304,10 +384,10 @@ fn apply_mapped(
     source: Option<u64>,
     region: Option<(u32, [f32; 4])>,
 ) -> bool {
-    if effects.screentone.is_some() && region.is_none() {
+    if (effects.screentone.is_some() || effects.mask.is_some()) && region.is_none() {
         return false;
     }
-    if !effects.enabled
+    if !effects.active()
         || pixels.len() / 4 < MIN_PIXELS
         || !pixels.len().is_multiple_of(4)
         || (pixels.len() as u64)
@@ -361,7 +441,9 @@ mod tests {
         let module = wgpu::naga::front::wgsl::parse_str(concat!(
             include_str!("layer_effects.wgsl"),
             "\n",
-            include_str!("screentone.wgsl")
+            include_str!("screentone.wgsl"),
+            "\n",
+            include_str!("layer_mask.wgsl")
         ))
         .unwrap();
         wgpu::naga::valid::Validator::new(
@@ -745,6 +827,86 @@ mod screentone_tests {
         }
         if let Ok(path) = std::env::var("LUMAPAINT_TONE_SHEET") {
             sheet.save(path).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+    use lumapaint_core::{
+        document::Point,
+        layer_mask::{LayerMask, MaskKind},
+        selection::{Selection, SelectionOperation, SelectionShape},
+    };
+    #[test]
+    #[ignore = "requires hardware GPU"]
+    fn layer_masks_gpu_match_cpu() {
+        let mut gpu = Gpu::new().expect("GPU mask shader must compile");
+        let mut selections = vec![Selection::new(SelectionShape::Ellipse, [4., 8., 24., 16.])];
+        let mut compound = Selection::new(SelectionShape::Rectangle, [0., 0., 32., 32.]);
+        let mut hole = Selection::new(SelectionShape::Ellipse, [8., 8., 16., 16.])
+            .regions
+            .remove(0);
+        hole.operation = SelectionOperation::Subtract;
+        compound.regions.push(hole);
+        selections.push(compound);
+        let mut polygon = Selection::new(SelectionShape::Polygon, [2., 2., 26., 26.]);
+        polygon.regions[0].points = vec![
+            Point { x: 2., y: 2. },
+            Point { x: 28., y: 8. },
+            Point { x: 8., y: 28. },
+        ];
+        selections.push(polygon);
+        let mut stroke = Selection::new(SelectionShape::Stroke, [2., 2., 26., 26.]);
+        stroke.regions[0].points = vec![Point { x: 4., y: 4. }, Point { x: 24., y: 20. }];
+        stroke.regions[0].radius = 3.;
+        selections.push(stroke);
+        for selection in selections {
+            for kind in [MaskKind::Pixel, MaskKind::Vector] {
+                for inverted in [false, true] {
+                    let mut mask =
+                        LayerMask::from_selection(kind, Some(&selection), 32, 32).unwrap();
+                    mask.transform_by([1.2, 0.3, -0.2, 0.8, 4., -2.]).unwrap();
+                    mask.paint_selection(
+                        &Selection::new(SelectionShape::Ellipse, [4., 4., 12., 12.]),
+                        Some(&Selection::new(
+                            SelectionShape::Rectangle,
+                            [6., 0., 20., 32.],
+                        )),
+                        false,
+                    )
+                    .unwrap();
+                    mask.paint_selection(
+                        &Selection::new(SelectionShape::Rectangle, [10., 6., 5., 8.]),
+                        None,
+                        true,
+                    )
+                    .unwrap();
+                    mask.transform_by([1., 0.1, 0., 1., 1., -1.]).unwrap();
+                    mask.inverted = inverted;
+                    mask.density = 0.65;
+                    let effects = LayerEffects {
+                        mask: Some(mask),
+                        ..Default::default()
+                    };
+                    let input = [31, 47, 63, 128].repeat(64 * 64);
+                    let mapping = [-2., -3., 0.6, 0.7];
+                    let mut expected = input.clone();
+                    crate::screentone::apply_cpu(&mut expected, &effects, 64, mapping);
+                    let mut plan = config(&effects).unwrap();
+                    plan[1120] = 64.;
+                    plan[1121..1125].copy_from_slice(&mapping);
+                    let actual = gpu.render(&input, &plan).unwrap();
+                    assert!(
+                        actual
+                            .iter()
+                            .zip(&expected)
+                            .all(|(a, b)| a.abs_diff(*b) <= 1),
+                        "{kind:?} inverted={inverted}"
+                    );
+                }
+            }
         }
     }
 }

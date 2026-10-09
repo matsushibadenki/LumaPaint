@@ -18,7 +18,8 @@ struct Uniforms { viewport: vec4<f32>, appearance: vec4<f32>, document: vec4<f32
     if any(point < vec2(0.0)) || any(point >= u.document.xy) { return color; }
     let mode = u32(floor(u.appearance.x / 2.0));
     if mode == 0u { return color; }
-    let rgb = select(12.92*color.rgb, 1.055*pow(max(color.rgb,vec3(0.0)),vec3(1.0/2.4))-0.055, color.rgb>vec3(0.0031308));
+    let straight = select(vec3(0.0), color.rgb / max(color.a, 0.000001), color.a > 0.0);
+    let rgb = select(12.92*straight, 1.055*pow(max(straight,vec3(0.0)),vec3(1.0/2.4))-0.055, straight>vec3(0.0031308));
     var value = 0.0;
     if mode == 1u { value = rgb.r; }
     if mode == 2u { value = rgb.g; }

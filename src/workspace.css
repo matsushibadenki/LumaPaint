@@ -878,3 +878,30 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 
 .ai-settings .ai-api-key-link { display:inline-flex; align-items:center; gap:4px; margin:4px 0 12px; color:var(--color-focus); text-underline-offset:3px; line-height:1.6; }
 .ai-settings .ai-api-key-link:hover { color:var(--color-ink); }
+
+
+.layer-mask-controls { min-width: 0; margin: 10px 0; padding: 10px; border: 1px solid var(--color-rule, var(--line)); display: grid; gap: 8px; }
+.layer-mask-controls legend { font-size: 11px; padding-inline: 4px; }
+.layer-mask-controls p { text-wrap: pretty; margin: 0; font-size: 10px; line-height: 1.6; }
+.layer-mask-controls label { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); font-size: 11px; }
+.layer-mask-controls select, .layer-mask-controls input[type=number] { width: 100%; min-width: 0; }
+.layer-mask-controls button { white-space: normal; line-height: 1.5; }
+.layer-mask-controls .mask-enabled-toggle { display: flex; align-items: center; gap: 6px; }
+.layer-mask-controls input[type=checkbox] { width: 13px; height: 13px; margin: 0; min-height: 0; }
+.layer-mask-controls [role=alert] { color: #c45e50; }
+.mask-thumb.disabled { opacity: .4; }
+.layer-row-content .mask-thumb { display: grid; place-items: center; color: #333; font-size: 13px; }
+.layer-row-content .mask-thumb.inverted { color: #fff; }
+.mask-link-button { display: grid; place-items: center; flex: 0 0 20px; width: 20px; min-height: 30px; padding: 0; border: 0; background: transparent; color: var(--color-muted); }
+.mask-link-button[aria-pressed=true] { color: var(--color-ink); }
+.mask-link-button:focus-visible { outline: 2px solid var(--color-accent, #508bd4); outline-offset: 1px; }
+.mask-transform-controls { min-width: 0; display: grid; font-size: 11px; }
+.mask-transform-controls > :not(summary) { margin-top: 8px; }
+.mask-transform-controls summary { cursor: pointer; line-height: 1.6; }
+
+.layer-edit-thumb { padding: 0; cursor: pointer; }
+.layer-edit-thumb[aria-pressed=true] { outline: 2px solid var(--color-ink, #eee); outline-offset: 2px; }
+.layer-edit-thumb:focus-visible { outline: 2px solid var(--color-accent, #508bd4); outline-offset: 2px; }
+.layer-edit-thumb:disabled { cursor: default; }
+.layer-row-content button.mask-thumb { background: #fff; color: #555; }
+.layer-row-content button.mask-thumb.inverted { background: #000; color: #fff; }

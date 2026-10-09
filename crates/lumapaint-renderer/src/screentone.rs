@@ -1,10 +1,10 @@
 //! Coordinate-aware adjustment entry point for export, tiles and viewport images.
 use lumapaint_core::layer_effects::LayerEffects;
 pub fn apply(pixels: &mut [u8], effects: &LayerEffects, width: u32, rect: [f32; 4]) {
-    if !effects.enabled {
+    if !effects.active() {
         return;
     }
-    if effects.screentone.is_none() {
+    if effects.screentone.is_none() && effects.mask.is_none() {
         crate::apply_layer_effects(pixels, effects);
         return;
     }
@@ -24,7 +24,7 @@ pub fn apply(pixels: &mut [u8], effects: &LayerEffects, width: u32, rect: [f32; 
     apply_cpu(pixels, effects, width, mapping);
 }
 pub(super) fn apply_cpu(pixels: &mut [u8], effects: &LayerEffects, width: u32, mapping: [f32; 4]) {
-    if !effects.enabled {
+    if !effects.active() {
         return;
     }
     let plan = effects.prepare();
@@ -127,6 +127,62 @@ mod tests {
                 };
                 let i = (y * 32 + x) * 4;
                 assert_eq!(&output[i..i + 4], &expected, "at {x},{y}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod layer_mask_tests {
+    use lumapaint_core::{
+        document::Document,
+        layer_effects::LayerEffects,
+        layer_mask::{LayerMask, MaskKind},
+        selection::{Selection, SelectionShape},
+    };
+    #[test]
+    fn four_layer_mask_combinations_render_and_export_with_original_sources_intact() {
+        for vector in [false, true] {
+            for kind in [MaskKind::Pixel, MaskKind::Vector] {
+                let mut document = Document::default();
+                let id = if vector {
+                    document.add_vector_layer().unwrap()
+                } else {
+                    document.add_paint_layer().unwrap()
+                };
+                let mut state = document.document_state();
+                state.width = 16;
+                state.height = 16;
+                state.svg_layers.last_mut().unwrap().source="<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\"><rect width=\"16\" height=\"16\" fill=\"black\"/></svg>".into();
+                let original = state.svg_layers.last().unwrap().source.clone();
+                let mut document = Document::from_document_state(state).unwrap();
+                let selection = Selection::new(SelectionShape::Rectangle, [0., 0., 8., 16.]);
+                let mask = LayerMask::from_selection(kind, Some(&selection), 16, 16).unwrap();
+                document
+                    .set_layer_effects(
+                        &id,
+                        LayerEffects {
+                            mask: Some(mask),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let output = crate::thumbnails::document_pixels(&document).unwrap();
+                for y in 0..16 {
+                    for x in 0..16 {
+                        let i = (y * 16 + x) * 4;
+                        let expected = if x < 8 { [0, 0, 0, 255] } else { [255; 4] };
+                        assert_eq!(
+                            &output[i..i + 4],
+                            &expected,
+                            "vector={vector}, mask={kind:?} at {x},{y}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    document.document_state().svg_layers.last().unwrap().source,
+                    original
+                );
             }
         }
     }

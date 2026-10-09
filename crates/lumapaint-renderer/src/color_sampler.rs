@@ -73,23 +73,23 @@ impl ColorSampler {
         let rect = [point.x.floor(), point.y.floor(), 1., 1.];
         let mut result = [0.; 4];
         if inside && document.background_visible() {
-            let mut background = if document.canvas_color() == CanvasColor::White {
-                [255.; 4]
-            } else {
-                [0.; 4]
-            };
             if self.paint.is_none() {
                 self.paint = Some(PaintCache::new((width, height))?);
             }
             let cache = self.paint.as_mut().unwrap();
             cache.prepare(document, false)?;
-            let mut paint = cache.pixel(rect[0] as u32, rect[1] as u32);
-            for c in 0..3 {
-                paint[c] = (paint[c] as u16 * paint[3] as u16 / 255) as u8;
-            }
-            over(&mut background, paint, 1.);
+            let mut effects = document.layer_effects("layer-1");
+            let mask = effects.mask.take();
+            let effects = effects.prepare();
+            let background = crate::root_paint::composite(
+                cache.raw_pixel(rect[0] as u32, rect[1] as u32),
+                [rect[0] + 0.5, rect[1] + 0.5],
+                &effects,
+                mask.as_ref(),
+                document.canvas_color() == CanvasColor::White,
+            );
             for c in 0..4 {
-                result[c] = background[c] * document.paint_layer_opacity();
+                result[c] = background[c] as f32 * document.paint_layer_opacity();
             }
         }
         for layer in document.visible_svg_layers() {
