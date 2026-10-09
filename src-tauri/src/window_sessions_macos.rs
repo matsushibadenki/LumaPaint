@@ -333,7 +333,7 @@ fn take_live_document(id: u64) -> OpenDocument {
                     DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
                 ))
             },
-            OpenDocumentContent::Tiled,
+            |document| OpenDocumentContent::Tiled(Box::new(document)),
         );
     OpenDocument {
         id,
@@ -377,7 +377,7 @@ pub(super) fn take_shared(id: u64) -> OpenDocument {
                     .expect("shared owner runtime exists");
                 let content = runtime.active_tiled_document.take().map_or_else(
                     || OpenDocumentContent::Legacy(Box::new(std::mem::take(&mut runtime.document))),
-                    OpenDocumentContent::Tiled,
+                    |document| OpenDocumentContent::Tiled(Box::new(document)),
                 );
                 OpenDocument {
                     id,
@@ -411,7 +411,7 @@ fn load_shared_active() {
             }
             OpenDocumentContent::Tiled(document) => {
                 DOCUMENT.with(|slot| *slot.borrow_mut() = Document::default());
-                ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(document));
+                ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(*document));
             }
             OpenDocumentContent::Shared(_) => unreachable!("canonical content cannot be a view"),
         }
@@ -1192,13 +1192,13 @@ mod tests {
         document.add_layer("tiles-a".into(), "A".into()).unwrap();
         activate_document(OpenDocument {
             id,
-            content: OpenDocumentContent::Tiled(TiledSession {
+            content: OpenDocumentContent::Tiled(Box::new(TiledSession {
                 selected_layer: None,
                 document,
                 file_name: Some("Shared tiles".into()),
                 saved_revision: Some(0),
                 name: "Shared tiles".into(),
-            }),
+            })),
             path: None,
             fingerprint: None,
         });

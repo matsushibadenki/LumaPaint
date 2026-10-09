@@ -1109,3 +1109,8 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 
 - 🟢 [Done] 編集メニューにショートカット編集を追加。メニュー／ツールの共通登録、検索、競合確認と再割り当て、セット複製・削除、初期値復元、テキスト書き出し、Rust側の永続化と全ウインドウへの通知に対応（英語・日本語・简体中文）。詳細は `keyboard-shortcuts.md`。
 - ⭕️ [Pending] ショートカットの実機JIS/USキーボードと複数ネイティブウインドウの操作確認。
+
+### Bounds membership maintenance (2026-10-09)
+
+- 🟢 [Done] Existing Scene objects can switch between unknown and known drawing bounds without rebuilding the spatial index. Retired BVH slots are reused and published snapshots retain their original query results. Picking uses the same refit path.
+- 🟠 [Next] Structural object insertion/deletion, persistent membership-map updates and dynamic-tree balancing remain separate work. The complete vector/text improvement specification is still unfinished; the current phase table in `vector-text-performance-2026-10-07.md` remains authoritative.

@@ -145,3 +145,50 @@ impl PickingCache {
             .retain(|id, _| layers.iter().any(|l| &l.id == id));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::{Changes, Target};
+
+    #[test]
+    fn notified_bounds_membership_changes_do_not_rebuild_picking() {
+        let mut layer: SvgLayer = serde_json::from_value(serde_json::json!({
+            "id":"layer", "name":"layer", "visible":true, "source":"before",
+            "vectorLayer":true, "vectorObjects":[{
+                "id":"a","name":"a","visible":true,
+                "path":{"data":"M0 0H20V20H0Z","fillRule":"nonZero"},
+                "transform":[1.,0.,0.,1.,0.,0.],"fill":{"color":[255,0,0,255]},
+                "stroke":null,"strokeWidth":0.,"kind":"rectangle",
+                "controlPoints":[[0.,0.],[20.,0.],[20.,20.],[0.,20.]]
+            }]
+        }))
+        .unwrap();
+        let mut journal = Journal::default();
+        let mut index = LayerIndex::build(&layer, &journal, 0);
+        let points = layer.vector_objects[0].control_points.clone();
+        let query = [100., 100., 110., 110.];
+        assert!(index.tree.query(query).items.is_empty());
+        for (revision, unknown) in [(1, true), (2, false), (3, true), (4, false)] {
+            layer.vector_objects[0].control_points =
+                if unknown { Vec::new() } else { points.clone() };
+            layer.source = format!("revision {revision}");
+            journal.push(
+                Target {
+                    layer: layer.id.clone(),
+                    object: Some("a".into()),
+                },
+                Changes {
+                    geometry: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+            assert_eq!(index.refresh(&layer, &journal, revision), 0);
+            assert_eq!(
+                index.tree.query(query).items,
+                if unknown { vec![0] } else { vec![] }
+            );
+        }
+    }
+}

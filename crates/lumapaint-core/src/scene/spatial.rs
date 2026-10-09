@@ -28,6 +28,8 @@ pub struct SpatialIndex {
     nodes: super::pages::Pages<Node>,
     leaves: Arc<HashMap<usize, usize>>,
     unknown: Arc<Vec<usize>>,
+    root: Option<usize>,
+    free: Arc<Vec<usize>>,
 }
 #[derive(Debug, Default)]
 pub struct Candidates {
@@ -47,7 +49,7 @@ impl SpatialIndex {
             }
         }
         if !known.is_empty() {
-            index.branch(&mut known, None);
+            index.root = Some(index.branch(&mut known, None));
         }
         index
     }
@@ -79,27 +81,22 @@ impl SpatialIndex {
         }
         position
     }
-    /// Returns false only when the known/unknown membership changes.
-    pub fn refit(&mut self, item: usize, bounds: Option<Bounds>) -> bool {
-        let _timer = crate::performance::time("spatial_refit_host");
-        let Some(bounds) = bounds.filter(|b| valid(*b)) else {
-            return self.unknown.contains(&item);
-        };
-        let Some(&position) = self.leaves.get(&item) else {
-            return false;
-        };
-        if self.nodes[position].bounds == bounds {
-            crate::performance::count("spatial_refit_unchanged_leaf", 1);
-            return true;
+    fn allocate(&mut self, node: Node) -> usize {
+        if let Some(position) = Arc::make_mut(&mut self.free).pop() {
+            self.nodes[position] = node;
+            position
+        } else {
+            let position = self.nodes.len();
+            self.nodes.push(node);
+            position
         }
-        self.nodes[position].bounds = bounds;
-        let mut parent = self.nodes[position].parent;
+    }
+
+    fn update_ancestors(&mut self, mut parent: Option<usize>) {
         while let Some(position) = parent {
             let [a, b] = self.nodes[position].children.unwrap();
-            crate::performance::count("spatial_refit_parent_visits", 1);
             let bounds = union(self.nodes[a].bounds, self.nodes[b].bounds);
-            // Ancestors depend only on this union. Once it is unchanged, all
-            // remaining ancestors are unchanged too, even if the leaf moved.
+            crate::performance::count("spatial_refit_parent_visits", 1);
             if self.nodes[position].bounds == bounds {
                 crate::performance::count("spatial_refit_early_stops", 1);
                 break;
@@ -107,6 +104,107 @@ impl SpatialIndex {
             self.nodes[position].bounds = bounds;
             parent = self.nodes[position].parent;
         }
+    }
+
+    fn remove_known(&mut self, item: usize) {
+        let position = Arc::make_mut(&mut self.leaves).remove(&item).unwrap();
+        if let Some(parent) = self.nodes[position].parent {
+            let [a, b] = self.nodes[parent].children.unwrap();
+            let sibling = if a == position { b } else { a };
+            let grandparent = self.nodes[parent].parent;
+            self.nodes[sibling].parent = grandparent;
+            if let Some(grandparent) = grandparent {
+                let children = self.nodes[grandparent].children.as_mut().unwrap();
+                children[usize::from(children[1] == parent)] = sibling;
+                self.update_ancestors(Some(grandparent));
+            } else {
+                self.root = Some(sibling);
+            }
+            Arc::make_mut(&mut self.free).push(parent);
+        } else {
+            self.root = None;
+        }
+        Arc::make_mut(&mut self.free).push(position);
+    }
+
+    fn insert_known(&mut self, item: usize, bounds: Bounds) {
+        let leaf = self.allocate(Node {
+            bounds,
+            parent: None,
+            children: None,
+            item,
+        });
+        let Some(mut sibling) = self.root else {
+            self.root = Some(leaf);
+            Arc::make_mut(&mut self.leaves).insert(item, leaf);
+            return;
+        };
+        // Descend by the smallest increase in bounding area. Only this branch
+        // and its ancestors change; untouched persistent pages stay shared.
+        while let Some([a, b]) = self.nodes[sibling].children {
+            let growth = |position: usize| {
+                let old = self.nodes[position].bounds;
+                let new = union(old, bounds);
+                (new[2] - new[0]) * (new[3] - new[1]) - (old[2] - old[0]) * (old[3] - old[1])
+            };
+            sibling = if growth(a).total_cmp(&growth(b)).is_le() {
+                a
+            } else {
+                b
+            };
+        }
+        let ancestor = self.nodes[sibling].parent;
+        let parent = self.allocate(Node {
+            bounds: union(bounds, self.nodes[sibling].bounds),
+            parent: ancestor,
+            children: Some([sibling, leaf]),
+            item,
+        });
+        self.nodes[sibling].parent = Some(parent);
+        self.nodes[leaf].parent = Some(parent);
+        if let Some(ancestor) = ancestor {
+            let children = self.nodes[ancestor].children.as_mut().unwrap();
+            children[usize::from(children[1] == sibling)] = parent;
+            self.update_ancestors(Some(ancestor));
+        } else {
+            self.root = Some(parent);
+        }
+        Arc::make_mut(&mut self.leaves).insert(item, leaf);
+    }
+
+    /// Returns false for an absent item. Known/unknown transitions update only
+    /// the affected branch instead of requiring a complete index rebuild.
+    pub fn refit(&mut self, item: usize, bounds: Option<Bounds>) -> bool {
+        let _timer = crate::performance::time("spatial_refit_host");
+        let bounds = bounds.filter(|b| valid(*b));
+        let position = self.leaves.get(&item).copied();
+        match (position, bounds) {
+            (Some(_), None) => {
+                self.remove_known(item);
+                Arc::make_mut(&mut self.unknown).push(item);
+                crate::performance::count("spatial_membership_updates", 1);
+                return true;
+            }
+            (None, Some(bounds)) => {
+                let Some(index) = self.unknown.iter().position(|id| *id == item) else {
+                    return false;
+                };
+                Arc::make_mut(&mut self.unknown).swap_remove(index);
+                self.insert_known(item, bounds);
+                crate::performance::count("spatial_membership_updates", 1);
+                return true;
+            }
+            (None, None) => return self.unknown.contains(&item),
+            (Some(_), Some(_)) => {}
+        }
+        let position = position.unwrap();
+        let bounds = bounds.unwrap();
+        if self.nodes[position].bounds == bounds {
+            crate::performance::count("spatial_refit_unchanged_leaf", 1);
+            return true;
+        }
+        self.nodes[position].bounds = bounds;
+        self.update_ancestors(self.nodes[position].parent);
         true
     }
     pub fn query(&self, bounds: Bounds) -> Candidates {
@@ -125,8 +223,8 @@ impl SpatialIndex {
         items.clear();
         items.extend_from_slice(&self.unknown);
         stack.clear();
-        if !self.nodes.is_empty() {
-            stack.push(0);
+        if let Some(root) = self.root {
+            stack.push(root);
         }
         let mut visited_nodes = 0;
         // Invalid queries cannot safely reject anything.
@@ -150,6 +248,71 @@ impl SpatialIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn membership_transitions_preserve_snapshots_and_reuse_nodes() {
+        let mut tree = SpatialIndex::build(
+            (0..10_000).map(|i| (i, Some([i as f64 * 10., 0., i as f64 * 10. + 5., 5.]))),
+        );
+        let published = tree.clone();
+        let original_nodes = tree.nodes.len();
+        for _ in 0..100 {
+            assert!(tree.refit(7000, None));
+            assert!(tree.query([-100., -100., -90., -90.]).items.contains(&7000));
+            assert!(tree.refit(7000, Some([-100., -100., -95., -95.])));
+            assert_eq!(tree.query([-100., -100., -95., -95.]).items, [7000]);
+            assert!(tree.query([70_000., 0., 70_005., 5.]).items.is_empty());
+            assert_eq!(tree.nodes.len(), original_nodes);
+        }
+        assert_eq!(published.query([70_000., 0., 70_005., 5.]).items, [7000]);
+        assert!(published.query([-100., -100., -95., -95.]).items.is_empty());
+        assert!(!tree.refit(20_000, Some([0.; 4])));
+        assert!(!tree.refit(20_000, None));
+    }
+
+    #[test]
+    fn single_leaf_and_unknown_only_transitions_keep_a_valid_root() {
+        let mut tree = SpatialIndex::build([(42, None), (7, Some([0.; 4]))]);
+        assert!(tree.refit(7, Some([f64::NAN; 4])));
+        assert!(tree.root.is_none());
+        assert_eq!(tree.query([100.; 4]).items, [7, 42]);
+        assert!(tree.refit(42, Some([100.; 4])));
+        assert!(tree.refit(7, Some([0.; 4])));
+        assert_eq!(tree.query([100.; 4]).items, [42]);
+        assert_eq!(tree.query([0.; 4]).items, [7]);
+        assert_eq!(tree.query([f64::NAN; 4]).items, [7, 42]);
+        assert!(tree.refit(42, None));
+        assert!(tree.refit(7, None));
+        assert_eq!(tree.nodes.len(), 3);
+    }
+
+    #[test]
+    fn mixed_membership_edits_match_linear_scan() {
+        let mut boxes: Vec<Option<Bounds>> = (0..257)
+            .map(|i| Some([i as f64, i as f64, i as f64 + 2., i as f64 + 2.]))
+            .collect();
+        let mut tree = SpatialIndex::build(boxes.iter().copied().enumerate());
+        for step in 0..1200 {
+            let item = step * 37 % boxes.len();
+            boxes[item] = if step % 3 == 0 {
+                None
+            } else {
+                let x = (step * 13 % 300) as f64;
+                Some([x, 0., x + 4., 4.])
+            };
+            assert!(tree.refit(item, boxes[item]));
+            for query in [[0., 0., 50., 50.], [150., 0., 170., 200.], [f64::NAN; 4]] {
+                let expected: Vec<_> = boxes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, bounds)| {
+                        (bounds.is_none_or(|b| !valid(query) || intersects(b, query))).then_some(id)
+                    })
+                    .collect();
+                assert_eq!(tree.query(query).items, expected, "step {step}");
+            }
+        }
+    }
+
     #[test]
     fn scratch_queries_match_allocating_queries_and_reuse_capacity() {
         let tree =
@@ -236,7 +399,8 @@ mod tests {
         boxes[11] = [-100., 0., -95., 5.];
         assert!(tree.refit(11, Some(boxes[11])));
         assert_eq!(tree.query(query).items, expected(&boxes));
-        assert!(!tree.refit(11, None));
+        assert!(tree.refit(11, None));
+        assert!(tree.query(query).items.contains(&11));
     }
     #[test]
     fn unknown_empty_touching_and_invalid_queries_are_conservative() {

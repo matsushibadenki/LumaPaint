@@ -5270,7 +5270,7 @@ struct OpenDocument {
 enum OpenDocumentContent {
     Shared(u64),
     Legacy(Box<Document>),
-    Tiled(TiledSession),
+    Tiled(Box<TiledSession>),
 }
 
 struct TiledSession {
@@ -5401,7 +5401,7 @@ fn park_active_document() {
                     DOCUMENT.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
                 ))
             },
-            OpenDocumentContent::Tiled,
+            |document| OpenDocumentContent::Tiled(Box::new(document)),
         );
     let path = PROJECT_PATH.with(|slot| slot.borrow_mut().take());
     let fingerprint = PROJECT_FINGERPRINT.with(|slot| slot.borrow_mut().take());
@@ -5455,7 +5455,7 @@ fn activate_document(entry: OpenDocument) {
         }
         OpenDocumentContent::Tiled(document) => {
             DOCUMENT.with(|slot| *slot.borrow_mut() = Document::default());
-            ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(document));
+            ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(*document));
         }
     }
     CANVAS.with(|slot| {
@@ -8053,13 +8053,13 @@ pub fn open_psd(prepared: crate::psd_import::Prepared) -> Result<(), String> {
     park_active_document();
     activate_document(OpenDocument {
         id: next_document_id(),
-        content: OpenDocumentContent::Tiled(TiledSession {
+        content: OpenDocumentContent::Tiled(Box::new(TiledSession {
             selected_layer: None,
             document: prepared.document,
             name: prepared.name,
             file_name: None,
             saved_revision: None,
-        }),
+        })),
         path: None,
         fingerprint: None,
     });
@@ -8319,13 +8319,13 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     OpenDocumentContent::Legacy(document)
                 }
                 crate::project_file::ProjectData::Tiled(state) => {
-                    OpenDocumentContent::Tiled(TiledSession {
+                    OpenDocumentContent::Tiled(Box::new(TiledSession {
                         selected_layer: None,
                         document: TiledRasterDocument::from_state(state)?,
                         file_name: Some(name.clone()),
                         saved_revision: Some(0),
                         name: name.clone(),
-                    })
+                    }))
                 }
             };
             park_active_document();
@@ -8583,13 +8583,13 @@ pub fn restore_recovery(id: String) -> Result<DocumentSnapshot, String> {
             OpenDocumentContent::Legacy(Box::new(recovered))
         }
         crate::project_file::ProjectData::Tiled(state) => {
-            OpenDocumentContent::Tiled(TiledSession {
+            OpenDocumentContent::Tiled(Box::new(TiledSession {
                 selected_layer: None,
                 document: TiledRasterDocument::from_state(state)?,
                 name: "Recovered tiled document / 復旧したタイル文書 / 恢复的瓦片文档".into(),
                 file_name: None,
                 saved_revision: None,
-            })
+            }))
         }
     };
     park_active_document();
