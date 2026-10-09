@@ -391,6 +391,12 @@ export async function getRuntimeInfo(): Promise<RuntimeInfo | null> {
   return invoke<RuntimeInfo>('runtime_info');
 }
 
+export function dropFiles(paths: string[], targetId: number | null): Promise<{workspace: DocumentWorkspaceSnapshot; errors: string[]}> {
+  const result = canvasQueue.then(() => invoke<{workspace: DocumentWorkspaceSnapshot; errors: string[]}>('drop_files', { paths, targetId }));
+  canvasQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export function projectAction(action: 'open' | 'save' | 'saveAs' | 'export'): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('project_action', { action }));
   canvasQueue = result.then(() => undefined, () => undefined);

@@ -238,7 +238,7 @@ pub struct MaskTileState {
     pub values: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TileChange {
     pub coord: TileCoord,
     pub before: Option<Vec<u8>>,
@@ -246,14 +246,15 @@ pub struct TileChange {
 }
 
 /// A mask tile is absent when every pixel is fully visible (255).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SparseMask {
     width: u32,
     height: u32,
+    #[serde(with = "tile_pairs")]
     tiles: BTreeMap<TileCoord, Vec<u8>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct MaskChange {
     coord: TileCoord,
     before: Option<Vec<u8>>,
@@ -428,10 +429,11 @@ impl SparseMask {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SparseTiles {
     width: u32,
     height: u32,
+    #[serde(with = "tile_pairs")]
     tiles: BTreeMap<TileCoord, Vec<u8>>,
 }
 
@@ -706,7 +708,7 @@ fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) 
     edited
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RasterLayer {
     pub effects: crate::layer_effects::LayerEffects,
     pub blend_mode: RasterBlendMode,
@@ -752,8 +754,14 @@ impl RasterLayer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum RasterEdit {
+    #[serde(skip)]
+    Stored(crate::history_storage::StoredHistory),
+    ImportedLayer {
+        layer: Box<RasterLayer>,
+        index: usize,
+    },
     Effects {
         id: String,
         before: Box<crate::layer_effects::LayerEffects>,
@@ -1325,6 +1333,28 @@ impl TiledRasterDocument {
             tiles: SparseTiles::new(self.width, self.height)?,
         });
         self.revision += 1;
+        Ok(())
+    }
+
+    /// Attach worker-prepared pixels as one atomic, undoable layer import.
+    pub fn import_layer(
+        &mut self,
+        id: String,
+        name: String,
+        tiles: SparseTiles,
+    ) -> Result<(), String> {
+        if tiles.dimensions() != self.dimensions() {
+            return Err("Imported layer dimensions differ from document".into());
+        }
+        // Reuse add_layer validation; no operation after this can fail.
+        self.add_layer(id, name)?;
+        let index = self.layers.len() - 1;
+        self.layers[index].tiles = tiles;
+        self.revision -= 1;
+        self.record_edit(RasterEdit::ImportedLayer {
+            layer: Box::new(self.layers[index].clone()),
+            index,
+        });
         Ok(())
     }
 
@@ -1928,6 +1958,56 @@ impl TiledRasterDocument {
         self.apply_history(false)
     }
 
+    pub fn manage_history(
+        &mut self,
+        store: &dyn crate::history_storage::HistoryStore,
+        budget: usize,
+        states: usize,
+    ) -> Result<usize, String> {
+        let excess = (self.undo.len() + self.redo.len()).saturating_sub(states);
+        let old_undo = excess.min(self.undo.len());
+        self.undo.drain(..old_undo);
+        self.redo.drain(..excess - old_undo);
+        let size = |entry: &RasterEdit| match entry {
+            RasterEdit::Stored(_) => 0,
+            RasterEdit::Pixels { changes, .. } => changes
+                .iter()
+                .map(|change| {
+                    change.before.as_ref().map_or(0, Vec::len)
+                        + change.after.as_ref().map_or(0, Vec::len)
+                })
+                .sum(),
+            RasterEdit::MaskPixels { changes, .. } => changes
+                .iter()
+                .map(|change| {
+                    change.before.as_ref().map_or(0, Vec::len)
+                        + change.after.as_ref().map_or(0, Vec::len)
+                })
+                .sum(),
+            RasterEdit::ImportedLayer { layer, .. } => {
+                layer.tiles.allocated_tile_count() * TILE_BYTES
+            }
+            _ => 4096,
+        };
+        let mut retained = self.undo.iter().chain(&self.redo).map(size).sum::<usize>();
+        for history in [&mut self.undo, &mut self.redo] {
+            let cold = history.len().saturating_sub(2);
+            for entry in history.iter_mut().take(cold) {
+                if retained <= budget {
+                    break;
+                }
+                let bytes_count = size(entry);
+                if bytes_count == 0 {
+                    continue;
+                }
+                let bytes = serde_json::to_vec(entry).map_err(|error| error.to_string())?;
+                *entry = RasterEdit::Stored(store.write(&bytes)?);
+                retained = retained.saturating_sub(bytes_count);
+            }
+        }
+        Ok(retained)
+    }
+
     fn record_edit(&mut self, edit: RasterEdit) {
         self.undo.push(edit);
         self.redo.clear();
@@ -1935,11 +2015,44 @@ impl TiledRasterDocument {
     }
 
     fn apply_history(&mut self, undo: bool) -> Result<Option<TileInvalidation>, String> {
+        let source = if undo { &mut self.undo } else { &mut self.redo };
+        if let Some(RasterEdit::Stored(blob)) = source.last() {
+            let restored =
+                serde_json::from_slice(&blob.0.read()?).map_err(|error| error.to_string())?;
+            *source.last_mut().unwrap() = restored;
+        }
         let source = if undo { &self.undo } else { &self.redo };
         let Some(edit) = source.last() else {
             return Ok(None);
         };
         let invalidation = match edit {
+            RasterEdit::Stored(_) => unreachable!("history was restored before applying"),
+            RasterEdit::ImportedLayer { layer, index } => {
+                if undo {
+                    if self.layers.get(*index) != Some(&**layer) {
+                        return Err("Imported raster layer changed outside history".into());
+                    }
+                    self.layers.remove(*index);
+                    if self
+                        .layer_edit_selection
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &layer.id)
+                    {
+                        self.layer_edit_selection = None;
+                    }
+                } else {
+                    if *index > self.layers.len()
+                        || self.layers.iter().any(|item| item.id == layer.id)
+                    {
+                        return Err("Imported raster layer order changed outside history".into());
+                    }
+                    self.layers.insert(*index, (**layer).clone());
+                }
+                TileInvalidation {
+                    layer_id: layer.id.clone(),
+                    coords: layer.tiles.allocated_coords().collect(),
+                }
+            }
             RasterEdit::Effects { id, before, after } => {
                 let layer = self
                     .layers
@@ -3202,5 +3315,61 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod imported_layer_tests {
+    use super::*;
+    #[test]
+    fn layer_import_is_one_history_entry_and_failed_import_is_atomic() {
+        let mut document = TiledRasterDocument::new(3, 2).unwrap();
+        document.add_layer("base".into(), "Base".into()).unwrap();
+        document.discard_history();
+        let before = document.state();
+        let revision = document.revision();
+        let mut tiles = SparseTiles::new(3, 2).unwrap();
+        tiles.write_rect(1, 0, 1, 1, &[10, 20, 30, 128]).unwrap();
+        assert!(document
+            .import_layer("base".into(), "Duplicate".into(), tiles.clone())
+            .is_err());
+        assert!(document
+            .import_layer(
+                "wrong".into(),
+                "Wrong".into(),
+                SparseTiles::new(1, 1).unwrap()
+            )
+            .is_err());
+        assert_eq!(document.state(), before);
+        assert_eq!(document.revision(), revision);
+        assert!(document.undo().unwrap().is_none());
+        document
+            .import_layer("new".into(), "Imported".into(), tiles.clone())
+            .unwrap();
+        assert_eq!(document.revision(), revision + 1);
+        assert_eq!(document.layers()[1].tiles, tiles);
+        let imported = document.state();
+        document.undo().unwrap();
+        assert_eq!(document.state(), before);
+        assert!(document.undo().unwrap().is_none());
+        document.redo().unwrap();
+        assert_eq!(document.state(), imported);
+    }
+}
+
+mod tile_pairs {
+    use super::*;
+    pub fn serialize<S: serde::Serializer, T: Serialize>(
+        value: &BTreeMap<TileCoord, T>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<TileCoord, T>, D::Error> {
+        Ok(Vec::<(TileCoord, T)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
     }
 }

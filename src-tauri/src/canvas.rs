@@ -1219,6 +1219,65 @@ pub async fn project_action(
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDropResult {
+    workspace: DocumentWorkspaceSnapshot,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn drop_files(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+    target_id: Option<u64>,
+) -> Result<FileDropResult, String> {
+    if crate::modal_windows::owner(&window).is_err() {
+        return Err("Unknown editor window".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let context = on_main(window.clone(), move || {
+            platform::file_drop::target_context(target_id)
+        })
+        .await?;
+        let mut errors = Vec::new();
+        // Keep order; one failed file must not discard other successful imports.
+        for path in paths {
+            let display = std::path::Path::new(&path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let result = crate::diagnostic_jobs::spawn_blocking(move || {
+                platform::file_drop::prepare(path.into(), target_id.is_some())
+                    .and_then(|prepared| platform::file_drop::fit_layer(prepared, context))
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            let result = match result {
+                Ok(prepared) => {
+                    on_main(window.clone(), move || {
+                        platform::file_drop::apply(prepared, target_id)
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                errors.push(format!("{display}: {error}"));
+            }
+        }
+        let workspace = on_main(window, || Ok(platform::workspace_snapshot())).await?;
+        Ok(FileDropResult { workspace, errors })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, paths, target_id);
+        Err("Native file drop is not supported on this platform yet".into())
+    }
+}
+
 #[tauri::command]
 pub async fn finish_raster_import(
     window: tauri::WebviewWindow,
@@ -1476,7 +1535,10 @@ pub fn confirm_discard() -> bool {
 
 pub fn shutdown() {
     #[cfg(target_os = "macos")]
-    platform::window_sessions::shutdown_all();
+    {
+        platform::window_sessions::shutdown_all();
+        platform::cleanup_memory();
+    }
 }
 
 #[cfg(target_os = "macos")]

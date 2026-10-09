@@ -281,6 +281,7 @@ pub struct FrameCacheStats {
 
 #[derive(Default)]
 pub struct FrameRasterCache {
+    memory_limit: Option<usize>,
     composites: Vec<CompositeEntry>,
     composite_bytes: usize,
     composite_evicted_entries: usize,
@@ -595,6 +596,17 @@ fn update_cropped_composite(
 }
 
 impl FrameRasterCache {
+    fn payload_limit(&self) -> usize {
+        self.memory_limit.unwrap_or(MAX_CACHE_BYTES)
+    }
+    fn composite_limit(&self) -> usize {
+        self.payload_limit().min(MAX_COMPOSITE_BYTES)
+    }
+    pub fn set_memory_limit(&mut self, bytes: usize) {
+        self.memory_limit = Some(bytes.clamp(1024 * 1024, MAX_CACHE_BYTES));
+        self.reserve_payload(0, self.payload_limit());
+    }
+
     /// Prepare contained text without a document-sized CPU buffer.
     /// Disjoint frames remain independent; overlapping frames are composed in encoded
     /// RGBA on the CPU within their union bounds to preserve exact rounding.
@@ -678,12 +690,12 @@ impl FrameRasterCache {
                         .map(|(index, entry)| (index, entry.bytes()));
                     let local = candidate.and_then(|(index, bytes)| {
                         let pressure = self.composites.len() >= MAX_COMPOSITE_ENTRIES
-                            || self.composite_bytes.saturating_add(bytes) > MAX_COMPOSITE_BYTES
+                            || self.composite_bytes.saturating_add(bytes) > self.composite_limit()
                             || self
                                 .used_bytes
                                 .saturating_add(self.composite_bytes)
                                 .saturating_add(bytes)
-                                > MAX_CACHE_BYTES;
+                                > self.payload_limit();
                         if pressure && Arc::strong_count(&self.composites[index].frame) == 1 {
                             let mut old = self.composites.swap_remove(index);
                             self.composite_bytes -= old.bytes();
@@ -999,11 +1011,11 @@ impl FrameRasterCache {
 
     fn retain_entry(&mut self, entry: CompositeEntry) {
         let bytes = entry.bytes();
-        if bytes > MAX_COMPOSITE_BYTES {
+        if bytes > self.composite_limit() {
             crate::performance::count("fallback.text_overlap_composite_budget", 1);
             return;
         }
-        while self.composite_bytes + bytes > MAX_COMPOSITE_BYTES
+        while self.composite_bytes + bytes > self.composite_limit()
             || self.composites.len() >= MAX_COMPOSITE_ENTRIES
         {
             let index = self
@@ -1015,7 +1027,7 @@ impl FrameRasterCache {
                 .0;
             self.evict_composite(index);
         }
-        self.reserve_payload(bytes, MAX_CACHE_BYTES);
+        self.reserve_payload(bytes, self.payload_limit());
         self.composites.push(entry);
         self.composite_bytes += bytes;
     }
@@ -1023,14 +1035,14 @@ impl FrameRasterCache {
     pub fn stats(&self) -> FrameCacheStats {
         FrameCacheStats {
             total_retained_payload_bytes: self.used_bytes + self.composite_bytes,
-            total_payload_budget_bytes: MAX_CACHE_BYTES,
+            total_payload_budget_bytes: self.payload_limit(),
             composite_entries: self.composites.len(),
             composite_retained_payload_bytes: self.composite_bytes,
-            composite_payload_budget_bytes: MAX_COMPOSITE_BYTES,
+            composite_payload_budget_bytes: self.composite_limit(),
             composite_evicted_entries: self.composite_evicted_entries,
             entries: self.entries.len(),
             retained_payload_bytes: self.used_bytes,
-            payload_budget_bytes: MAX_CACHE_BYTES,
+            payload_budget_bytes: self.payload_limit(),
             evicted_entries: self.evicted_entries,
         }
     }
@@ -1126,7 +1138,7 @@ impl FrameRasterCache {
             .saturating_add(source.len())
             .saturating_add(key.0.len())
             .saturating_add(key.1.len());
-        if entry_bytes <= MAX_CACHE_BYTES {
+        if entry_bytes <= self.payload_limit() {
             while self.entries.len() >= MAX_CACHE_ENTRIES {
                 let Some(oldest) = self
                     .entries
@@ -1138,7 +1150,7 @@ impl FrameRasterCache {
                 };
                 self.evict_glyph(&oldest);
             }
-            self.reserve_payload(entry_bytes, MAX_CACHE_BYTES);
+            self.reserve_payload(entry_bytes, self.payload_limit());
             self.used_bytes += entry_bytes;
             self.entries.insert(
                 key,

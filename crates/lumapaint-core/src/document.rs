@@ -432,7 +432,7 @@ const fn default_layer_opacity() -> f32 {
     1.0
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerSettings {
     pub id: String,
@@ -582,7 +582,7 @@ enum HistoryKind {
     Vector,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PathEditing {
     object_ids: Vec<(String, String)>,
     id: String,
@@ -590,7 +590,7 @@ struct PathEditing {
     previous_layer: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct VectorHistoryState {
     paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
@@ -633,8 +633,10 @@ pub struct TranslationMetrics {
 
 /// Ordinary translations retain only the edited objects. Other edit kinds keep
 /// the existing complete-state contract until their delta transactions migrate.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 enum VectorHistoryEntry {
+    #[serde(skip)]
+    Stored(crate::history_storage::StoredHistory),
     PaintBucket(crate::paint_bucket::Settings),
     Animation(std::sync::Arc<animation::Animation>),
     SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
@@ -646,7 +648,7 @@ enum VectorHistoryEntry {
         selected_layer: Option<String>,
     },
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ObjectHistoryEntry {
     layer: usize,
     position: usize,
@@ -1710,7 +1712,87 @@ impl Document {
             self.revision += 1;
         }
     }
+    pub fn restore_history(&mut self, redo: bool) -> Result<(), String> {
+        let kind = if redo {
+            self.redo_order.last()
+        } else {
+            self.undo_order.last()
+        };
+        if !matches!(kind, Some(HistoryKind::Vector)) {
+            return Ok(());
+        }
+        let history = if redo {
+            &mut self.vector_redo
+        } else {
+            &mut self.vector_undo
+        };
+        if let Some(VectorHistoryEntry::Stored(blob)) = history.last() {
+            let restored =
+                serde_json::from_slice(&blob.0.read()?).map_err(|error| error.to_string())?;
+            *history.last_mut().unwrap() = restored;
+        }
+        Ok(())
+    }
+    pub fn manage_history(
+        &mut self,
+        store: &dyn crate::history_storage::HistoryStore,
+        budget: usize,
+        states: usize,
+    ) -> Result<usize, String> {
+        while self.undo_order.len() + self.redo_order.len() > states && !self.undo_order.is_empty()
+        {
+            match self.undo_order.remove(0) {
+                HistoryKind::Vector => {
+                    self.vector_undo.remove(0);
+                }
+                HistoryKind::Page => {
+                    self.page_undo.remove(0);
+                }
+                HistoryKind::Stroke => {} // Committed strokes are artwork, not discardable history.
+            }
+        }
+        while self.undo_order.len() + self.redo_order.len() > states {
+            match self.redo_order.remove(0) {
+                HistoryKind::Vector => {
+                    self.vector_redo.remove(0);
+                }
+                HistoryKind::Page => {
+                    self.page_redo.remove(0);
+                }
+                HistoryKind::Stroke => {
+                    self.redo.remove(0);
+                }
+            }
+        }
+        let mut retained = self
+            .vector_undo
+            .iter()
+            .chain(&self.vector_redo)
+            .map(history_bytes)
+            .sum::<usize>();
+        for history in [&mut self.vector_undo, &mut self.vector_redo] {
+            let cold = history.len().saturating_sub(2);
+            for entry in history.iter_mut().take(cold) {
+                if retained <= budget {
+                    break;
+                }
+                let size = history_bytes(entry);
+                if size == 0 {
+                    continue;
+                }
+                let bytes = serde_json::to_vec(entry).map_err(|error| error.to_string())?;
+                let blob = store.write(&bytes)?; // Never replace an entry until the write succeeds.
+                *entry = VectorHistoryEntry::Stored(blob);
+                retained = retained.saturating_sub(size);
+            }
+        }
+        Ok(retained)
+    }
+
     pub fn undo(&mut self) {
+        if self.restore_history(false).is_err() {
+            return;
+        }
         self.finish();
         match self.undo_order.pop() {
             Some(HistoryKind::Page) => self.undo_page(),
@@ -1734,6 +1816,9 @@ impl Document {
         }
     }
     pub fn redo(&mut self) {
+        if self.restore_history(true).is_err() {
+            return;
+        }
         self.finish();
         match self.redo_order.pop() {
             Some(HistoryKind::Page) => self.redo_page(),
@@ -2432,6 +2517,18 @@ impl Document {
         self.paste_content(Some(source), Vec::new())?;
         // The paste history already contains the state before this new layer.
         self.svg_layers.last_mut().unwrap().name = name;
+        Ok(())
+    }
+
+    /// Import into a new, independently undoable layer, regardless of current selection.
+    pub fn import_svg_as_layer(&mut self, name: String, source: String) -> Result<(), String> {
+        if self.path_editing.is_some() {
+            return Err("Finish path editing before importing / パスの編集を終了してから読み込んでください / 请先结束路径编辑".into());
+        }
+        self.paste_content(Some(source), Vec::new())?;
+        let layer = self.svg_layers.last_mut().unwrap();
+        layer.name = name;
+        layer.paint_layer = false;
         Ok(())
     }
 
@@ -7112,6 +7209,7 @@ impl Document {
     }
     fn exchange_vector_history(&mut self, entry: VectorHistoryEntry) -> VectorHistoryEntry {
         match entry {
+            VectorHistoryEntry::Stored(_) => unreachable!("history was restored before exchange"),
             VectorHistoryEntry::PaintBucket(previous) => VectorHistoryEntry::PaintBucket(
                 std::mem::replace(&mut self.paint_bucket_settings, previous),
             ),
@@ -13413,5 +13511,27 @@ mod text_frame_svg_tests {
             .unwrap();
             assert!(doc.svg_layers().next().unwrap().source.contains(">Hidden<"));
         }
+    }
+}
+
+fn history_bytes(entry: &VectorHistoryEntry) -> usize {
+    match entry {
+        VectorHistoryEntry::Stored(_) => 0,
+        VectorHistoryEntry::State(state) => {
+            state
+                .layers
+                .iter()
+                .map(|layer| layer.source.len() + layer.vector_objects.len() * 512)
+                .sum::<usize>()
+                + state.paint_source.as_ref().map_or(0, String::len)
+                + state.strokes.as_ref().map_or(0, |strokes| {
+                    strokes
+                        .iter()
+                        .map(|stroke| stroke.points.len() * 32)
+                        .sum::<usize>()
+                })
+        }
+        VectorHistoryEntry::Objects { edits, .. } => edits.len() * 80,
+        _ => 4096,
     }
 }

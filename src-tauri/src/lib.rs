@@ -6,6 +6,7 @@ mod media_browser;
 mod pdf_import;
 #[cfg(any(target_os = "macos", test))]
 mod psd_import;
+mod resource_memory;
 mod shortcuts;
 mod timeline;
 #[tauri::command]
@@ -64,6 +65,7 @@ pub fn run() {
             if let Err(error) = media_browser::initialize(app.handle()) {
                 eprintln!("Media browser: {error}");
             }
+            app.manage(resource_memory::Resources::load(app.handle())?);
             app.manage(modal_windows::Modals::default());
             app.manage(pdf_import::Imports::default());
             #[cfg(target_os = "macos")]
@@ -137,6 +139,9 @@ pub fn run() {
             media_browser::media_pick_folder,
             measurement_units::measurement_unit,
             measurement_units::set_measurement_unit,
+            resource_memory::memory_settings,
+            resource_memory::save_memory_settings,
+            resource_memory::memory_pick_disk,
             runtime_info,
             canvas::edit_pages,
             canvas::edit_guides,
@@ -250,6 +255,7 @@ pub fn run() {
             canvas::set_tool_zoom,
             canvas::numeric_tool,
             canvas::project_action,
+            canvas::drop_files,
             file_format_capabilities,
             canvas::import_svg_layer,
             canvas::import_raster_layer,

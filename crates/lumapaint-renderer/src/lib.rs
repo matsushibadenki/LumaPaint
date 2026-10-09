@@ -3688,6 +3688,9 @@ impl Renderer {
         self.render_vector_drag(viewport, document, [0.0, 0.0])
     }
 
+    pub fn set_memory_budget(&mut self, bytes: usize) {
+        self.frame_raster_cache.set_memory_limit(bytes);
+    }
     pub fn set_outline_view(&mut self, outline: bool) {
         self.outline_view = outline;
     }
@@ -6158,3 +6161,7 @@ mod animation_tests;
 
 #[cfg(test)]
 mod brush_settings_tests;
+
+pub fn process_rss_bytes() -> Option<u64> {
+    process_memory::current_rss()
+}

@@ -922,3 +922,23 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .options-bar > label { display: flex; align-items: center; gap: var(--space-sm); white-space: nowrap; }
 .options-bar .current-tool { min-height: 0; margin-block: 0; white-space: nowrap; }
 .options-bar .session-note { flex-basis: auto; max-width: none; white-space: nowrap; }
+
+.memory-settings { min-width: 0; }
+.memory-settings dl { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px 16px; }
+.memory-settings dt { color: var(--color-muted); }
+.memory-settings dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.memory-allocation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
+.memory-settings input[type=number] { width: 86px; padding: 6px; }
+.memory-slider { width: 100%; margin: 16px 0 0; accent-color: var(--color-accent); }
+.memory-history { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+.memory-settings footer, .scratch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.memory-settings footer { justify-content: flex-end; border-top: 1px solid var(--color-rule); padding-top: 16px; }
+.memory-settings button { padding: 6px 10px; }
+.memory-error { color: var(--color-error); white-space: pre-wrap; overflow-wrap: anywhere; }
+.scratch-table-wrap { overflow-x: auto; margin-top: 20px; }
+.memory-settings table { width: 100%; border-collapse: collapse; text-align: left; }
+.memory-settings th, .memory-settings td { padding: 8px; border-bottom: 1px solid var(--color-rule); }
+.memory-settings th { white-space: nowrap; font-weight: 500; color: var(--color-muted); }
+.memory-settings tr[aria-selected=true] { background: var(--color-bar); }
+.memory-settings td small { display: block; overflow-wrap: anywhere; }
+.memory-settings td button { text-align: left; }

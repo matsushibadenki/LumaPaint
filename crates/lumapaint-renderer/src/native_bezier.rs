@@ -38,6 +38,7 @@ pub(crate) struct PreparationMetrics {
     pub bvh_builds: usize,
     pub bvh_refits: usize,
     pub bvh_suffix_updates: usize,
+    pub bvh_structural_updates: usize,
     pub spatial_queries: usize,
     pub spatial_query_reuses: usize,
     pub geometry_builds: usize,
@@ -280,6 +281,67 @@ impl VerifiedLayer {
                 })
                 .collect(),
         )
+    }
+
+    /// Maintain dense spatial slots locally; shifted positions require refits but
+    /// unaffected prefixes and BVH nodes remain resident. Canonical validation precedes this.
+    fn reuse_structure(
+        &mut self,
+        layer: &SvgLayer,
+        journal: &lumapaint_core::scene::Journal,
+    ) -> bool {
+        if self.clip_indices.iter().any(|clips| !clips.is_empty())
+            || layer
+                .vector_objects
+                .iter()
+                .any(|o| o.clipping_group.is_some() || !o.group_path.is_empty())
+        {
+            return false;
+        }
+        let Some(bounds) = self.structural_bounds(layer, journal) else {
+            return false;
+        };
+        let lumapaint_core::scene::JournalRead::Incremental { changes, cursor } =
+            journal.read_layer(self.cursor, &layer.id)
+        else {
+            return false;
+        };
+        let changed: HashSet<_> = changes
+            .iter()
+            .filter(|c| {
+                c.changes.transform || c.changes.geometry || c.changes.style || c.changes.visibility
+            })
+            .filter_map(|c| c.target.object.as_deref())
+            .collect();
+        self.last_refits = 0;
+        for position in layer.vector_objects.len()..self.object_ids.len() {
+            self.spatial.remove(position);
+        }
+        for (position, object) in layer.vector_objects.iter().enumerate() {
+            if self.object_ids.get(position) != Some(&object.id)
+                || changed.contains(object.id.as_str())
+            {
+                self.spatial.upsert(
+                    position,
+                    transformed_drawing_bounds(object, bounds[position]),
+                );
+                self.last_refits += 1;
+            }
+        }
+        self.local_bounds = bounds;
+        self.object_ids = layer.vector_objects.iter().map(|o| o.id.clone()).collect();
+        self.positions = self
+            .object_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+        self.clip_indices = vec![Vec::new(); self.object_ids.len()];
+        self.cursor = cursor;
+        self.source_key = (layer.source.as_ptr() as usize, layer.source.len());
+        self.layer_sequence = journal.layer_sequence(&layer.id);
+        crate::performance::count("native_structural_spatial_updates", 1);
+        true
     }
 
     /// Only a certified transform-only change can reuse SVG compatibility and
@@ -863,6 +925,12 @@ impl Cache {
                     {
                         verified = previous.take().unwrap();
                         self.metrics.bvh_suffix_updates += 1;
+                    } else if previous
+                        .as_mut()
+                        .is_some_and(|old| old.reuse_structure(layer, journal))
+                    {
+                        verified = previous.take().unwrap();
+                        self.metrics.bvh_structural_updates += 1;
                     } else {
                         self.metrics.bvh_builds += 1;
                         verified.local_bounds = previous
@@ -2081,6 +2149,44 @@ mod tests {
         d.delete_selected_vector_objects().unwrap();
         assert!(!fresh.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
         assert_eq!(fresh.object_ids, ["curve", "tail"]);
+    }
+
+    #[test]
+    fn structural_spatial_updates_match_fresh_dense_index() {
+        let mut d = lumapaint_core::document::Document::default();
+        let id = d.add_vector_layer().unwrap();
+        for (name, x) in [("first", 0.), ("middle", 100.), ("last", 200.)] {
+            let mut o = object("M0 0H20V20H0Z");
+            o.id = name.into();
+            o.transform[4] = x;
+            d.upsert_vector_object(&id, o).unwrap();
+        }
+        let mut retained = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        d.select_vector_objects(vec!["middle".into()]).unwrap();
+        d.delete_selected_vector_objects().unwrap();
+        for step in 0..3 {
+            if step == 1 {
+                d.undo();
+            }
+            if step == 2 {
+                d.redo();
+            }
+            let layer = d.svg_layers().next().unwrap();
+            assert!(retained.reuse_structure(layer, d.scene_journal()));
+            let fresh = unclipped_verified(layer, d.scene_journal());
+            for q in [
+                [-1., -1., 400., 40.],
+                [99., -1., 121., 21.],
+                [199., -1., 221., 21.],
+            ] {
+                assert_eq!(
+                    retained.spatial.query(q).items,
+                    fresh.spatial.query(q).items
+                );
+            }
+            assert_eq!(retained.object_ids, fresh.object_ids);
+            assert_eq!(retained.last_refits, if step == 1 { 2 } else { 1 });
+        }
     }
 
     #[test]
@@ -3742,7 +3848,8 @@ mod tests {
                     u64::from(step == 1)
                 );
             }
-            assert_eq!(suffix_cache.metrics.bvh_builds, 1);
+            assert_eq!(suffix_cache.metrics.bvh_builds, 0);
+            assert_eq!(suffix_cache.metrics.bvh_structural_updates, 1);
             assert_eq!(suffix_cache.metrics.geometry_builds, usize::from(step == 1));
             let mut fresh = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
             assert!(fresh.prepare(

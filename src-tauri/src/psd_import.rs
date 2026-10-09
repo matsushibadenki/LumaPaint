@@ -41,7 +41,7 @@ fn error(error: ImportError) -> String {
     };
     format!("{message}\n{error}")
 }
-fn decode(path: &Path) -> Result<Prepared, String> {
+pub(crate) fn decode(path: &Path) -> Result<Prepared, String> {
     let limit = lumapaint_formats::psd::MAX_INPUT_BYTES;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() > limit as u64 {

@@ -44,3 +44,5 @@ pub mod paint_bucket;
 pub mod selection_tools;
 
 pub mod retouch;
+
+pub mod history_storage;

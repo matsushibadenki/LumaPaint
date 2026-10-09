@@ -9,6 +9,9 @@ pub(crate) mod timeline;
 pub(super) mod window_sessions;
 pub(super) use window_sessions::{current_label, SessionGuard};
 
+#[path = "file_drop_macos.rs"]
+pub(super) mod file_drop;
+
 use super::{
     CanvasInfo, CanvasRequest, CanvasTool, DocumentAction, DocumentTabSnapshot,
     DocumentWorkspaceSnapshot,
@@ -165,12 +168,14 @@ pub fn initialize(app: tauri::AppHandle) {
             let _metrics = lumapaint_core::performance::batch("host.font_prewarm_job");
             lumapaint_renderer::vector::prepare_text_fonts();
         });
+    let memory = app.state::<crate::resource_memory::Resources>().0.clone();
     let (sender, receiver) = crate::render_queue::channel::<RasterJob>();
     if std::thread::Builder::new()
         .name("svg-raster".into())
         .spawn(move || {
             let mut frame_cache = FrameRasterCache::default();
             while let Ok(job) = receiver.recv() {
+                frame_cache.set_memory_limit(memory.policy().0 / 8);
                 let _metrics = lumapaint_renderer::performance::batch("host.svg_worker_job");
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
@@ -389,6 +394,22 @@ define_class!(
     #[ivars = FrameState]
     struct PaintView;
 impl PaintView {
+        #[unsafe(method(draggingEntered:))]
+        fn file_drag_entered(&self, sender: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSDraggingInfo>) -> objc2_app_kit::NSDragOperation {
+            file_drop::drag_operation(sender)
+        }
+        #[unsafe(method(draggingUpdated:))]
+        fn file_drag_updated(&self, sender: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSDraggingInfo>) -> objc2_app_kit::NSDragOperation {
+            file_drop::drag_operation(sender)
+        }
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_file_drop(&self, sender: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSDraggingInfo>) -> bool {
+            !file_drop::paths(sender).is_empty()
+        }
+        #[unsafe(method(performDragOperation:))]
+        fn perform_file_drop(&self, sender: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSDraggingInfo>) -> bool {
+            file_drop::perform(self, sender)
+        }
         #[unsafe(method(frameTick:))]
         fn frame_tick(&self, _link: &AnyObject) {
             let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
@@ -676,7 +697,13 @@ impl PaintView {
             display_link: RefCell::new(None),
         });
         // SAFETY: initializing the allocated NSView subclass once on the main thread.
-        unsafe { msg_send![super(view), initWithFrame: frame] }
+        let view: Retained<Self> = unsafe { msg_send![super(view), initWithFrame: frame] };
+        unsafe {
+            view.registerForDraggedTypes(&objc2_foundation::NSArray::from_slice(&[
+                objc2_app_kit::NSPasteboardTypeFileURL,
+            ]));
+        }
+        view
     }
 
     fn request_frame(&self) {
@@ -3404,7 +3431,22 @@ fn emit_error(error: String) {
         let _ = app.emit_to(current_label(), "canvas-error", error);
     }
 }
+pub fn cleanup_memory() {
+    if let Some(app) = APP.get() {
+        app.state::<crate::resource_memory::Resources>().0.cleanup();
+    }
+}
+pub fn apply_memory_preferences() -> Result<(), String> {
+    let app = APP.get().ok_or("Application unavailable")?;
+    window_sessions::manage_memory(&app.state::<crate::resource_memory::Resources>().0)
+}
 fn emit_document() {
+    if let Some(app) = APP.get() {
+        let memory = app.state::<crate::resource_memory::Resources>().0.clone();
+        if let Err(error) = window_sessions::manage_memory(&memory) {
+            emit_error(error);
+        }
+    }
     checkpoint();
     if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none()) {
         if let Some(app) = APP.get() {
@@ -3531,8 +3573,14 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                 )?;
             }
 
-            DocumentAction::Undo => doc.undo(),
-            DocumentAction::Redo => doc.redo(),
+            DocumentAction::Undo => {
+                doc.restore_history(false)?;
+                doc.undo();
+            }
+            DocumentAction::Redo => {
+                doc.restore_history(true)?;
+                doc.redo();
+            }
             DocumentAction::ToggleLayer => {
                 let snapshot = doc.layer_groups_snapshot();
                 if let Some(group) = snapshot
@@ -5260,7 +5308,7 @@ thread_local! {
     static NEXT_VECTOR_OBJECT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
-struct OpenDocument {
+pub(crate) struct OpenDocument {
     id: u64,
     content: OpenDocumentContent,
     path: Option<std::path::PathBuf>,
@@ -5285,6 +5333,7 @@ impl TiledSession {
     fn selected_layer_id(&self) -> &str {
         self.selected_layer
             .as_deref()
+            .filter(|id| self.document.layers().iter().any(|layer| layer.id == *id))
             .or_else(|| {
                 self.document
                     .layers()

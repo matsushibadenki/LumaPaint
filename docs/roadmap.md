@@ -1159,3 +1159,18 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 - 🟢 [Done] Reuse surviving path bounds by object ID after canonical validation, including notified middle deletion/restoration and dense-position changes. Parse changed/restored/new paths only; reject incomplete notifications and journal gaps.
 - 🟢 [Done] Fourteen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo matches fresh GPU output exactly; Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
 - 🟠 [Next] Middle operations still rebuild the BVH and clipping index; full SVG verification and application performance acceptance remain. Phase 7 is partial.
+
+### Finder file drops (2026-10-09)
+
+- 🟢 [Done] Drop LumaPaint documents, SVG and images on an empty canvas or the space to the right of document tabs to open new documents. Drop on an existing page to import independent layers; preserve source dimensions and image alpha. Multiple files are processed in order, with per-file errors.
+- 🟢 [Done] macOS GPU views receive AppKit file drops directly; WebViews handle empty canvases and tab gaps. Rust workers decode files and prepare vector/raster data. Import commits validate the destination document, including shared views, and support Undo/Redo in legacy and tiled documents.
+- 🟢 [Done] Workspace tests: 900 passed, 56 existing opt-in tests ignored. Native and frontend builds, all-targets Clippy, formatting and architecture checks pass. New coverage includes native/SVG/image loading, original dimensions and alpha, stale destinations, corrupt inputs, tiled edge pixels, atomic layer history, and 48 Workspace routing checks across Japanese/English/Simplified Chinese, DPR 1/2 and 640/1200px widths.
+- ⭕️ [Pending] Manual Finder drag gestures in the rebuilt macOS application, including drops between separate editor windows and different displays.
+
+### Native BVH maintenance through middle edits (2026-10-09)
+
+- 🟢 [Done] Canonically validated unclipped middle edits keep the spatial index and locally remove/upsert affected dense positions. Unchanged positions retain their entries; retained path/GPU geometry reuse continues.
+- 🟢 [Done] Fifteen native CPU regressions and one explicit real-GPU regression pass: delete/Undo/Redo performs zero full BVH builds, preserves fresh-index query results and exactly matches fresh GPU output.
+- 🟠 [Next] Shifted dense positions still require suffix refits and metadata reconstruction; stable native slots, clipping/group updates, SVG verification and application-scale performance acceptance remain. Phase 7 is partial.
+
+- 🟢 [Done] Final validation for local native BVH maintenance: Skia renderer all-targets Clippy (`-D warnings`), scoped Rust formatting and diff whitespace checks pass.

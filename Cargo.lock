@@ -2595,6 +2595,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "image",
+ "libc",
  "lumapaint-core",
  "lumapaint-fonts",
  "lumapaint-formats",

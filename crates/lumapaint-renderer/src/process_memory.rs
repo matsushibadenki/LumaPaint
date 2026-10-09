@@ -166,3 +166,7 @@ mod tests {
         );
     }
 }
+
+pub(super) fn current_rss() -> Option<u64> {
+    read_process_memory().map(|memory| memory.rss_bytes)
+}

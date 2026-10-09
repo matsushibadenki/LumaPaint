@@ -1,3 +1,5 @@
+import { useFileDrop, type FileDrop } from './file-drop';
+import { dropFiles } from './bridge';
 import { BrushSettings } from './components/BrushSettings';
 import {ShortcutDialog} from './components/ShortcutDialog';
 import {useShortcutCommands,useShortcutInputBlocked,useShortcuts,keyFromAccelerator,commandShortcut} from './shortcuts';
@@ -205,6 +207,30 @@ export function Workspace() {
     setDocumentAvailable(next.active !== null);
     setDocumentState(next.active ?? emptyDocument);
   }, []);
+
+  const acceptFileDrop = useCallback(async ({ paths, targetId }: FileDrop) => {
+    if (filePending.current || fileBusy) {
+      setError({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
+      return;
+    }
+    filePending.current = true; setFileBusy(true); setError('');
+    try {
+      const result = await dropFiles(paths, targetId);
+      updateWorkspace(result.workspace);
+      if (result.errors.length) setError(result.errors.join('\n'));
+      if (targetId === null && result.workspace.active) changeZoom(0);
+    } catch (cause) { setError(String(cause)); }
+    finally { filePending.current = false; setFileBusy(false); }
+  }, [fileBusy, locale, updateWorkspace, changeZoom]);
+  useFileDrop(activeDocumentId, acceptFileDrop, setError);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true; let stop = () => {};
+    void getCurrentWebviewWindow().listen('memory-settings-changed', () => {
+      void getDocumentWorkspace().then(next => { if (live) updateWorkspace(next); }).catch(cause => { if (live) setError(String(cause)); });
+    }).then(unlisten => { if (live) stop = unlisten; else unlisten(); });
+    return () => { live = false; stop(); };
+  }, [updateWorkspace]);
 
   useEffect(() => { document.documentElement.lang = locale; savePreference('locale', locale); }, [locale]);
   useEffect(() => { document.documentElement.dataset.theme = theme; savePreference('theme', theme); }, [theme]);

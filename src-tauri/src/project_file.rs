@@ -1,4 +1,4 @@
-//! Bounded reads and same-directory atomic replacement. No path supplied by the WebView.
+//! Bounded reads and same-directory atomic replacement for picker/drop file paths.
 use lumapaint_core::document::Document;
 use lumapaint_core::tiles::TiledRasterState;
 use lumapaint_formats::native::NativeDocumentCodec;
