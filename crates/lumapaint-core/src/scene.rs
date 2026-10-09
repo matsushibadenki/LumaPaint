@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 pub mod pages;
 pub(crate) mod picking;
+mod positions;
 pub mod spatial;
 
 const JOURNAL_CAPACITY: usize = 4096;

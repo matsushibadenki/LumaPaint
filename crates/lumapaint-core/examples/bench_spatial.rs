@@ -77,6 +77,35 @@ fn main() {
             drop(snapshot);
         }
         report(count, "single_refit_shared_snapshot", timings, 0);
+        // Unshared structural edits touch one branch. Keep tree ownership
+        // separate from the published-snapshot case, whose membership maps still
+        // copy on their first edit and must be measured honestly.
+        let mut timings = Vec::with_capacity(samples);
+        for _ in 0..64 {
+            assert!(tree.remove(count - 1));
+            tree.upsert(count - 1, Some([old_x, 0., old_x + 5., 5.]));
+        }
+        for _ in 0..samples {
+            let start = Instant::now();
+            assert!(tree.remove(count - 1));
+            tree.upsert(count - 1, Some([old_x, 0., old_x + 5., 5.]));
+            timings.push(start.elapsed().as_secs_f64() * 1e6);
+        }
+        report(count, "remove_reinsert", timings, 0);
+        let structural_samples = samples.min(8);
+        let mut timings = Vec::with_capacity(structural_samples);
+        for _ in 0..structural_samples {
+            let snapshot = tree.clone();
+            let start = Instant::now();
+            assert!(tree.remove(count - 1));
+            tree.upsert(count - 1, Some([old_x, 0., old_x + 5., 5.]));
+            timings.push(start.elapsed().as_secs_f64() * 1e6);
+            assert_eq!(
+                snapshot.query([old_x, 0., old_x + 5., 5.]).items,
+                [count - 1]
+            );
+        }
+        report(count, "remove_reinsert_shared_snapshot", timings, 0);
         assert_eq!(tree.query(query).items.len(), 512);
     }
 }

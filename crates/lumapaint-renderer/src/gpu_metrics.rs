@@ -516,6 +516,55 @@ mod tests {
             None
         );
     }
+    fn unaccounted_wgpu_call(source: &str) -> Option<&'static str> {
+        // Git checkouts may use LF or CRLF. Normalize whitespace before locating
+        // the test module so test-only GPU calls are excluded on every platform.
+        let normalized: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        let production = normalized.split("#[cfg(test)]modtests{").next().unwrap();
+        [
+            "create_buffer",
+            "create_buffer_init",
+            "create_texture",
+            "create_texture_with_data",
+            "write_buffer",
+            "write_texture",
+            "copy_buffer_to_buffer",
+            "copy_buffer_to_texture",
+            "copy_texture_to_texture",
+            "copy_texture_to_buffer",
+            "get_mapped_range",
+        ]
+        .into_iter()
+        .find(|method| production.contains(&format!(".{method}(")))
+    }
+
+    #[test]
+    fn accounted_entry_point_scan_handles_lf_crlf_and_module_whitespace() {
+        for separator in ["\n", "\r\n"] {
+            let source = [
+                "fn production() { crate::gpu_metrics::create_buffer!(device, descriptor); }",
+                "#[cfg(test)]",
+                "mod tests {",
+                "fn readback() { device.create_buffer(descriptor); }",
+                "}",
+            ]
+            .join(separator);
+            assert_eq!(unaccounted_wgpu_call(&source), None);
+            assert_eq!(
+                unaccounted_wgpu_call(&format!(
+                    "queue.write_buffer(buffer, 0, bytes);{separator}{source}"
+                )),
+                Some("write_buffer")
+            );
+        }
+        assert_eq!(
+            unaccounted_wgpu_call(
+                "#[cfg(test)]\r\nmod\ttests\r\n{ device.create_buffer(descriptor); }"
+            ),
+            None
+        );
+    }
+
     #[test]
     fn production_wgpu_allocations_and_writes_use_accounted_entry_points() {
         fn inspect(directory: &std::path::Path) {
@@ -533,27 +582,8 @@ mod tests {
                     continue;
                 }
                 let source = std::fs::read_to_string(&path).unwrap();
-                let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
-                let normalized: String =
-                    production.chars().filter(|c| !c.is_whitespace()).collect();
-                for method in [
-                    "create_buffer",
-                    "create_buffer_init",
-                    "create_texture",
-                    "create_texture_with_data",
-                    "write_buffer",
-                    "write_texture",
-                    "copy_buffer_to_buffer",
-                    "copy_buffer_to_texture",
-                    "copy_texture_to_texture",
-                    "copy_texture_to_buffer",
-                    "get_mapped_range",
-                ] {
-                    assert!(
-                        !normalized.contains(&format!(".{method}(")),
-                        "unaccounted {method} in {}",
-                        path.display()
-                    );
+                if let Some(method) = unaccounted_wgpu_call(&source) {
+                    panic!("unaccounted {method} in {}", path.display());
                 }
             }
         }

@@ -12,7 +12,7 @@ This table supersedes earlier chronological remaining-work notes below. The spec
 | 4: native normal zoom | 🟢 [Done] Qualified opaque straight strokes and single pixel-aligned opaque rectangular fills use native GPU rendering at normal zoom; six-zoom pixel comparisons | 🟠 [Next] Cubic fills and other appearance still need edge-quality corrections before normal-zoom routing |
 | 5: native strokes | 🟢 [Done] Bounded opaque axis-aligned straight strokes, butt/square caps and dashes; exact rational-conic storage and round undashed straight caps above 150%; retained geometry | 🟠 [Next] Curves/polylines and round joins remain quality-gated; normal-zoom round caps, overlapping/transparent strokes, mixed fill/stroke and general transforms |
 | 6: gradients/clipping | 🟢 [Done] Retained GPU linear/radial paints, nested clipping and isolated layer opacity/order; compatibility pixel comparisons pass | Complete within the bounded native geometry contract below; unsupported geometry/appearance retains compatibility rendering. Full Adobe comparisons remain phase 8. |
-| 7: incremental Scene | 🟢 [Done] Native transform refits reuse local bounds; idle synchronization skips source walks and retained viewport queries; unchanged layers skip journal copies; structural removals prune cached IDs locally; existing bounds membership changes refit locally | 🟠 [Next] Extend journal-based reuse to every rendering route; local object insertion/deletion BVH updates and remaining compatibility/mixed-content verification scans |
+| 7: incremental Scene | 🟢 [Done] Native transform refits reuse local bounds; idle synchronization skips source walks and retained viewport queries; unchanged layers skip journal copies; structural removals prune cached IDs locally; existing bounds membership changes refit locally; picking retains dynamically balanced stable slots and persistent known-item membership | 🟠 [Next] Extend journal-based reuse to every rendering route; native-renderer structural insertion/deletion reuse and remaining compatibility/mixed-content verification scans |
 | 8: scale/performance gates | 🟢 [Done] Release spatial-index query/refit example up to one million entries | 🟠 [Next] End-to-end application workloads, capacity changes, 60-second × 5 runs, GPU/RSS/upload budgets; 🟢 [Done] First Illustrator 2026 geometry export fixture and measured compatibility comparison; 🟠 [Next] native/glyph/color-managed Adobe comparisons |
 
 The attached improvement specification is being implemented in stages. The first changes added diagnostic coverage and fixed a measured text-cache eligibility bug. The follow-up below adds bounded retained text-frame GPU composition. The entire specification is not complete.
@@ -728,3 +728,33 @@ The long-source / eight-worker fixture records 14–25 parses per serial batch a
 - 🟠 [Next] This is bounds-membership maintenance for existing objects, not structural object insertion/deletion in application layers. Structural edits still rebuild their dense-position mappings. A shared `leaves` hash map still copies on its first membership edit; this does not establish constant snapshot-copy cost. Dynamic-tree balancing and end-to-end structural benchmarks remain unfinished.
 
 Validation: the final compiled core test binary passed 310 tests (one existing manual test ignored), including 13 Scene tests and the picking membership regression. Scoped Rust formatting and diff whitespace checks passed. The new core Clippy invocation remained blocked by another Cargo build; it was cancelled without interrupting that unrelated build. Clippy for this patch remains unverified. These tests establish query correctness and node reuse, not application frame-time or Adobe pixel-quality acceptance.
+
+## Follow-up: dynamic structural picking and persistent membership (2026-10-09)
+
+- 🟢 [Done] Existing-object membership Clippy verification from the preceding entry now passes.
+- 🟢 [Done] Stable-ID BVH upsert/removal and height-based local rotations. Sorted insertion of 10,000 entries stays below height 20; removal/reinsertion reuses retired slots. Mixed structural edits match a freshly rebuilt index, including unknown bounds and invalid queries.
+- 🟢 [Done] Picking retains stable spatial slots across notified insertion/deletion/reordering/restoration, then maps candidates back into current document drawing order. Unchanged objects retain their spatial leaves. Missing notifications, duplicate IDs, source changes without object notifications and a new Journal instance use the complete rebuild path. Repeated notifications evaluate each existing changed object only once.
+- 🟢 [Done] Replace the shared known-item hash map with a compressed persistent binary trie. Its path depth is bounded by machine-word bits, so snapshot membership edits no longer clone the entire known-item map. Sparse and extreme IDs are covered; snapshots preserve removed/updated entries. This changes allocation layout and needs measured validation; it is not a claim of reduced total RSS.
+- 🟠 [Next] Structural edits still scan dense document positions; unknown-item lists and retired-slot lists still use shared vectors. Native draw-list/clipping verification has its separate structural rebuild path. Full application capacity, GPU quality and end-to-end timing acceptance remain unfinished.
+
+The spatial example now measures unshared remove/reinsert and shared-snapshot remove/reinsert separately. Shared structural cases use at most eight samples; these are microbenchmarks, not the required 60-second × 5 application runs.
+
+### Persistent membership measurement and list follow-up
+
+Same local macOS Release example, 64 timed samples (eight shared structural samples), 64 warm structural operations. The dynamic-tree/hash-map run and persistent-known-map run are separate sequential runs, not randomized paired application experiments.
+
+| 1,000,000 known entries, operation | Dynamic tree/shared hash map median | Persistent known map median |
+| --- | ---: | ---: |
+| Unshared remove/reinsert | 5.500 µs | 11.250 µs |
+| Shared-snapshot remove/reinsert | 1,457.750 µs | 34.208 µs |
+
+The persistent map reduces first membership-edit snapshot copying but increases unshared-operation cost in this fixture. Query/refit noise also varies between runs. These results do not establish GUI latency, frame deadlines, RSS improvement or a universal speedup.
+
+- 🟢 [Done] Follow-up storage now also uses the persistent trie for unknown-item membership and persistent radix pages for retired slots. This removes whole unknown/free-list copies on a shared spatial snapshot edit; unknown-item enumeration remains proportional to unknown candidates. Trie nodes and free pages have a different allocation layout; memory totals still require measurement.
+- 🟠 [Next] Dense document position scans and the native renderer's structural/clipping rebuild paths remain outside this local Scene/picking change.
+
+Final-storage Release recheck (same 64/eight-sample protocol): one-million-entry unshared remove/reinsert median 11.417 µs, shared-snapshot median 35.583 µs. The final core suite passes 317 tests (one existing manual test ignored), and core all-targets Clippy with warnings denied passes. Scoped formatting and whitespace checks pass.
+
+Final integration validation: after restricting structural position scans to object-level changes, the core suite again passes 317 tests (one existing manual test ignored). Layer-order-only notifications now have a zero-scan regression. The renderer's `transform_journal_refits_native_bounds_and_undo_restores_pixels` test passes: transformed candidates, canonical/full-source pixel equality and Undo/Redo restoration are preserved. This is a CPU compatibility raster integration test, not a new explicit native GPU or Adobe comparison.
+
+The final order-only-scan patch also passes core all-targets Clippy (`-D warnings`); its build-lock wait is resolved. No outstanding lint failure is being deferred for this Scene/picking patch.

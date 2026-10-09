@@ -1114,3 +1114,15 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 
 - 🟢 [Done] Existing Scene objects can switch between unknown and known drawing bounds without rebuilding the spatial index. Retired BVH slots are reused and published snapshots retain their original query results. Picking uses the same refit path.
 - 🟠 [Next] Structural object insertion/deletion, persistent membership-map updates and dynamic-tree balancing remain separate work. The complete vector/text improvement specification is still unfinished; the current phase table in `vector-text-performance-2026-10-07.md` remains authoritative.
+
+### Dynamic spatial maintenance and picking (2026-10-09)
+
+- 🟢 [Done] Local BVH insertion/removal with height balancing and reusable slots; persistent known-item membership copies only the edited binary-trie path when snapshots are shared.
+- 🟢 [Done] Picking uses stable slots for notified object addition, deletion, reordering and restoration. Candidate results preserve current drawing order; incomplete notifications and new Journal instances safely rebuild.
+- 🟠 [Next] Dense-position scans, unknown/free-list snapshot copies and native structural/clipping rebuilds remain. These completed subsets do not close the complete vector/text specification.
+
+- 🟢 [Done] Spatial snapshots now also share unknown-item tries and paged retired-slot stacks; edits copy their affected paths/pages. The earlier unknown/free-vector remaining note is superseded by this follow-up.
+- 🟢 [Done] First Release structural-index microbenchmark: at one million known entries, shared-snapshot remove/reinsert median changed from 1,457.750 µs to 34.208 µs. Unshared median increased from 5.500 µs to 11.250 µs. This is not application throughput or RSS validation.
+
+- 🟢 [Done] Final Scene/picking validation: 317 core tests pass (one manual test ignored), including a zero-position-scan layer-order regression; renderer move/Undo/Redo pixel restoration integration passes. Scoped formatting and whitespace checks pass.
+- 🟢 [Done] Final core all-targets Clippy (`-D warnings`) passes after the layer-order scan correction; the earlier build-lock verification wait is resolved.
