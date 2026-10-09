@@ -23,7 +23,7 @@ const MAX_ACTIVE_DAB_REFS: usize = 262_144;
 #[derive(PartialEq)]
 struct ActiveStyle {
     eraser: bool,
-    color: [u8; 3],
+    brush: lumapaint_core::document::Brush,
     selection: Option<lumapaint_core::selection::Selection>,
 }
 
@@ -37,7 +37,7 @@ impl ActiveTiles {
         let mut result = Self {
             style: ActiveStyle {
                 eraser: stroke.eraser,
-                color: stroke.brush.color,
+                brush: stroke.brush,
                 selection: stroke.selection.clone(),
             },
             dabs: BTreeMap::new(),
@@ -261,34 +261,23 @@ impl PaintCache {
                 .count();
             if dirty.is_empty() {
                 None
-            } else if stroke.eraser {
-                self.tiles.erase_dabs_clipped_in_tiles(
-                    "paint",
-                    dabs,
-                    stroke.selection.as_ref(),
-                    Some(&dirty),
-                )?
             } else {
-                self.tiles.paint_dabs_clipped_in_tiles(
+                self.tiles.paint_brush_dabs_clipped_in_tiles(
                     "paint",
                     dabs,
-                    stroke.brush.color,
+                    compositing_brush(stroke),
                     stroke.selection.as_ref(),
                     Some(&dirty),
                 )?
             }
         } else if let (Some(stroke), Some(dabs)) = (active, sampled.as_deref()) {
-            if stroke.eraser {
-                self.tiles
-                    .erase_dabs_clipped("paint", dabs, stroke.selection.as_ref())?
-            } else {
-                self.tiles.paint_dabs_clipped(
-                    "paint",
-                    dabs,
-                    stroke.brush.color,
-                    stroke.selection.as_ref(),
-                )?
-            }
+            self.tiles.paint_brush_dabs_clipped_in_tiles(
+                "paint",
+                dabs,
+                compositing_brush(stroke),
+                stroke.selection.as_ref(),
+                None,
+            )?
         } else {
             active
                 .map(|stroke| paint_stroke_into_tiles(&mut self.tiles, "paint", stroke))
@@ -533,6 +522,7 @@ mod tests {
             size: 20.,
             hardness: 0.5,
             color: [20, 40, 60],
+            ..Default::default()
         };
         if erase {
             document

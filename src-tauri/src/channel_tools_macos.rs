@@ -121,6 +121,7 @@ pub(super) fn pointer(point: Point, phase: u8, pressure: f32) -> Result<bool, St
             point,
             Brush {
                 color: [255; 3],
+                blend_mode: lumapaint_core::brush_blend::BrushBlendMode::Normal,
                 no_color: false,
                 ..brush
             },
@@ -142,9 +143,14 @@ pub(super) fn pointer(point: Point, phase: u8, pressure: f32) -> Result<bool, St
             })
         });
         let label = current_label();
+        let mode = if tool == CanvasTool::Eraser {
+            lumapaint_core::brush_blend::BrushBlendMode::Normal
+        } else {
+            brush.blend_mode
+        };
         std::thread::spawn(move || {
             let pending = Arc::new(Mutex::new(None));
-            let result = worker(workspace, stroke, channel, value, rx, |source| {
+            let result = worker(workspace, stroke, channel, value, mode, rx, |source| {
                 publish(label.clone(), token, &pending, source)
             });
             let _ = done.send(result);
@@ -180,6 +186,7 @@ fn worker(
     mut stroke: Document,
     channel: u32,
     value: u8,
+    mode: lumapaint_core::brush_blend::BrushBlendMode,
     receiver: mpsc::Receiver<Sample>,
     mut output: impl FnMut(String),
 ) -> Result<String, String> {
@@ -188,7 +195,8 @@ fn worker(
     raw.update(&workspace)?;
     let (pixels, _) = raw.into_parts();
     let mut paint =
-        lumapaint_renderer::channel_paint::ChannelPaint::new(size, pixels, channel, value)?;
+        lumapaint_renderer::channel_paint::ChannelPaint::new(size, pixels, channel, value)?
+            .with_blend_mode(mode);
     let mut first = true;
     let mut finish = false;
     loop {

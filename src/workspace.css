@@ -905,3 +905,20 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .layer-edit-thumb:disabled { cursor: default; }
 .layer-row-content button.mask-thumb { background: #fff; color: #555; }
 .layer-row-content button.mask-thumb.inverted { background: #000; color: #fff; }
+
+.brush-option { flex-shrink: 0; white-space: nowrap; }
+.brush-option select { max-width: 180px; }
+.brush-settings { display: grid; gap: 9px; margin-block: 12px; }
+.brush-settings .property-row select { min-width: 0; max-width: 68%; }
+.brush-settings .diameter-row { margin-top: 0; }
+.brush-settings input.compact-slider[type=range] { height: 28px; }
+.brush-settings .diameter-row > span:first-child { min-width: 5em; }
+
+/* Tool options stay one bounded row even when the status text cannot fit.
+ * Reserve space for non-overlay scrollbars; keep all controls reachable. */
+.workspace { min-height: 0; grid-template-rows: 34px 44px minmax(0, 1fr); }
+.options-bar { min-width: 0; min-height: 0; padding: 0 16px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.options-bar > * { flex-shrink: 0; }
+.options-bar > label { display: flex; align-items: center; gap: var(--space-sm); white-space: nowrap; }
+.options-bar .current-tool { min-height: 0; margin-block: 0; white-space: nowrap; }
+.options-bar .session-note { flex-basis: auto; max-width: none; white-space: nowrap; }

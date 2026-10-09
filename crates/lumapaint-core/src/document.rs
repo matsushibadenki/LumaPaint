@@ -158,6 +158,16 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
+    #[serde(default = "default_hardness")]
+    pub opacity: f32,
+    #[serde(default = "default_hardness")]
+    pub flow: f32,
+    #[serde(default = "default_hardness")]
+    pub alpha: f32,
+    #[serde(default)]
+    pub smoothing: f32,
+    #[serde(default)]
+    pub blend_mode: crate::brush_blend::BrushBlendMode,
     #[serde(default)]
     pub no_color: bool,
     #[serde(default)]
@@ -252,6 +262,11 @@ pub enum BrushSimulation {
 impl Default for Brush {
     fn default() -> Self {
         Self {
+            opacity: 1.,
+            flow: 1.,
+            alpha: 1.,
+            smoothing: 0.,
+            blend_mode: Default::default(),
             no_color: false,
             size: 16.0,
             envelope: BrushEnvelope::default(),
@@ -263,8 +278,19 @@ impl Default for Brush {
 }
 
 impl Brush {
+    pub fn needs_compositing(self) -> bool {
+        self.opacity != 1.
+            || self.alpha != 1.
+            || self.blend_mode != crate::brush_blend::BrushBlendMode::Normal
+    }
     pub fn validate(&self) -> Result<(), String> {
         self.envelope.validate()?;
+        if [self.opacity, self.flow, self.alpha, self.smoothing]
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err("Invalid brush opacity, flow, alpha or smoothing".into());
+        }
         if !self.size.is_finite() || !(1.0..=MAX_BRUSH_SIZE).contains(&self.size) {
             return Err("Brush size must be between 1 and 512 px".into());
         }
@@ -9157,7 +9183,8 @@ mod tests {
             envelope: Default::default(),
             size: 512.0,
             hardness: 1.0,
-            color: [0, 0, 0]
+            color: [0, 0, 0],
+            ..Default::default()
         }
         .validate()
         .is_ok());
@@ -9167,7 +9194,8 @@ mod tests {
             envelope: Default::default(),
             size: 513.0,
             hardness: 1.0,
-            color: [0, 0, 0]
+            color: [0, 0, 0],
+            ..Default::default()
         }
         .validate()
         .is_err());
@@ -9177,7 +9205,8 @@ mod tests {
             envelope: Default::default(),
             size: 16.0,
             hardness: 1.01,
-            color: [0, 0, 0]
+            color: [0, 0, 0],
+            ..Default::default()
         }
         .validate()
         .is_err());
@@ -10475,6 +10504,7 @@ mod persistence_tests {
                     size: 37.0,
                     hardness: 0.35,
                     color: [12, 34, 56],
+                    ..Default::default()
                 },
             )
             .unwrap();

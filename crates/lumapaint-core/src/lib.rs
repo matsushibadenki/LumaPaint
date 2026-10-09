@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 pub mod bezier;
+pub mod brush_blend;
 pub mod clone_stamp;
 pub mod document;
 pub mod gradient;

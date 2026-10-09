@@ -36,6 +36,8 @@ pub enum MaskContent {
         width: u32,
         height: u32,
         runs: Vec<[u32; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        gray: Vec<[u32; 3]>,
     },
     Vector {
         selection: Selection,
@@ -139,6 +141,7 @@ impl LayerMask {
                     width,
                     height,
                     runs,
+                    gray: Vec::new(),
                 }
             }
         };
@@ -200,6 +203,7 @@ impl LayerMask {
                     width,
                     height,
                     runs,
+                    gray,
                 }),
             ) => {
                 if *width == 0
@@ -207,6 +211,7 @@ impl LayerMask {
                     || *width > 8192
                     || *height > 8192
                     || runs.len() > 1_048_576
+                    || gray.len() > 1_048_576
                 {
                     return Err("Invalid pixel mask".into());
                 }
@@ -218,6 +223,18 @@ impl LayerMask {
                         || *len > width - start % width
                     {
                         return Err("Invalid mask run".into());
+                    }
+                    end = start + len;
+                }
+                let mut end = 0;
+                for [start, len, value] in gray {
+                    if *len == 0
+                        || *start < end
+                        || *start >= width * height
+                        || *len > width - start % width
+                        || !(1..=254).contains(value)
+                    {
+                        return Err("Invalid grayscale mask run".into());
                     }
                     end = start + len;
                 }
@@ -237,7 +254,7 @@ impl LayerMask {
             a * point[0] + c * point[1] + e,
             b * point[0] + d * point[1] + f,
         ];
-        let hit = match &self.content {
+        let value = match &self.content {
             Some(MaskContent::Vector { selection, edits }) => {
                 let mut hit = selection.contains(Point {
                     x: point[0],
@@ -251,26 +268,31 @@ impl LayerMask {
                         hit = edit.reveal;
                     }
                 }
-                hit
+                f32::from(hit)
             }
             Some(MaskContent::Pixel {
                 width,
                 height,
                 runs,
+                gray,
             }) => {
-                let x = point[0].floor();
-                let y = point[1].floor();
+                let x = pixel_coordinate(point[0]);
+                let y = pixel_coordinate(point[1]);
                 if x < 0. || y < 0. || x >= *width as f32 || y >= *height as f32 {
-                    false
+                    0.
                 } else {
                     let index = y as u32 * width + x as u32;
                     let at = runs.partition_point(|r| r[0] <= index);
-                    at > 0 && index < runs[at - 1][0] + runs[at - 1][1]
+                    let g = gray.partition_point(|r| r[0] <= index);
+                    if g > 0 && index < gray[g - 1][0] + gray[g - 1][1] {
+                        gray[g - 1][2] as f32 / 255.
+                    } else {
+                        f32::from(at > 0 && index < runs[at - 1][0] + runs[at - 1][1])
+                    }
                 }
             }
-            None => true,
+            None => 1.,
         };
-        let value = f32::from(hit);
         1. - self.density + self.density * if self.inverted { 1. - value } else { value }
     }
     pub fn hash_state(&self, hash: &mut impl std::hash::Hasher) {
@@ -287,10 +309,17 @@ impl LayerMask {
                 width,
                 height,
                 runs,
+                gray,
             }) => {
                 hash.write_u32(*width);
                 hash.write_u32(*height);
                 hash.write_usize(runs.len());
+                hash.write_usize(gray.len());
+                for run in gray {
+                    for value in run {
+                        hash.write_u32(*value);
+                    }
+                }
                 for run in runs {
                     hash.write_u32(run[0]);
                     hash.write_u32(run[1]);
@@ -329,6 +358,17 @@ impl LayerMask {
             density: self.density,
             content: None,
         }
+    }
+}
+
+// CPU and GPU affine arithmetic can land on opposite sides of an exact pixel
+// boundary. Snap roundoff near integer coordinates before nearest-pixel lookup.
+fn pixel_coordinate(value: f32) -> f32 {
+    let nearest = value.round();
+    if (value - nearest).abs() <= (value.abs() * 0.0000002).max(0.00001) {
+        nearest
+    } else {
+        value.floor()
     }
 }
 
@@ -444,6 +484,7 @@ mod tests {
             width: 8,
             height: 8,
             runs: vec![[7, 2]],
+            gray: Vec::new(),
         });
         assert!(mask.validate().is_err());
         mask.content = None;

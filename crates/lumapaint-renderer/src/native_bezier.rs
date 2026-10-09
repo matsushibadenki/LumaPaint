@@ -37,6 +37,7 @@ pub(crate) struct PreparationMetrics {
     pub svg_generations: usize,
     pub bvh_builds: usize,
     pub bvh_refits: usize,
+    pub bvh_suffix_updates: usize,
     pub spatial_queries: usize,
     pub spatial_query_reuses: usize,
     pub geometry_builds: usize,
@@ -87,6 +88,200 @@ struct VerifiedLayer {
     layer_sequence: u64,
 }
 impl VerifiedLayer {
+    /// Called only after the new layer passes complete canonical SVG validation.
+    /// A certified unclipped suffix edit preserves every retained prefix slot.
+    fn reuse_suffix(&mut self, layer: &SvgLayer, journal: &lumapaint_core::scene::Journal) -> bool {
+        let old_len = self.object_ids.len();
+        let new_len = layer.vector_objects.len();
+        let retained = old_len.min(new_len);
+        if !self.compatible
+            || self.journal_id != journal.instance_id()
+            || old_len == new_len
+            || self.positions.len() != old_len
+            || self.local_bounds.len() != old_len
+            || self.clip_indices.len() != old_len
+            || self.clip_indices.iter().any(|clips| !clips.is_empty())
+            || layer
+                .vector_objects
+                .iter()
+                .any(|o| o.clipping_group.is_some() || !o.group_path.is_empty())
+            || self
+                .object_ids
+                .iter()
+                .take(retained)
+                .zip(&layer.vector_objects)
+                .any(|(id, object)| id != &object.id)
+        {
+            return false;
+        }
+        let lumapaint_core::scene::JournalRead::Incremental { changes, cursor } =
+            journal.read_layer(self.cursor, &layer.id)
+        else {
+            return false;
+        };
+        let mut additions = HashSet::new();
+        let mut removals = HashSet::new();
+        let mut transforms = HashSet::new();
+        for change in &changes {
+            if let Some(id) = &change.target.object {
+                if let Some(&position) = self.positions.get(id) {
+                    if position < retained {
+                        if change.removed
+                            || change.changes.structure
+                            || change.changes.style
+                            || change.changes.visibility
+                            || change.changes.geometry
+                        {
+                            return false;
+                        }
+                        if change.changes.transform {
+                            transforms.insert(position);
+                        }
+                    } else if change.removed {
+                        removals.insert(id.as_str());
+                    }
+                } else if change.changes.structure && !change.removed {
+                    additions.insert(id.as_str());
+                }
+            } else if change.removed
+                || change.changes.structure
+                || change.changes.style
+                || change.changes.visibility
+            {
+                return false;
+            }
+        }
+        if self
+            .object_ids
+            .iter()
+            .skip(new_len)
+            .any(|id| !removals.contains(id.as_str()))
+        {
+            return false;
+        }
+        let mut added_ids = HashSet::new();
+        for object in layer.vector_objects.iter().skip(old_len) {
+            if self.positions.contains_key(&object.id)
+                || !added_ids.insert(object.id.as_str())
+                || !additions.contains(object.id.as_str())
+            {
+                return false;
+            }
+        }
+        // Validate all notifications first, then mutate the retained derived data.
+        self.last_refits = 0;
+        while self.object_ids.len() > new_len {
+            let position = self.object_ids.len() - 1;
+            let id = self.object_ids.pop().unwrap();
+            self.positions.remove(&id);
+            self.spatial.remove(position);
+        }
+        self.local_bounds.truncate(new_len);
+        self.clip_indices.truncate(new_len);
+        for position in transforms {
+            self.spatial.upsert(
+                position,
+                transformed_drawing_bounds(
+                    &layer.vector_objects[position],
+                    self.local_bounds[position],
+                ),
+            );
+            self.last_refits += 1;
+        }
+        for (position, object) in layer.vector_objects.iter().enumerate().skip(old_len) {
+            let bounds = segments(object).map(|(_, _, bounds)| bounds);
+            self.spatial
+                .upsert(position, transformed_drawing_bounds(object, bounds));
+            self.local_bounds.push(bounds);
+            self.clip_indices.push(Vec::new());
+            self.positions.insert(object.id.clone(), position);
+            self.object_ids.push(object.id.clone());
+            crate::performance::count("native_suffix_bounds_parses", 1);
+        }
+        self.source_key = (layer.source.as_ptr() as usize, layer.source.len());
+        self.cursor = cursor;
+        self.layer_sequence = journal.layer_sequence(&layer.id);
+        crate::performance::count("native_suffix_spatial_updates", 1);
+        crate::performance::count("native_suffix_retained_objects", retained as u64);
+        true
+    }
+
+    /// Reuse local path bounds across dense-position changes after canonical validation.
+    /// The BVH is rebuilt because its item keys are still dense drawing positions.
+    fn structural_bounds(
+        &self,
+        layer: &SvgLayer,
+        journal: &lumapaint_core::scene::Journal,
+    ) -> Option<Vec<Option<[f64; 4]>>> {
+        if !self.compatible
+            || self.journal_id != journal.instance_id()
+            || self.positions.len() != self.object_ids.len()
+            || self.local_bounds.len() != self.object_ids.len()
+        {
+            return None;
+        }
+        let lumapaint_core::scene::JournalRead::Incremental { changes, .. } =
+            journal.read_layer(self.cursor, &layer.id)
+        else {
+            return None;
+        };
+        let mut changed = HashSet::new();
+        let mut added = HashSet::new();
+        let mut removed = HashSet::new();
+        for change in &changes {
+            if let Some(id) = &change.target.object {
+                if change.removed {
+                    removed.insert(id.as_str());
+                    changed.insert(id.as_str());
+                } else {
+                    if change.changes.structure {
+                        added.insert(id.as_str());
+                    }
+                    if change.changes.geometry {
+                        changed.insert(id.as_str());
+                    }
+                }
+            } else if change.removed || change.changes.structure || change.changes.geometry {
+                // Layer-wide geometry notifications accompany authoritative object edits.
+                // Only object-level notifications may certify which paths can be retained.
+                if change.removed || change.changes.structure {
+                    return None;
+                }
+            }
+        }
+        let mut ids = HashSet::new();
+        for object in &layer.vector_objects {
+            if !ids.insert(object.id.as_str())
+                || (!self.positions.contains_key(&object.id) && !added.contains(object.id.as_str()))
+            {
+                return None;
+            }
+        }
+        if self
+            .object_ids
+            .iter()
+            .any(|id| !ids.contains(id.as_str()) && !removed.contains(id.as_str()))
+        {
+            return None;
+        }
+        Some(
+            layer
+                .vector_objects
+                .iter()
+                .map(|object| {
+                    if !changed.contains(object.id.as_str()) {
+                        if let Some(&position) = self.positions.get(&object.id) {
+                            crate::performance::count("native_structural_bounds_reused", 1);
+                            return self.local_bounds[position];
+                        }
+                    }
+                    crate::performance::count("native_structural_bounds_parses", 1);
+                    segments(object).map(|(_, _, bounds)| bounds)
+                })
+                .collect(),
+        )
+    }
+
     /// Only a certified transform-only change can reuse SVG compatibility and
     /// geometry. All other changes return to the complete compatibility check.
     fn refresh(&mut self, layer: &SvgLayer, journal: &lumapaint_core::scene::Journal) -> bool {
@@ -108,13 +303,15 @@ impl VerifiedLayer {
             return false;
         }
         let lumapaint_core::scene::JournalRead::Incremental { changes, cursor } =
-            journal.read(self.cursor)
+            journal.read_layer(self.cursor, &layer.id)
         else {
             return false;
         };
         let mut has_changes = false;
         let mut has_objects = false;
-        for change in changes.iter().filter(|c| c.target.layer == layer.id) {
+        let mut positions = Vec::new();
+        let mut visited = HashSet::new();
+        for change in &changes {
             has_changes = true;
             if change.removed
                 || change.changes.structure
@@ -132,8 +329,15 @@ impl VerifiedLayer {
                     return false;
                 };
                 let object = &layer.vector_objects[position];
-                if object.id != *id || !supported(object) {
+                if object.id != *id {
                     return false;
+                }
+                if visited.insert(position) {
+                    crate::performance::count("native_transform_objects_validated", 1);
+                    if !supported(object) {
+                        return false;
+                    }
+                    positions.push(position);
                 }
             }
         }
@@ -145,11 +349,7 @@ impl VerifiedLayer {
         if !has_objects {
             return false;
         }
-        for change in changes.iter().filter(|c| c.target.layer == layer.id) {
-            let Some(id) = &change.target.object else {
-                continue;
-            };
-            let position = self.positions[id];
+        for position in positions {
             let object = &layer.vector_objects[position];
             self.last_refits += 1;
             if !self.spatial.refit(
@@ -165,6 +365,39 @@ impl VerifiedLayer {
         true
     }
 }
+/// Resolve mask membership without comparing every object with every mask.
+/// Preserve document mask order, including multiple masks for the same group.
+fn layer_clip_indices(objects: &[VectorObject]) -> Vec<Vec<usize>> {
+    let _timer = crate::performance::time("native_clip_index_host");
+    let mut masks: HashMap<&str, Vec<usize>> = HashMap::new();
+    crate::performance::count("native_clip_objects_indexed", objects.len() as u64);
+    for (position, object) in objects.iter().enumerate() {
+        if let Some(group) = object.clipping_group.as_deref() {
+            masks.entry(group).or_default().push(position);
+            crate::performance::count("native_clip_masks_indexed", 1);
+        }
+    }
+    if masks.is_empty() {
+        return vec![Vec::new(); objects.len()];
+    }
+    objects
+        .iter()
+        .map(|object| {
+            let mut clips = Vec::new();
+            for group in &object.group_path {
+                crate::performance::count("native_clip_group_lookups", 1);
+                if let Some(positions) = masks.get(group.as_str()) {
+                    clips.extend_from_slice(positions);
+                }
+            }
+            clips.sort_unstable();
+            clips.dedup();
+            crate::performance::count("native_clip_memberships", clips.len() as u64);
+            clips
+        })
+        .collect()
+}
+
 impl Cache {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -354,9 +587,32 @@ impl Cache {
                             }
                         }
                         if change.removed || change.changes.structure {
-                            self.verified.remove(&change.target.layer);
+                            // Retain derived bounds until canonical revalidation can
+                            // certify a suffix update. Deleted layers discard them.
+                            if change.removed && change.target.object.is_none() {
+                                self.verified.remove(&change.target.layer);
+                            }
                             self.draw_lists.remove(&change.target.layer);
                             self.query_keys.remove(&change.target.layer);
+                        }
+                    }
+                    let affected: HashSet<_> = changes
+                        .iter()
+                        .filter(|c| c.removed || c.changes.structure)
+                        .map(|c| c.target.layer.as_str())
+                        .collect();
+                    if !affected.is_empty() {
+                        for layer in document.svg_layers() {
+                            crate::performance::count("native_structural_layer_metadata_scans", 1);
+                            if affected.contains(layer.id.as_str())
+                                && (!layer.visible || layer.vector_objects.is_empty())
+                                && self.verified.remove(&layer.id).is_some()
+                            {
+                                crate::performance::count(
+                                    "native_inactive_structural_cache_drops",
+                                    1,
+                                );
+                            }
                         }
                     }
                     changes.is_empty() && !same_sources
@@ -565,6 +821,7 @@ impl Cache {
         };
         if rebuild {
             let _timer = crate::performance::time("native_layer_verify_bvh_build");
+            let mut previous = self.verified.remove(&layer.id);
             let eligible = layer.vector_objects.iter().all(supported)
                 && (layer
                     .vector_objects
@@ -600,45 +857,42 @@ impl Cache {
                 );
                 verified.compatible = expected == layer.source;
                 if verified.compatible {
-                    self.metrics.bvh_builds += 1;
-                    verified.local_bounds = layer
-                        .vector_objects
-                        .iter()
-                        .map(|object| segments(object).map(|(_, _, bounds)| bounds))
-                        .collect();
-                    verified.spatial = lumapaint_core::scene::spatial::SpatialIndex::build(
-                        layer.vector_objects.iter().enumerate().map(|(i, object)| {
-                            (
-                                i,
-                                transformed_drawing_bounds(object, verified.local_bounds[i]),
-                            )
-                        }),
-                    );
-                    verified.object_ids =
-                        layer.vector_objects.iter().map(|o| o.id.clone()).collect();
-                    verified.clip_indices = layer
-                        .vector_objects
-                        .iter()
-                        .map(|o| {
-                            layer
-                                .vector_objects
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, mask)| {
-                                    mask.clipping_group
-                                        .as_ref()
-                                        .filter(|g| o.group_path.contains(g))
-                                        .map(|_| i)
-                                })
-                                .collect()
-                        })
-                        .collect();
-                    verified.positions = layer
-                        .vector_objects
-                        .iter()
-                        .enumerate()
-                        .map(|(i, object)| (object.id.clone(), i))
-                        .collect();
+                    if previous
+                        .as_mut()
+                        .is_some_and(|old| old.reuse_suffix(layer, journal))
+                    {
+                        verified = previous.take().unwrap();
+                        self.metrics.bvh_suffix_updates += 1;
+                    } else {
+                        self.metrics.bvh_builds += 1;
+                        verified.local_bounds = previous
+                            .as_ref()
+                            .and_then(|old| old.structural_bounds(layer, journal))
+                            .unwrap_or_else(|| {
+                                layer
+                                    .vector_objects
+                                    .iter()
+                                    .map(|object| segments(object).map(|(_, _, bounds)| bounds))
+                                    .collect()
+                            });
+                        verified.spatial = lumapaint_core::scene::spatial::SpatialIndex::build(
+                            layer.vector_objects.iter().enumerate().map(|(i, object)| {
+                                (
+                                    i,
+                                    transformed_drawing_bounds(object, verified.local_bounds[i]),
+                                )
+                            }),
+                        );
+                        verified.object_ids =
+                            layer.vector_objects.iter().map(|o| o.id.clone()).collect();
+                        verified.clip_indices = layer_clip_indices(&layer.vector_objects);
+                        verified.positions = layer
+                            .vector_objects
+                            .iter()
+                            .enumerate()
+                            .map(|(i, object)| (object.id.clone(), i))
+                            .collect();
+                    }
                 }
             }
             if !verified.compatible {
@@ -1722,6 +1976,224 @@ mod tests {
         );
     }
 
+    fn unclipped_verified(
+        layer: &SvgLayer,
+        journal: &lumapaint_core::scene::Journal,
+    ) -> VerifiedLayer {
+        let local_bounds: Vec<_> = layer
+            .vector_objects
+            .iter()
+            .map(|o| segments(o).map(|(_, _, bounds)| bounds))
+            .collect();
+        VerifiedLayer {
+            source_key: (layer.source.as_ptr() as usize, layer.source.len()),
+            compatible: true,
+            fallback_reasons: HashMap::new(),
+            spatial: lumapaint_core::scene::spatial::SpatialIndex::build(
+                layer
+                    .vector_objects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| (i, transformed_drawing_bounds(o, local_bounds[i]))),
+            ),
+            positions: layer
+                .vector_objects
+                .iter()
+                .enumerate()
+                .map(|(i, o)| (o.id.clone(), i))
+                .collect(),
+            local_bounds,
+            clip_indices: vec![Vec::new(); layer.vector_objects.len()],
+            object_ids: layer.vector_objects.iter().map(|o| o.id.clone()).collect(),
+            cursor: journal.cursor(),
+            last_refits: 0,
+            journal_id: journal.instance_id(),
+            layer_sequence: journal.layer_sequence(&layer.id),
+        }
+    }
+
+    #[test]
+    fn suffix_spatial_reuse_preserves_prefix_bounds_and_history() {
+        let mut d = lumapaint_core::document::Document::default();
+        let id = d.add_vector_layer().unwrap();
+        d.upsert_vector_object(&id, object("M0 0H20V20H0Z"))
+            .unwrap();
+        let mut retained = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        let first_bounds = retained.local_bounds[0];
+        let mut tail = object("M0 0H20V20H0Z");
+        tail.id = "tail".into();
+        tail.transform[4] = 100.;
+        d.upsert_vector_object(&id, tail).unwrap();
+        crate::performance::take();
+        assert!(retained.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["native_suffix_bounds_parses"], 1);
+            assert_eq!(stats.counts["native_path_parses"], 1);
+        }
+        assert_eq!(retained.local_bounds[0], first_bounds);
+        assert_eq!(retained.spatial.query([100., 0., 120., 20.]).items, [1]);
+        d.select_vector_objects(vec!["tail".into()]).unwrap();
+        assert!(d.delete_selected_vector_objects().unwrap());
+        crate::performance::take();
+        assert!(retained.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert!(!crate::performance::take()
+            .counts
+            .contains_key("native_path_parses"));
+        assert!(retained
+            .spatial
+            .query([100., 0., 120., 20.])
+            .items
+            .is_empty());
+        d.undo();
+        assert!(retained.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert_eq!(retained.spatial.query([100., 0., 120., 20.]).items, [1]);
+        d.redo();
+        assert!(retained.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert_eq!(retained.object_ids, ["curve"]);
+        assert_eq!(retained.local_bounds[0], first_bounds);
+    }
+
+    #[test]
+    fn suffix_spatial_reuse_rejects_prefix_geometry_and_incomplete_notifications() {
+        let mut d = lumapaint_core::document::Document::default();
+        let id = d.add_vector_layer().unwrap();
+        d.upsert_vector_object(&id, object("M0 0H20V20H0Z"))
+            .unwrap();
+        let mut retained = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        let old_cursor = retained.cursor;
+        let old_bounds = retained.local_bounds.clone();
+        let mut changed = object("M0 0H40V40H0Z");
+        d.upsert_vector_object(&id, changed.clone()).unwrap();
+        changed.id = "tail".into();
+        d.upsert_vector_object(&id, changed).unwrap();
+        assert!(!retained.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert_eq!(retained.cursor, old_cursor);
+        assert_eq!(retained.local_bounds, old_bounds);
+        let mut fresh = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        let mut unnotified = d.svg_layers().next().unwrap().clone();
+        let mut extra = unnotified.vector_objects[0].clone();
+        extra.id = "extra".into();
+        unnotified.vector_objects.push(extra);
+        assert!(!fresh.reuse_suffix(&unnotified, d.scene_journal()));
+        assert_eq!(fresh.object_ids.len(), 2);
+        d.select_vector_objects(vec!["curve".into()]).unwrap();
+        d.delete_selected_vector_objects().unwrap();
+        assert!(!fresh.reuse_suffix(d.svg_layers().next().unwrap(), d.scene_journal()));
+        assert_eq!(fresh.object_ids, ["curve", "tail"]);
+    }
+
+    #[test]
+    fn structural_bounds_reuses_survivors_after_middle_delete_and_undo() {
+        let mut d = lumapaint_core::document::Document::default();
+        let id = d.add_vector_layer().unwrap();
+        for (name, x) in [("first", 0.), ("middle", 100.), ("last", 200.)] {
+            let mut o = object("M0 0H20V20H0Z");
+            o.id = name.into();
+            o.transform[4] = x;
+            d.upsert_vector_object(&id, o).unwrap();
+        }
+        let retained = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        d.select_vector_objects(vec!["middle".into()]).unwrap();
+        d.delete_selected_vector_objects().unwrap();
+        crate::performance::take();
+        let bounds = retained
+            .structural_bounds(d.svg_layers().next().unwrap(), d.scene_journal())
+            .unwrap();
+        assert_eq!(
+            bounds,
+            vec![retained.local_bounds[0], retained.local_bounds[2]]
+        );
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["native_structural_bounds_reused"], 2);
+            assert!(!stats.counts.contains_key("native_path_parses"));
+        }
+        let deleted = unclipped_verified(d.svg_layers().next().unwrap(), d.scene_journal());
+        d.undo();
+        crate::performance::take();
+        let restored = deleted
+            .structural_bounds(d.svg_layers().next().unwrap(), d.scene_journal())
+            .unwrap();
+        assert_eq!(restored, retained.local_bounds);
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["native_structural_bounds_reused"], 2);
+            assert_eq!(stats.counts["native_structural_bounds_parses"], 1);
+        }
+        let mut changed = d.svg_layers().next().unwrap().vector_objects[0].clone();
+        changed.path = object("M0 0H40V40H0Z").path;
+        d.upsert_vector_object(&id, changed).unwrap();
+        let bounds = retained
+            .structural_bounds(d.svg_layers().next().unwrap(), d.scene_journal())
+            .unwrap();
+        assert_ne!(bounds[0], retained.local_bounds[0]);
+        let mut unnotified = d.svg_layers().next().unwrap().clone();
+        unnotified.vector_objects[0].id = "missing-notification".into();
+        assert!(retained
+            .structural_bounds(&unnotified, d.scene_journal())
+            .is_none());
+    }
+
+    #[test]
+    fn transform_journal_coalesces_repeated_moves_but_preserves_style_rejection() {
+        let mut document = lumapaint_core::document::Document::default();
+        let id = document.add_vector_layer().unwrap();
+        let original = object("M0 0H20V20H0Z");
+        document
+            .upsert_vector_object(&id, original.clone())
+            .unwrap();
+        document
+            .select_vector_objects(vec!["curve".into()])
+            .unwrap();
+        let layer = document.svg_layers().next().unwrap();
+        let bounds = segments(&layer.vector_objects[0]).unwrap().2;
+        let mut verified = VerifiedLayer {
+            source_key: (layer.source.as_ptr() as usize, layer.source.len()),
+            compatible: true,
+            fallback_reasons: HashMap::new(),
+            spatial: lumapaint_core::scene::spatial::SpatialIndex::build([(0, Some(bounds))]),
+            positions: [("curve".into(), 0)].into(),
+            local_bounds: vec![Some(bounds)],
+            clip_indices: Vec::new(),
+            object_ids: Vec::new(),
+            cursor: document.scene_journal().cursor(),
+            last_refits: 0,
+            journal_id: document.scene_journal().instance_id(),
+            layer_sequence: document.scene_journal().layer_sequence(&layer.id),
+        };
+        for _ in 0..64 {
+            assert!(document.move_selected_vectors(1., 0.).unwrap());
+        }
+        crate::performance::take();
+        assert!(verified.refresh(
+            document.svg_layers().next().unwrap(),
+            document.scene_journal()
+        ));
+        assert_eq!(verified.last_refits, 1);
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["native_transform_objects_validated"], 1);
+            assert!(!stats.counts.contains_key("native_path_parses"));
+        }
+        assert_eq!(verified.spatial.query([64., 0., 84., 20.]).items, [0]);
+        assert!(verified.spatial.query([0., 0., 20., 20.]).items.is_empty());
+        let old_source = verified.source_key;
+        let mut changed = document.svg_layers().next().unwrap().vector_objects[0].clone();
+        changed.fill = None;
+        document.upsert_vector_object(&id, changed.clone()).unwrap();
+        changed.fill = original.fill;
+        document.upsert_vector_object(&id, changed).unwrap();
+        assert!(document.move_selected_vectors(10., 0.).unwrap());
+        assert!(!verified.refresh(
+            document.svg_layers().next().unwrap(),
+            document.scene_journal()
+        ));
+        assert_eq!(verified.last_refits, 0);
+        assert_eq!(verified.source_key, old_source);
+        assert_eq!(verified.spatial.query([64., 0., 84., 20.]).items, [0]);
+    }
+
     #[test]
     fn transform_journal_refits_native_bounds_and_undo_restores_pixels() {
         let mut d = lumapaint_core::document::Document::default();
@@ -1860,6 +2332,79 @@ mod tests {
             text: None,
         }
     }
+    fn reference_clip_indices(objects: &[VectorObject]) -> Vec<Vec<usize>> {
+        objects
+            .iter()
+            .map(|object| {
+                objects
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, mask)| {
+                        mask.clipping_group
+                            .as_ref()
+                            .filter(|g| object.group_path.contains(g))
+                            .map(|_| i)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn clip_index_matches_reference_for_nested_repeated_and_missing_groups() {
+        let mut objects: Vec<_> = (0..512)
+            .map(|i| {
+                let mut o = object("M0 0H20V20H0Z");
+                o.id = format!("object-{i}");
+                o.group_path = vec![
+                    format!("group-{}", i % 17),
+                    "missing".into(),
+                    format!("group-{}", i % 17),
+                    format!("group-{}", i % 7),
+                ];
+                if i % 5 == 0 {
+                    o.clipping_group = Some(format!("group-{}", i % 17));
+                }
+                o
+            })
+            .collect();
+        objects[0].clipping_group = Some(String::new());
+        objects[1].group_path.push(String::new());
+        assert_eq!(
+            layer_clip_indices(&objects),
+            reference_clip_indices(&objects)
+        );
+        objects.reverse();
+        assert_eq!(
+            layer_clip_indices(&objects),
+            reference_clip_indices(&objects)
+        );
+    }
+
+    #[test]
+    fn clip_index_skips_pairwise_work_for_unmasked_layers() {
+        let objects: Vec<_> = (0..4096)
+            .map(|i| {
+                let mut o = object("M0 0H20V20H0Z");
+                o.id = format!("object-{i}");
+                o.group_path = vec!["outer".into(), "inner".into()];
+                o
+            })
+            .collect();
+        crate::performance::take();
+        let clips = layer_clip_indices(&objects);
+        assert_eq!(clips.len(), 4096);
+        assert!(clips.iter().all(Vec::is_empty));
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["native_clip_objects_indexed"], 4096);
+            assert!(stats.cpu_nanoseconds.contains_key("native_clip_index_host"));
+            assert!(!stats.counts.contains_key("native_clip_group_lookups"));
+            assert!(!stats.counts.contains_key("native_clip_masks_indexed"));
+        }
+        assert!(layer_clip_indices(&[]).is_empty());
+    }
+
     #[test]
     fn portable_curves_and_unsupported_fallback() {
         let o = object("M0 0Q20 40 40 0C50 -20 60 20 70 0L70 50H0Z");
@@ -3070,6 +3615,155 @@ mod tests {
             assert_eq!(cache.metrics.geometry_upload_bytes, 0);
             assert_eq!(cache.metrics.uniform_upload_bytes, 0);
         }
+        // Suffix structural edits retain the prefix BVH and resident geometry,
+        // while still comparing the canonical SVG and a freshly built GPU cache.
+        let mut state = lumapaint_core::document::Document::default().document_state();
+        state.width = 128;
+        state.height = 128;
+        let mut base_layer = layer.clone();
+        base_layer.vector_objects = vec![object("M0 0H20V20H0Z")];
+        base_layer.source =
+            lumapaint_core::document::vector_svg(128, 128, &base_layer.vector_objects);
+        state.svg_layers = vec![base_layer];
+        let mut suffix_doc =
+            lumapaint_core::document::Document::from_document_state(state).unwrap();
+        let suffix_id = suffix_doc.svg_layers().next().unwrap().id.clone();
+        let mut suffix_cache = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        suffix_cache.synchronize(&suffix_doc);
+        assert!(suffix_cache.prepare(
+            &device,
+            &queue,
+            suffix_doc.svg_layers().next().unwrap(),
+            v,
+            (suffix_doc.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        let prefix_buffer = &suffix_cache.shapes["curve"]._curves as *const _ as usize;
+        let mut tail = object("M0 0H20V20H0Z");
+        tail.id = "suffix-tail".into();
+        tail.transform[4] = 40.;
+        suffix_doc.upsert_vector_object(&suffix_id, tail).unwrap();
+        for step in 0..4 {
+            if step == 1 {
+                suffix_doc
+                    .select_vector_objects(vec!["suffix-tail".into()])
+                    .unwrap();
+                suffix_doc.delete_selected_vector_objects().unwrap();
+            }
+            if step == 2 {
+                suffix_doc.undo();
+            }
+            if step == 3 {
+                suffix_doc.redo();
+            }
+            suffix_cache.begin_frame();
+            suffix_cache.synchronize(&suffix_doc);
+            let suffix_layer = suffix_doc.svg_layers().next().unwrap();
+            assert!(suffix_cache.prepare(
+                &device,
+                &queue,
+                suffix_layer,
+                v,
+                (suffix_doc.scene_journal(), &[]),
+                [0., 0.]
+            ));
+            assert_eq!(suffix_cache.metrics.bvh_builds, 0);
+            assert_eq!(suffix_cache.metrics.bvh_suffix_updates, 1);
+            assert_eq!(suffix_cache.metrics.svg_generations, 1);
+            assert_eq!(
+                suffix_cache.metrics.geometry_builds,
+                usize::from(step % 2 == 0)
+            );
+            assert_eq!(
+                &suffix_cache.shapes["curve"]._curves as *const _ as usize,
+                prefix_buffer
+            );
+            let mut fresh = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            assert!(fresh.prepare(
+                &device,
+                &queue,
+                suffix_layer,
+                v,
+                (suffix_doc.scene_journal(), &[]),
+                [0., 0.]
+            ));
+            assert_eq!(
+                render(&suffix_cache, suffix_layer),
+                render(&fresh, suffix_layer)
+            );
+        }
+        for (name, x) in [("middle", 40.), ("end", 80.)] {
+            let mut o = object("M0 0H20V20H0Z");
+            o.id = name.into();
+            o.transform[4] = x;
+            suffix_doc.upsert_vector_object(&suffix_id, o).unwrap();
+        }
+        suffix_cache.synchronize(&suffix_doc);
+        assert!(suffix_cache.prepare(
+            &device,
+            &queue,
+            suffix_doc.svg_layers().next().unwrap(),
+            v,
+            (suffix_doc.scene_journal(), &[]),
+            [0., 0.]
+        ));
+        suffix_doc
+            .select_vector_objects(vec!["middle".into()])
+            .unwrap();
+        suffix_doc.delete_selected_vector_objects().unwrap();
+        for step in 0..3 {
+            if step == 1 {
+                suffix_doc.undo();
+            }
+            if step == 2 {
+                suffix_doc.redo();
+            }
+            suffix_cache.begin_frame();
+            suffix_cache.synchronize(&suffix_doc);
+            crate::performance::take();
+            let current = suffix_doc.svg_layers().next().unwrap();
+            assert!(suffix_cache.prepare(
+                &device,
+                &queue,
+                current,
+                v,
+                (suffix_doc.scene_journal(), &[]),
+                [0., 0.]
+            ));
+            let stats = crate::performance::take();
+            if crate::performance::enabled() {
+                assert_eq!(stats.counts["native_structural_bounds_reused"], 2);
+                assert_eq!(
+                    stats
+                        .counts
+                        .get("native_structural_bounds_parses")
+                        .copied()
+                        .unwrap_or(0),
+                    u64::from(step == 1)
+                );
+            }
+            assert_eq!(suffix_cache.metrics.bvh_builds, 1);
+            assert_eq!(suffix_cache.metrics.geometry_builds, usize::from(step == 1));
+            let mut fresh = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            assert!(fresh.prepare(
+                &device,
+                &queue,
+                current,
+                v,
+                (suffix_doc.scene_journal(), &[]),
+                [0., 0.]
+            ));
+            assert_eq!(render(&suffix_cache, current), render(&fresh, current));
+        }
+        suffix_doc.toggle_layer(&suffix_id).unwrap();
+        let mut hidden_tail = object("M0 0H20V20H0Z");
+        hidden_tail.id = "hidden-tail".into();
+        suffix_doc
+            .upsert_vector_object(&suffix_id, hidden_tail)
+            .unwrap();
+        suffix_cache.synchronize(&suffix_doc);
+        assert!(!suffix_cache.verified.contains_key(&suffix_id));
+
         for count in [1, 16] {
             let mut state = document.document_state();
             state.layer_groups = Default::default();

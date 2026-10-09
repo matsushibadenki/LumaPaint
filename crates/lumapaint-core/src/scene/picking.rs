@@ -27,6 +27,7 @@ struct LayerIndex {
     slot_positions: Vec<Option<usize>>,
     free_slots: Vec<usize>,
     journal_id: u64,
+    layer_sequence: u64,
     cursor: u64,
     revision: u64,
     source_pointer: usize,
@@ -56,6 +57,7 @@ impl LayerIndex {
             slot_positions: (0..layer.vector_objects.len()).map(Some).collect(),
             free_slots: Vec::new(),
             journal_id: journal.instance_id(),
+            layer_sequence: journal.layer_sequence(&layer.id),
             cursor: journal.cursor(),
             revision,
             source_pointer: layer.source.as_ptr() as usize,
@@ -73,14 +75,20 @@ impl LayerIndex {
         {
             return 0;
         }
-        let JournalRead::Incremental { changes, .. } = journal.read(self.cursor) else {
+        if self.source_pointer == pointer
+            && self.layer_sequence == journal.layer_sequence(&layer.id)
+            && self.positions.len() == layer.vector_objects.len()
+        {
+            self.cursor = journal.cursor();
+            self.revision = revision;
+            crate::performance::count("picking_unchanged_layer_journal_skips", 1);
+            return 0;
+        }
+        let JournalRead::Incremental { changes, .. } = journal.read_layer(self.cursor, &layer.id)
+        else {
             *self = Self::build(layer, journal, revision);
             return layer.vector_objects.len();
         };
-        let changes: Vec<_> = changes
-            .iter()
-            .filter(|c| c.target.layer == layer.id)
-            .collect();
         let object_changes: Vec<_> = changes
             .iter()
             .filter(|c| c.target.object.is_some())
@@ -184,6 +192,7 @@ impl LayerIndex {
             }
         }
         self.cursor = journal.cursor();
+        self.layer_sequence = journal.layer_sequence(&layer.id);
         self.revision = revision;
         self.source_pointer = pointer;
         scanned
@@ -344,6 +353,40 @@ mod tests {
         layer.vector_objects[1].transform[4] = 200.;
         assert_eq!(index.refresh(&layer, &journal, 2), 2);
         assert_eq!(index.tree.query([200., 0., 220., 20.]).items, [1]);
+    }
+
+    #[test]
+    fn unchanged_layer_skips_notifications_even_after_other_layers_roll_over() {
+        let mut layer = layer();
+        let mut journal = Journal::default();
+        let mut index = LayerIndex::build(&layer, &journal, 0);
+        for _ in 0..5000 {
+            journal.push(
+                Target {
+                    layer: "other".into(),
+                    object: Some("other-object".into()),
+                },
+                Changes {
+                    transform: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+        }
+        crate::performance::take();
+        assert_eq!(index.refresh(&layer, &journal, 1), 0);
+        assert_eq!(index.cursor, journal.cursor());
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert_eq!(stats.counts["picking_unchanged_layer_journal_skips"], 1);
+            assert!(!stats
+                .counts
+                .contains_key("scene_journal_read_cloned_events"));
+        }
+        layer.vector_objects[0].transform[4] = 100.;
+        layer.source = "unnotified move".into();
+        assert_eq!(index.refresh(&layer, &journal, 2), 1);
+        assert_eq!(index.tree.query([100., 0., 120., 20.]).items, [0]);
     }
 
     #[test]

@@ -24,6 +24,148 @@ fn bounds(selection: &Selection) -> [f32; 4] {
     )
 }
 impl LayerMask {
+    /// Apply a whole brush stroke to grayscale mask coverage, using the same
+    /// accumulated dab density as pixel painting. Called with the original mask
+    /// for every preview, so opacity does not compound when frames are refreshed.
+    pub fn paint_brush_dabs(
+        &mut self,
+        size: (u32, u32),
+        dabs: &[crate::tiles::RasterDab],
+        brush: crate::document::Brush,
+        clip: Option<&Selection>,
+    ) -> Result<(), String> {
+        self.validate()?;
+        brush.validate()?;
+        let Some(MaskContent::Pixel {
+            width,
+            height,
+            runs,
+            gray,
+        }) = &self.content
+        else {
+            return Err("Pixel mask required".into());
+        };
+        let (mut width, mut height) = (*width, *height);
+        let density = crate::tiles::dab_density(size.0, size.1, dabs, clip)?;
+        if density.is_empty() || brush.no_color || brush.opacity * brush.alpha == 0. {
+            return Ok(());
+        }
+        let mut pixels = vec![0u8; (width * height) as usize];
+        for [start, len] in runs {
+            pixels[*start as usize..(start + len) as usize].fill(255);
+        }
+        for [start, len, value] in gray {
+            pixels[*start as usize..(start + len) as usize].fill(*value as u8);
+        }
+        let inverse = inverse(self.transform)?;
+        let mut area = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for coord in density.keys() {
+            let x = (coord.x * crate::tiles::TILE_SIZE) as f32;
+            let y = (coord.y * crate::tiles::TILE_SIZE) as f32;
+            let right = (x + crate::tiles::TILE_SIZE as f32).min(size.0 as f32);
+            let bottom = (y + crate::tiles::TILE_SIZE as f32).min(size.1 as f32);
+            for point in
+                [[x, y], [right, y], [x, bottom], [right, bottom]].map(|p| mapped(inverse, p))
+            {
+                area = [
+                    area[0].min(point.x),
+                    area[1].min(point.y),
+                    area[2].max(point.x),
+                    area[3].max(point.y),
+                ];
+            }
+        }
+        // Retain painting outside the old mask bounds after an unlinked move.
+        let ox = area[0].floor().min(0.);
+        let oy = area[1].floor().min(0.);
+        let nw = area[2].ceil().max(width as f32) - ox;
+        let nh = area[3].ceil().max(height as f32) - oy;
+        if !nw.is_finite() || !nh.is_finite() || nw > 8192. || nh > 8192. {
+            return Err("Pixel mask size limit exceeded (8192 px)".into());
+        }
+        let transform = multiply(self.transform, [1., 0., 0., 1., ox, oy]);
+        if nw as u32 != width || nh as u32 != height {
+            let mut expanded = vec![0; (nw as u32 * nh as u32) as usize];
+            for y in 0..height {
+                let from = (y * width) as usize;
+                let to = ((y + (-oy) as u32) * nw as u32 + (-ox) as u32) as usize;
+                expanded[to..to + width as usize]
+                    .copy_from_slice(&pixels[from..from + width as usize]);
+            }
+            pixels = expanded;
+            width = nw as u32;
+            height = nh as u32;
+        }
+        area = [area[0] - ox, area[1] - oy, area[2] - ox, area[3] - oy];
+        for y in (area[1].floor().max(0.) as u32)..(area[3].ceil().max(0.) as u32).min(height) {
+            for x in (area[0].floor().max(0.) as u32)..(area[2].ceil().max(0.) as u32).min(width) {
+                let p = mapped(transform, [x as f32 + 0.5, y as f32 + 0.5]);
+                if p.x < 0. || p.y < 0. {
+                    continue;
+                }
+                let (wx, wy) = (p.x.floor() as u32, p.y.floor() as u32);
+                let coord = crate::tiles::TileCoord {
+                    x: wx / crate::tiles::TILE_SIZE,
+                    y: wy / crate::tiles::TILE_SIZE,
+                };
+                let Some(tile) = density.get(&coord) else {
+                    continue;
+                };
+                let depth = tile[((wy % crate::tiles::TILE_SIZE) * crate::tiles::TILE_SIZE
+                    + wx % crate::tiles::TILE_SIZE) as usize];
+                let amount = (1. - (-depth).exp()) * brush.opacity * brush.alpha;
+                let at = (y * width + x) as usize;
+                let old = if self.inverted {
+                    255 - pixels[at]
+                } else {
+                    pixels[at]
+                };
+                let value = crate::brush_blend::composite_gray(
+                    old,
+                    brush.color[0],
+                    amount,
+                    brush.blend_mode,
+                    [wx, wy],
+                );
+                pixels[at] = if self.inverted { 255 - value } else { value };
+            }
+        }
+        let mut runs = Vec::new();
+        let mut gray = Vec::new();
+        for y in 0..height {
+            let mut x = 0;
+            while x < width {
+                let start = y * width + x;
+                let value = pixels[start as usize];
+                let mut len = 1;
+                while x + len < width && pixels[(start + len) as usize] == value {
+                    len += 1;
+                }
+                if value == 255 {
+                    runs.push([start, len]);
+                } else if value > 0 {
+                    gray.push([start, len, u32::from(value)]);
+                }
+                x += len;
+            }
+        }
+        let mut next = self.clone();
+        next.transform = transform;
+        next.content = Some(MaskContent::Pixel {
+            width,
+            height,
+            runs,
+            gray,
+        });
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
     pub fn bounds_quad(&self) -> Option<[[f32; 2]; 4]> {
         let [x, y, r, b] = match self.content.as_ref()? {
             MaskContent::Pixel { width, height, .. } => [0., 0., *width as f32, *height as f32],
@@ -69,6 +211,7 @@ impl LayerMask {
                 width,
                 height,
                 runs,
+                gray,
             } => {
                 let inv = inverse(self.transform)?;
                 let mut area = bounds(selection);
@@ -161,6 +304,28 @@ impl LayerMask {
                         runs.push([yy as u32 * nw + start, *len]);
                     }
                 }
+                let mut carried = Vec::<[u32; 3]>::new();
+                for [start, len, tone] in gray.iter().copied() {
+                    for index in start..start + len {
+                        let xx = index % *width + shiftx;
+                        let yy = index / *width + shifty;
+                        let point =
+                            mapped(self.transform, [xx as f32 + ox + 0.5, yy as f32 + oy + 0.5]);
+                        if selection.contains(point) && clip.is_none_or(|c| c.contains(point)) {
+                            continue;
+                        }
+                        let offset = yy * nw + xx;
+                        if let Some(last) = carried
+                            .last_mut()
+                            .filter(|r| r[0] + r[1] == offset && r[2] == tone && r[0] / nw == yy)
+                        {
+                            last[1] += 1;
+                        } else {
+                            carried.push([offset, 1, tone]);
+                        }
+                    }
+                }
+                *gray = carried;
                 *width = nw;
                 *height = nh;
                 next.transform = multiply(self.transform, [1., 0., 0., 1., ox, oy]);
@@ -181,6 +346,98 @@ mod tests {
         layer_mask::{LayerEditTarget, MaskKind},
         selection::SelectionShape,
     };
+    #[test]
+    fn brush_mask_expands_after_unlinked_translation() {
+        let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, 8, 8).unwrap();
+        mask.transform_by([1., 0., 0., 1., 12., 12.]).unwrap();
+        mask.paint_brush_dabs(
+            (32, 32),
+            &[crate::tiles::RasterDab {
+                x: 4.,
+                y: 4.,
+                radius: 2.,
+                hardness: 1.,
+                weight: 4.,
+                texture: 0.,
+                texture_scale: 1.,
+            }],
+            crate::document::Brush {
+                color: [255; 3],
+                alpha: 0.5,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(mask.coverage([4.5, 4.5]), 128. / 255.);
+        assert_eq!(mask.coverage([14.5, 14.5]), 1.);
+        assert_eq!(mask.coverage([0.5, 0.5]), 0.);
+    }
+    #[test]
+    fn brush_mask_grayscale_opacity_alpha_clip_and_save() {
+        use crate::{brush_blend::BrushBlendMode, document::Brush, tiles::RasterDab};
+        let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, 32, 32).unwrap();
+        let dab = RasterDab {
+            x: 16.,
+            y: 16.,
+            radius: 8.,
+            hardness: 1.,
+            weight: 4.,
+            texture: 0.,
+            texture_scale: 1.,
+        };
+        let brush = Brush {
+            color: [0; 3],
+            opacity: 0.5,
+            alpha: 0.5,
+            ..Default::default()
+        };
+        let clip = Selection::new(SelectionShape::Rectangle, [16., 0., 16., 32.]);
+        mask.paint_brush_dabs((32, 32), &[dab], brush, Some(&clip))
+            .unwrap();
+        assert_eq!(mask.coverage([16.5, 16.5]), 191. / 255.);
+        assert_eq!(mask.coverage([15.5, 16.5]), 1.);
+        assert_eq!(mask.coverage([2.5, 2.5]), 1.);
+        let loaded: LayerMask =
+            serde_json::from_slice(&serde_json::to_vec(&mask).unwrap()).unwrap();
+        assert_eq!(loaded, mask);
+        loaded.validate().unwrap();
+        mask.paint_brush_dabs(
+            (32, 32),
+            &[dab],
+            Brush {
+                opacity: 0.5,
+                alpha: 1.,
+                blend_mode: BrushBlendMode::Clear,
+                ..brush
+            },
+            Some(&clip),
+        )
+        .unwrap();
+        assert_eq!(mask.coverage([16.5, 16.5]), 96. / 255.);
+        mask.paint_selection(
+            &Selection::new(SelectionShape::Rectangle, [16., 16., 1., 1.]),
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(mask.coverage([16.5, 16.5]), 1.);
+        assert_eq!(mask.coverage([17.5, 16.5]), 96. / 255.);
+        mask.inverted = true;
+        mask.paint_brush_dabs(
+            (32, 32),
+            &[dab],
+            Brush {
+                color: [255; 3],
+                opacity: 1.,
+                alpha: 1.,
+                ..brush
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(mask.coverage([16.5, 16.5]), 1.);
+    }
     #[test]
     fn all_layer_mask_combinations_edit_coverage_without_touching_artwork() {
         for vector_layer in [false, true] {

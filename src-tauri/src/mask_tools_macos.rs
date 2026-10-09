@@ -17,6 +17,8 @@ pub(super) struct MaskGesture {
     effects: LayerEffects,
     clip: Option<Selection>,
     points: Vec<Point>,
+    brush: Brush,
+    size: (u32, u32),
     tool: CanvasTool,
     radius: f32,
     reveal: bool,
@@ -144,6 +146,41 @@ impl MaskGesture {
     }
     fn painted(&self) -> Result<LayerEffects, String> {
         let mut e = self.effects.clone();
+        if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
+            && e.mask
+                .as_ref()
+                .is_some_and(|m| m.kind == lumapaint_core::layer_mask::MaskKind::Pixel)
+        {
+            let mut brush = self.brush;
+            let value = if self.tool == CanvasTool::Eraser {
+                0
+            } else {
+                (0.2126 * brush.color[0] as f32
+                    + 0.7152 * brush.color[1] as f32
+                    + 0.0722 * brush.color[2] as f32)
+                    .round() as u8
+            };
+            brush.color = [value; 3];
+            brush.no_color = false;
+            if self.tool == CanvasTool::Eraser {
+                brush.blend_mode = Default::default();
+            }
+            let stroke = lumapaint_core::document::Stroke {
+                brush,
+                points: self.points.clone(),
+                pressures: Vec::new(),
+                selection: self.clip.clone(),
+                eraser: self.tool == CanvasTool::Eraser,
+                clear: false,
+            };
+            e.mask.as_mut().unwrap().paint_brush_dabs(
+                self.size,
+                &lumapaint_renderer::sampled_raster_dabs(&stroke)?,
+                brush,
+                self.clip.as_ref(),
+            )?;
+            return Ok(e);
+        }
         let a = self.points[0];
         let b = *self.points.last().unwrap();
         let mut selection = if matches!(
@@ -314,6 +351,8 @@ pub(super) fn pointer(point: Point, phase: u8) -> Result<bool, String> {
                     )
                 })),
                 points: vec![point],
+                brush,
+                size: (s.width, s.height),
                 tool,
                 radius: (brush.size * 0.5).clamp(0.5, 512.),
                 reveal: tool != CanvasTool::Eraser && luma >= 128.,

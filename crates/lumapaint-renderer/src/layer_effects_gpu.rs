@@ -80,12 +80,17 @@ pub(super) fn config(e: &LayerEffects) -> Option<Vec<f32>> {
                 width,
                 height,
                 runs,
+                gray,
             } => {
                 out[1125] = 1.;
                 out[1128] = *width as f32;
                 out[1129] = *height as f32;
                 out[1130] = runs.len() as f32;
                 for run in runs {
+                    out.extend(run.map(f32::from_bits));
+                }
+                out[1131] = gray.len() as f32;
+                for run in gray {
                     out.extend(run.map(f32::from_bits));
                 }
             }
@@ -884,6 +889,28 @@ mod mask_tests {
                     )
                     .unwrap();
                     mask.transform_by([1., 0.1, 0., 1., 1., -1.]).unwrap();
+                    if kind == MaskKind::Pixel {
+                        mask.paint_brush_dabs(
+                            (32, 32),
+                            &[lumapaint_core::tiles::RasterDab {
+                                x: 16.,
+                                y: 16.,
+                                radius: 10.,
+                                hardness: 0.5,
+                                weight: 0.2,
+                                texture: 0.,
+                                texture_scale: 1.,
+                            }],
+                            lumapaint_core::document::Brush {
+                                color: [80; 3],
+                                opacity: 0.6,
+                                alpha: 0.7,
+                                ..Default::default()
+                            },
+                            None,
+                        )
+                        .unwrap();
+                    }
                     mask.inverted = inverted;
                     mask.density = 0.65;
                     let effects = LayerEffects {
@@ -903,7 +930,16 @@ mod mask_tests {
                             .iter()
                             .zip(&expected)
                             .all(|(a, b)| a.abs_diff(*b) <= 1),
-                        "{kind:?} inverted={inverted}"
+                        "{kind:?} inverted={inverted}, mismatches={:?}",
+                        actual
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .zip(expected.as_chunks::<4>().0.iter())
+                            .enumerate()
+                            .filter(|(_, (a, b))| a.iter().zip(*b).any(|(a, b)| a.abs_diff(*b) > 1))
+                            .take(10)
+                            .collect::<Vec<_>>()
                     );
                 }
             }

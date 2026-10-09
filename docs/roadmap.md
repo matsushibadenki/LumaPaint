@@ -1126,3 +1126,36 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 
 - 🟢 [Done] Final Scene/picking validation: 317 core tests pass (one manual test ignored), including a zero-position-scan layer-order regression; renderer move/Undo/Redo pixel restoration integration passes. Scoped formatting and whitespace checks pass.
 - 🟢 [Done] Final core all-targets Clippy (`-D warnings`) passes after the layer-order scan correction; the earlier build-lock verification wait is resolved.
+
+### Layer-scoped change notifications (2026-10-09)
+
+- 🟢 [Done] Add targeted journal reads preserving global cursor/gap safety. Picking and native verification clone only the changed layer's events; unchanged picking layers skip reads, including unrelated journal rollover.
+- 🟢 [Done] Metrics-enabled core validation: 319 tests pass (one manual test ignored); the 100-layer fixture reduces a scoped read from 2,000 cloned events to 20, with unchanged-layer reads cloning zero.
+- 🟢 [Done] Native repeated-transform coalescing passes renderer regression: 64 pending moves validate/refit once; intervening style changes still reject reuse, and Undo/Redo restores identical compatibility pixels.
+- 🟢 [Done] Final checks: native module nine regressions pass (one explicit GPU test ignored); core and Skia renderer all-targets Clippy pass with warnings denied. Scoped formatting and whitespace checks pass.
+- 🟠 [Next] Native structural insertion/deletion reuse and complete journal reuse across other rendering routes remain separate work.
+
+### Brush opacity, flow, smoothing, color alpha and blending (2026-10-09)
+
+- 🟢 [Done] Add the five controls to the options bar, Brush panel and tool settings in English, Japanese and Simplified Chinese; provide the 29 brush modes from the supplied reference.
+- 🟢 [Done] Apply settings in Rust painting, previews, thumbnails, history and native document replay. Pixel masks retain grayscale coverage; selected-channel painting preserves other components. See [brush settings](brush-settings.md).
+- 🟢 [Done] Validation: 888 workspace tests, final 549 core/renderer regressions, explicit GPU/CPU mask comparison, warning-free workspace Clippy, frontend build, three-language UI interactions and narrow layouts pass.
+- ⭕️ [Pending] Manual stylus feel and Windows/Linux native-window interaction require validation on their respective devices.
+
+### Native clipping-membership indexing (2026-10-09)
+
+- 🟢 [Done] Native verification indexes masks by group name, preserving document mask order and duplicate-group membership semantics. Unmasked 4,096-object layers avoid the former 16,777,216 pair checks; opt-in timing/counters are available.
+- 🟢 [Done] Eleven native-module regressions pass, followed by an explicit real-GPU gradient/clip/resident-reuse regression. Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Native structural changes still require SVG verification and BVH rebuilding. The quadratic clipping lookup is removed, but full native insertion/deletion delta reuse and application-scale performance acceptance remain unfinished.
+
+### Native suffix structural reuse (2026-10-09)
+
+- 🟢 [Done] Unclipped layer-end additions/removals retain existing local bounds and BVH after canonical SVG verification. Added paths alone produce new bounds; retained GPU geometry survives append/delete/Undo/Redo. Hidden, empty or removed affected layers discard verification metadata.
+- 🟢 [Done] Thirteen native CPU regressions and one explicitly executed real-GPU regression pass. Retained and freshly rebuilt GPU output matches exactly through append/delete/Undo/Redo; Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Full SVG generation/eligibility remains intentional. Middle insertion/deletion, reordered/clipped structure and complete application-scale performance acceptance remain unfinished; phase 7 is still partial. This entry supersedes the previous statement that every native structural change rebuilds its BVH.
+
+### Native local bounds through middle edits (2026-10-09)
+
+- 🟢 [Done] Reuse surviving path bounds by object ID after canonical validation, including notified middle deletion/restoration and dense-position changes. Parse changed/restored/new paths only; reject incomplete notifications and journal gaps.
+- 🟢 [Done] Fourteen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo matches fresh GPU output exactly; Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Middle operations still rebuild the BVH and clipping index; full SVG verification and application performance acceptance remain. Phase 7 is partial.

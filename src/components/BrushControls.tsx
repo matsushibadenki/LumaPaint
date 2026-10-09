@@ -4,9 +4,9 @@ import type { Brush } from '../bridge';
 
 export const MAX_BRUSH_SIZE = 512;
 
-export function PercentInput({ value, onChange, label }: { value: number; onChange: (value: number) => void; label: string }) {
+export function PercentInput({ value, onChange, label, disabled = false }: { value: number; onChange: (value: number) => void; label: string; disabled?: boolean }) {
   const percent = Math.round(value * 100);
-  return <span className="number-field percent-field"><input aria-label={label} type="number" min="0" max="100" value={percent} onChange={event => {
+  return <span className="number-field percent-field"><input aria-label={label} disabled={disabled} type="number" min="0" max="100" value={percent} onChange={event => {
     const next = Number(event.target.value);
     if (Number.isFinite(next)) onChange(Math.min(100, Math.max(0, next)) / 100);
   }} /><span>%</span></span>;

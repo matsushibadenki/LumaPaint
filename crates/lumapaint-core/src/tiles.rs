@@ -344,7 +344,7 @@ impl SparseMask {
     fn paint_dabs(
         &mut self,
         dabs: &[RasterDab],
-        value: u8,
+        brush: crate::document::Brush,
         selection: Option<&Selection>,
     ) -> Result<Vec<MaskChange>, String> {
         let density = dab_density(self.width, self.height, dabs, selection)?;
@@ -354,13 +354,18 @@ impl SparseMask {
             let mut after = before
                 .clone()
                 .unwrap_or_else(|| vec![255; (TILE_SIZE * TILE_SIZE) as usize]);
-            for (pixel, depth) in after.iter_mut().zip(coverage) {
-                if depth > 0.0 {
-                    let alpha = 1.0 - (-depth).exp();
-                    *pixel = (f32::from(value) * alpha + f32::from(*pixel) * (1.0 - alpha))
-                        .round()
-                        .clamp(0.0, 255.0) as u8;
-                }
+            for (index, (pixel, depth)) in after.iter_mut().zip(coverage).enumerate() {
+                let amount = (1.0 - (-depth).exp()) * brush.opacity * brush.alpha;
+                *pixel = crate::brush_blend::composite_gray(
+                    *pixel,
+                    brush.color[0],
+                    amount,
+                    brush.blend_mode,
+                    [
+                        coord.x * TILE_SIZE + index as u32 % TILE_SIZE,
+                        coord.y * TILE_SIZE + index as u32 / TILE_SIZE,
+                    ],
+                );
             }
             let after = after.iter().any(|value| *value != 255).then_some(after);
             if before == after {
@@ -559,13 +564,22 @@ impl SparseTiles {
         color: [u8; 3],
         selection: Option<&Selection>,
     ) -> Result<Vec<TileChange>, String> {
-        self.paint_dabs_with_alpha_lock(dabs, color, selection, false, None)
+        self.paint_dabs_with_alpha_lock(
+            dabs,
+            crate::document::Brush {
+                color,
+                ..Default::default()
+            },
+            selection,
+            false,
+            None,
+        )
     }
 
     fn paint_dabs_with_alpha_lock(
         &mut self,
         dabs: &[RasterDab],
-        color: [u8; 3],
+        brush: crate::document::Brush,
         selection: Option<&Selection>,
         alpha_locked: bool,
         targets: Option<&BTreeSet<TileCoord>>,
@@ -576,38 +590,25 @@ impl SparseTiles {
         for (coord, coverage) in density {
             let before = self.tiles.get(&coord).cloned();
             let mut after = before.clone().unwrap_or_else(|| vec![0; TILE_BYTES]);
-            for (pixel, depth) in after.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
-                if depth <= 0.0 || (alpha_locked && pixel[3] == 0) {
-                    continue;
-                }
-                let source_alpha = 1.0 - (-depth).exp();
-                if alpha_locked {
-                    for channel in 0..3 {
-                        pixel[channel] = (f32::from(color[channel]) * source_alpha
-                            + f32::from(pixel[channel]) * (1.0 - source_alpha))
-                            .round()
-                            .clamp(0.0, 255.0) as u8;
-                    }
-                    continue;
-                }
-                let old_alpha = f32::from(pixel[3]) / 255.0;
-                let output_alpha = source_alpha + old_alpha * (1.0 - source_alpha);
-                let byte_alpha = (output_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
-                if byte_alpha == 0 {
-                    pixel.fill(0);
-                    continue;
-                }
-                for channel in 0..3 {
-                    let old = f32::from(pixel[channel]) / 255.0;
-                    let ink = f32::from(color[channel]) / 255.0;
-                    pixel[channel] = (((ink * source_alpha
-                        + old * old_alpha * (1.0 - source_alpha))
-                        / output_alpha)
-                        * 255.0)
-                        .round()
-                        .clamp(0.0, 255.0) as u8;
-                }
-                pixel[3] = byte_alpha;
+            for (index, (pixel, depth)) in after
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(coverage)
+                .enumerate()
+            {
+                let amount = (1.0 - (-depth).exp()) * brush.opacity * brush.alpha;
+                *pixel = crate::brush_blend::composite(
+                    *pixel,
+                    brush.color,
+                    amount,
+                    brush.blend_mode,
+                    alpha_locked,
+                    [
+                        coord.x * TILE_SIZE + index as u32 % TILE_SIZE,
+                        coord.y * TILE_SIZE + index as u32 / TILE_SIZE,
+                    ],
+                );
             }
             let after = after.iter().any(|byte| *byte != 0).then_some(after);
             if before == after {
@@ -879,7 +880,7 @@ pub fn brush_texture(x: f32, y: f32, texture: f32) -> f32 {
     pencil + (dry - pencil) * (texture - 1.0)
 }
 
-fn dab_density(
+pub(crate) fn dab_density(
     width: u32,
     height: u32,
     dabs: &[RasterDab],
@@ -1562,6 +1563,25 @@ impl TiledRasterDocument {
         value: u8,
         selection: Option<&Selection>,
     ) -> Result<Option<TileInvalidation>, String> {
+        self.paint_mask_brush_dabs(
+            layer_id,
+            dabs,
+            crate::document::Brush {
+                color: [value; 3],
+                ..Default::default()
+            },
+            selection,
+        )
+    }
+
+    pub fn paint_mask_brush_dabs(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        brush: crate::document::Brush,
+        selection: Option<&Selection>,
+    ) -> Result<Option<TileInvalidation>, String> {
+        brush.validate()?;
         let layer = self
             .layers
             .iter_mut()
@@ -1570,7 +1590,7 @@ impl TiledRasterDocument {
         if layer.locked || !layer.visible {
             return Err("Raster layer is hidden or locked".into());
         }
-        let changes = layer.mask.paint_dabs(dabs, value, selection)?;
+        let changes = layer.mask.paint_dabs(dabs, brush, selection)?;
         if changes.is_empty() {
             return Ok(None);
         }
@@ -1850,6 +1870,27 @@ impl TiledRasterDocument {
         selection: Option<&Selection>,
         targets: Option<&BTreeSet<TileCoord>>,
     ) -> Result<Option<TileInvalidation>, String> {
+        self.paint_brush_dabs_clipped_in_tiles(
+            layer_id,
+            dabs,
+            crate::document::Brush {
+                color,
+                ..Default::default()
+            },
+            selection,
+            targets,
+        )
+    }
+
+    pub fn paint_brush_dabs_clipped_in_tiles(
+        &mut self,
+        layer_id: &str,
+        dabs: &[RasterDab],
+        brush: crate::document::Brush,
+        selection: Option<&Selection>,
+        targets: Option<&BTreeSet<TileCoord>>,
+    ) -> Result<Option<TileInvalidation>, String> {
+        brush.validate()?;
         let layer = self
             .layers
             .iter_mut()
@@ -1860,7 +1901,7 @@ impl TiledRasterDocument {
         }
         let changes = layer.tiles.paint_dabs_with_alpha_lock(
             dabs,
-            color,
+            brush,
             selection,
             layer.alpha_locked,
             targets,

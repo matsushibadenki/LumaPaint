@@ -364,7 +364,7 @@ fn linear_color(color: [u8; 3]) -> [f32; 4] {
 // The carry across polyline vertices is essential: restarting dabs at every
 // vertex would reintroduce dark knots. A partial final interval has less weight.
 fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
-    let points = smooth_points(&stroke.points, &stroke.pressures);
+    let points = smoothed_brush_points(stroke);
     let mut brush = stroke.brush;
     if stroke.eraser {
         brush.simulation = Default::default();
@@ -421,7 +421,7 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     {
         return Err("Invalid stroke samples".into());
     }
-    let points = smooth_points(&stroke.points, &stroke.pressures);
+    let points = smoothed_brush_points(stroke);
     let base_radius = stroke.brush.size * 0.5;
     let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - stroke.brush.hardness));
     let length: f64 = points
@@ -454,6 +454,14 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     Ok(dabs)
 }
 
+fn compositing_brush(stroke: &Stroke) -> lumapaint_core::document::Brush {
+    let mut brush = stroke.brush;
+    if stroke.eraser {
+        brush.blend_mode = lumapaint_core::brush_blend::BrushBlendMode::Clear;
+    }
+    brush
+}
+
 pub fn paint_stroke_into_tiles(
     document: &mut TiledRasterDocument,
     layer_id: &str,
@@ -468,18 +476,12 @@ pub fn paint_stroke_into_tiles(
                 .ok_or("Clear stroke requires selection")?,
         );
     }
-    if stroke.eraser {
-        return document.erase_dabs_clipped(
-            layer_id,
-            &sampled_raster_dabs(stroke)?,
-            stroke.selection.as_ref(),
-        );
-    }
-    document.paint_dabs_clipped(
+    document.paint_brush_dabs_clipped_in_tiles(
         layer_id,
         &sampled_raster_dabs(stroke)?,
-        stroke.brush.color,
+        compositing_brush(stroke),
         stroke.selection.as_ref(),
+        None,
     )
 }
 
@@ -527,11 +529,13 @@ pub fn paint_stroke_into_tiles_at_scale(
                 .ok_or("Clear stroke requires selection")?,
         );
     }
-    if stroke.eraser {
-        document.erase_dabs_clipped(layer_id, &dabs, selection.as_ref())
-    } else {
-        document.paint_dabs_clipped(layer_id, &dabs, stroke.brush.color, selection.as_ref())
-    }
+    document.paint_brush_dabs_clipped_in_tiles(
+        layer_id,
+        &dabs,
+        compositing_brush(stroke),
+        selection.as_ref(),
+        None,
+    )
 }
 
 /// Conservative tile bounds for one retained stroke. The two-pixel margin
@@ -593,10 +597,13 @@ pub fn paint_stroke_into_mask(
     stroke: &Stroke,
     value: u8,
 ) -> Result<Option<TileInvalidation>, String> {
-    document.paint_mask_dabs(
+    document.paint_mask_brush_dabs(
         layer_id,
         &sampled_raster_dabs(stroke)?,
-        value,
+        lumapaint_core::document::Brush {
+            color: [value; 3],
+            ..stroke.brush
+        },
         stroke.selection.as_ref(),
     )
 }
@@ -1058,6 +1065,13 @@ fn dabs_along_path(
     // Soft tips tolerate wider sampling. Avoid thousands of tiny half-float
     // additions on wide brushes; hard edges keep a one-pixel upper bound.
     let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
+    // A stationary hard-tip click at 50% flow deposits 50% coverage. Preserve
+    // legacy full-flow density while calibrating intermediate values as alpha.
+    let flow_density = if brush.flow == 1. {
+        1.
+    } else {
+        -(-brush.flow).ln_1p() / (4. + 12. * brush.hardness)
+    };
     let color = linear_color(brush.color);
     let mut result = Vec::new();
     let mut emit = |p: Point, pressure: f32, length: f32, distance: f32| {
@@ -1079,7 +1093,7 @@ fn dabs_along_path(
             radius,
             hardness: brush.hardness,
             // Optical depth per unit arc length; the shader converts it to alpha.
-            weight: length / radius * opacity * level,
+            weight: length / radius * opacity * level * flow_density,
             texture: base_texture + (2.0 - base_texture) * dryness,
         })
     };
@@ -1119,7 +1133,10 @@ fn dabs_along_path(
                 emit(*last, *pressure, remainder, traversed);
             } else if let Some(last_dab) = result.last_mut() {
                 // Preserve the envelope multiplier when correcting the final cell.
-                last_dab.weight += remainder / base_radius * brush.envelope.level(next - spacing);
+                last_dab.weight += remainder / base_radius
+                    * brush.envelope.level(next - spacing)
+                    * opacity
+                    * flow_density;
             }
         }
     }
@@ -1136,6 +1153,25 @@ fn dabs_along_path(
         }
     }
     result
+}
+
+fn smoothed_brush_points(stroke: &Stroke) -> Vec<(Point, f32)> {
+    if stroke.brush.smoothing == 0. || stroke.points.len() < 2 {
+        return smooth_points(&stroke.points, &stroke.pressures);
+    }
+    let mut points = Vec::with_capacity(stroke.points.len());
+    let mut last = stroke.points[0];
+    points.push(last);
+    for point in &stroke.points[1..] {
+        let distance = (point.x - last.x).hypot(point.y - last.y);
+        let gain = 1. - (-distance / (24. * stroke.brush.smoothing)).exp();
+        last = Point {
+            x: last.x + (point.x - last.x) * gain,
+            y: last.y + (point.y - last.y) * gain,
+        };
+        points.push(last);
+    }
+    smooth_points(&points, &stroke.pressures)
 }
 
 fn smooth_points(points: &[Point], pressures: &[f32]) -> Vec<(Point, f32)> {
@@ -3746,7 +3782,9 @@ impl Renderer {
         };
         if document.has_layer_effects("layer-1")
             || document.paint_source().is_some()
-            || document.visible_strokes().any(|stroke| stroke.eraser)
+            || document
+                .visible_strokes()
+                .any(|stroke| stroke.eraser || stroke.brush.needs_compositing())
         {
             let started = std::time::Instant::now();
             let mut cache = match self.paint_cache.take() {
@@ -5133,6 +5171,7 @@ mod tests {
                 size: 32.0,
                 hardness: 0.3,
                 color: [20, 80, 200],
+                ..Default::default()
             },
             points: vec![
                 Point { x: 20.0, y: 20.0 },
@@ -5234,6 +5273,7 @@ mod tests {
                     size: 20.0,
                     hardness: 0.5,
                     color: [180, 40, 20],
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -5286,6 +5326,7 @@ mod tests {
                     size: 24.0,
                     hardness: 1.0,
                     color: [0, 0, 0],
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -5309,6 +5350,7 @@ mod tests {
             size: 32.0,
             hardness: 0.4,
             color: [30, 90, 180],
+            ..Default::default()
         };
         source.begin(Point { x: 240.0, y: 240.0 }, brush).unwrap();
         source.extend(Point { x: 300.0, y: 300.0 }).unwrap();
@@ -5348,6 +5390,7 @@ mod tests {
             size: 24.0,
             hardness: 0.25,
             color: [20, 40, 80],
+            ..Default::default()
         };
         source.begin(Point { x: 80.0, y: 80.0 }, brush).unwrap();
         source.finish();
@@ -6112,3 +6155,6 @@ mod effects_plan_tests {
 
 #[cfg(test)]
 mod animation_tests;
+
+#[cfg(test)]
+mod brush_settings_tests;

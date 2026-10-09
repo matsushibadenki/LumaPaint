@@ -117,6 +117,14 @@ impl Journal {
         self.generations.get(target).copied().unwrap_or_default()
     }
     pub fn read(&self, cursor: u64) -> JournalRead {
+        self.read_matching(cursor, None)
+    }
+    /// Read only this layer's notifications, retaining a global cursor and the
+    /// same missing-range protection as `read`. Other target IDs are not cloned.
+    pub fn read_layer(&self, cursor: u64, layer: &str) -> JournalRead {
+        self.read_matching(cursor, Some(layer))
+    }
+    fn read_matching(&self, cursor: u64, layer: Option<&str>) -> JournalRead {
         if cursor > self.sequence || self.events.front().is_some_and(|c| cursor < c.sequence - 1) {
             return JournalRead::Rebuild {
                 cursor: self.sequence,
@@ -130,6 +138,8 @@ impl Journal {
                 });
                 self.events
                     .range(start.min(self.events.len())..)
+                    .filter(|change| layer.is_none_or(|id| change.target.layer == id))
+                    .inspect(|_| crate::performance::count("scene_journal_read_cloned_events", 1))
                     .cloned()
                     .collect()
             },
@@ -340,6 +350,104 @@ mod tests {
             "strokeWidth":0.,"kind":"rectangle","controlPoints":[[0.,0.],[20.,0.],[20.,20.],[0.,20.]]
         })).unwrap()
     }
+    #[test]
+    fn layer_reads_preserve_global_cursor_gaps_and_clone_only_matching_events() {
+        let mut journal = Journal::default();
+        for i in 0..2000 {
+            journal.push(
+                Target {
+                    layer: format!("layer-{}", i % 100),
+                    object: Some(format!("object-{i}")),
+                },
+                Changes {
+                    transform: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+        }
+        crate::performance::take();
+        let all = journal.read(0);
+        let all_stats = crate::performance::take();
+        let filtered = journal.read_layer(0, "layer-3");
+        let filtered_stats = crate::performance::take();
+        let JournalRead::Incremental { changes, cursor } = all else {
+            panic!("valid global cursor")
+        };
+        let expected: Vec<_> = changes
+            .into_iter()
+            .filter(|c| c.target.layer == "layer-3")
+            .collect();
+        assert_eq!(expected.len(), 20);
+        assert_eq!(
+            filtered,
+            JournalRead::Incremental {
+                changes: expected,
+                cursor
+            }
+        );
+        if crate::performance::enabled() {
+            assert_eq!(all_stats.counts["scene_journal_read_cloned_events"], 2000);
+            assert_eq!(
+                filtered_stats.counts["scene_journal_read_cloned_events"],
+                20
+            );
+        }
+        assert_eq!(
+            journal.read_layer(cursor, "absent"),
+            JournalRead::Incremental {
+                changes: Vec::new(),
+                cursor
+            }
+        );
+        journal.push(
+            Target {
+                layer: "other".into(),
+                object: None,
+            },
+            Changes {
+                style: true,
+                ..Changes::default()
+            },
+            false,
+        );
+        assert_eq!(
+            journal.read_layer(cursor, "layer-3"),
+            JournalRead::Incremental {
+                changes: Vec::new(),
+                cursor: journal.cursor()
+            }
+        );
+        for _ in 0..JOURNAL_CAPACITY {
+            journal.push(
+                Target {
+                    layer: "other".into(),
+                    object: None,
+                },
+                Changes {
+                    style: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+        }
+        for position in [0, cursor, journal.cursor() + 1] {
+            assert_eq!(
+                journal.read_layer(position, "layer-3"),
+                JournalRead::Rebuild {
+                    cursor: journal.cursor()
+                }
+            );
+        }
+        assert_eq!(
+            journal.read_layer(journal.cursor(), "layer-3"),
+            JournalRead::Incremental {
+                changes: Vec::new(),
+                cursor: journal.cursor()
+            }
+        );
+    }
+
     #[test]
     fn edits_history_failed_transactions_and_native_reload() {
         let mut document = Document::default();

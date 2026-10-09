@@ -26,18 +26,26 @@ fn mask_selection(offset:u32,count:u32,p:vec2<f32>)->MaskSelectionResult {
   }
  return MaskSelectionResult(inside,base);
 }
+fn mask_pixel_coordinate(p:vec2<f32>)->vec2<f32> {
+ let nearest=round(p);
+ return select(floor(p),nearest,abs(p-nearest)<=max(abs(p)*0.0000002,vec2(0.00001)));
+}
 fn mask_coverage(i:u32)->f32 {
  let kind=u32(config[1125]);if kind==0u{return 1.;}
  let width=max(u32(config[1120]),1u);
  let world=vec2(config[1121],config[1122])+(vec2(f32(i%width),f32(i/width))+vec2(0.5))*vec2(config[1123],config[1124]);
  let p=vec2(config[1135]*world.x+config[1137]*world.y+config[1139],config[1136]*world.x+config[1138]*world.y+config[1140]);
- var inside=false;let count=u32(config[1130]);
+ var tone=-1.;var inside=false;let count=u32(config[1130]);
  if kind==1u {
-  let q=floor(p);let w=u32(config[1128]);
+  let q=mask_pixel_coordinate(p);let w=u32(config[1128]);
   if q.x>=0. && q.y>=0. && q.x<config[1128] && q.y<config[1129] {
    let index=u32(q.y)*w+u32(q.x);var lo=0u;var hi=count;
    loop{if lo>=hi{break;}let mid=(lo+hi)/2u;if bitcast<u32>(config[1141u+mid*2u])<=index{lo=mid+1u;}else{hi=mid;}}
    if lo>0u{let base=1141u+(lo-1u)*2u;inside=index<bitcast<u32>(config[base])+bitcast<u32>(config[base+1u]);}
+   let start=1141u+count*2u;lo=0u;hi=u32(config[1131]);
+   loop{if lo>=hi{break;}let mid=(lo+hi)/2u;if bitcast<u32>(config[start+mid*3u])<=index{lo=mid+1u;}else{hi=mid;}}
+   if lo>0u{let base=start+(lo-1u)*3u;if index<bitcast<u32>(config[base])+bitcast<u32>(config[base+1u]){tone=f32(bitcast<u32>(config[base+2u]))/255.;}}
+
   }
  }else{
   var result=mask_selection(1141u,count,p);inside=result.inside;var base=result.next;
@@ -50,7 +58,7 @@ fn mask_coverage(i:u32)->f32 {
    base=clip.next;
   }
  }
- var value=select(0.,1.,inside);if config[1126]>0.5{value=1.-value;}
+ var value=select(0.,1.,inside);if tone>=0.{value=tone;}if config[1126]>0.5{value=1.-value;}
  return 1.-config[1127]+config[1127]*value;
 }
 fn adjust(packed:u32,i:u32)->u32 {

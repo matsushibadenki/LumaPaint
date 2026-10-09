@@ -730,6 +730,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
             size: 24.0,
             hardness: 1.0,
             color: [0, 0, 0],
+            ..Default::default()
         },
         points: vec![Point { x: 90.0, y: 120.0 }, Point { x: 500.0, y: 120.0 }],
         pressures: vec![],
@@ -745,6 +746,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
             size: 48.0,
             hardness: 0.0,
             color: [30, 90, 180],
+            ..Default::default()
         },
         points: vec![
             Point { x: 100.0, y: 340.0 },
@@ -764,6 +766,7 @@ fn gpu_v1_and_tile_brush_pixel_difference_diagnostic() {
             size: 32.0,
             hardness: 0.25,
             color: [0, 0, 0],
+            ..Default::default()
         },
         points: vec![Point { x: 140.0, y: 470.0 }, Point { x: 450.0, y: 560.0 }],
         pressures: vec![],
@@ -807,6 +810,7 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
             size: 24.0,
             hardness: 1.0,
             color: [0, 0, 0],
+            ..Default::default()
         },
         points: vec![Point { x: 380.0, y: 320.0 }, Point { x: 580.0, y: 320.0 }],
         pressures: vec![],
@@ -822,6 +826,7 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
             size: 48.0,
             hardness: 0.0,
             color: [30, 90, 180],
+            ..Default::default()
         },
         points: vec![
             Point { x: 380.0, y: 360.0 },
@@ -1161,6 +1166,7 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
                     size: 512.0,
                     hardness,
                     color: [0, 0, 0],
+                    ..Default::default()
                 },
                 points: vec![Point { x: 80.0, y: 300.0 }, Point { x: 880.0, y: 300.0 }],
                 pressures: vec![],
@@ -1270,6 +1276,7 @@ fn gpu_selection_clips_brush_footprint_and_survives_reload() {
                         size: 512.0,
                         hardness,
                         color: [0, 0, 0],
+                        ..Default::default()
                     },
                 )
                 .unwrap();
@@ -1326,6 +1333,7 @@ fn gpu_brush_self_crossing_matches_separate_strokes() {
                 envelope: Default::default(),
                 hardness,
                 color: [32, 32, 32],
+                ..Default::default()
             };
             let continuous = gpu.render(&[figure_eight(brush, 3)]);
             let separate = gpu.render(&vec![figure_eight(brush, 1); 3]);
@@ -1362,6 +1370,7 @@ fn gpu_brush_sampling_density_does_not_change_width() {
             size: 32.0,
             hardness,
             color: [0, 0, 0],
+            ..Default::default()
         };
         let sparse = Stroke {
             eraser: false,
@@ -1416,6 +1425,7 @@ fn gpu_brush_crossings_follow_normal_alpha_including_repeated_passes() {
         size: 64.0,
         hardness: 0.0,
         color: [0, 0, 0],
+        ..Default::default()
     };
     let line = |reverse: bool| Stroke {
         eraser: false,

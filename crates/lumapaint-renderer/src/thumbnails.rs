@@ -123,11 +123,13 @@ fn render_sized_inner(
                 dab.y *= scale;
                 dab.radius = (dab.radius * scale).max(0.025);
             }
-            if stroke.eraser {
-                tiles.erase_dabs_clipped("thumb", &dabs, selection.as_ref())?;
-            } else {
-                tiles.paint_dabs_clipped("thumb", &dabs, stroke.brush.color, selection.as_ref())?;
-            }
+            tiles.paint_brush_dabs_clipped_in_tiles(
+                "thumb",
+                &dabs,
+                super::compositing_brush(stroke),
+                selection.as_ref(),
+                None,
+            )?;
         }
         tiles.discard_history();
     }

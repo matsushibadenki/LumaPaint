@@ -1,11 +1,13 @@
 //! Isolated channel edits preserve every unselected component. Source and brush
 //! coverage remain in Rust; previews reuse the normal incremental brush raster.
 use crate::{pixel_paint::PixelPaintPreview, vector, Document, TileUpload};
+use lumapaint_core::brush_blend::{composite_gray, BrushBlendMode};
 
 pub struct ChannelPaint {
     size: (u32, u32),
     channel: usize,
     value: u8,
+    blend_mode: BrushBlendMode,
     original: Vec<u8>,
     pixels: Vec<u8>,
     coverage: PixelPaintPreview,
@@ -20,10 +22,15 @@ impl ChannelPaint {
             size,
             channel: channel as usize - 1,
             value,
+            blend_mode: BrushBlendMode::Normal,
             pixels: source.clone(),
             original: source,
             coverage: PixelPaintPreview::new(size)?,
         })
+    }
+    pub fn with_blend_mode(mut self, mode: BrushBlendMode) -> Self {
+        self.blend_mode = mode;
+        self
     }
     pub fn update(&mut self, stroke: &Document) -> Result<Vec<TileUpload>, String> {
         self.coverage.update(stroke)?;
@@ -37,8 +44,14 @@ impl ChannelPaint {
                         + x)
                         * 4;
                     let source: [u8; 4] = self.original[global..global + 4].try_into().unwrap();
-                    let out =
-                        paint_pixel(source, self.channel, self.value, upload.pixels[local + 3]);
+                    let out = paint_pixel_blended(
+                        source,
+                        self.channel,
+                        self.value,
+                        upload.pixels[local + 3],
+                        self.blend_mode,
+                        [upload.origin[0] + x as u32, upload.origin[1] + y as u32],
+                    );
                     self.pixels[global..global + 4].copy_from_slice(&out);
                     upload.pixels[local..local + 4].copy_from_slice(&out);
                 }
@@ -51,12 +64,24 @@ impl ChannelPaint {
     }
 }
 fn paint_pixel(source: [u8; 4], channel: usize, value: u8, coverage: u8) -> [u8; 4] {
-    let mix = |old: u8| {
-        ((u32::from(old) * (255 - u32::from(coverage))
-            + u32::from(value) * u32::from(coverage)
-            + 127)
-            / 255) as u8
-    };
+    paint_pixel_blended(
+        source,
+        channel,
+        value,
+        coverage,
+        BrushBlendMode::Normal,
+        [0; 2],
+    )
+}
+fn paint_pixel_blended(
+    source: [u8; 4],
+    channel: usize,
+    value: u8,
+    coverage: u8,
+    mode: BrushBlendMode,
+    position: [u32; 2],
+) -> [u8; 4] {
+    let mix = |old| composite_gray(old, value, f32::from(coverage) / 255., mode, position);
     let mut result = source;
     if channel == 3 {
         result[3] = mix(source[3]);
@@ -101,6 +126,28 @@ pub fn clear(
 mod tests {
     use super::*;
     use lumapaint_core::document::{Brush, Point};
+    #[test]
+    fn brush_channel_modes_preserve_unselected_values() {
+        let source = [32, 64, 96, 128];
+        for channel in 0..3 {
+            let out =
+                paint_pixel_blended(source, channel, 128, 255, BrushBlendMode::Multiply, [0; 2]);
+            assert!(out[channel].abs_diff(source[channel] / 2) <= 1);
+            for i in 0..4 {
+                if i != channel {
+                    assert_eq!(out[i], source[i]);
+                }
+            }
+        }
+        assert_eq!(
+            paint_pixel_blended(source, 3, 255, 128, BrushBlendMode::Clear, [0; 2]),
+            [16, 32, 48, 64]
+        );
+        assert_eq!(
+            paint_pixel_blended(source, 1, 255, 255, BrushBlendMode::Behind, [0; 2]),
+            source
+        );
+    }
     #[test]
     fn only_selected_rgb_component_changes_and_alpha_remains_exact() {
         for channel in 0..3 {
