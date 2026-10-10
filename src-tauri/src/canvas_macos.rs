@@ -4854,7 +4854,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
             let waiting = waiting_for_vector_commit(
                 &mut canvas.pending_vector_commit,
                 current,
-                !canvas.renderer.svg_layers_ready(&document),
+                !canvas.renderer.svg_layers_ready(&document, canvas.viewport),
             );
             if reusable {
                 lumapaint_core::performance::count(
@@ -5086,19 +5086,45 @@ fn can_reconcile_tile_preview(
         && cache.dimensions == document.dimensions()
 }
 
-fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), String> {
-    let layers = canvas.renderer.missing_svg_layers(document);
-    if layers.is_empty() {
-        canvas.raster_job = None;
-        canvas.raster_failure = None;
-        return Ok(());
+// A queued/failed version must not rebuild an immutable worker payload on every draw.
+// Readiness may change independently when a shared GPU display becomes available.
+fn raster_request_handled(
+    pending: &mut Option<RasterKey>,
+    failure: &mut Option<RasterKey>,
+    current: RasterKey,
+    ready: impl FnOnce() -> bool,
+) -> bool {
+    if *pending != Some(current) && *failure != Some(current) {
+        return false;
     }
+    if ready() {
+        *pending = None;
+        *failure = None;
+    }
+    true
+}
+
+fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), String> {
     let key = RasterKey {
         document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
         revision: document.revision(),
         canvas_token: canvas.token,
     };
-    if canvas.raster_job == Some(key) || canvas.raster_failure == Some(key) {
+    if raster_request_handled(
+        &mut canvas.raster_job,
+        &mut canvas.raster_failure,
+        key,
+        || canvas.renderer.svg_layers_ready(document, canvas.viewport),
+    ) {
+        lumapaint_core::performance::count("host.svg_job_duplicate_snapshot_avoided", 1);
+        return Ok(());
+    }
+    let layers = canvas
+        .renderer
+        .missing_svg_layers(document, canvas.viewport);
+    if layers.is_empty() {
+        canvas.raster_job = None;
+        canvas.raster_failure = None;
         return Ok(());
     }
     let Some(sender) = RASTER_SENDER.get() else {
@@ -5154,9 +5180,8 @@ fn finish_raster_job(
                 let missing: std::collections::HashSet<_> = DOCUMENT.with(|document| {
                     canvas
                         .renderer
-                        .missing_svg_layers(&document.borrow())
-                        .into_iter()
-                        .map(|layer| layer.id)
+                        .missing_svg_layer_ids(&document.borrow(), canvas.viewport)
+                        .map(str::to_owned)
                         .collect()
                 });
                 for layer in layers {
@@ -7045,6 +7070,56 @@ mod tests {
             assert!(frame.is_none());
         }
     }
+    #[test]
+    fn raster_request_waits_without_payload_rebuild_and_recovers_when_display_is_ready() {
+        let key = RasterKey {
+            document_id: 7,
+            revision: 12,
+            canvas_token: 3,
+        };
+        for failed in [false, true] {
+            let mut pending = (!failed).then_some(key);
+            let mut failure = failed.then_some(key);
+            assert!(raster_request_handled(
+                &mut pending,
+                &mut failure,
+                key,
+                || false
+            ));
+            assert!(pending == (!failed).then_some(key));
+            assert!(failure == failed.then_some(key));
+            assert!(raster_request_handled(
+                &mut pending,
+                &mut failure,
+                key,
+                || true
+            ));
+            assert!(pending.is_none() && failure.is_none());
+        }
+        for changed in [
+            RasterKey {
+                document_id: 8,
+                ..key
+            },
+            RasterKey {
+                revision: 13,
+                ..key
+            },
+            RasterKey {
+                canvas_token: 4,
+                ..key
+            },
+        ] {
+            let mut pending = Some(key);
+            assert!(!raster_request_handled(
+                &mut pending,
+                &mut None,
+                changed,
+                || { panic!("new requests must use their own missing-layer preparation") }
+            ));
+        }
+    }
+
     #[test]
     fn vector_release_holds_last_frame_until_ready_and_rejects_stale_documents() {
         let key = RasterKey {

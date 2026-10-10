@@ -2845,21 +2845,42 @@ impl Renderer {
         }
     }
 
-    /// Layers that still need CPU preparation for the committed document frame.
-    pub fn svg_layers_ready(&self, document: &Document) -> bool {
-        if self.outline_view {
-            return true;
-        }
+    /// Both frame retention and worker scheduling use the same readiness predicate.
+    pub fn svg_layers_ready(&self, document: &Document, viewport: Viewport) -> bool {
+        self.missing_svg_layer_refs(document, viewport)
+            .next()
+            .is_none()
+    }
+
+    fn missing_svg_layer_refs<'a>(
+        &'a self,
+        document: &'a Document,
+        viewport: Viewport,
+    ) -> impl Iterator<Item = &'a lumapaint_core::document::SvgLayer> + 'a {
+        #[cfg(not(feature = "skia"))]
+        let _ = viewport;
         let size = document.dimensions();
-        document.visible_svg_layers().all(|layer| {
-            self.glyph_display
-                .as_ref()
-                .is_some_and(|display| display.ready(layer))
+        document.visible_svg_layers().filter(move |layer| {
+            if self.outline_view
                 || self
-                    .object_cache
-                    .get(&layer.id)
-                    .is_some_and(|cached| cached.ready(document, layer))
-                || self.svg_cache.get(&layer.id).is_some_and(|cached| {
+                    .glyph_display
+                    .as_ref()
+                    .is_some_and(|display| display.ready(layer))
+            {
+                return false;
+            }
+            #[cfg(feature = "skia")]
+            if self
+                .native_geometry
+                .ready_for_document(document, layer, viewport)
+            {
+                return false;
+            }
+            !self
+                .object_cache
+                .get(&layer.id)
+                .is_some_and(|cached| cached.ready(document, layer))
+                && !self.svg_cache.get(&layer.id).is_some_and(|cached| {
                     cached.matches_source(document, layer)
                         && cached.opacity == layer.effective_opacity()
                         && cached.size == size
@@ -2868,37 +2889,38 @@ impl Renderer {
     }
 
     /// Clone only the layers that need to be sent to the CPU worker.
-    pub fn missing_svg_layers(&self, document: &Document) -> Vec<SvgLayer> {
-        if self.outline_view {
-            return Vec::new();
-        }
-        let size = document.dimensions();
-        document
-            .visible_svg_layers()
-            .filter(|layer| {
-                if self
-                    .glyph_display
-                    .as_ref()
-                    .is_some_and(|display| display.ready(layer))
-                {
-                    return false;
-                }
-                #[cfg(feature = "skia")]
-                if self.native_geometry.ready(layer) {
-                    return false;
-                }
-                !self
-                    .object_cache
-                    .get(&layer.id)
-                    .is_some_and(|cached| cached.ready(document, layer))
-                    && !self.svg_cache.get(&layer.id).is_some_and(|cached| {
-                        cached.matches_source(document, layer)
-                            && cached.opacity == layer.effective_opacity()
-                            && cached.size == size
-                    })
+    pub fn missing_svg_layers(
+        &self,
+        document: &Document,
+        viewport: Viewport,
+    ) -> Vec<lumapaint_core::document::SvgLayer> {
+        self.missing_svg_layer_refs(document, viewport)
+            .map(|layer| {
+                performance::count("host.svg_worker_layer_snapshots", 1);
+                performance::count(
+                    "host.svg_worker_source_snapshot_bytes",
+                    layer.source.len() as u64,
+                );
+                layer.clone()
             })
-            .cloned()
             .collect()
+    }
+
+    /// Completion checks need layer IDs, never another source/object snapshot.
+    pub fn missing_svg_layer_ids<'a>(
+        &'a self,
+        document: &'a Document,
+        viewport: Viewport,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.missing_svg_layer_refs(document, viewport)
+            .map(|layer| {
+                performance::count("host.svg_worker_id_only_checks", 1);
+                performance::count(
+                    "host.svg_worker_id_check_source_bytes_avoided",
+                    layer.source.len() as u64,
+                );
+                layer.id.as_str()
+            })
     }
 
     /// Upload changed raster tiles directly into the layer's retained texture.

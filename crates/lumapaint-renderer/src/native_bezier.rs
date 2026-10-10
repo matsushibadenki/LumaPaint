@@ -57,6 +57,7 @@ pub(crate) struct Cache {
     layer_shapes: HashMap<String, HashSet<String>>,
     resident_bytes: u64,
     ready: HashSet<String>,
+    ready_viewport: Option<[u32; 9]>,
     live_cursor: Option<u64>,
     live_revision: Option<u64>,
     journal_id: Option<u64>,
@@ -66,6 +67,20 @@ pub(crate) struct Cache {
     query_keys: HashMap<String, QueryKey>,
     query_stack: Vec<usize>,
     normal_zoom_probe: Option<(String, VectorPath, bool, [f64; 4])>,
+}
+// Coverage qualification and visible draw lists depend on the complete view transform.
+fn viewport_readiness_key(viewport: Viewport) -> [u32; 9] {
+    [
+        viewport.width,
+        viewport.height,
+        viewport.scale.to_bits(),
+        viewport.zoom.to_bits(),
+        viewport.pan_x.to_bits(),
+        viewport.pan_y.to_bits(),
+        viewport.document_width.to_bits(),
+        viewport.document_height.to_bits(),
+        viewport.screen_zoom().to_bits(),
+    ]
 }
 #[derive(Clone, Copy, PartialEq)]
 struct QueryKey {
@@ -715,6 +730,7 @@ impl Cache {
             layer_shapes: HashMap::new(),
             resident_bytes: 0,
             ready: HashSet::new(),
+            ready_viewport: None,
             live_cursor: None,
             live_revision: None,
             journal_id: None,
@@ -729,6 +745,7 @@ impl Cache {
     pub fn begin_frame(&mut self) {
         self.metrics = PreparationMetrics::default();
         self.ready.clear();
+        self.ready_viewport = None;
     }
     pub fn ready(&self, layer: &SvgLayer) -> bool {
         self.ready.contains(&layer.id)
@@ -736,6 +753,20 @@ impl Cache {
                 || layer.effective_opacity() == 1.,
                 |c| c.opacity == layer.effective_opacity(),
             )
+    }
+    /// Worker scheduling happens between frames, when the last draw may belong
+    /// to an older commit. A ready layer ID alone cannot validate that document.
+    pub fn ready_for_document(
+        &self,
+        document: &lumapaint_core::document::Document,
+        layer: &SvgLayer,
+        viewport: Viewport,
+    ) -> bool {
+        self.ready_viewport == Some(viewport_readiness_key(viewport))
+            && self.journal_id == Some(document.scene_journal().instance_id())
+            && self.live_revision == Some(document.revision())
+            && !document.has_layer_effects(&layer.id)
+            && self.ready(layer)
     }
     pub fn synchronize(&mut self, document: &lumapaint_core::document::Document) {
         let journal_id = document.scene_journal().instance_id();
@@ -1354,6 +1385,7 @@ impl Cache {
                 self.query_keys.insert(layer.id.clone(), query_key);
             }
         }
+        self.ready_viewport = Some(viewport_readiness_key(viewport));
         self.ready.insert(layer.id.clone());
         true
     }
@@ -2999,6 +3031,95 @@ mod tests {
             document.scene_journal()
         ));
     }
+    #[test]
+    #[ignore = "requires a real GPU"]
+    fn gpu_native_worker_readiness_rejects_old_revision_fork_and_effects() {
+        use lumapaint_core::document::{vector_svg, Document};
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut cache = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut document = Document::default();
+        let id = document.add_vector_layer().unwrap();
+        let mut state = document.document_state();
+        state.width = 128;
+        state.height = 128;
+        let layer = &mut state.svg_layers[0];
+        layer.vector_objects = vec![object("M20 20H80V80H20Z")];
+        layer.source = vector_svg(128, 128, &layer.vector_objects);
+        let mut document = Document::from_document_state(state).unwrap();
+        document
+            .select_vector_objects(vec!["curve".into()])
+            .unwrap();
+        let viewport = Viewport {
+            pasteboard_color: None,
+            width: 128,
+            height: 128,
+            scale: 1.,
+            zoom: 2.,
+            dark: false,
+            pan_x: 0.,
+            pan_y: 0.,
+            document_width: 128.,
+            document_height: 128.,
+            canvas_color: lumapaint_core::document::CanvasColor::White,
+        }
+        .with_screen_zoom(2.);
+        cache.begin_frame();
+        cache.synchronize(&document);
+        let layer = document.svg_layers().next().unwrap();
+        assert!(cache.prepare_display(
+            &device,
+            &queue,
+            layer,
+            viewport,
+            (document.scene_journal(), document.selected_vector_ids()),
+            [0., 0.]
+        ));
+        assert!(cache.ready_for_document(&document, layer, viewport));
+        for changed in [
+            viewport.with_screen_zoom(0.5),
+            Viewport {
+                pan_x: 10.,
+                ..viewport
+            },
+            Viewport {
+                width: 256,
+                ..viewport
+            },
+            Viewport {
+                scale: 2.,
+                ..viewport
+            },
+        ] {
+            assert!(!cache.ready_for_document(&document, layer, changed));
+        }
+
+        let fork = document.clone_for_rendering();
+        assert!(!cache.ready_for_document(&fork, fork.svg_layers().next().unwrap(), viewport));
+        document.move_selected_vectors(5., 0.).unwrap();
+        let layer = document.svg_layers().next().unwrap();
+        assert!(cache.ready(layer)); // IDs alone still describe the previous frame.
+        assert!(!cache.ready_for_document(&document, layer, viewport));
+        document
+            .set_layer_effects(
+                &id,
+                lumapaint_core::layer_effects::LayerEffects {
+                    enabled: true,
+                    values: [1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        cache.synchronize(&document);
+        assert!(!cache.ready_for_document(
+            &document,
+            document.svg_layers().next().unwrap(),
+            viewport
+        ));
+    }
+
     #[test]
     #[ignore = "requires a real GPU"]
     fn gpu_native_cubic_matches_fill_and_reuses_resident_geometry() {

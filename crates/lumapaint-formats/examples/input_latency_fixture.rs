@@ -1,7 +1,7 @@
-//! Reproducible native GUI input-latency fixtures; selected first rectangle.
+//! Native GUI fixtures for dense rectangles, multiple selection and multilingual text.
 use lumapaint_core::{
-    document::{vector_svg, Document},
-    vector::{VectorObject, VectorPaint, VectorPath},
+    document::{vector_svg, Document, TextSettings},
+    vector::{VectorObject, VectorPaint, VectorPath, VectorText},
 };
 use lumapaint_formats::native::NativeDocumentCodec;
 fn fixture(count: usize) -> Document {
@@ -75,4 +75,71 @@ fn main() {
         )
         .unwrap();
     }
+    let mut multiple = fixture(1000);
+    multiple
+        .select_vector_objects(vec!["object-0".into(), "object-1".into()])
+        .unwrap();
+    std::fs::write(
+        std::path::Path::new(&output).join("latency-multiple.lumapaint"),
+        multiple.encode().unwrap(),
+    )
+    .unwrap();
+    let effects = fixture(5000);
+    let mut state = effects.document_state();
+    let layer = &mut state.svg_layers[0];
+    for object in &mut layer.vector_objects {
+        object.fill.as_mut().unwrap().color = [30, 80, 160, 255];
+    }
+    layer.source = vector_svg(state.width, state.height, &layer.vector_objects);
+    let id = layer.id.clone();
+    let mut effects = Document::from_document_state(state).unwrap();
+    effects
+        .set_layer_effects(
+            &id,
+            lumapaint_core::layer_effects::LayerEffects {
+                enabled: true,
+                values: [1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let bytes = effects.encode().unwrap();
+    assert!(Document::decode(&bytes).unwrap().has_layer_effects(&id));
+    std::fs::write(
+        std::path::Path::new(&output).join("latency-effects.lumapaint"),
+        bytes,
+    )
+    .unwrap();
+    let mut text = Document::default();
+    for (i, content) in ["English office", "日本語の文字", "简体中文文本"]
+        .into_iter()
+        .enumerate()
+    {
+        text.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: content.into(),
+                font_size: 36.0,
+                box_width: 500.0,
+                ..VectorText::default()
+            },
+            position: [40.0, 80.0 + i as f32 * 120.0],
+            color: [24, 80, 160],
+        })
+        .unwrap();
+    }
+    let bytes = text.encode().unwrap();
+    assert_eq!(
+        Document::decode(&bytes)
+            .unwrap()
+            .snapshot()
+            .text_objects
+            .len(),
+        3
+    );
+    std::fs::write(
+        std::path::Path::new(&output).join("latency-text.lumapaint"),
+        bytes,
+    )
+    .unwrap();
 }
