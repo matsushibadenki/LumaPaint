@@ -130,6 +130,10 @@ fn read_process_memory() -> Option<ProcessMemory> {
     None
 }
 
+pub(super) fn current_rss() -> Option<u64> {
+    read_process_memory().map(|memory| memory.rss_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,8 +169,4 @@ mod tests {
             "never issue a memory syscall on every frame"
         );
     }
-}
-
-pub(super) fn current_rss() -> Option<u64> {
-    read_process_memory().map(|memory| memory.rss_bytes)
 }

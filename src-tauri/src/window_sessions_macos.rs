@@ -1045,6 +1045,105 @@ pub(super) fn fork_recovery() -> Option<Result<crate::recovery::Recovery, String
     })
 }
 
+/// Divide the managed history pool across every Rust-owned editor document.
+pub(super) fn manage_memory(memory: &crate::resource_memory::Memory) -> Result<(), String> {
+    fn owned(entry: &OpenDocument) -> bool {
+        !matches!(entry.content, OpenDocumentContent::Shared(_))
+    }
+    let active = usize::from(DOCUMENT_OPEN.with(|open| open.get()));
+    let count = active
+        + INACTIVE_DOCUMENTS.with(|docs| docs.borrow().iter().filter(|entry| owned(entry)).count())
+        + PARKED.with(|sessions| {
+            sessions
+                .borrow()
+                .values()
+                .map(|runtime| {
+                    usize::from(runtime.document_open)
+                        + runtime
+                            .inactive_documents
+                            .iter()
+                            .filter(|entry| owned(entry))
+                            .count()
+                })
+                .sum::<usize>()
+        })
+        + SHARED.with(|docs| {
+            docs.borrow()
+                .values()
+                .filter(|doc| doc.parked.is_some())
+                .count()
+        });
+    let (pool, states) = memory.policy();
+    let budget = pool / count.max(1);
+    let cache_budget = (pool / count.max(1) / 8).clamp(1024 * 1024, 64 * 1024 * 1024);
+    fn content(
+        entry: &mut OpenDocument,
+        memory: &crate::resource_memory::Memory,
+        budget: usize,
+        states: usize,
+    ) -> Result<usize, String> {
+        match &mut entry.content {
+            OpenDocumentContent::Legacy(doc) => doc.manage_history(memory, budget, states),
+            OpenDocumentContent::Tiled(session) => {
+                session.document.manage_history(memory, budget, states)
+            }
+            OpenDocumentContent::Shared(_) => Ok(0),
+        }
+    }
+    let mut retained = 0;
+    if active > 0 {
+        retained += ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<usize, String> {
+            let mut slot = slot.borrow_mut();
+            if let Some(session) = slot.as_mut() {
+                session.document.manage_history(memory, budget, states)
+            } else {
+                DOCUMENT.with(|doc| doc.borrow_mut().manage_history(memory, budget, states))
+            }
+        })?;
+    }
+    INACTIVE_DOCUMENTS.with(|docs| -> Result<(), String> {
+        for entry in docs.borrow_mut().iter_mut() {
+            retained += content(entry, memory, budget, states)?;
+        }
+        Ok(())
+    })?;
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow_mut().as_mut() {
+            canvas.renderer.set_memory_budget(cache_budget);
+        }
+    });
+    PARKED.with(|sessions| -> Result<(), String> {
+        for runtime in sessions.borrow_mut().values_mut() {
+            if runtime.document_open {
+                retained += if let Some(session) = runtime.active_tiled_document.as_mut() {
+                    session.document.manage_history(memory, budget, states)?
+                } else {
+                    runtime.document.manage_history(memory, budget, states)?
+                };
+            }
+            for entry in &mut runtime.inactive_documents {
+                retained += content(entry, memory, budget, states)?;
+            }
+            if let Some(canvas) = runtime.canvas.as_mut() {
+                canvas.renderer.set_memory_budget(cache_budget);
+            }
+        }
+        Ok(())
+    })?;
+    SHARED.with(|docs| -> Result<(), String> {
+        for doc in docs.borrow_mut().values_mut() {
+            if let Some(entry) = doc.parked.as_mut() {
+                retained += content(entry, memory, budget, states)?;
+            }
+        }
+        Ok(())
+    })?;
+    memory
+        .resident_history
+        .store(retained as u64, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1506,103 +1605,4 @@ mod tests {
         assert!(for_canvas(u64::MAX).is_none());
         drop(outer);
     }
-}
-
-/// Divide the managed history pool across every Rust-owned editor document.
-pub(super) fn manage_memory(memory: &crate::resource_memory::Memory) -> Result<(), String> {
-    fn owned(entry: &OpenDocument) -> bool {
-        !matches!(entry.content, OpenDocumentContent::Shared(_))
-    }
-    let active = usize::from(DOCUMENT_OPEN.with(|open| open.get()));
-    let count = active
-        + INACTIVE_DOCUMENTS.with(|docs| docs.borrow().iter().filter(|entry| owned(entry)).count())
-        + PARKED.with(|sessions| {
-            sessions
-                .borrow()
-                .values()
-                .map(|runtime| {
-                    usize::from(runtime.document_open)
-                        + runtime
-                            .inactive_documents
-                            .iter()
-                            .filter(|entry| owned(entry))
-                            .count()
-                })
-                .sum::<usize>()
-        })
-        + SHARED.with(|docs| {
-            docs.borrow()
-                .values()
-                .filter(|doc| doc.parked.is_some())
-                .count()
-        });
-    let (pool, states) = memory.policy();
-    let budget = pool / count.max(1);
-    let cache_budget = (pool / count.max(1) / 8).clamp(1024 * 1024, 64 * 1024 * 1024);
-    fn content(
-        entry: &mut OpenDocument,
-        memory: &crate::resource_memory::Memory,
-        budget: usize,
-        states: usize,
-    ) -> Result<usize, String> {
-        match &mut entry.content {
-            OpenDocumentContent::Legacy(doc) => doc.manage_history(memory, budget, states),
-            OpenDocumentContent::Tiled(session) => {
-                session.document.manage_history(memory, budget, states)
-            }
-            OpenDocumentContent::Shared(_) => Ok(0),
-        }
-    }
-    let mut retained = 0;
-    if active > 0 {
-        retained += ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<usize, String> {
-            let mut slot = slot.borrow_mut();
-            if let Some(session) = slot.as_mut() {
-                session.document.manage_history(memory, budget, states)
-            } else {
-                DOCUMENT.with(|doc| doc.borrow_mut().manage_history(memory, budget, states))
-            }
-        })?;
-    }
-    INACTIVE_DOCUMENTS.with(|docs| -> Result<(), String> {
-        for entry in docs.borrow_mut().iter_mut() {
-            retained += content(entry, memory, budget, states)?;
-        }
-        Ok(())
-    })?;
-    CANVAS.with(|slot| {
-        if let Some(canvas) = slot.borrow_mut().as_mut() {
-            canvas.renderer.set_memory_budget(cache_budget);
-        }
-    });
-    PARKED.with(|sessions| -> Result<(), String> {
-        for runtime in sessions.borrow_mut().values_mut() {
-            if runtime.document_open {
-                retained += if let Some(session) = runtime.active_tiled_document.as_mut() {
-                    session.document.manage_history(memory, budget, states)?
-                } else {
-                    runtime.document.manage_history(memory, budget, states)?
-                };
-            }
-            for entry in &mut runtime.inactive_documents {
-                retained += content(entry, memory, budget, states)?;
-            }
-            if let Some(canvas) = runtime.canvas.as_mut() {
-                canvas.renderer.set_memory_budget(cache_budget);
-            }
-        }
-        Ok(())
-    })?;
-    SHARED.with(|docs| -> Result<(), String> {
-        for doc in docs.borrow_mut().values_mut() {
-            if let Some(entry) = doc.parked.as_mut() {
-                retained += content(entry, memory, budget, states)?;
-            }
-        }
-        Ok(())
-    })?;
-    memory
-        .resident_history
-        .store(retained as u64, std::sync::atomic::Ordering::Relaxed);
-    Ok(())
 }
