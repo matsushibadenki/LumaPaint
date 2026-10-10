@@ -2870,6 +2870,7 @@ fn vector_select_pointer(
                 // Present the release position with the existing drag textures before
                 // committing. The worker can then prepare the new SVG without a blank frame.
                 let release_preview = input_timing::Stage::new("vector_release_preview");
+                let mut release_presented = false;
                 CANVAS.with(|slot| -> Result<(), String> {
                     let mut slot = slot.borrow_mut();
                     if let Some(canvas) = slot.as_mut() {
@@ -2885,6 +2886,7 @@ fn vector_select_pointer(
                             overlay
                         });
                         canvas.renderer.set_frame_overlay(overlay);
+                        let before = canvas.renderer.presentation_serial();
                         if duplicate {
                             let mut preview = document.clone();
                             preview.duplicate_selected_vectors(offset[0], offset[1])?;
@@ -2896,6 +2898,7 @@ fn vector_select_pointer(
                                 offset,
                             )?;
                         }
+                        release_presented = canvas.renderer.presentation_serial() != before;
                     }
                     Ok(())
                 })?;
@@ -2907,11 +2910,29 @@ fn vector_select_pointer(
                     document.move_selected_vectors(offset[0], offset[1])?
                 } {
                     hold_vector_commit_frame(document);
+                    if release_presented && !duplicate && reuse_release_enabled() {
+                        CANVAS.with(|slot| {
+                            if let Some(canvas) = slot.borrow_mut().as_mut() {
+                                canvas.reusable_release_frame = canvas.pending_vector_commit;
+                            }
+                        });
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn reuse_release_enabled() -> bool {
+    static FORCE_REDRAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*FORCE_REDRAW.get_or_init(|| {
+        lumapaint_core::performance::enabled()
+            && std::env::var_os("LUMAPAINT_REDUNDANT_RELEASE_DRAW").is_some()
+    })
+}
+fn take_reusable_release_frame(frame: &mut Option<RasterKey>, current: RasterKey) -> bool {
+    frame.take() == Some(current)
 }
 
 fn hold_vector_commit_frame(document: &Document) {
@@ -4523,9 +4544,6 @@ fn emit_ruler_viewport(viewport: Viewport) {
 
 fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
     let _stage = input_timing::Stage::new("canvas_redraw");
-    if let Some(marker) = lumapaint_core::performance::input_started() {
-        canvas.renderer.mark_input(marker);
-    }
     let started = Instant::now();
     let draft = GUIDE_DRAFT
         .with(|g| g.borrow().clone())
@@ -4832,11 +4850,19 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
                 revision: document.revision(),
                 canvas_token: canvas.token,
             };
-            if waiting_for_vector_commit(
+            let reusable = take_reusable_release_frame(&mut canvas.reusable_release_frame, current);
+            let waiting = waiting_for_vector_commit(
                 &mut canvas.pending_vector_commit,
                 current,
                 !canvas.renderer.svg_layers_ready(&document),
-            ) {
+            );
+            if reusable {
+                lumapaint_core::performance::count(
+                    "host.vector_release_redundant_present_avoided",
+                    1,
+                );
+            }
+            if waiting || reusable {
                 // Leave the complete release-position frame on the surface. Do not
                 // present a frame with the changed layer omitted by render_deferred.
                 return Ok(());
@@ -5280,6 +5306,7 @@ struct Canvas {
     raster_job: Option<RasterKey>,
     raster_failure: Option<RasterKey>,
     pending_vector_commit: Option<RasterKey>,
+    reusable_release_frame: Option<RasterKey>,
     tile_job: Option<TileKey>,
     tile_ready: Option<TileKey>,
     tile_failure: Option<TileKey>,
@@ -5930,6 +5957,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         raster_job: None,
                         raster_failure: None,
                         pending_vector_commit: None,
+                        reusable_release_frame: None,
                         tile_job: None,
                         tile_ready: None,
                         tile_failure: None,
@@ -6988,6 +7016,35 @@ mod tests {
         assert!((p[0] + 15.).abs() < 0.001 && (p[1] - 120.).abs() < 0.001);
     }
 
+    #[test]
+    fn release_frame_reuse_is_once_only_and_rejects_other_document_revision_or_canvas() {
+        let key = RasterKey {
+            document_id: 7,
+            revision: 12,
+            canvas_token: 3,
+        };
+        let mut frame = Some(key);
+        assert!(take_reusable_release_frame(&mut frame, key));
+        assert!(!take_reusable_release_frame(&mut frame, key));
+        for changed in [
+            RasterKey {
+                document_id: 8,
+                ..key
+            },
+            RasterKey {
+                revision: 13,
+                ..key
+            },
+            RasterKey {
+                canvas_token: 4,
+                ..key
+            },
+        ] {
+            let mut frame = Some(key);
+            assert!(!take_reusable_release_frame(&mut frame, changed));
+            assert!(frame.is_none());
+        }
+    }
     #[test]
     fn vector_release_holds_last_frame_until_ready_and_rejects_stale_documents() {
         let key = RasterKey {

@@ -21,7 +21,38 @@ impl Default for Tracker {
         }
     }
 }
+/// Captures the marker by value so deferred frames retain their input identity.
+pub(crate) struct Stage {
+    name: &'static str,
+    marker: (u64, Instant),
+    started: Instant,
+}
+impl Drop for Stage {
+    fn drop(&mut self) {
+        let now = Instant::now();
+        let ns = |start| {
+            now.saturating_duration_since(start)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64
+        };
+        eprintln!(
+            "lumapaint-input-stage event={} stage={} host_ns={} handler_elapsed_host_ns={}",
+            self.marker.0,
+            self.name,
+            ns(self.started),
+            ns(self.marker.1)
+        );
+    }
+}
 impl Tracker {
+    pub fn stage(&self, name: &'static str) -> Option<Stage> {
+        Some(Stage {
+            name,
+            marker: self.pending?.latest,
+            started: Instant::now(),
+        })
+    }
+
     pub fn mark(&mut self, marker: (u64, Instant)) {
         if let Some(pending) = self.pending.as_mut() {
             if pending.latest.0 == marker.0 {
@@ -85,6 +116,21 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_stages_capture_latest_marker_without_consuming_pending_input() {
+        let mut tracker = Tracker::default();
+        assert!(tracker.stage("surface_acquire").is_none());
+        let start = Instant::now();
+        tracker.mark((1, start));
+        tracker.mark((2, start));
+        let stage = tracker.stage("surface_acquire").unwrap();
+        tracker.mark((3, start));
+        assert_eq!(stage.marker.0, 2);
+        assert_eq!(tracker.pending.unwrap().latest.0, 3);
+        drop(stage);
+        tracker.complete(start);
+        assert!(tracker.stage("surface_acquire").is_none());
+    }
     #[test]
     fn coalescing_ignores_duplicate_marks_clears_on_present_and_bounds_history() {
         let mut t = Tracker::default();

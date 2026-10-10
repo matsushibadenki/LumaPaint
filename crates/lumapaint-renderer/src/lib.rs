@@ -1386,6 +1386,7 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     gpu_timing: Option<gpu_timing::FrameTiming>,
     input_latency: Option<Box<input_latency::Tracker>>,
+    presentation_serial: u64,
     memory_sampler: Option<process_memory::Sampler>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -2291,6 +2292,11 @@ fn replace_tiled_text_gpu(
 }
 
 impl Renderer {
+    /// Advances only after an acquired surface frame reaches the present API.
+    pub fn presentation_serial(&self) -> u64 {
+        self.presentation_serial
+    }
+
     /// Capture a host event only when it schedules rendering. Diagnostic builds
     /// retain the marker through deferred frames; ordinary builds do no timing work.
     pub fn mark_input(&mut self, marker: (u64, std::time::Instant)) {
@@ -3400,6 +3406,21 @@ impl Renderer {
             .ok_or("No compatible surface configuration")?;
         config.format = format;
         config.present_mode = wgpu::PresentMode::Fifo;
+        // Diagnostic comparison only: retain FIFO display synchronization.
+        // wgpu clamps the requested latency to the backend's supported range.
+        if performance::enabled() {
+            if let Some(latency) = std::env::var("LUMAPAINT_SURFACE_FRAME_LATENCY")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|value| matches!(value, 1 | 2))
+            {
+                config.desired_maximum_frame_latency = latency;
+            }
+            eprintln!(
+                "lumapaint-surface-config present_mode=Fifo desired_maximum_frame_latency={}",
+                config.desired_maximum_frame_latency
+            );
+        }
         let surface_format = format;
         let float_support = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba16Float);
         let format = if float_support
@@ -3571,6 +3592,7 @@ impl Renderer {
         Ok(Self {
             memory_sampler: performance::enabled().then(process_memory::Sampler::default),
             gpu_timing,
+            presentation_serial: 0,
             input_latency: performance::enabled()
                 .then(|| Box::new(input_latency::Tracker::default())),
             channel: 0,
@@ -3769,8 +3791,19 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
+        // Direct release previews also present frames. Capture their current
+        // input before preparing; deferred draws retain their queued marker.
+        if let Some(input) = self.input_latency.as_mut() {
+            if let Some(marker) = performance::input_started() {
+                input.mark(marker);
+            }
+        }
         let frame_timer = performance::time("render_frame_host");
         let prepare_timer = performance::time("render_prepare_before_surface_host");
+        let prepare_stage = self
+            .input_latency
+            .as_ref()
+            .and_then(|input| input.stage("render_prepare"));
         let host_frame_start = performance::enabled().then(std::time::Instant::now);
         let channel_view;
         let document = if self.channel != 0 {
@@ -3872,6 +3905,11 @@ impl Renderer {
             self.surface.configure(&self.device, &self.config);
         }
         drop(prepare_timer);
+        drop(prepare_stage);
+        let surface_stage = self
+            .input_latency
+            .as_ref()
+            .and_then(|input| input.stage("surface_acquire"));
         let surface_timer = performance::time("surface_acquire_host");
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -3892,6 +3930,11 @@ impl Renderer {
             error => return Err(format!("Surface acquisition failed: {error:?}")),
         };
         drop(surface_timer);
+        drop(surface_stage);
+        let encode_stage = self
+            .input_latency
+            .as_ref()
+            .and_then(|input| input.stage("render_encode"));
         let encode_timer = performance::time("render_encode_after_surface_host");
         let mut background_viewport = viewport;
         if self.channel != 0 || root_paint::masked_paper(document) || !document.background_visible()
@@ -4797,7 +4840,12 @@ impl Renderer {
                 .resolve(slot, &mut encoder);
         }
         drop(encode_timer);
+        drop(encode_stage);
         {
+            let _stage = self
+                .input_latency
+                .as_ref()
+                .and_then(|input| input.stage("queue_submit"));
             let _timer = performance::time("queue_submit_host");
             self.queue.submit(Some(encoder.finish()));
         }
@@ -4805,9 +4853,14 @@ impl Renderer {
             self.gpu_timing.as_ref().unwrap().submitted(slot);
         }
         {
+            let _stage = self
+                .input_latency
+                .as_ref()
+                .and_then(|input| input.stage("queue_present"));
             let _timer = performance::time("queue_present_host");
             self.queue.present(frame);
         }
+        self.presentation_serial = self.presentation_serial.wrapping_add(1);
         if let Some(input) = self.input_latency.as_mut() {
             input.presented(
                 timing_slot.map(|slot| self.gpu_timing.as_ref().unwrap().correlation(slot)),

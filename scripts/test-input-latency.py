@@ -22,6 +22,18 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(result["marked_events"], 180)
         self.assertEqual(result["latest_over_16_67ms"], 84)
 
+    def test_deferred_renderer_stages_are_correlated_to_presented_input(self):
+        lines = [
+            "lumapaint-input-stage event=7 stage=surface_acquire host_ns=12000000 handler_elapsed_host_ns=14000000",
+            "lumapaint-input-stage event=7 stage=render_encode host_ns=100000 handler_elapsed_host_ns=14100000",
+            "lumapaint-input-stage event=8 stage=surface_acquire host_ns=99000000 handler_elapsed_host_ns=99000000",
+            "lumapaint-input-present first_event=6 latest_event=7 coalesced_events=2 first_handler_to_present_host_ns=15000000 latest_handler_to_present_host_ns=14500000",
+        ]
+        result = latency.summarize("\n".join(lines))
+        self.assertEqual(result["host_stages"]["surface_acquire"]["samples"], 1)
+        self.assertEqual(result["host_stages"]["surface_acquire"]["duration"]["p95_ms"], 12.)
+        self.assertEqual(result["host_stages"]["render_encode"]["handler_elapsed"]["p95_ms"], 14.1)
+
     def test_empty_or_invalid_warmup_is_rejected(self):
         for warmup in [0, -1, 10]:
             with self.assertRaises(ValueError):
