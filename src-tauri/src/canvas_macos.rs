@@ -5607,6 +5607,11 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
     }
 }
 
+pub fn resync_document_notifications() {
+    crate::workspace_notifications::reset(&current_label());
+    emit_workspace();
+}
+
 fn emit_workspace() {
     if APP.get().is_some() {
         emit_workspace_snapshot(workspace_snapshot());
@@ -5648,7 +5653,12 @@ fn emit_workspace_snapshot(snapshot: DocumentWorkspaceSnapshot) {
             });
         }
         let _delivery = input_timing::Stage::new("document_workspace_delivery");
-        let _ = app.emit_to(label, "documents-changed", snapshot);
+        if let Err(error) = crate::workspace_notifications::publish(&label, snapshot, |json| {
+            app.emit_str_to(&label, "documents-changed", json)
+                .map_err(|e| e.to_string())
+        }) {
+            emit_error(error);
+        }
     }
 }
 

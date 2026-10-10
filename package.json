@@ -12,6 +12,7 @@
     "check:architecture": "python3 scripts/check-core-boundary.py",
     "check:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
     "test:rust": "cargo test --workspace",
+    "test:workspace-notifications": "node scripts/test-workspace-notifications.mjs",
     "test:measurements": "node scripts/test-measurements.mjs",
     "test:color-modes": "node scripts/test-color-modes.mjs"
   },

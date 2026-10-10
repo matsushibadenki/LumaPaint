@@ -181,6 +181,23 @@ pub struct DocumentWorkspaceSnapshot {
 }
 
 #[tauri::command]
+pub async fn resync_document_notifications(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, || {
+            platform::resync_document_notifications();
+            Ok(())
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 pub async fn document_workspace(
     window: tauri::WebviewWindow,
 ) -> Result<DocumentWorkspaceSnapshot, String> {

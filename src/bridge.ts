@@ -1,3 +1,4 @@
+import { applyNotification, type NotificationState, type WorkspaceNotification } from './workspace-notifications';
 import type { Screentone } from './screentone';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -318,9 +319,34 @@ export async function subscribeCanvasError(onError: (error: string) => void) {
   return listen<string>('canvas-error', event => onError(event.payload));
 }
 
-export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceSnapshot) => void) {
+export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceSnapshot) => void, onError: (error: string) => void = console.error) {
   if (!isTauri()) return () => {};
-  return listen<DocumentWorkspaceSnapshot>('documents-changed', event => onDocuments(event.payload));
+  let state: NotificationState | undefined;
+  let live = true;
+  let pending = true;
+  const resync = () => {
+    pending = true;
+    return invoke('resync_document_notifications').catch(cause => {
+      pending = false;
+      if (live) onError(String(cause));
+    }).finally(() => { pending = false; });
+  };
+  const stop = await listen<WorkspaceNotification>('documents-changed', event => {
+    if (!live) return;
+    const next = applyNotification(state, event.payload);
+    if (!next) {
+      if (!pending) void resync();
+      return;
+    }
+    if (next === state) return;
+    state = next;
+    pending = false;
+    onDocuments(next.workspace);
+  });
+  // Register before requesting a full packet; no command snapshot can overwrite
+  // a newer event while the initial subscription is being established.
+  await resync();
+  return () => { live = false; stop(); };
 }
 
 export async function getDocumentWorkspace(): Promise<DocumentWorkspaceSnapshot> {

@@ -487,13 +487,16 @@ pub(super) fn shared_changed() {
                         });
                     }
                     tabs.sort_by_key(|tab| tab.id);
-                    let _ = app.emit_to(
+                    let _ = crate::workspace_notifications::publish(
                         label,
-                        "documents-changed",
                         DocumentWorkspaceSnapshot {
                             active_id: runtime.document_open.then_some(runtime.active_document_id),
                             active,
                             documents: tabs,
+                        },
+                        |json| {
+                            app.emit_str_to(label, "documents-changed", json)
+                                .map_err(|e| e.to_string())
                         },
                     );
                     if is_active {
@@ -939,6 +942,7 @@ pub(in crate::canvas) fn close_window(label: &str) {
     close(label, true);
 }
 fn close(label: &str, discard: bool) {
+    crate::workspace_notifications::forget(label);
     super::timeline::close(label);
     if CLOSED.with(|closed| closed.borrow().contains(label)) {
         return;

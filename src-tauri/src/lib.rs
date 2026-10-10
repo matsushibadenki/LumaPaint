@@ -9,6 +9,8 @@ mod psd_import;
 mod resource_memory;
 mod shortcuts;
 mod timeline;
+#[cfg(any(target_os = "macos", test))]
+mod workspace_notifications;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
     lumapaint_formats::io::FILE_FORMATS
@@ -167,6 +169,7 @@ pub fn run() {
             canvas::crop_action,
             canvas::finish_canvas_path,
             canvas::document_workspace,
+            canvas::resync_document_notifications,
             canvas::new_document,
             canvas::switch_document,
             canvas::close_document,

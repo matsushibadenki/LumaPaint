@@ -261,8 +261,7 @@ export function Workspace() {
   useEffect(() => {
     let active = true;
     let stop = () => {};
-    getDocumentWorkspace().then(next => { if (active) updateWorkspace(next); }).catch(cause => { if (active) setError(String(cause)); });
-    subscribeDocuments(next => { if (active) { updateWorkspace(next); if (next.active) setNewDocumentOpen(false); } })
+    subscribeDocuments(next => { if (active) { updateWorkspace(next); if (next.active) setNewDocumentOpen(false); } }, message => { if (active) setError(message); })
       .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
