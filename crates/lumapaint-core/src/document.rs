@@ -452,16 +452,21 @@ pub struct LayerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerObjectSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_frame: Option<crate::image_frame::ImageFrameSummary>,
     pub locked: bool,
     pub opacity: f32,
     pub blend_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_gradient: Option<crate::gradient::Gradient>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stroke_gradient: Option<crate::gradient::Gradient>,
     pub fill_color: Option<[u8; 4]>,
     pub stroke_color: Option<[u8; 4]>,
     pub stroke_width: f32,
-    pub stroke_style: crate::stroke::StrokeStyle,
+    /// Absent means the canonical default; custom styles are always complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_style: Option<crate::stroke::StrokeStyle>,
     pub stroke_contours: Vec<bool>,
     pub id: String,
     pub name: String,
@@ -1015,6 +1020,7 @@ impl Document {
     }
 
     pub fn snapshot(&self) -> DocumentSnapshot {
+        let mut default_styles_elided = 0;
         let mut layers = vec![LayerSnapshot {
             effects: Some(
                 self.layer_effects
@@ -1078,7 +1084,12 @@ impl Document {
                                 stroke_gradient: object.stroke_gradient.clone(),
                                 fill_color: object.fill.map(|p| p.color),
                                 stroke_color: object.stroke.map(|p| p.color),
-                                stroke_style: object.stroke_style.clone(),
+                                stroke_style: if object.stroke_style.is_default() {
+                                    default_styles_elided += 1;
+                                    None
+                                } else {
+                                    Some(object.stroke_style.clone())
+                                },
                                 stroke_contours: crate::stroke::contour_closed(&object.path.data),
                                 stroke_width: if object.stroke.is_some() {
                                     object.stroke_width
@@ -1129,6 +1140,10 @@ impl Document {
                         stroke_count: 0,
                     }
                 }),
+        );
+        crate::performance::count(
+            "document_snapshot_default_stroke_styles_elided",
+            default_styles_elided,
         );
         DocumentSnapshot {
             saved_vector_selections: self
@@ -7778,6 +7793,94 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compact_object_snapshot_keeps_custom_style_selection_and_history() {
+        use crate::stroke::{LineCap, StrokeStyle, StrokeStylePatch};
+        let prototype: VectorObject = serde_json::from_value(serde_json::json!({
+            "id": "object-0", "name": "English 日本語 简体中文",
+            "path": {"data": "M10 10H90V90H10Z", "fillRule": "nonZero"},
+            "transform": [1,0,0,1,0,0], "fill": {"color": [0,0,0,255]},
+            "stroke": null, "strokeWidth": 0, "visible": true, "kind": "rectangle"
+        }))
+        .unwrap();
+        let mut doc = Document::default();
+        doc.add_vector_layer().unwrap();
+        let mut state = doc.document_state();
+        state.svg_layers[0].vector_objects = (0..1000)
+            .map(|index| {
+                let mut object = prototype.clone();
+                object.id = format!("object-{index}");
+                object
+            })
+            .collect();
+        state.svg_layers[0].source = vector_svg(
+            state.width,
+            state.height,
+            &state.svg_layers[0].vector_objects,
+        );
+        let mut doc = Document::from_document_state(state).unwrap();
+        doc.select_vector_objects(vec!["object-0".into()]).unwrap();
+        crate::performance::take();
+        let snapshot = doc.snapshot();
+        if crate::performance::enabled() {
+            assert_eq!(
+                crate::performance::take().counts["document_snapshot_default_stroke_styles_elided"],
+                1000
+            );
+        }
+        let objects = &snapshot.layers[1].objects;
+        assert_eq!(objects.len(), 1000);
+        assert!(objects.iter().all(|o| o.stroke_style.is_none()));
+        let compact = serde_json::to_value(objects).unwrap();
+        let mut legacy = compact.clone();
+        for object in legacy.as_array_mut().unwrap() {
+            object["strokeStyle"] = serde_json::to_value(StrokeStyle::default()).unwrap();
+            for field in ["imageFrame", "fillGradient", "strokeGradient"] {
+                object[field] = serde_json::Value::Null;
+            }
+        }
+        let compact_bytes = serde_json::to_vec(&compact).unwrap().len();
+        let legacy_bytes = serde_json::to_vec(&legacy).unwrap().len();
+        assert!(
+            compact_bytes * 2 < legacy_bytes,
+            "default fixture must save over half its object metadata"
+        );
+        eprintln!("1000 object metadata bytes: legacy={legacy_bytes}, compact={compact_bytes}");
+        assert_eq!(snapshot.selected_vector_objects, ["object-0"]);
+        assert_eq!(snapshot.selected_bounds, doc.selected_vector_bounds());
+
+        let before = doc.encode().unwrap();
+        doc.set_selected_stroke_style(StrokeStylePatch {
+            cap: Some(LineCap::Round),
+            ..Default::default()
+        })
+        .unwrap();
+        let after = doc.encode().unwrap();
+        let check = |doc: &Document, custom: bool| {
+            let snapshot = doc.snapshot();
+            let object = &snapshot.layers[1].objects[0];
+            assert_eq!(object.stroke_style.is_some(), custom);
+            let style = object.stroke_style.clone().unwrap_or_default();
+            assert_eq!(style, doc.svg_layers[0].vector_objects[0].stroke_style);
+            let json = serde_json::to_value(object).unwrap();
+            assert_eq!(json.get("strokeStyle").is_some(), custom);
+            if custom {
+                assert_eq!(json["strokeStyle"], serde_json::to_value(style).unwrap());
+            }
+            assert!(snapshot.layers[1].objects[1..]
+                .iter()
+                .all(|o| o.stroke_style.is_none()));
+        };
+        check(&doc, true);
+        doc.undo();
+        check(&doc, false);
+        assert_eq!(doc.encode().unwrap(), before);
+        doc.redo();
+        check(&doc, true);
+        assert_eq!(doc.encode().unwrap(), after);
+        check(&Document::decode(&after).unwrap(), true);
+    }
+
+    #[test]
     fn lightweight_edit_state_matches_ui_after_selection_and_history_changes() {
         let mut doc = Document::default();
         let check = |doc: &Document| {
@@ -12466,7 +12569,7 @@ mod stroke_width_tests {
         );
         assert_eq!(
             doc.snapshot().layers[1].objects[0].stroke_style,
-            doc.svg_layers[0].vector_objects[0].stroke_style
+            Some(doc.svg_layers[0].vector_objects[0].stroke_style.clone())
         );
         doc.svg_layers[0].vector_objects[1].visible = false;
         let locked = doc.encode().unwrap();
@@ -13523,6 +13626,7 @@ fn history_bytes(entry: &VectorHistoryEntry) -> usize {
                 .iter()
                 .map(|layer| layer.source.len() + layer.vector_objects.len() * 512)
                 .sum::<usize>()
+                + animation_history_bytes(&state.animation)
                 + state.paint_source.as_ref().map_or(0, String::len)
                 + state.strokes.as_ref().map_or(0, |strokes| {
                     strokes
@@ -13531,7 +13635,46 @@ fn history_bytes(entry: &VectorHistoryEntry) -> usize {
                         .sum::<usize>()
                 })
         }
+        VectorHistoryEntry::Animation(animation) => animation_history_bytes(animation),
+        VectorHistoryEntry::SavedSelections(selections) => selections
+            .iter()
+            .map(|s| s.name.len() + s.object_ids.iter().map(|id| id.len() + 24).sum::<usize>())
+            .sum(),
+        VectorHistoryEntry::PixelSelection(selection) => selection.as_ref().map_or(0, |s| {
+            s.regions
+                .iter()
+                .map(|r| 64 + r.points.len() * std::mem::size_of::<Point>())
+                .sum()
+        }),
         VectorHistoryEntry::Objects { edits, .. } => edits.len() * 80,
         _ => 4096,
     }
+}
+
+fn animation_history_bytes(animation: &animation::Animation) -> usize {
+    animation
+        .tracks
+        .iter()
+        .map(|(name, track)| {
+            name.len()
+                + 128
+                + track
+                    .cels
+                    .values()
+                    .map(|cel| {
+                        cel.source.as_ref().map_or(0, String::len)
+                            + cel
+                                .strokes
+                                .iter()
+                                .map(|stroke| 256 + stroke.points.len() * 32)
+                                .sum::<usize>()
+                    })
+                    .sum::<usize>()
+                + track
+                    .channels
+                    .values()
+                    .map(|keys| keys.len() * std::mem::size_of::<animation::Keyframe>())
+                    .sum::<usize>()
+        })
+        .sum()
 }

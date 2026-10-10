@@ -41,7 +41,7 @@ import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reo
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
 import { subscribeCanvasZoom, newEditorWindow } from './bridge';
-import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasSampledColor, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeDocument, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
+import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasSampledColor, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeCanvasError, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
 import { workspaceMessages } from './workspace-i18n';
 import { RecoveryControls } from './components/RecoveryControls';
@@ -253,11 +253,11 @@ export function Workspace() {
   useEffect(() => {
     let active = true;
     let stop = () => {};
-    subscribeDocument(next => { if (active) updateDocument(next); }, message => { if (active) setError(message); })
+    subscribeCanvasError(message => { if (active) setError(message); })
       .then(unsubscribe => { if (active) stop = unsubscribe; else unsubscribe(); })
       .catch(cause => { if (active) setError(String(cause)); });
     return () => { active = false; stop(); };
-  }, [updateDocument]);
+  }, []);
   useEffect(() => {
     let active = true;
     let stop = () => {};

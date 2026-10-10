@@ -1,7 +1,7 @@
 //! Certify retained object images from document changes, without rebuilding SVG.
 use lumapaint_core::{
     document::{Document, SvgLayer},
-    scene::{Changes, Generations, JournalRead, Target},
+    scene::{Changes, Generations, Target},
     vector::VectorObject,
 };
 use std::collections::{HashMap, HashSet};
@@ -146,17 +146,10 @@ impl ObjectCacheState {
         {
             return None;
         }
-        let JournalRead::Incremental { changes, .. } = document.scene_journal().read(self.cursor)
-        else {
-            return None;
-        };
-        let changes: Vec<_> = changes
-            .iter()
-            .filter(|c| c.target.layer == layer.id)
-            .collect();
-        if changes.is_empty() || changes.len() % 2 != 0 {
-            return None;
-        }
+        let mut changes = document
+            .scene_journal()
+            .read_borrowed(self.cursor)?
+            .filter(|c| c.target.layer == layer.id);
         let parent = Changes {
             geometry: true,
             ..Default::default()
@@ -169,17 +162,19 @@ impl ObjectCacheState {
         // Targeted transactions emit one parent notification directly followed
         // by its object's transform notification. Reject unrelated source edits,
         // missing ranges, reorder, text/style changes and non-transform events.
-        for pair in changes.as_chunks::<2>().0 {
-            if pair[0].removed
-                || pair[1].removed
-                || pair[0].target.object.is_some()
-                || pair[0].changes != parent
-                || pair[1].changes != object
-                || pair[1].sequence != pair[0].sequence + 1
+        while let Some(parent_change) = changes.next() {
+            let object_change = changes.next()?;
+            if parent_change.removed
+                || object_change.removed
+                || parent_change.target.object.is_some()
+                || parent_change.changes != parent
+                || object_change.changes != object
+                || object_change.sequence != parent_change.sequence + 1
             {
                 return None;
             }
-            changed.insert(pair[1].target.object.as_deref()?);
+            changed.insert(object_change.target.object.as_deref()?);
+            lumapaint_core::performance::count("object_cache_borrowed_translation_pairs", 1);
         }
         if changed.len() != selected.len()
             || selected.iter().any(|id| !changed.contains(id.as_str()))
@@ -310,9 +305,17 @@ mod tests {
                 }
                 let layer = document.svg_layers().next().unwrap();
                 assert!(!state.matches(&document, layer));
+                lumapaint_core::performance::take();
                 let delta = state
                     .translated(&document, layer, &cached, &selected)
                     .unwrap();
+                let stats = lumapaint_core::performance::take();
+                if lumapaint_core::performance::enabled() {
+                    assert_eq!(stats.counts["object_cache_borrowed_translation_pairs"], 1);
+                    assert!(!stats
+                        .counts
+                        .contains_key("scene_journal_read_cloned_events"));
+                }
                 assert_eq!(delta.positions, [count - 1]);
                 assert_eq!(
                     delta.offset,
@@ -384,6 +387,25 @@ mod tests {
             )
             .is_none());
     }
+    #[test]
+    fn borrowed_translation_rejects_incomplete_pair_and_future_cursor() {
+        let mut document = fixture(2);
+        let layer = document.svg_layers().next().unwrap();
+        let mut state = ObjectCacheState::new(&document, layer, true);
+        let cached = layer.vector_objects.clone();
+        let selected = document.selected_vector_ids().to_vec();
+        document.move_selected_vectors(3., 4.).unwrap();
+        let layer = document.svg_layers().next().unwrap();
+        state.cursor = document.scene_journal().cursor() - 1;
+        assert!(state
+            .translated(&document, layer, &cached, &selected)
+            .is_none());
+        state.cursor = document.scene_journal().cursor() + 1;
+        assert!(state
+            .translated(&document, layer, &cached, &selected)
+            .is_none());
+    }
+
     #[test]
     fn pending_uniform_moves_accumulate_but_journal_gaps_and_nonuniform_moves_reject() {
         let mut document = fixture(2);

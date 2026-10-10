@@ -117,12 +117,14 @@ fn validate(p: &Preferences) -> Result<(), String> {
     Ok(())
 }
 impl Memory {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn cleanup(&self) {
         for session in self.sessions.lock().unwrap().drain(..) {
             let _ = std::fs::remove_dir_all(session.directory.path());
         }
         self.scratch_bytes.store(0, Ordering::Relaxed);
     }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn policy(&self) -> (usize, usize) {
         let p = self.preferences.lock().unwrap();
         // The history pool is a quarter of the RAM target, shared across editor documents.
@@ -366,7 +368,9 @@ fn free_space(path: &Path) -> u64 {
         // SAFETY: statvfs writes the advertised initialized structure; path is NUL terminated.
         if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
             let stat = unsafe { stat.assume_init() };
-            return (stat.f_bavail as u64).saturating_mul(stat.f_frsize);
+            #[allow(clippy::unnecessary_cast)] // libc widths vary between Unix targets.
+            let bytes = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+            return bytes;
         }
     }
     #[cfg(target_os = "windows")]
@@ -466,7 +470,12 @@ pub async fn save_memory_settings(
         Ok(memory.snapshot())
     }).await.map_err(|e|e.to_string())??;
     #[cfg(target_os = "macos")]
-    crate::canvas::on_main(window, crate::canvas::platform::apply_memory_preferences).await?;
+    if let Err(error) =
+        crate::canvas::on_main(window, crate::canvas::platform::apply_memory_preferences).await
+    {
+        // Preferences already committed. A paging failure retains history in RAM.
+        let _ = app.emit("canvas-error", error);
+    }
     app.emit("memory-settings-changed", ())
         .map_err(|e| e.to_string())?;
     Ok(result)
@@ -482,6 +491,41 @@ pub async fn memory_pick_disk() -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct UnavailableStore;
+    impl HistoryStore for UnavailableStore {
+        fn write(&self, _: &[u8]) -> Result<StoredHistory, String> {
+            Err("disk unavailable".into())
+        }
+    }
+    #[test]
+    fn failed_paging_keeps_pixels_and_history_limit_preserves_current_artwork() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(2, 2).unwrap();
+        doc.add_layer("base".into(), "Base".into()).unwrap();
+        for value in 1..=6 {
+            doc.write_rect("base", [0, 0, 1, 1], &[value, 0, 0, 255])
+                .unwrap();
+        }
+        let before = doc.state();
+        assert!(doc.manage_history(&UnavailableStore, 0, 50).is_err());
+        assert_eq!(doc.state(), before);
+        for value in (1..=6).rev() {
+            assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([value, 0, 0, 255]));
+            doc.undo().unwrap();
+        }
+        for _ in 0..6 {
+            doc.redo().unwrap();
+        }
+        doc.manage_history(&UnavailableStore, usize::MAX, 2)
+            .unwrap();
+        assert_eq!(doc.state(), before);
+        doc.undo().unwrap();
+        doc.undo().unwrap();
+        assert!(!doc.can_undo());
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([4, 0, 0, 255]));
+        doc.redo().unwrap();
+        doc.redo().unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([6, 0, 0, 255]));
+    }
     fn memory(directory: &Path, disks: Vec<Disk>) -> Arc<Memory> {
         Arc::new(Memory {
             preferences: Mutex::new(Preferences {

@@ -8,6 +8,7 @@ final class FrameProbe: NSView {
     var link: CADisplayLink?
     func request(_ value: Int) {
         latest = value
+        if pending { return }
         pending = true
         if link == nil {
             link = displayLink(target: self, selector: #selector(tick(_:)))
@@ -43,6 +44,25 @@ precondition(view.rendered == [1000] && view.link!.isPaused)
 for value in 1001...2000 { view.request(value) }
 waitFor(2)
 precondition(view.rendered == [1000, 2000] && view.link!.isPaused)
+// Mouse-down, drag and mouse-up share the next frame; the terminal state wins.
+view.request(2001)
+view.request(2002)
+view.request(2003)
+waitFor(3)
+precondition(view.rendered == [1000, 2000, 2003] && view.link!.isPaused)
+// A separate view must retain its own pending final frame.
+let second = FrameProbe(frame: window.contentView!.bounds)
+window.contentView!.addSubview(second)
+view.request(2004)
+second.request(42)
+let deadline = Date().addingTimeInterval(3)
+while (view.rendered.count < 4 || second.rendered.isEmpty) && Date() < deadline {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+}
+precondition(view.rendered == [1000, 2000, 2003, 2004])
+precondition(second.rendered == [42])
+precondition(view.link!.isPaused && second.link!.isPaused)
 view.link!.invalidate()
+second.link!.invalidate()
 window.close()
-print("PASS: 2000 preview requests -> 2 latest-state display frames; link pauses when idle")
+print("PASS: coalesced requests preserve terminal state, independent views and idle pause")

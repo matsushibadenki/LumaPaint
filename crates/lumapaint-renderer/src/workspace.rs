@@ -1,20 +1,34 @@
 //! Viewport-sized exterior image. The model and all export/save dimensions remain unchanged.
 use super::{vector, Document, PreparedSvgLayer, Viewport};
 use lumapaint_core::document::SvgLayer;
+use std::sync::Arc;
+
+type SharedPreparedLayer = PreparedSvgLayer<Arc<Vec<u8>>>;
 
 struct RetainedLayer {
     layer: SvgLayer,
     effects: lumapaint_core::layer_effects::LayerEffects,
     size: [u32; 2],
-    pixels: Vec<u8>,
-    source_pixels: Vec<u8>,
+    pixels: Arc<Vec<u8>>,
+    source_pixels: Arc<Vec<u8>>,
     source_revision: u64,
     deferred: bool,
 }
 
 pub(super) struct WorkspaceImage {
-    pub image: PreparedSvgLayer,
+    pub image: SharedPreparedLayer,
     pub effect: Option<(lumapaint_core::layer_effects::LayerEffects, u64, [f32; 4])>,
+}
+
+// A failed GPU effect must never adjust the raw pixels retained by the workspace.
+pub(super) fn apply_cpu_fallback(
+    image: &mut SharedPreparedLayer,
+    effects: &lumapaint_core::layer_effects::LayerEffects,
+    mapping: [f32; 4],
+) {
+    let pixels = Arc::make_mut(&mut image.pixels);
+    crate::screentone::apply_cpu(pixels, effects, image.size.0, mapping);
+    apply_opacity(pixels, image.opacity);
 }
 
 #[derive(Default)]
@@ -22,12 +36,7 @@ pub(super) struct WorkspaceCache {
     key: Option<[f32; 8]>,
     journal_cursor: u64,
     gpu_display: bool,
-    layers: Vec<(
-        String,
-        String,
-        f32,
-        lumapaint_core::layer_effects::LayerEffects,
-    )>,
+    layers: Vec<String>,
     retained: std::collections::HashMap<String, RetainedLayer>,
     #[cfg(test)]
     rasterizations: usize,
@@ -46,7 +55,7 @@ impl WorkspaceCache {
         document: &Document,
         viewport: Viewport,
         offset: [f32; 2],
-    ) -> Result<Option<Vec<PreparedSvgLayer>>, String> {
+    ) -> Result<Option<Vec<SharedPreparedLayer>>, String> {
         let mut prepared = self
             .prepare_filtered(document, viewport, offset, &Default::default(), None)?
             .map(|images| {
@@ -58,7 +67,12 @@ impl WorkspaceCache {
         if let Some(images) = &mut prepared {
             for image in images {
                 if image.pixels.is_empty() {
-                    image.pixels = self.retained[&image.id].pixels.clone();
+                    let retained = &self.retained[&image.id];
+                    image.pixels = if retained.pixels.is_empty() {
+                        retained.source_pixels.clone()
+                    } else {
+                        retained.pixels.clone()
+                    };
                 }
             }
         }
@@ -106,16 +120,14 @@ impl WorkspaceCache {
         if self.gpu_display == gpu_limits.is_some()
             && self.key == Some(key)
             && self.layers.len() == layers.len()
-            && self
-                .layers
-                .iter()
-                .zip(&layers)
-                .all(|((id, source, opacity, effects), layer)| {
-                    *id == layer.id
-                        && *source == layer.source
-                        && *opacity == layer.effective_opacity()
-                        && *effects == document.layer_effects(&layer.id)
-                })
+            && self.layers.iter().zip(&layers).all(|(id, layer)| {
+                *id == layer.id
+                    && self.retained.get(id).is_some_and(|old| {
+                        old.layer.source == layer.source
+                            && old.layer.effective_opacity() == layer.effective_opacity()
+                            && old.effects == document.layer_effects(&layer.id)
+                    })
+            })
         {
             return Ok(None);
         }
@@ -128,11 +140,11 @@ impl WorkspaceCache {
             (viewport.width as f64 * ratio).floor().max(1.0) as u32,
             (viewport.height as f64 * ratio).floor().max(1.0) as u32,
         ];
-        let journal = document.scene_journal().read(self.journal_cursor);
-        let (cursor, complete_history) = match journal {
-            lumapaint_core::scene::JournalRead::Incremental { cursor, .. } => (cursor, true),
-            lumapaint_core::scene::JournalRead::Rebuild { cursor } => (cursor, false),
-        };
+        // Only range availability is needed here, not the event payloads.
+        let journal = document.scene_journal();
+        let cursor = journal.cursor();
+        let complete_history = journal.read_borrowed(self.journal_cursor).is_some();
+        lumapaint_core::performance::count("workspace_journal_range_checks", 1);
         let same_view =
             self.gpu_display == gpu_limits.is_some() && self.key == Some(key) && complete_history;
         self.gpu_display = gpu_limits.is_some();
@@ -147,6 +159,8 @@ impl WorkspaceCache {
                 && gpu_limits.is_some_and(|limits| {
                     super::effects_display::layout((size[0], size[1]), limits).is_some()
                 });
+            // Unadjusted CPU display also needs only the raw retained image.
+            let raw_display = deferred || (!effects.active() && opacity == 1.0);
             let old = self
                 .retained
                 .remove(&layer.id)
@@ -164,7 +178,7 @@ impl WorkspaceCache {
                         opacity,
                         size: (size[0], size[1]),
                         fully_contained: true,
-                        pixels: Vec::new(),
+                        pixels: Default::default(),
                     },
                 });
                 retained.insert(layer.id.clone(), old.unwrap());
@@ -183,25 +197,50 @@ impl WorkspaceCache {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             };
-            let (source_pixels, mut pixels) = if same_source {
+            let (source_pixels, mut pixels, retained_layer) = if same_source {
                 // Effects/opacity changes never feed adjusted pixels back into the filter.
                 let old = old.unwrap();
+                let mut retained_layer = old.layer;
+                retained_layer.opacity = layer.opacity;
+                retained_layer.mask_enabled = layer.mask_enabled;
+                retained_layer.mask_inverted = layer.mask_inverted;
+                retained_layer.mask_density = layer.mask_density;
+                if retained_layer.vector_objects != layer.vector_objects {
+                    retained_layer.vector_objects = layer.vector_objects.clone();
+                } else {
+                    lumapaint_core::performance::count(
+                        "workspace_retained_object_snapshot_reuses",
+                        1,
+                    );
+                }
+                lumapaint_core::performance::count(
+                    "workspace_retained_source_bytes_reused",
+                    retained_layer.source.len() as u64,
+                );
                 let source_pixels = old.source_pixels;
                 let mut pixels = old.pixels;
-                if !deferred {
+                if !raw_display {
+                    // Every adjusted byte is replaced; do not copy the old shared image.
+                    if Arc::get_mut(&mut pixels).is_none() {
+                        pixels = Default::default();
+                    }
+                    let pixels = Arc::make_mut(&mut pixels);
+                    pixels.resize(source_pixels.len(), 0);
                     pixels.copy_from_slice(&source_pixels);
                     if effects.screentone.is_some() || effects.mask.is_some() {
-                        crate::screentone::apply(&mut pixels, &effects, size[0], rect);
+                        crate::screentone::apply(pixels, &effects, size[0], rect);
                     } else {
-                        crate::apply_layer_effects_source(&mut pixels, &effects, source_revision);
+                        crate::apply_layer_effects_source(pixels, &effects, source_revision);
                     }
-                    apply_opacity(&mut pixels, opacity);
+                    apply_opacity(pixels, opacity);
                 }
-                (source_pixels, pixels)
+                (source_pixels, pixels, retained_layer)
             } else if let Some(tiles) = tiles {
                 let old = old.unwrap();
                 let mut source_pixels = old.source_pixels;
                 let mut pixels = old.pixels;
+                let source_output = Arc::make_mut(&mut source_pixels);
+                let mut adjusted_output = (!raw_display).then(|| Arc::make_mut(&mut pixels));
                 for [x, y, width, height] in tiles {
                     let left = x.saturating_sub(2);
                     let top = y.saturating_sub(2);
@@ -226,21 +265,23 @@ impl WorkspaceCache {
                     for row in y..y + height {
                         let from = ((row - top) * (right - left) + x - left) as usize * 4;
                         let to = (row * size[0] + x) as usize * 4;
-                        source_pixels[to..to + width as usize * 4]
+                        source_output[to..to + width as usize * 4]
                             .copy_from_slice(&tile[from..from + width as usize * 4]);
                     }
-                    if !deferred {
+                    if !raw_display {
                         crate::screentone::apply(&mut tile, &effects, right - left, tile_rect);
                         apply_opacity(&mut tile, opacity);
                     }
-                    for row in y..y + height {
-                        let from = ((row - top) * (right - left) + x - left) as usize * 4;
-                        let to = (row * size[0] + x) as usize * 4;
-                        pixels[to..to + width as usize * 4]
-                            .copy_from_slice(&tile[from..from + width as usize * 4]);
+                    if !raw_display {
+                        for row in y..y + height {
+                            let from = ((row - top) * (right - left) + x - left) as usize * 4;
+                            let to = (row * size[0] + x) as usize * 4;
+                            adjusted_output.as_deref_mut().unwrap()[to..to + width as usize * 4]
+                                .copy_from_slice(&tile[from..from + width as usize * 4]);
+                        }
                     }
                 }
-                (source_pixels, pixels)
+                (source_pixels, pixels, (*layer).clone())
             } else {
                 #[cfg(test)]
                 {
@@ -252,8 +293,12 @@ impl WorkspaceCache {
                     size,
                     rect,
                 )?;
-                let mut pixels = source_pixels.clone();
-                if !deferred {
+                let mut pixels = if raw_display {
+                    Vec::new()
+                } else {
+                    source_pixels.clone()
+                };
+                if !raw_display {
                     if effects.screentone.is_some() || effects.mask.is_some() {
                         crate::screentone::apply(&mut pixels, &effects, size[0], rect);
                     } else {
@@ -261,18 +306,36 @@ impl WorkspaceCache {
                     }
                     apply_opacity(&mut pixels, opacity);
                 }
-                (source_pixels, pixels)
+                (Arc::new(source_pixels), Arc::new(pixels), (*layer).clone())
             };
+            let upload_pixels = if raw_display {
+                lumapaint_core::performance::count(
+                    if deferred {
+                        "workspace_deferred_duplicate_bytes_avoided"
+                    } else {
+                        "workspace_cpu_raw_duplicate_bytes_avoided"
+                    },
+                    source_pixels.len() as u64,
+                );
+                pixels = Default::default();
+                Arc::clone(&source_pixels)
+            } else {
+                Arc::clone(&pixels)
+            };
+            lumapaint_core::performance::count(
+                "workspace_upload_bytes_shared",
+                upload_pixels.len() as u64,
+            );
             retained.insert(
                 layer.id.clone(),
                 RetainedLayer {
-                    layer: (*layer).clone(),
+                    layer: retained_layer,
                     effects: effects.clone(),
                     deferred,
                     size,
                     source_pixels,
                     source_revision,
-                    pixels: pixels.clone(),
+                    pixels,
                 },
             );
             prepared.push(WorkspaceImage {
@@ -292,22 +355,16 @@ impl WorkspaceCache {
                     opacity,
                     size: (size[0], size[1]),
                     fully_contained: true,
-                    pixels: std::mem::take(&mut pixels),
+                    pixels: upload_pixels,
                 },
             });
         }
         self.retained = retained;
-        self.layers = layers
-            .iter()
-            .map(|layer| {
-                (
-                    layer.id.clone(),
-                    layer.source.clone(),
-                    layer.effective_opacity(),
-                    document.layer_effects(&layer.id),
-                )
-            })
-            .collect();
+        self.layers = layers.iter().map(|layer| layer.id.clone()).collect();
+        lumapaint_core::performance::count(
+            "workspace_snapshot_source_bytes_avoided",
+            layers.iter().map(|layer| layer.source.len() as u64).sum(),
+        );
         self.key = Some(key);
         self.journal_cursor = cursor;
         Ok(Some(prepared))
@@ -431,6 +488,58 @@ mod tests {
     use lumapaint_formats::native::NativeDocumentCodec;
 
     #[test]
+    fn deferred_cpu_fallback_preserves_shared_source_and_matches_cpu_preparation() {
+        let mut doc = Document::default();
+        doc.import_svg("image".into(), r##"<svg width="960" height="640"><rect width="960" height="640" fill="#404040"/></svg>"##.into()).unwrap();
+        let id = doc.svg_layers().next().unwrap().id.clone();
+        let mut effects = lumapaint_core::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        effects.values[0] = 1.;
+        doc.set_layer_effects(&id, effects).unwrap();
+        doc.set_layer_settings(lumapaint_core::document::LayerSettings {
+            id: id.clone(),
+            name: "image".into(),
+            opacity: 0.5,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        })
+        .unwrap();
+        let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
+        let mut cache = WorkspaceCache::default();
+        let mut item = cache
+            .prepare_filtered(
+                &doc,
+                viewport,
+                [0., 0.],
+                &Default::default(),
+                Some(&wgpu::Limits::default()),
+            )
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        let raw = Arc::clone(&cache.retained[&id].source_pixels);
+        let original = raw.as_ref().clone();
+        assert!(Arc::ptr_eq(&raw, &item.image.pixels));
+        let (effects, _, mapping) = item.effect.take().unwrap();
+        apply_cpu_fallback(&mut item.image, &effects, mapping);
+        assert_eq!(raw.as_ref(), &original);
+        assert!(!Arc::ptr_eq(&raw, &item.image.pixels));
+        let fresh = WorkspaceCache::default()
+            .prepare(&doc, viewport, [0., 0.])
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        assert_eq!(item.image.pixels, fresh.pixels);
+        cache.clear();
+        assert_eq!(raw.as_ref(), &original);
+    }
+
+    #[test]
     fn deferred_effects_keep_raw_pixels_and_invalidate_on_mode_or_effect_changes() {
         let mut doc = Document::default();
         doc.import_svg("image".into(), r##"<svg width="960" height="640"><rect width="960" height="640" fill="#404040"/></svg>"##.into()).unwrap();
@@ -451,6 +560,9 @@ mod tests {
         let revision = first.effect.unwrap().1;
         let rasters = cache.rasterizations;
         let raw = first.image.pixels;
+        assert!(cache.retained[&id].pixels.is_empty());
+        assert_eq!(cache.retained[&id].source_pixels, raw);
+        assert!(Arc::ptr_eq(&cache.retained[&id].source_pixels, &raw));
         let index = raw
             .as_chunks::<4>()
             .0
@@ -465,6 +577,7 @@ mod tests {
         let changed = prepare(&mut cache, &doc).unwrap().unwrap().remove(0);
         assert_eq!(changed.effect.unwrap().1, revision);
         assert_eq!(changed.image.pixels, raw);
+        assert!(Arc::ptr_eq(&changed.image.pixels, &raw));
         assert_eq!(cache.rasterizations, rasters);
         let cpu = cache
             .prepare(&doc, viewport, [0., 0.])
@@ -482,6 +595,42 @@ mod tests {
     }
 
     #[test]
+    fn retained_snapshot_detects_same_length_source_changes() {
+        let mut document = Document::default();
+        document.import_svg("image".into(), r#"<svg width="960" height="640"><rect width="960" height="640" fill="red"/></svg>"#.into()).unwrap();
+        let viewport = Viewport::new(96., 64., 1., 1., false).unwrap();
+        let mut cache = WorkspaceCache::default();
+        let before = cache
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert!(cache
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .is_none());
+        let mut state = document.document_state();
+        let source = &mut state.svg_layers[0].source;
+        let length = source.len();
+        *source = source.replace("red", "tan");
+        assert_eq!(source.len(), length);
+        let changed = Document::from_document_state(state).unwrap();
+        let after = cache
+            .prepare(&changed, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert_ne!(before[0].pixels, after[0].pixels);
+        let fresh = WorkspaceCache::default()
+            .prepare(&changed, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert_eq!(after[0].pixels, fresh[0].pixels);
+        assert!(cache
+            .prepare(&changed, viewport, [0., 0.])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn effects_invalidate_retained_pixels_without_changing_svg() {
         let mut d = Document::default();
         d.import_svg("image".into(),r##"<svg width="960" height="640"><rect width="960" height="640" fill="#404040"/></svg>"##.into()).unwrap();
@@ -489,9 +638,32 @@ mod tests {
         let source = d.svg_layers().next().unwrap().source.clone();
         let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
         let mut cache = WorkspaceCache::default();
+        lumapaint_core::performance::take();
         let before = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        let before_bytes = before[0].pixels.as_ref().clone();
+        assert!(Arc::ptr_eq(
+            &cache.retained[&id].source_pixels,
+            &before[0].pixels
+        ));
+        let stats = lumapaint_core::performance::take();
+        if lumapaint_core::performance::enabled() {
+            assert_eq!(
+                stats.counts["workspace_snapshot_source_bytes_avoided"],
+                source.len() as u64
+            );
+        }
+        assert_eq!(cache.layers.as_slice(), std::slice::from_ref(&id));
+        assert!(cache.retained[&id].pixels.is_empty());
+        assert_eq!(cache.retained[&id].source_pixels, before[0].pixels);
+        if lumapaint_core::performance::enabled() {
+            assert_eq!(
+                stats.counts["workspace_cpu_raw_duplicate_bytes_avoided"],
+                before[0].pixels.len() as u64
+            );
+        }
         let rasters = cache.rasterizations;
         let revision = cache.retained[&id].source_revision;
+        let source_pointer = cache.retained[&id].layer.source.as_ptr();
         assert!(cache.prepare(&d, viewport, [0., 0.]).unwrap().is_none());
         let mut e = lumapaint_core::layer_effects::LayerEffects {
             enabled: true,
@@ -499,7 +671,23 @@ mod tests {
         };
         e.values[0] = 1.;
         d.set_layer_effects(&id, e).unwrap();
+        lumapaint_core::performance::take();
         let after = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
+        let stats = lumapaint_core::performance::take();
+        if lumapaint_core::performance::enabled() {
+            assert_eq!(
+                stats.counts["workspace_retained_source_bytes_reused"],
+                source.len() as u64
+            );
+            assert_eq!(stats.counts["workspace_retained_object_snapshot_reuses"], 1);
+            assert_eq!(
+                stats.counts["workspace_upload_bytes_shared"],
+                after[0].pixels.len() as u64
+            );
+        }
+        assert!(Arc::ptr_eq(&cache.retained[&id].pixels, &after[0].pixels));
+        assert_eq!(before[0].pixels.as_ref(), &before_bytes);
+        assert_eq!(cache.retained[&id].layer.source.as_ptr(), source_pointer);
         assert_eq!(cache.rasterizations, rasters);
         let index = before[0]
             .pixels
@@ -517,6 +705,7 @@ mod tests {
         let undone = cache.prepare(&d, viewport, [0., 0.]).unwrap().unwrap();
         assert_eq!(cache.rasterizations, rasters);
         assert_eq!(undone[0].pixels, before[0].pixels);
+        assert!(cache.retained[&id].pixels.is_empty());
         let sampled = crate::color_sampler::ColorSampler::default()
             .sample(&d, lumapaint_core::document::Point { x: 100., y: 100. })
             .unwrap();
@@ -550,6 +739,7 @@ mod tests {
             .unwrap();
         assert!(translucent[0].pixels == full[0].pixels);
         assert_eq!(cache.retained[&id].source_revision, revision);
+        assert_eq!(cache.retained[&id].layer.source.as_ptr(), source_pointer);
         cache.clear();
         cache.prepare(&d, viewport, [0., 0.]).unwrap();
         assert_ne!(cache.retained[&id].source_revision, revision);
@@ -599,7 +789,11 @@ mod tests {
             .unwrap();
         let viewport = Viewport::new(960., 640., 1., 1., false).unwrap();
         let mut cache = WorkspaceCache::default();
-        cache.prepare(&document, viewport, [0., 0.]).unwrap();
+        let original = cache
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        let original_bytes = original[0].pixels.as_ref().clone();
         let before = document
             .svg_layers()
             .find(|l| l.id == layer)
@@ -619,10 +813,23 @@ mod tests {
         .unwrap();
         assert!(!tiles.is_empty());
         assert!(tiles.len() < 12);
+        lumapaint_core::performance::take();
         let incremental = cache
             .prepare(&document, viewport, [0., 0.])
             .unwrap()
             .unwrap();
+        assert_eq!(original[0].pixels.as_ref(), &original_bytes);
+        assert!(Arc::ptr_eq(
+            &cache.retained[&layer].source_pixels,
+            &incremental[0].pixels
+        ));
+        let stats = lumapaint_core::performance::take();
+        if lumapaint_core::performance::enabled() {
+            assert_eq!(stats.counts["workspace_journal_range_checks"], 1);
+            assert!(!stats
+                .counts
+                .contains_key("scene_journal_read_cloned_events"));
+        }
         let full = WorkspaceCache::default()
             .prepare(&document, viewport, [0., 0.])
             .unwrap()
@@ -630,7 +837,7 @@ mod tests {
         let max_error = incremental[0]
             .pixels
             .iter()
-            .zip(&full[0].pixels)
+            .zip(full[0].pixels.iter())
             .map(|(a, b)| a.abs_diff(*b))
             .max()
             .unwrap();
@@ -645,6 +852,67 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored[0].pixels, full[0].pixels);
+        document.redo();
+        cache.journal_cursor = document.scene_journal().cursor() + 1;
+        let before_rasterizations = cache.rasterizations;
+        let rebuilt = cache
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        let fresh = WorkspaceCache::default()
+            .prepare(&document, viewport, [0., 0.])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cache.rasterizations, before_rasterizations + 1);
+        assert_eq!(rebuilt[0].pixels, fresh[0].pixels);
+
+        let mut effects = lumapaint_core::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        effects.values[0] = 1.;
+        document.set_layer_effects(&layer, effects).unwrap();
+        let limits = wgpu::Limits::default();
+        cache
+            .prepare_filtered(
+                &document,
+                viewport,
+                [0., 0.],
+                &Default::default(),
+                Some(&limits),
+            )
+            .unwrap();
+        document
+            .select_vector_objects(vec!["moving".into()])
+            .unwrap();
+        document.move_selected_vectors(5., 0.).unwrap();
+        let incremental = cache
+            .prepare_filtered(
+                &document,
+                viewport,
+                [0., 0.],
+                &Default::default(),
+                Some(&limits),
+            )
+            .unwrap()
+            .unwrap();
+        let fresh = WorkspaceCache::default()
+            .prepare_filtered(
+                &document,
+                viewport,
+                [0., 0.],
+                &Default::default(),
+                Some(&limits),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(cache.retained[&layer].pixels.is_empty());
+        assert!(incremental[0]
+            .image
+            .pixels
+            .iter()
+            .zip(fresh[0].image.pixels.iter())
+            .all(|(a, b)| a.abs_diff(*b) <= 1));
         let mut imported = before.clone();
         imported.source = imported
             .source
@@ -686,7 +954,7 @@ mod tests {
         let max_error = incremental[0]
             .pixels
             .iter()
-            .zip(&full[0].pixels)
+            .zip(full[0].pixels.iter())
             .map(|(a, b)| a.abs_diff(*b))
             .max()
             .unwrap();
@@ -710,7 +978,7 @@ mod tests {
         let max_error = adjusted[0]
             .pixels
             .iter()
-            .zip(&full[0].pixels)
+            .zip(full[0].pixels.iter())
             .map(|(a, b)| a.abs_diff(*b))
             .max()
             .unwrap();

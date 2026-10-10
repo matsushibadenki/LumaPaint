@@ -56,6 +56,6 @@ export function MemorySettings({ locale, section }: { locale: Locale; section: '
       <div className="scratch-actions"><button type="button" onClick={()=>void add()} disabled={busy}>{t.add}</button><button type="button" onClick={()=>move(-1)} disabled={busy||selected===0} aria-label={t.up}>↑</button><button type="button" onClick={()=>move(1)} disabled={busy||selected>=draft.disks.length-1} aria-label={t.down}>↓</button><button type="button" disabled={busy||draft.disks.length<=1} onClick={()=>{change({...draft,disks:draft.disks.filter((_,index)=>index!==selected)});setSelected(0);}}>{t.remove}</button></div><p>{t.diskHint}</p>
     </>}
     {error&&<p role="alert" className="memory-error">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    <footer><button type="button" disabled={busy} onClick={()=>{change(snapshot.preferences);setError('');}}>{t.cancel}</button><button type="button" disabled={busy||draft.ramPercent<10||draft.ramPercent>90||draft.historyStates<1||draft.historyStates>1000||!draft.disks.some(d=>d.enabled)} onClick={()=>void save()}>{t.save}</button></footer>
+    <footer><button type="button" disabled={busy} onClick={()=>{change(snapshot.preferences);setError('');}}>{t.cancel}</button><button type="button" disabled={busy||!Number.isFinite(draft.ramPercent)||!Number.isInteger(draft.historyStates)||draft.ramPercent<10||draft.ramPercent>90||draft.historyStates<1||draft.historyStates>1000||!draft.disks.some(d=>d.enabled)} onClick={()=>void save()}>{t.save}</button></footer>
   </div>;
 }

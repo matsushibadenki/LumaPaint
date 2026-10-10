@@ -1603,17 +1603,12 @@ fn changed_svg_rect(previous: &[u8], next: &[u8], stride: usize) -> Option<[usiz
     Some([left, first, right - left, last - first + 1])
 }
 
-fn pack_svg_rect(pixels: &[u8], stride: usize, rect: [usize; 4]) -> std::borrow::Cow<'_, [u8]> {
+// Queue::write_texture accepts source row padding; the last row needs only
+// the requested pixels. Borrow through that row, including bottom/right edges.
+fn svg_rect_source(pixels: &[u8], stride: usize, rect: [usize; 4]) -> &[u8] {
     let [x, y, width, height] = rect;
-    if x == 0 && width * 4 == stride {
-        return std::borrow::Cow::Borrowed(&pixels[y * stride..(y + height) * stride]);
-    }
-    let mut packed = Vec::with_capacity(width * height * 4);
-    for row in y..y + height {
-        let start = row * stride + x * 4;
-        packed.extend_from_slice(&pixels[start..start + width * 4]);
-    }
-    std::borrow::Cow::Owned(packed)
+    let start = y * stride + x * 4;
+    &pixels[start..start + (height - 1) * stride + width * 4]
 }
 
 fn upload_svg_rect(
@@ -1627,7 +1622,15 @@ fn upload_svg_rect(
         let _timer = performance::time("svg_texture_write_host");
         performance::count("svg_uploaded_bytes", (width * height * 4) as u64);
         performance::count("svg_texture_writes", 1);
-        let packed = pack_svg_rect(pixels, stride, [x, y, width, height]);
+        let source = svg_rect_source(pixels, stride, [x, y, width, height]);
+        performance::count(
+            "svg_upload_packing_bytes_avoided",
+            if width * 4 == stride {
+                0
+            } else {
+                (width * height * 4) as u64
+            },
+        );
         crate::gpu_metrics::write_texture!(
             queue,
             wgpu::TexelCopyTextureInfo {
@@ -1640,10 +1643,10 @@ fn upload_svg_rect(
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            &packed,
+            source,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((width * 4) as u32),
+                bytes_per_row: Some(stride as u32),
                 rows_per_image: Some(height as u32),
             },
             wgpu::Extent3d {
@@ -1659,7 +1662,7 @@ struct CachedSvg {
     _capacity_lease: gpu_metrics::CachedTextureLease,
     source_identity: Option<object_cache_state::SourceIdentity>,
     gpu_effects: bool,
-    comparison_pixels: Vec<u8>,
+    comparison_pixels: std::sync::Arc<Vec<u8>>,
     fully_contained: bool,
     source: String,
     opacity: f32,
@@ -2142,13 +2145,15 @@ pub struct PreparedPixelTiles {
     pub uploads: Vec<TileUpload>,
 }
 
-pub struct PreparedSvgLayer {
+// Workspace uploads share immutable pixel storage with the retained raster cache.
+// Other preparation paths keep their existing owned Vec payloads.
+pub struct PreparedSvgLayer<P = Vec<u8>> {
     pub id: String,
     pub source: String,
     pub opacity: f32,
     pub size: (u32, u32),
     pub fully_contained: bool,
-    pub pixels: Vec<u8>,
+    pub pixels: P,
 }
 
 pub fn prepare_svg_layer(
@@ -2374,7 +2379,7 @@ impl Renderer {
                     cached.source = prepared.source;
                     cached.source_identity =
                         Some(object_cache_state::SourceIdentity::capture(document, layer));
-                    cached.comparison_pixels.clear();
+                    cached.comparison_pixels = Default::default();
                     self.object_cache.remove(&layer.id);
                     performance::count("text_tiled_patch_uploaded_bytes", uploaded as u64);
                     return Ok(uploaded);
@@ -2427,7 +2432,7 @@ impl Renderer {
                             opacity: prepared.opacity,
                             size: prepared.size,
                             fully_contained: true,
-                            pixels: Vec::new(),
+                            pixels: Vec::<u8>::new(),
                         },
                     )
                 });
@@ -2444,7 +2449,7 @@ impl Renderer {
             cached.opacity = prepared.opacity;
             cached.fully_contained = true;
             cached.gpu_effects = false;
-            cached.comparison_pixels.clear();
+            cached.comparison_pixels = Default::default();
             self.object_cache.remove(&layer.id);
             self.svg_cache.insert(layer.id.clone(), cached);
             return Ok(uploaded);
@@ -2468,7 +2473,7 @@ impl Renderer {
                     cached.source = prepared.source;
                     cached.source_identity =
                         Some(object_cache_state::SourceIdentity::capture(document, layer));
-                    cached.comparison_pixels.clear();
+                    cached.comparison_pixels = Default::default();
                     self.object_cache.remove(&layer.id);
                     return Ok(uploaded);
                 }
@@ -2641,7 +2646,7 @@ impl Renderer {
                         opacity: 1.0,
                         size: prepared.size,
                         fully_contained: true,
-                        pixels: Vec::new(),
+                        pixels: Vec::<u8>::new(),
                     },
                 )
             });
@@ -2660,7 +2665,7 @@ impl Renderer {
         }
         composite.source_identity =
             Some(object_cache_state::SourceIdentity::capture(document, layer));
-        composite.comparison_pixels.clear();
+        composite.comparison_pixels = Default::default();
         composite.gpu_effects = false;
         composite.opacity = prepared.opacity;
         composite.fully_contained = true;
@@ -2931,7 +2936,7 @@ impl Renderer {
         cached.source = prepared.source;
         cached.opacity = prepared.opacity;
         cached.fully_contained = true;
-        cached.comparison_pixels.clear();
+        cached.comparison_pixels = Default::default();
         Ok(())
     }
 
@@ -2976,7 +2981,11 @@ impl Renderer {
             cached.source = prepared.source;
             cached.opacity = prepared.opacity;
             cached.fully_contained = prepared.fully_contained;
-            cached.comparison_pixels = if keep { prepared.pixels } else { Vec::new() };
+            cached.comparison_pixels = if keep {
+                prepared.pixels.into()
+            } else {
+                Default::default()
+            };
             return Ok(());
         }
         let cached = self.make_cached_svg_retaining_pixels(prepared, keep)?;
@@ -3019,12 +3028,7 @@ impl Renderer {
                         }
                     }
                     // Unsupported dimensions/configuration keep the portable CPU path.
-                    screentone::apply_cpu(&mut image.pixels, &effects, image.size.0, mapping);
-                    if image.opacity != 1.0 {
-                        for value in &mut image.pixels {
-                            *value = (*value as f32 * image.opacity).round() as u8;
-                        }
-                    }
+                    workspace::apply_cpu_fallback(&mut image, &effects, mapping);
                     // GPU output has no CPU comparison payload. A fallback needs a full
                     // upload so pixels from the previous adjustment cannot remain.
                     previous.remove(&image.source);
@@ -3047,7 +3051,7 @@ impl Renderer {
                     cached.opacity = image.opacity;
                     Ok(cached)
                 } else {
-                    self.make_cached_svg_retaining_pixels(image, true)
+                    self.make_cached_svg_shared_pixels(image, true)
                 }
             })
             .collect()
@@ -3060,7 +3064,25 @@ impl Renderer {
     // Upload by borrow, then move the original allocation into the comparison cache.
     fn make_cached_svg_retaining_pixels(
         &self,
-        mut prepared: PreparedSvgLayer,
+        prepared: PreparedSvgLayer,
+        retain_pixels: bool,
+    ) -> Result<CachedSvg, String> {
+        self.make_cached_svg_shared_pixels(
+            PreparedSvgLayer {
+                id: prepared.id,
+                source: prepared.source,
+                opacity: prepared.opacity,
+                size: prepared.size,
+                fully_contained: prepared.fully_contained,
+                pixels: std::sync::Arc::new(prepared.pixels),
+            },
+            retain_pixels,
+        )
+    }
+
+    fn make_cached_svg_shared_pixels(
+        &self,
+        mut prepared: PreparedSvgLayer<std::sync::Arc<Vec<u8>>>,
         retain_pixels: bool,
     ) -> Result<CachedSvg, String> {
         let (width, height) = prepared.size;
@@ -3106,14 +3128,18 @@ impl Renderer {
         let pixels = if retain_pixels {
             std::mem::take(&mut prepared.pixels)
         } else {
-            Vec::new()
+            Default::default()
         };
         let mut cached = self.cached_svg_texture(texture, prepared);
         cached.comparison_pixels = pixels;
         Ok(cached)
     }
 
-    fn cached_svg_texture(&self, texture: wgpu::Texture, prepared: PreparedSvgLayer) -> CachedSvg {
+    fn cached_svg_texture<P>(
+        &self,
+        texture: wgpu::Texture,
+        prepared: PreparedSvgLayer<P>,
+    ) -> CachedSvg {
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
             ..Default::default()
@@ -3136,7 +3162,7 @@ impl Renderer {
             _capacity_lease: gpu_metrics::CachedTextureLease::new(&texture),
             source_identity: None,
             gpu_effects: false,
-            comparison_pixels: Vec::new(),
+            comparison_pixels: Default::default(),
             fully_contained: prepared.fully_contained,
             source: prepared.source,
             opacity: prepared.opacity,
@@ -3193,7 +3219,7 @@ impl Renderer {
                         source: String::new(),
                         opacity,
                         size: (rect[2] as u32, rect[3] as u32),
-                        pixels: Vec::new(),
+                        pixels: Vec::<u8>::new(),
                         fully_contained: true,
                     },
                 );
@@ -3744,6 +3770,7 @@ impl Renderer {
         defer_svg: bool,
     ) -> Result<(), String> {
         let frame_timer = performance::time("render_frame_host");
+        let prepare_timer = performance::time("render_prepare_before_surface_host");
         let host_frame_start = performance::enabled().then(std::time::Instant::now);
         let channel_view;
         let document = if self.channel != 0 {
@@ -3844,6 +3871,8 @@ impl Renderer {
             self.config.height = viewport.height;
             self.surface.configure(&self.device, &self.config);
         }
+        drop(prepare_timer);
+        let surface_timer = performance::time("surface_acquire_host");
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -3862,6 +3891,8 @@ impl Renderer {
             }
             error => return Err(format!("Surface acquisition failed: {error:?}")),
         };
+        drop(surface_timer);
+        let encode_timer = performance::time("render_encode_after_surface_host");
         let mut background_viewport = viewport;
         if self.channel != 0 || root_paint::masked_paper(document) || !document.background_visible()
         {
@@ -4765,6 +4796,7 @@ impl Renderer {
                 .unwrap()
                 .resolve(slot, &mut encoder);
         }
+        drop(encode_timer);
         {
             let _timer = performance::time("queue_submit_host");
             self.queue.submit(Some(encoder.finish()));
@@ -5948,7 +5980,7 @@ mod clipboard_pixel_tests {
 
 #[cfg(test)]
 mod svg_upload_tests {
-    use super::{changed_svg_rect, pack_svg_rect};
+    use super::{changed_svg_rect, svg_rect_source};
     #[test]
     fn rectangles_restore_exact_pixels_including_cleared_and_edge_pixels() {
         let stride = 8 * 4;
@@ -5966,12 +5998,14 @@ mod svg_upload_tests {
                 new[y * stride + x * 4 + 3] = 1;
             }
             let rect = changed_svg_rect(&old, &new, stride).unwrap();
-            let packed = pack_svg_rect(&new, stride, rect);
+            let source = svg_rect_source(&new, stride, rect);
             let [x, y, w, h] = rect;
-            assert_eq!(packed.len(), w * h * 4);
+            assert_eq!(source.len(), (h - 1) * stride + w * 4);
+            assert_eq!(source.as_ptr(), new[y * stride + x * 4..].as_ptr());
             for row in 0..h {
                 let start = (y + row) * stride + x * 4;
-                old[start..start + w * 4].copy_from_slice(&packed[row * w * 4..(row + 1) * w * 4]);
+                old[start..start + w * 4]
+                    .copy_from_slice(&source[row * stride..row * stride + w * 4]);
             }
             assert_eq!(old, new);
             assert_eq!(changed_svg_rect(&old, &new, stride), None);
@@ -5988,7 +6022,7 @@ mod svg_upload_tests {
         }
         let rect = changed_svg_rect(&old, &new, 4096).unwrap();
         assert_eq!(rect, [400, 500, 30, 20]);
-        assert_eq!(pack_svg_rect(&new, 4096, rect).len(), 2400);
+        assert_eq!(svg_rect_source(&new, 4096, rect).len(), 19 * 4096 + 120);
         assert_eq!(changed_svg_rect(&[], &new, 4096), Some([0, 0, 1024, 1024]));
     }
 }

@@ -1,6 +1,6 @@
 # Vector and text performance: measured first changes
 
-## Current specification status (2026-10-09)
+## Current specification status (2026-10-10)
 
 This table supersedes earlier chronological remaining-work notes below. The specification is **not complete**; completed subsets must not be reported as complete phases.
 
@@ -12,7 +12,7 @@ This table supersedes earlier chronological remaining-work notes below. The spec
 | 4: native normal zoom | 🟢 [Done] Qualified opaque straight strokes and single pixel-aligned opaque rectangular fills use native GPU rendering at normal zoom; six-zoom pixel comparisons | 🟠 [Next] Cubic fills and other appearance still need edge-quality corrections before normal-zoom routing |
 | 5: native strokes | 🟢 [Done] Bounded opaque axis-aligned straight strokes, butt/square caps and dashes; exact rational-conic storage and round undashed straight caps above 150%; retained geometry | 🟠 [Next] Curves/polylines and round joins remain quality-gated; normal-zoom round caps, overlapping/transparent strokes, mixed fill/stroke and general transforms |
 | 6: gradients/clipping | 🟢 [Done] Retained GPU linear/radial paints, nested clipping and isolated layer opacity/order; compatibility pixel comparisons pass | Complete within the bounded native geometry contract below; unsupported geometry/appearance retains compatibility rendering. Full Adobe comparisons remain phase 8. |
-| 7: incremental Scene | 🟢 [Done] Native transform refits reuse local bounds; idle synchronization skips source walks and retained viewport queries; unchanged layers skip journal copies; structural removals prune cached IDs locally; existing bounds membership changes refit locally; picking retains dynamically balanced stable slots and persistent known-item membership; layer-scoped notifications and coalesced native transform checks; indexed clipping membership removes all-pairs mask lookup; unclipped suffix additions/removals retain prefix bounds and BVH; notified middle edits reuse local bounds by object ID and locally update unclipped BVHs | 🟠 [Next] Extend journal-based reuse to every rendering route; general native-renderer structural insertion/deletion reuse and remaining compatibility/mixed-content verification scans |
+| 7: incremental Scene | 🟢 [Done] Native transform refits reuse local bounds; idle synchronization skips source walks and retained viewport queries; unchanged layers skip journal copies; structural removals prune cached IDs locally; existing bounds membership changes refit locally; picking retains dynamically balanced stable slots and persistent known-item membership; layer-scoped notifications and coalesced native transform checks; indexed clipping membership removes all-pairs mask lookup; unclipped suffix additions/removals retain prefix bounds and BVH; notified middle edits reuse local bounds and maintain clipped BVHs; adaptive dense rebuilding; retained ID/bounds/membership metadata; one shared journal batch per native revalidation; allocation-free borrowed journal iteration for native synchronization | 🟠 [Next] Extend journal-based reuse to every rendering route; stable native spatial slots, remaining dense metadata scans and full canonical SVG verification; compatibility/mixed-content routes |
 | 8: scale/performance gates | 🟢 [Done] Release spatial-index query/refit example up to one million entries | 🟠 [Next] End-to-end application workloads, capacity changes, 60-second × 5 runs, GPU/RSS/upload budgets; 🟢 [Done] First Illustrator 2026 geometry export fixture and measured compatibility comparison; 🟠 [Next] native/glyph/color-managed Adobe comparisons |
 
 The attached improvement specification is being implemented in stages. The first changes added diagnostic coverage and fixed a measured text-cache eligibility bug. The follow-up below adds bounded retained text-frame GPU composition. The entire specification is not complete.
@@ -800,3 +800,254 @@ Final validation for layer-scoped reads/coalescing: metrics-enabled core suite p
 - 🟠 [Next] Dense positions still require refitting the shifted suffix and rebuilding ID/position metadata. Stable native slots, clipping/group structural updates, full SVG verification cost and application-scale timings remain unfinished. This supersedes the earlier statement that middle edits always rebuild the BVH; no FPS improvement is inferred from the regression counters.
 
 - 🟢 [Done] Final validation for local native BVH maintenance: Skia renderer all-targets Clippy (`-D warnings`), scoped Rust formatting and diff whitespace checks pass.
+
+### Native clipped structural spatial reuse (2026-10-10)
+
+- 🟢 [Done] Canonically validated clipping/group structural edits now retain the native spatial index and local bounds. Recompute clipping membership in current document order; locally refit shifted or changed dense positions. Existing eligibility and canonical SVG checks remain mandatory.
+- 🟢 [Done] Sixteen native CPU regressions and one explicit real-GPU regression pass. Clipped child deletion/Undo/Redo performs zero full BVH builds and matches fresh-cache pixels exactly. Derived membership/query tests also cover mask deletion/restoration; a missing mask remains outside native eligibility and uses compatibility rendering.
+- 🟢 [Done] Skia renderer all-targets Clippy with warnings denied, scoped Rust formatting and whitespace checks pass.
+- 🟠 [Next] Clipping membership is still recomputed across the layer. Stable native slots, shifted-suffix metadata work, full canonical SVG verification and application-scale performance measurements remain unfinished. Phase 7 remains partial; operation counters do not establish an FPS improvement.
+
+### Retained clipping membership for nonstructural edits (2026-10-10)
+
+- 🟢 [Done] Native canonical revalidation retains clipping membership when object IDs/order match and all journal events exclude removal/structure changes. Geometry/style edits update drawing bounds while preserving the membership allocation. Group/mask membership or order changes still rebuild the indexed membership map.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. The geometry-edit regression checks retained allocation and reuse diagnostics; group detachment reindexes. GPU mask geometry editing with a restored clipped child exactly matches fresh-cache output and has zero full BVH builds. Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Actual membership/order changes still recompute clipping relations; dense-position metadata and canonical SVG validation remain layer-wide. Stable native slots, complete resource budgets and application-scale timing gates remain unfinished. Phase 7 remains partial.
+
+### Retained native ID/position metadata (2026-10-10)
+
+- 🟢 [Done] Canonical revalidation keeps object-ID storage and the ID-to-position map when IDs/order are unchanged, including geometry/style or group-only edits. Changed order rebuilds metadata. Add `native_position_metadata_reuses` and rebuilt-ID counters.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Mask geometry editing retains ID-array and map-key storage, reports zero rebuilt IDs and matches fresh GPU output exactly. Existing middle deletion/restoration and clipping-membership regressions continue to pass.
+- 🟠 [Next] Structural additions/deletions/reordering still reconstruct position metadata and refit shifted dense positions. Stable slots, canonical SVG generation/verification cost and application-scale acceptance remain unfinished. Phase 7 remains partial; no FPS improvement is inferred from these counters.
+
+- 🟢 [Done] Final ID/position metadata validation: Skia renderer all-targets Clippy with warnings denied, scoped Rust formatting and whitespace checks pass.
+
+### Incremental native position-map maintenance (2026-10-10)
+
+- 🟢 [Done] Structural revalidation updates the existing ID-to-position map instead of recreating every string key and map entry. Remove absent IDs, insert new IDs, and rewrite shifted positions; surviving string allocations and map capacity are retained. Add inserted/removed/shifted-ID counters.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo retains both surviving map-key allocations and updates one inserted/removed ID and one shifted position in the fixture. Rendering, clipping and history match fresh GPU output. Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+- 🟠 [Next] The ordered ID array, live-ID lookup and dense metadata still perform layer-wide work for structural edits. Stable native slots, full SVG verification cost and application-scale acceptance remain unfinished; phase 7 is partial. These counters establish avoided map/string reconstruction, not a measured application speedup.
+
+### Move retained ordered-ID strings through structural edits (2026-10-10)
+
+- 🟢 [Done] Build the new native drawing-order ID array by moving surviving strings from their previous positions rather than cloning them. Clone only newly inserted IDs; reuse the position map as implemented previously. Add ordered-ID reused/cloned counters.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo preserves surviving ordered-string allocations; deletion clones zero strings and restoration clones one in the fixture. Fresh GPU comparisons, clipping/history tests, Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Structural edits still allocate the new ordered array and scan the layer, refit shifted dense positions and verify full canonical SVG. Stable slots, remaining memory budgets and end-to-end timing gates remain unfinished; phase 7 is partial. Avoided string clones are not a measured application-speed claim.
+
+### Retain local-bound arrays for unchanged geometry (2026-10-10)
+
+- 🟢 [Done] Canonically validated native edits retain the local-bound array when IDs/order are unchanged and journal events contain no object geometry/removal changes or layer structure changes. Style, transform and group-only edits update derived drawing bounds/membership without allocating/copying a replacement local-bound array. Geometry/structural edits keep the validated update path. Add `native_local_bounds_array_reuses`.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Group detachment retains the local-bound allocation and values with zero path parses while rebuilding correct clipping membership. Existing shape edits, clipped rendering and Undo/Redo match fresh GPU output. Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Geometry/structural edits still construct bound arrays; dense-slot updates, full canonical SVG verification and end-to-end application timing remain unfinished. Phase 7 remains partial; allocation avoidance is not a measured FPS improvement.
+
+### Share native structural notification reads (2026-10-10)
+
+- 🟢 [Done] Native structural spatial reuse passes its already-read layer notifications into local-bound validation/update. Geometry or insertion/deletion updates no longer clone the same journal batch a second time for bounds processing; independent fallback validation retains its safe read path.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo asserts cloned events equal exactly one layer-read batch. Fresh GPU comparisons for structural edits, clipping and geometry remain identical. Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Separate refresh/fallback attempts may still read their own batches. Full canonical SVG verification, dense-slot metadata, complete memory budgets and application-scale timing acceptance remain unfinished; phase 7 is partial. Reduced notification copies do not establish measured application latency gains.
+
+### Reuse empty native clipping-membership arrays (2026-10-10)
+
+- 🟢 [Done] Canonically validated layers without masks resize/clear retained clipping-membership storage instead of allocating a replacement outer array. Clearing old rows also removes stale membership after masks disappear. Add `native_empty_clip_membership_reuses`.
+- 🟢 [Done] Seventeen native CPU regressions and one explicit real-GPU regression pass. Middle delete/Undo/Redo preserves the membership-array allocation within retained capacity, keeps all rows empty and preserves fresh-index query results. Mask deletion/restoration and fresh GPU output comparisons remain correct.
+- 🟠 [Next] Growth beyond retained capacity still allocates. Layer-wide membership checks, stable spatial slots, canonical SVG verification and application timing acceptance remain unfinished; phase 7 is partial. Avoided allocations do not establish measured application speedup.
+
+- 🟢 [Done] Final empty-membership validation: Skia renderer all-targets Clippy with warnings denied, scoped Rust formatting and whitespace checks pass.
+
+## Structural-index host microbenchmark (2026-10-10)
+
+- 🟢 [Done] Add the ignored, explicitly invoked `benchmark_structural_reuse_against_full_index` test: 1,000/4,096 opaque rectangles, deletion at position 1 or the penultimate position, two warm-up and twenty recorded samples. Every sample compares viewport queries with a fresh derived index. No runtime routing threshold was changed.
+
+Command: `cargo test --offline --locked -p lumapaint-renderer --features skia native_bezier::tests::benchmark_structural_reuse_against_full_index -- --ignored --exact --nocapture`.
+
+Local macOS Cargo dev profile (core/renderer optimized by workspace settings), host-only derived-index work. Timed reuse includes journal/bounds validation, dense spatial refits, ordered IDs, map updates and empty membership maintenance. Fresh construction includes path-bound parsing and index/metadata construction. Document deletion/history, full canonical SVG generation/eligibility, GPU preparation and presentation are excluded. Existing cache construction is outside the reuse timer. Retained is measured before fresh each sample; this is a fixed-order preliminary microbenchmark, not randomized comparative acceptance. The reported median is the upper middle sample (index 10 of 20); p95 is nearest-rank index 18.
+
+| Objects | Deleted position | Retained upper median µs | Retained p95 µs | Fresh upper median µs | Fresh p95 µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1 | 616.541 | 719.709 | 870.875 | 1,103.209 |
+| 1,000 | 998 | 197.250 | 415.458 | 1,078.292 | 1,854.417 |
+| 4,096 | 1 | 2,717.459 | 3,510.000 | 4,081.208 | 5,486.083 |
+| 4,096 | 4,094 | 741.792 | 1,082.583 | 3,282.583 | 5,707.750 |
+
+- 🟢 [Done] All four benchmark cases pass exact derived-query comparisons. Scoped formatting and whitespace checks pass.
+- 🟠 [Next] Repeat in Release with alternated/randomized ordering and larger sample sets; measure application edits, SVG work, GPU transfers, memory and input-to-display separately. These results do not establish 60/120fps, capacity beyond the application limit or end-to-end latency gains. Phase 7/8 remain partial.
+
+- 🟢 [Done] Structural benchmark validation: Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+
+## Release alternating-order comparison and adaptive index maintenance (2026-10-10)
+
+- 🟢 [Done] Alternate reuse/fresh measurement order and calculate the median as the average of the two central samples. Run the actual Skia-enabled Release benchmark. A Skia dependency download/source-sync failure was resolved by packaging the existing cache with exactly matching version 0.153.3 and binary feature key into a temporary local archive, passed via `SKIA_BINARIES_URL=file:///tmp/lumapaint-skia-matching-cache.tar.gz`. The no-Skia attempt ran zero native tests and is not validation.
+- 🟢 [Done] The initial Release comparison found early deletion slower for the retained path (1,000: 492.375 vs 418.292 µs; 4,096: 2,088.729 vs 1,754.354 µs). Add an initial adaptive policy: at least 512 remaining objects and more than half the positions requiring updates rebuild the spatial index from retained local bounds rather than performing individual dense refits. Metadata/geometry reuse remains; full BVH builds are counted accurately. This policy is provisional, based on the bounded rectangle fixture.
+
+After the change, five separate benchmark process runs after this task's builds completed; two warm-up and twenty alternating samples per case per run. Each sample checks queries against fresh construction. The table reports the median of the five per-run medians and the range of per-run p95 values, not a pooled p95. These are host-only Release timings; full SVG validation, document/history edits and GPU are excluded as in the earlier benchmark. External system activity is not controlled; this is not a 60-second × 5 application trial or a controlled before/after throughput claim.
+
+| Objects | Deleted position | Adaptive median µs | Fresh median µs | Adaptive trial p95 range µs | Fresh trial p95 range µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1 | 390.272 | 382.709 | 400.583–466.041 | 386.084–1035.459 |
+| 1,000 | 998 | 146.896 | 380.188 | 150.166–161.750 | 382.042–413.584 |
+| 4,096 | 1 | 1685.958 | 1595.792 | 1722.458–2117.958 | 1583.541–1959.875 |
+| 4,096 | 4,094 | 638.104 | 1582.376 | 654.667–713.208 | 1639.250–1852.791 |
+
+- 🟢 [Done] Seventeen native regressions pass (two manual/GPU tests ignored in that invocation); the Release real-GPU regression is explicitly executed and passes. Five Release benchmark runs pass query comparisons. Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Early deletion remains slightly slower than fresh construction (roughly 2–6% in median-of-medians comparisons). Remove residual notification/metadata overhead and broaden the switching-policy fixtures. Stable slots, canonical SVG verification and actual application latency/memory/upload acceptance remain unfinished. The earlier dev result that every tested case was faster is superseded by these Release findings; phases 7/8 are still partial.
+
+## Share validated live IDs through native structural updates (2026-10-10)
+
+- 🟢 [Done] Local-bound validation returns its already-built live-ID set together with bounds. Position-map maintenance borrows that set, removing a second layer-wide hash-set construction and allocation. Validation/rejection precedes derived-data mutation; a named `ValidatedBounds` result keeps the lifetime/data contract explicit. Add `native_live_id_set_reuses`.
+- 🟢 [Done] Final Release native regressions: seventeen pass (two manual/GPU tests ignored), followed by an explicit real-GPU comparison pass. Skia renderer all-targets Clippy with warnings denied, scoped formatting and whitespace checks pass.
+
+Five final-code Release benchmark processes after this task's builds/tests completed, each with two warm-up and twenty alternating-order samples per case. Median of the five per-run medians; ranges of per-run p95, not pooled percentiles. Same host-only scope as the previous benchmark: exclude document edits, full SVG verification and GPU. External system activity is not controlled; previous and current runs are separate, not randomized before/after trials.
+
+| Objects | Deleted position | Retained median µs | Fresh median µs | Retained trial p95 range µs | Fresh trial p95 range µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1 | 373.646 | 386.125 | 375.292–390.166 | 383.916–410.542 |
+| 1,000 | 998 | 133.791 | 368.958 | 132.666–142.292 | 375.500–393.959 |
+| 4,096 | 1 | 1606.042 | 1591.083 | 1653.334–1726.292 | 1632.709–1726.167 |
+| 4,096 | 4,094 | 593.416 | 1565.229 | 600.791–693.000 | 1597.250–1770.958 |
+
+- 🟠 [Next] The 4,096-object early deletion case remains approximately 1% slower than fresh construction in these aggregate medians, versus about 6% in the previous separate run. Duplicate set construction is removed, but a definitive speedup or complete regression removal is not claimed. Remaining dense scans/metadata, SVG verification and end-to-end latency/memory/upload acceptance remain unfinished; phases 7/8 stay partial.
+
+## Completed item: single journal batch across native revalidation (2026-10-10)
+
+- 🟢 [Done] Transform refresh, suffix reuse, structural reuse and fallback bounds validation share one immutable journal read, keyed by start cursor, current end cursor, journal instance ID and layer ID. Subsequent attempts reuse the batch without cloning events. New edits/instances/cursors/layers invalidate it, including rebuild/gap results. Successful cursor advancement releases the cached batch; unchanged-layer fast paths still skip reads.
+- 🟢 [Done] Eighteen native regressions pass (two manual/GPU tests initially ignored), followed by an explicit real-GPU regression pass. A new unit regression verifies shared batch identity and invalidation after new events. The production GPU preparation regression verifies cloned-event count equals exactly one layer-read batch through geometry fallback/revalidation, with fresh-cache pixel equality. Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟢 [Done] The earlier unfinished native refresh/fallback duplicate-read subset is now closed. This does not close phase 7 or include the separate renderer synchronization read, picking, text workers or every rendering route.
+- 🟠 [Next] Full canonical SVG verification, native stable spatial slots/dense scans, other rendering routes and end-to-end application timing/resource acceptance remain unfinished. The prior approximately 1% early-deletion timing difference has not been remeasured for this change and is not declared resolved.
+
+## Completed item: native synchronization without event copies (2026-10-10)
+
+- 🟢 [Done] Add `Journal::read_borrowed`, exposing immutable retained events through a clonable iterator with the same future-cursor/missing-range rebuild safety. Native synchronization borrows that iterator for removals and affected-layer classification rather than cloning every Change/Target into a Vec. Iterator clones copy cursor state only; owned read APIs remain available for asynchronous consumers.
+- 🟢 [Done] Five Scene notification tests pass, including a new owned/borrowed equality test over journal rollover, current/future cursors and zero copied-event counters. Eighteen native renderer regressions pass (two manual/GPU tests ignored), followed by an explicit GPU regression verifying actual synchronization consumes events while copying zero, preserves geometry fallback's single batch and matches fresh-cache pixels. Core/Skia renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟢 [Done] Close the separate native synchronization event-copy subset left open in the previous entry. This does not remove event iteration, source-layer checks or cover other rendering/text/picking consumers.
+- 🟠 [Next] Other rendering routes, native dense-position metadata, full canonical SVG verification and application-scale timing/resource acceptance remain unfinished. No new timing claim is inferred from zero-copy counters; phase 7 remains partial.
+
+## Completed item: borrowed notifications in picking refresh (2026-10-10)
+
+- 🟢 [Done] Picking refresh borrows Journal events and clones only iterator cursor state. Filtering by layer and object preserves isolation; notification/target strings and the temporary event-reference vector are no longer copied or allocated. Structural validation and stable picking slots retain their existing behavior.
+- 🟢 [Done] A metrics-enabled regression interleaves 100 unrelated same-object-ID events with each move/restore, verifying one consumed event, one bounds evaluation, zero cloned events and fresh-index query equality. Journal rollover with a changed source still rebuilds safely. Existing insert/delete/reorder/restore and missing-notification/new-instance regressions pass. Core suite: 327 passed, one existing manual test ignored; all-targets core Clippy passes with warnings denied.
+- 🟠 [Next] Notification iteration, structural position scans, other renderer/text routes, native dense slots, canonical SVG verification and application timing remain unfinished. This closes the picking notification-copy subset, not phase 7 or measured input latency.
+
+## Complete borrowed notifications for retained object-image translation (2026-10-10)
+
+- 🟢 [Done] `ObjectCacheState::translated` validates parent/object transform pairs directly from borrowed layer-filtered Journal events. Remove owned notification/target-string copies and the temporary event-reference vector. Preserve consecutive-sequence checks, uniform-translation validation and safe fallback for incomplete pairs, gaps, foreign journals and font/style/geometry changes.
+- 🟢 [Done] Five targeted renderer tests pass. Metrics-enabled multilingual text tests at 1,000/4,096 objects verify move/Undo/Redo consumes one pair with zero cloned events, updates only the selected transform and retains text/path storage. New incomplete-pair/future-cursor tests pass. Renderer all-targets Clippy passes with warnings denied; scoped formatting and whitespace checks pass.
+- 🟠 [Next] Workspace notification consumption, native canonical validation and dense metadata, other text/render routes and application timing acceptance remain unfinished. Phase 7 remains partial; this allocation reduction is not a measured frame-time improvement.
+
+## Complete copy-free workspace journal availability checks (2026-10-10)
+
+- 🟢 [Done] Workspace preparation checks retained Journal range availability through the borrowed API, without copying notifications/target strings or iterating event payloads. Preserve the original incremental-history/full-raster fallback decision and cursor advancement. Add `workspace_journal_range_checks` diagnostics.
+- 🟢 [Done] Seven workspace regressions pass with metrics enabled. Actual dirty-tile preparation checks history once with zero copied-event counters; transparent tile composition stays within the existing one-channel-value tolerance, Undo matches fresh pixels exactly, and an invalid future cursor forces a full raster matching fresh pixels after Redo. Effects, viewport overlap, exterior content, layer order and extreme zoom regressions pass. Renderer all-targets Clippy passes with warnings denied; scoped formatting and whitespace checks pass.
+- 🟠 [Next] Retained workspace source comparisons/image copies, native canonical verification/dense metadata, other text/render consumers and application timing acceptance remain unfinished. Phase 7 remains partial; this closes the workspace notification-copy subset without claiming measured FPS gains.
+
+## Complete single raw-image retention for GPU workspace effects (2026-10-10)
+
+- 🟢 [Done] GPU-deferred workspace effects retain only `source_pixels`; the duplicate raw `pixels` buffer stays empty. Full raster preparation removes one full-image copy; dirty tiles update the single retained source buffer. Upload payloads remain owned and unchanged, and CPU effects keep separate raw/adjusted buffers. This removes up to 32 MiB of duplicate retained raw workspace pixels per cache under the existing budget, excluding transient uploads and GPU allocations. Add `workspace_deferred_duplicate_bytes_avoided` diagnostics.
+- 🟢 [Done] Seven workspace tests pass. Deferred effect changes preserve raw upload pixels and an empty duplicate buffer; GPU-mode dirty tile preparation matches fresh raw raster within the existing one-value tolerance. CPU mode/effect transitions, Undo/Redo, opacity, exterior content and viewport tests pass. Renderer all-targets Clippy, scoped formatting and whitespace checks pass. Tests exercise host preparation with GPU limits; no new actual GPU timing or frame-rate claim.
+- 🟠 [Next] CPU adjusted-image retention/upload copies, source comparisons, native canonical verification/dense metadata and application timing acceptance remain unfinished. Phase 7 remains partial.
+
+## Complete removal of duplicate workspace source snapshots (2026-10-10)
+
+- 🟢 [Done] Workspace order snapshots retain only layer IDs. Idle-cache validation reads source, effective opacity and effects from the existing retained layer instead of maintaining duplicate SVG strings/effect snapshots. Remove one full source-string copy per visible layer per successful preparation; retain exact content comparison and order checks. Add `workspace_snapshot_source_bytes_avoided` diagnostics.
+- 🟢 [Done] Eight metrics-enabled workspace regressions pass. The source-byte counter matches the removed snapshot length; a same-length source change invalidates the cache, matches fresh raster pixels exactly and subsequently idles without regeneration. Layer-order, effects, mode switches, tile updates and Undo/Redo tests pass. All-targets renderer Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Full source comparison, retained SvgLayer/object snapshots, CPU adjusted-image/upload copies, native canonical validation/dense metadata and end-to-end timing acceptance remain unfinished. Phase 7 remains partial; no measured latency/FPS gain is claimed.
+
+## Complete retained workspace snapshots for unchanged source (2026-10-10)
+
+- 🟢 [Done] Effect/opacity-only preparation moves the existing retained SvgLayer snapshot instead of cloning it. Preserve its source string and unchanged object storage; update opacity/mask scalars used by future validation. Changed vector-object content is compared exactly and copied when necessary, preserving legacy/missing-notification safety. Source-changing preparation still captures a fresh snapshot. Add retained-source-byte/object-snapshot reuse counters.
+- 🟢 [Done] Eight metrics-enabled workspace tests pass. Effect changes verify the same source allocation and reuse counters; opacity changes and Undo/Redo preserve pixels/source revision and retained source allocation. Same-length source changes, CPU/GPU mode changes and dirty tiles retain fresh-raster comparison coverage. All-targets renderer Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Object comparisons and source-changing snapshot copies, CPU adjusted-image/upload copies, native canonical verification/dense metadata and end-to-end timing remain unfinished. Phase 7 remains partial; no measured input latency gain is claimed.
+
+## Complete single raw-image retention for unadjusted CPU workspace display (2026-10-10)
+
+- 🟢 [Done] CPU workspace layers without active effects and with effective opacity exactly 1 retain only their raw source image. Full raster preparation removes the redundant adjusted-image copy and retention (up to 32 MiB per cache under the existing budget). Raw dirty-tile updates likewise skip duplicate adjusted writes. Effect/opacity transitions allocate/resize an adjusted buffer when needed; returning to raw display releases duplicate storage. Owned upload payloads remain unchanged. Add `workspace_cpu_raw_duplicate_bytes_avoided` diagnostics.
+- 🟢 [Done] Eight metrics-enabled workspace tests pass. Raw retention is verified empty for the duplicate buffer, source/upload pixels match and the avoided-byte counter equals the image length. Effect changes, opacity, Undo back to raw mode, Redo, partial tile updates, invalid-history rebuilds and fresh-raster comparisons pass. Renderer all-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Active CPU effect/opacity buffers, owned upload copies, source comparisons, native canonical verification/dense metadata and end-to-end timing remain unfinished. Phase 7 remains partial; no measured FPS gain is claimed.
+
+## Complete retained picking IDs during incremental structural updates (2026-10-10)
+
+- 🟢 [Done] Valid incremental structural picking updates build a borrowed ID/position validation map and update the persistent position map in place. Retained IDs are not cloned; deleted IDs are removed and only new IDs are copied into the position/handle maps. Stable slots and pre-mutation duplicate/missing-notification validation remain. Add `picking_structural_id_string_clones` diagnostics.
+- 🟢 [Done] Metrics-enabled insertion/delete/reorder/restoration tests verify zero copies for retained-only edits and two string copies per inserted/restored ID. A targeted-notification fixture inserts at the start of 1,000/4,096 objects: both copy exactly two IDs, retain the existing key allocation and return all expected candidates. Core suite: 328 passed, one manual test ignored. All-targets Clippy, scoped formatting and whitespace checks pass.
+- 🟠 [Next] Structural full-position validation/scans and the temporary map still scale with object count. Legacy full-layer comparison notifications can exceed the bounded Journal at 4,096 objects and correctly trigger full rebuilding; that route is not optimized by this subset. Missing-range/invalid-notification rebuilds still copy complete IDs. Native slots/canonical verification and end-to-end timing remain unfinished. Phase 7 remains partial.
+
+### Share retained workspace pixels through upload preparation (2026-10-10)
+
+Workspace raw/adjusted images now use `Arc<Vec<u8>>`. Preparation and the renderer's previous-image comparison cache share the selected display allocation, avoiding one whole-image preparation copy and up to 32 MiB of duplicate comparison storage per workspace cache under the existing budget. Standard SVG callers retain the default owned `PreparedSvgLayer<Vec<u8>>` API. No pixels cross the JavaScript IPC boundary.
+
+Partial raster updates use copy-on-write when an earlier prepared/comparison image still owns the buffer; old pixels remain valid for dirty-rectangle detection. Full CPU effect recomputation allocates a replacement when shared instead of copying the previous adjusted image before overwriting it. GPU-effect fallback detaches its output before applying effects/opacity, preserving retained raw pixels. `workspace_upload_bytes_shared` counts payload bytes shared at preparation, not bytes avoided across the entire frame: copy-on-write, rectangle packing and wgpu staging may still copy. This is an allocation/retention improvement, not an end-to-end timing or FPS claim.
+
+Validation: Skia-enabled renderer library suite passed 268 tests with 56 manual/GPU tests ignored by default; all nine workspace regressions passed, including pointer sharing, immutable previous pixels during partial updates, and CPU fallback equality at 50% opacity. The new `gpu_workspace_shared_pixels_preserve_diff_uploads` test passed separately on Apple M4/Metal: effect change, Undo and Redo use the production changed-rectangle/upload functions and match fresh raster bytes exactly after GPU readback. Sandbox execution could not discover a Metal adapter; the same test succeeded with host GPU access. Renderer all-target Clippy with warnings denied, macOS host `cargo check`, architecture boundary validation, scoped rustfmt and whitespace checks passed. Builds used the matching local Skia archive because network dependency download was unavailable. No interactive frame-time benchmark was performed.
+
+### Strided partial uploads and native GUI latency baseline (2026-10-10)
+
+- 🟢 [Done] `upload_svg_rect` borrows the original image from the first changed pixel through the final changed row, passing the original row stride to `Queue::write_texture`. Remove the temporary tightly packed rectangle allocation/copy for narrow updates; full-width updates remain borrowed. Logical upload pixels are unchanged. `svg_upload_packing_bytes_avoided` counts the former narrow-rectangle copy size; the general source-span counter now includes intervening row padding and must not be interpreted as logical GPU payload or physical bus traffic. Copy-on-write of shared workspace images and wgpu's own staging remain.
+- 🟢 [Done] CPU rectangle reconstruction/clear/edge tests pass. Apple M4/Metal confirms effects/Undo/Redo through narrow uploads, plus separate exact readback comparisons at 65-pixel source width (260-byte stride), interior rectangles, one-pixel bottom-right, rectangles ending at the bottom/right boundary, and full images.
+- 🟢 [Done] Added native fixture generation (`cargo run --offline --locked -p lumapaint-formats --example input_latency_fixture -- /tmp/lumapaint-input-latency-fixtures`) and a log summarizer (`python3 scripts/summarize-input-latency.py LOG`, optional `--warmup N`). Summary tests verify nearest-rank percentiles, warm-up exclusion, unrelated-line exclusion, thresholds and empty-input rejection.
+
+Actual GUI baseline: Cargo dev build (core/renderer opt-level 2), Vite dev UI, `LUMAPAINT_RENDER_METRICS=1`, Apple M4/Metal, 800×574 pixels, scale 1, 78.33% display zoom. Fixtures contain 100/1,000 native 80×80 rectangles on a 100-pixel grid, 32 columns, with off-page objects retained; object count is not visible-object count. Select the vector layer and selection tool. Warm up by dragging the first rectangle from window coordinates (155,235) to (165,235), then capture 12 return/forward pairs (24 native CUA drags), observing AX after every drag. Verify final X/Y/W/H = 8.031/3.528/28.222/28.222 mm so handle resizing is excluded. The earlier small-rectangle pilot mixed resize and move and is excluded from these results. Builds and tests were finished before measurement.
+
+| Objects | Input/present samples | Latest handler p50 ms | p95 ms | p99/max ms | >16.67 ms | Render-host p95 ms | Queue-submit p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 72 | 1.105 | 16.568 | 16.960 | 2 | 15.645 | 0.581 |
+| 1,000 | 72 | 0.883 | 17.159 | 17.533 | 9 | 16.351 | 0.423 |
+
+The input measurement ends at the present API call, excluding OS event queue delay and physical display latency. These are short automated GUI runs, not continuous human/stylus input, sustained 60-second × five Release acceptance, or a before/after speedup. Each input/present sample is a presented group of marked events, not necessarily one mouse event; 83/78 events were marked across these captures. Percentile sample counts are too small for stable tail acceptance. Diagnostic logging and WebView development overhead are included.
+
+All 72 frame snapshots in each capture show zero SVG pixel uploads and zero packing bytes avoided: retained object translation already reuses the GPU image. Consequently this drag baseline does **not** measure the partial-upload optimization's benefit. Cumulative process snapshots were excluded from per-frame totals. Raw input samples, environment, summary and per-frame counts are saved in `docs/input-latency-2026-10-10.json`. Render-host time includes work and waits; a new `surface_acquire_host` timer isolates surface acquisition (including lost/outdated recovery) before attributing the approximately one-frame tail to a cause.
+
+- 🟠 [Next] Shared-image copy-on-write on partial raster edits; sustained Release pointer/stylus, text, pan/zoom and effect-edit captures with repeated matched before/after runs. Preserve FIFO presentation until isolated evidence supports changing scheduling.
+
+Follow-up diagnosis with the final surface timer: another 24 GUI drags / 72 presented samples on the 1,000-object fixture, alternating in reverse order after one excluded warm-up. Final X/Y = 3.528/3.528 mm and W/H unchanged. Latest-handler p50/p95/p99 = **0.948/16.439/16.941 ms**. Frame-host p95 = **15.580 ms**, surface acquisition p95 = **15.062 ms**, queue-submit p95 = **0.575 ms**, present-call p95 = **0.051 ms**. These inclusive stage percentiles are not additive, but the acquisition samples identify substantial waiting inside acquisition rather than the rectangle packing path. Surface acquisition may include presentation pacing and resource availability; this does not measure GPU execution or prove a specific driver cause. FIFO was unchanged. Prioritize main-thread acquisition/frame scheduling analysis and redundant redraw/coalescing before further upload optimization for this drag workload. Raw stage samples are included alongside the input samples in the JSON artifact.
+
+Final verification: macOS application build, renderer/formats all-target Clippy with warnings denied, scoped Rust formatting, architecture boundary and diff whitespace checks pass; CPU upload tests (2), Python summary tests (2), and two explicitly run Metal upload regressions pass. The temporary measurement app and Vite server were stopped after capture. This follow-up does not claim sustained Release acceptance or a measured before/after latency improvement.
+
+### 2026-10-10: display scheduling experiment
+
+Compared the existing immediate mouse-down/up and display-linked drag path with scheduling all pointer phases, on the same 1,000-object fixture, viewport and dev build settings. Each capture followed one forward warmup with 24 alternating 10 px drags and an AX observation after each drag. The baseline yielded 72 input/present groups (latest-handler p50 0.938 ms, p95 16.763 ms); the trial yielded 24 (p50 1.357 ms, p95 50.465 ms). Final selected geometry remained X=8.031, Y=3.528, W=H=28.222 mm; trial Undo restored X=3.528 and Redo restored X=8.031. The trial's final AX capture required reconnecting CUA to the app; its raw logs and final geometry were retained.
+
+Surface-acquisition p95 fell from 15.062 ms to 0.149 ms in the trial, but that did not improve end-to-end handler-to-present timing. There were 72 baseline versus 96 trial render snapshots, and input groups changed, so stage percentile reductions are not acceptance evidence. Deferred terminal rendering also changes which preview/cache preparation paths run before the next interaction; the exact cause of the additional delay needs separate host-stage instrumentation. Rejected the all-phase scheduling trial and restored immediate mouse-down/up. The final change only avoids notifying a display link/AppKit again when a frame is already pending, while still marking every input. No latency improvement is claimed for that final change based on the rejected trial.
+
+`check-display-frame-coalescing.swift` now checks pending-notification suppression, terminal-state preservation and independent views in addition to idle pause. The production pending flag already travels with `window_sessions::Runtime`; its ownership remains unchanged. Fifo presentation remains unchanged. Raw input and render-stage samples for both experimental runs are in `input-latency-2026-10-10.json` under `frame_scheduling_experiment`.
+
+Final pending-notification suppression was rebuilt and independently checked with the same 24-drag procedure: 72 input/present groups, latest-handler p50 0.946 ms, p95 16.784 ms, p99 17.040 ms. Baseline p95 was 16.763 ms; this short run demonstrates no measured latency improvement. Undo/Redo restored the expected X positions, width/height stayed unchanged, and the native canvas screenshot showed the selected translated rectangle. `cargo check`, final app build, scoped rustfmt, architecture-boundary and whitespace checks passed; the real AppKit display-link probe passed. This result is a bounded reduction in redundant scheduling calls, with surface waiting and sustained Release acceptance still unfinished.
+
+### 2026-10-10: input completion and document notification stages
+
+Added opt-in input-ID-correlated `lumapaint-input-stage` records for pointer down/drag/up, release-position presentation and vector commit. Notification records separate memory policy, recovery checkpoint preparation, snapshot notification, workspace notification and shared-view notification; `canvas_redraw` captures synchronous host rendering. Renderer snapshots now separately time preparation before surface acquisition and command construction after acquisition. These are inclusive host durations, not physical display latency, and percentile values must not be added.
+
+The summarizer reads the entire capture before matching stage event IDs to retained presentation ranges, so a pointer-up completion logged after its presentation is retained. Warmup exclusion also excludes stages outside retained event ranges. Three Python regressions cover percentile calculation, invalid captures, stage ordering and coalesced-ID/warmup filtering. Disabled diagnostics perform no stage clock read or log output.
+
+An initial 24-drag run on the same 1,000-object fixture recorded pointer-up p95 61.049 ms while latest-handler-to-present p95 was 16.572 ms. Release-position presentation p95 was 1.411 ms and commit was 0.018 ms. A subsequent run with notification substages isolated pointer-up p95 62.138 ms, total notification 45.746 ms, document snapshot+emit 22.699 ms and workspace snapshot+emit 21.086 ms; memory policy was 0.018 ms and checkpoint preparation 0.344 ms. It identifies synchronous duplicate notification snapshots as a substantial post-presentation main-thread cost. The input/present value for that run was 16.619 ms. Raw stage and presentation samples are retained under `input_stage_diagnosis` in `input-latency-2026-10-10.json`.
+
+The final host notification path creates one workspace snapshot and borrows its active document for `document-changed`. It also serializes the active document once into `serde_json::value::RawValue`, embeds that verified JSON in a borrowed workspace wrapper and uses Tauri's `emit_str_to` for the existing events. Existing names, payload structure and ordering remain; closing the final legacy tab still sends the empty-document notification. Other independent workspace notifications retain their original serialization path. The JSON equivalence regression compares both payloads with ordinary serde serialization, including English/Japanese/Simplified Chinese, quotes, newline/backslash escaping and missing active state.
+
+Snapshot reuse alone produced pointer-up p95 62.902 ms and notification p95 46.906 ms, compared with 62.138/45.746 ms before reuse. With active JSON reuse, the final 24-drag run produced pointer-up p95 69.427 ms, notification 52.355 ms, active/workspace JSON preparation 44.273 ms and latest-handler-to-present 15.487 ms. The workspace-emit substage is now 0.761 ms, but its serialization moved into the JSON preparation substage: that substage reduction is not an overall improvement. Down/drag/release-preview timings also varied across these short captures. No handler-latency gain is accepted from these measurements; sustained, matched Release measurements and reduced notification delivery payloads remain next work. The first combined snapshot stage still includes emit and the reusable JSON work, so its name must not be interpreted as snapshot construction alone.
+
+The final native canvas retained the expected selected rectangle and dimensions after 24 drags; Undo/Redo restored X=3.528/8.031 mm. Saving back at original X and closing the last tab reset the canvas, toolbar and layers. Final app build, wire JSON regression and three summarizer tests passed. All raw intermediate and final samples are retained under `input_stage_diagnosis`; no pixel payload was introduced into the UI bridge.
+
+Final `cargo clippy --offline --locked -p lumapaint --lib -- -D warnings`, scoped rustfmt, architecture-boundary and whitespace checks passed. Temporary measurement apps and the owned Vite server were stopped; the test fixture was saved back at its original X position. Existing unrelated working-tree changes were retained.
+
+### 単一ワークスペース通知の実操作比較（2026-10-10）
+
+`document-changed`と`documents-changed`は同じアクティブ文書を届けていた。UIの既存`updateWorkspace`が文書・タブ・選択を更新するため、内部プロトコルを`documents-changed`だけへ統一。共有ビュー、タイムライン、塗りつぶし設定も購読経路を揃え、最後のタブ終了は`active:null`で初期化する。診断の`document_snapshot_emit`は現在スナップショット準備だけ、`document_workspace_delivery`はTauriのJSON化・配送を含む。区間は包含関係があるため加算しない。
+
+同じ更新済みWebView UI、開発ビルド、1,000図形、1回ウォームアップ後の24ドラッグ。統合前／後の提示サンプルは72／73。操作終了p95 39.048／38.297 ms、文書通知22.498／21.785 ms、最新入力開始→提示16.072／16.029 ms。明確な遅延改善は未確認。前の採取は主に待機中のテスト用コンパイラーと重なり、後はビルド／診断終了後かつ次のテスト開始前に採取した。Releaseでの条件を揃えた比較ではない。生入力・ステージログと制約は`docs/input-latency-2026-10-10.json`の`single_workspace_notification`へ保存。
+
+GUI確認は選択位置・寸法、Undo/Redo、保存、タイムラインのレイヤー表示、最終タブ終了の初期化。今回のGUI採取には共有ウインドウとタイル文書を含まない。
+
+### 既定線設定のスナップショットコピーとJSONを省略（2026-10-10）
+
+`LayerObjectSnapshot`の`strokeStyle`は既定の場合に省略し、UIは既存の`defaultStrokeStyle`へ補完する。Rustの`StrokeStyle`は保持した既定設定と比較し、既定の幅カーブを図形ごとに生成／複製しない。カスタム設定は全項目をコピーして通知する。未設定の`imageFrame`・`fillGradient`・`strokeGradient`もJSONから省略する。文書本体・保存形式・描画設定は同じで、全オブジェクト一覧の差分プロトコルは追加していない。
+
+1,000図形、多言語名付きテストのオブジェクト一覧は677,891→264,891バイト（約61%減）。既定スタイルの複製省略診断は1,000件。旧JSONは省略フィールドへRustの既定スタイルと3個の`null`を補って再構成した。全ワークスペースのサイズや全図形での普遍的な削減率ではない。全14項目の既定判定、カスタム設定・選択ID・Undo/Redo・保存復元を回帰テストで確認。
+
+実アプリは同じ1,000図形文書、Metal／Apple M4、800×574 px、78.33%、Cargo dev／Vite dev、診断有効。前後を交互に2回、各1回のウォームアップ後に24回の短いCUAドラッグ。各ドラッグ後にAX状態を観測し、終了位置を確認。
+
+| p95（ms） | 前・1回目 | 後・1回目 | 前・2回目 | 後・2回目 |
+| --- | ---: | ---: | ---: | ---: |
+| 操作終了ハンドラー | 62.383 | 29.578 | 73.715 | 35.320 |
+| 文書通知 | 48.744 | 22.299 | 64.931 | 18.913 |
+| 最新入力開始→提示API | 15.521 | 4.936 | 8.302 | 15.632 |
+
+2回とも文書通知と終了処理は短くなった。ただし提示の方向は揃わず、物理表示の遅延改善や一般的な改善率は主張しない。最初の前の採取はコアテストビルドと、最初の後は後続テスト／Clippyと重なり、再測定は主に待機中のClippyと重なった。アイドル条件を揃えたRelease 60秒×5回の比較ではない。全ログサンプル、条件、制約は計測JSONの`compact_object_snapshot`へ保存。
+
+GUIでは位置・寸法、移動のUndo/Redo、既定の線端／結合／線位置／プロファイル表示、カスタムのマイター制限4→5／Undo 4／Redo 5、復元・保存、レイヤー展開、最終タブ終了を確認。ネイティブ選択メニューのAX操作は再接続要求が繰り返されたため、カスタム設定は数値入力で検証した。展開した一覧のAX出力は500行まで観測し、全件表示数を確認したとはしない。

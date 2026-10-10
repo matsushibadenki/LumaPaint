@@ -100,6 +100,13 @@ pub struct StrokeStylePatch {
     pub contour_alignments: Option<Vec<StrokeAlignment>>,
 }
 impl StrokeStyle {
+    /// Compare against a retained default; checking UI elision must not allocate
+    /// the default width curve for every object in a document snapshot.
+    pub fn is_default(&self) -> bool {
+        static DEFAULT: std::sync::OnceLock<StrokeStyle> = std::sync::OnceLock::new();
+        self == DEFAULT.get_or_init(Self::default)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !self.miter_limit.is_finite()
             || !(1.0..=100.).contains(&self.miter_limit)
@@ -1127,6 +1134,33 @@ pub fn path_edges(data: &str, transform: [f32; 6]) -> Vec<[[f32; 2]; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_style_elision_checks_every_appearance_field() {
+        assert!(StrokeStyle::default().is_default());
+        let mutations: &[fn(&mut StrokeStyle)] = &[
+            |s| s.cap = LineCap::Round,
+            |s| s.join = LineJoin::Bevel,
+            |s| s.miter_limit = 5.,
+            |s| s.alignment = StrokeAlignment::Inside,
+            |s| s.dash_array = vec![2., 3.],
+            |s| s.dash_offset = 1.,
+            |s| s.start_arrow = Arrowhead::Triangle,
+            |s| s.end_arrow = Arrowhead::Circle,
+            |s| s.arrow_scale = 2.,
+            |s| s.profile = WidthProfile::TaperEnd,
+            |s| s.width_curve[1].width = 2.,
+            |s| s.start_arrow_scale = Some(1.),
+            |s| s.end_arrow_scale = Some(1.),
+            |s| s.contour_alignments = vec![StrokeAlignment::Outside],
+        ];
+        for (field, mutate) in mutations.iter().enumerate() {
+            let mut style = StrokeStyle::default();
+            mutate(&mut style);
+            assert!(!style.is_default(), "custom field {field} must be sent");
+        }
+    }
+
     #[test]
     fn custom_curve_validation_interpolation_and_legacy_defaults() {
         let mut style = StrokeStyle {

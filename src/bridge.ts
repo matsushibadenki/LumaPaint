@@ -79,6 +79,8 @@ export interface GradientStop { position: number; color: [number,number,number,n
 export interface Gradient { pixelStyle?: 'angular'|'reflected'|'diamond'; geometry?: [number,number,number,number,number,number]; kind: "linear" | "radial"; angle: number; aspect: number; dither?: boolean; method: "classic" | "linear" | "perceptual"; stops: GradientStop[] }
 export type FrameFit="contain"|"cover"|"stretch";
 export interface ImageFrameSummary {fitting:FrameFit;sourcePath:string|null;name:string|null;size:[number,number]|null;contentTransform:[number,number,number,number,number,number]|null}
+// Native snapshots omit strokeStyle when it equals defaultStrokeStyle.
+// Missing gradients/imageFrame mean no gradient/frame; custom settings are complete.
 export interface LayerObjectSnapshot { imageFrame?:ImageFrameSummary|null; fillGradient?: Gradient | null; strokeGradient?: Gradient | null; locked: boolean; strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
 export type RasterBlendMode = 'normal' | 'multiply' | 'screen' | 'darken' | 'lighten' | 'difference' | 'exclusion';
 export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<DocumentSnapshot> {
@@ -311,13 +313,9 @@ export function changeColorProfile(profile: ColorProfile): Promise<DocumentSnaps
   return result;
 }
 
-export async function subscribeDocument(onDocument: (value: DocumentSnapshot) => void, onError: (error: string) => void) {
+export async function subscribeCanvasError(onError: (error: string) => void) {
   if (!isTauri()) return () => {};
-  const stopDocument = await listen<DocumentSnapshot>('document-changed', event => onDocument(event.payload));
-  try {
-    const stopError = await listen<string>('canvas-error', event => onError(event.payload));
-    return () => { stopDocument(); stopError(); };
-  } catch (error) { stopDocument(); throw error; }
+  return listen<string>('canvas-error', event => onError(event.payload));
 }
 
 export async function subscribeDocuments(onDocuments: (value: DocumentWorkspaceSnapshot) => void) {

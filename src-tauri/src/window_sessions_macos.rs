@@ -509,7 +509,6 @@ pub(super) fn shared_changed() {
                             }
                             runtime.window_title = title;
                         }
-                        let _ = app.emit_to(label, "document-changed", &snapshot);
                         if let Some(canvas) = &runtime.canvas {
                             canvas.view.request_frame();
                         }

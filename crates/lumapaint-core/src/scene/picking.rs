@@ -1,4 +1,4 @@
-use super::{spatial::SpatialIndex, Journal, JournalRead};
+use super::{spatial::SpatialIndex, Journal};
 use crate::document::SvgLayer;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -84,20 +84,17 @@ impl LayerIndex {
             crate::performance::count("picking_unchanged_layer_journal_skips", 1);
             return 0;
         }
-        let JournalRead::Incremental { changes, .. } = journal.read_layer(self.cursor, &layer.id)
-        else {
+        let Some(changes) = journal.read_borrowed(self.cursor) else {
             *self = Self::build(layer, journal, revision);
             return layer.vector_objects.len();
         };
-        let object_changes: Vec<_> = changes
-            .iter()
-            .filter(|c| c.target.object.is_some())
-            .collect();
+        let object_changes =
+            changes.filter(|c| c.target.layer == layer.id && c.target.object.is_some());
         let structural = self.positions.len() != layer.vector_objects.len()
             || object_changes
-                .iter()
+                .clone()
                 .any(|c| c.removed || c.changes.structure);
-        if pointer != self.source_pointer && object_changes.is_empty() {
+        if pointer != self.source_pointer && object_changes.clone().next().is_none() {
             *self = Self::build(layer, journal, revision);
             return layer.vector_objects.len();
         }
@@ -107,10 +104,10 @@ impl LayerIndex {
                 .vector_objects
                 .iter()
                 .enumerate()
-                .map(|(position, object)| (object.id.clone(), position))
+                .map(|(position, object)| (object.id.as_str(), position))
                 .collect();
             let notified: HashSet<_> = object_changes
-                .iter()
+                .clone()
                 .filter(|c| c.removed || c.changes.structure)
                 .filter_map(|c| c.target.object.as_deref())
                 .collect();
@@ -120,18 +117,18 @@ impl LayerIndex {
                 || self
                     .handles
                     .keys()
-                    .filter(|id| !next.contains_key(*id))
+                    .filter(|id| !next.contains_key(id.as_str()))
                     .any(|id| !notified.contains(id.as_str()))
                 || next
                     .keys()
-                    .filter(|id| !self.handles.contains_key(*id))
-                    .any(|id| !notified.contains(id.as_str()))
+                    .filter(|id| !self.handles.contains_key(**id))
+                    .any(|id| !notified.contains(*id))
             {
                 *self = Self::build(layer, journal, revision);
                 return layer.vector_objects.len();
             }
             self.handles.retain(|id, slot| {
-                if next.contains_key(id) {
+                if next.contains_key(id.as_str()) {
                     return true;
                 }
                 self.tree.remove(*slot);
@@ -140,7 +137,7 @@ impl LayerIndex {
                 false
             });
             for (id, &position) in &next {
-                if let Some(&slot) = self.handles.get(id) {
+                if let Some(&slot) = self.handles.get(*id) {
                     self.slot_positions[slot] = Some(position);
                 } else {
                     let slot = self.free_slots.pop().unwrap_or_else(|| {
@@ -153,15 +150,26 @@ impl LayerIndex {
                         layer.vector_objects[position].conservative_drawing_bounds(),
                     );
                     crate::performance::count("picking_changed_bounds_evaluations", 1);
-                    self.handles.insert(id.clone(), slot);
+                    self.handles.insert((*id).to_owned(), slot);
+                    crate::performance::count("picking_structural_id_string_clones", 1);
                 }
             }
-            self.positions = next;
+            self.positions
+                .retain(|id, _| next.contains_key(id.as_str()));
+            for (&id, &position) in &next {
+                if let Some(old_position) = self.positions.get_mut(id) {
+                    *old_position = position;
+                } else {
+                    self.positions.insert(id.to_owned(), position);
+                    crate::performance::count("picking_structural_id_string_clones", 1);
+                }
+            }
             scanned = layer.vector_objects.len();
             crate::performance::count("picking_structural_position_scans", scanned as u64);
         }
         let mut refreshed = HashSet::new();
         for change in object_changes {
+            crate::performance::count("picking_borrowed_events", 1);
             if !(change.changes.geometry
                 || change.changes.transform
                 || change.changes.style
@@ -292,6 +300,7 @@ mod tests {
             layer.vector_objects = objects;
             layer.source = format!("revision {revision}");
             journal.layers_changed(&[before], &[layer.clone()]);
+            crate::performance::take();
             for bounds in [[0., 0., 20., 20.], [100., 0., 120., 20.], [f64::NAN; 4]] {
                 let expected = SpatialIndex::build(
                     layer
@@ -307,6 +316,17 @@ mod tests {
                     expected
                 );
             }
+            let stats = crate::performance::take();
+            if crate::performance::enabled() {
+                assert_eq!(
+                    stats
+                        .counts
+                        .get("picking_structural_id_string_clones")
+                        .copied()
+                        .unwrap_or(0),
+                    if revision == 0 || revision == 3 { 2 } else { 0 }
+                );
+            }
             if revision < 2 {
                 assert_eq!(cache.layers["layer"].handles["a"], original_slot);
             }
@@ -318,6 +338,63 @@ mod tests {
                 (0..ids.len()).collect::<Vec<_>>()
             );
             assert!(cache.layers["layer"].slot_positions.len() <= 2);
+        }
+    }
+
+    #[test]
+    fn structural_id_copies_depend_on_additions_not_layer_size() {
+        for count in [1000, 4096] {
+            let mut layer = layer();
+            let prototype = layer.vector_objects[0].clone();
+            layer.vector_objects = (0..count)
+                .map(|i| {
+                    let mut object = prototype.clone();
+                    object.id = format!("object-{i}");
+                    object
+                })
+                .collect();
+            let mut journal = Journal::default();
+            let mut cache = PickingCache::default();
+            cache.candidates(&layer, &journal, 0, [0., 0., 20., 20.]);
+            let retained_key = cache.layers["layer"]
+                .positions
+                .get_key_value("object-0")
+                .unwrap()
+                .0
+                .as_ptr();
+            let mut added = prototype;
+            added.id = "added".into();
+            layer.vector_objects.insert(0, added);
+            layer.source = "inserted".into();
+            journal.push(
+                Target {
+                    layer: layer.id.clone(),
+                    object: Some("added".into()),
+                },
+                Changes {
+                    structure: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+            crate::performance::take();
+            assert_eq!(
+                cache.candidates(&layer, &journal, 1, [0., 0., 20., 20.]),
+                (0..count + 1).collect::<Vec<_>>()
+            );
+            let stats = crate::performance::take();
+            if crate::performance::enabled() {
+                assert_eq!(stats.counts["picking_structural_id_string_clones"], 2);
+            }
+            assert_eq!(
+                cache.layers["layer"]
+                    .positions
+                    .get_key_value("object-0")
+                    .unwrap()
+                    .0
+                    .as_ptr(),
+                retained_key
+            );
         }
     }
 
@@ -387,6 +464,70 @@ mod tests {
         layer.source = "unnotified move".into();
         assert_eq!(index.refresh(&layer, &journal, 2), 1);
         assert_eq!(index.tree.query([100., 0., 120., 20.]).items, [0]);
+    }
+
+    #[test]
+    fn changed_layer_borrows_only_its_events_and_gap_rebuilds() {
+        let mut layer = layer();
+        let mut journal = Journal::default();
+        let mut index = LayerIndex::build(&layer, &journal, 0);
+        for revision in 1..=3 {
+            for _ in 0..100 {
+                journal.push(
+                    Target {
+                        layer: "other".into(),
+                        object: Some("a".into()),
+                    },
+                    Changes {
+                        transform: true,
+                        ..Changes::default()
+                    },
+                    false,
+                );
+            }
+            layer.vector_objects[0].transform[4] = if revision == 2 { 0. } else { 100. };
+            layer.source = format!("move/restore {revision}");
+            journal.push(
+                Target {
+                    layer: layer.id.clone(),
+                    object: Some("a".into()),
+                },
+                Changes {
+                    transform: true,
+                    ..Changes::default()
+                },
+                false,
+            );
+            crate::performance::take();
+            assert_eq!(index.refresh(&layer, &journal, revision), 0);
+            let stats = crate::performance::take();
+            if crate::performance::enabled() {
+                assert_eq!(stats.counts["picking_borrowed_events"], 1);
+                assert_eq!(stats.counts["picking_changed_bounds_evaluations"], 1);
+                assert!(!stats
+                    .counts
+                    .contains_key("scene_journal_read_cloned_events"));
+            }
+            let expected =
+                SpatialIndex::build([(0, layer.vector_objects[0].conservative_drawing_bounds())]);
+            for bounds in [[0., 0., 20., 20.], [100., 0., 120., 20.]] {
+                assert_eq!(index.tree.query(bounds).items, expected.query(bounds).items);
+            }
+        }
+        for _ in 0..5000 {
+            journal.push(
+                Target {
+                    layer: "other".into(),
+                    object: Some("a".into()),
+                },
+                Changes::default(),
+                false,
+            );
+        }
+        layer.vector_objects[0].transform[4] = 200.;
+        layer.source = "changed after gap".into();
+        assert_eq!(index.refresh(&layer, &journal, 4), 1);
+        assert_eq!(index.tree.query([200., 0., 220., 20.]).items, [0]);
     }
 
     #[test]

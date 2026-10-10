@@ -15,7 +15,7 @@ export function PaintBucketControls({locale,details=false,layers=[],onError,onCh
   let live=true;
   const refresh=()=>{if(isTauri())void invoke<Settings>('paint_bucket_settings').then(value=>{if(live&&(!onChange||!edited.current)){setSettings(value);onChange?.(value);}}).catch(error=>onError?.(String(error)));};
   refresh();
-  const listeners=isTauri()?[listen('paint-bucket-settings-changed',refresh),...(!onChange?[getCurrentWebviewWindow().listen('document-changed',refresh)]:[])]:[];
+  const listeners=isTauri()?[listen('paint-bucket-settings-changed',refresh),...(!onChange?[getCurrentWebviewWindow().listen('documents-changed',refresh)]:[])]:[];
   return()=>{live=false;listeners.forEach(listener=>void listener.then(unlisten=>unlisten()).catch(()=>{}));};
  },[]);
  const update=(patch:Partial<Settings>)=>{const next={...settings,...patch};edited.current=true;setSettings(next);if(onChange)onChange(next);else if(isTauri())void invoke('set_paint_bucket_settings',{settings:next}).catch(error=>onError?.(String(error)));};

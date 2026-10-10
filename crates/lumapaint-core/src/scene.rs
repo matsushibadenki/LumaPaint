@@ -116,6 +116,20 @@ impl Journal {
     pub fn generations(&self, target: &Target) -> Generations {
         self.generations.get(target).copied().unwrap_or_default()
     }
+    /// Borrow retained events without cloning targets or allocating a batch.
+    /// None signals the same gap/future-cursor rebuild required by owned reads.
+    pub fn read_borrowed(
+        &self,
+        cursor: u64,
+    ) -> Option<std::collections::vec_deque::Iter<'_, Change>> {
+        if cursor > self.sequence || self.events.front().is_some_and(|c| cursor < c.sequence - 1) {
+            return None;
+        }
+        let start = self.events.front().map_or(0, |first| {
+            cursor.saturating_add(1).saturating_sub(first.sequence) as usize
+        });
+        Some(self.events.range(start.min(self.events.len())..))
+    }
     pub fn read(&self, cursor: u64) -> JournalRead {
         self.read_matching(cursor, None)
     }
@@ -341,6 +355,40 @@ impl Journal {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn borrowed_journal_matches_owned_and_preserves_gap_safety() {
+        use super::*;
+        let mut journal = Journal::default();
+        assert_eq!(journal.read_borrowed(0).unwrap().len(), 0);
+        assert!(journal.read_borrowed(1).is_none());
+        for _ in 0..JOURNAL_CAPACITY + 2 {
+            journal.push(
+                Target {
+                    layer: "layer".into(),
+                    object: Some("object".into()),
+                },
+                Changes {
+                    transform: true,
+                    ..Default::default()
+                },
+                false,
+            );
+        }
+        assert!(journal.read_borrowed(0).is_none());
+        for cursor in [2, journal.cursor() - 1, journal.cursor()] {
+            let JournalRead::Incremental { changes, .. } = journal.read(cursor) else {
+                panic!("incremental expected");
+            };
+            crate::performance::take();
+            let borrowed = journal.read_borrowed(cursor).unwrap();
+            assert!(borrowed.clone().eq(changes.iter()));
+            assert_eq!(borrowed.len(), changes.len());
+            assert!(!crate::performance::take()
+                .counts
+                .contains_key("scene_journal_read_cloned_events"));
+        }
+    }
+
     use super::*;
     use crate::document::{Document, Point};
     fn rectangle(id: &str, x: f32) -> VectorObject {

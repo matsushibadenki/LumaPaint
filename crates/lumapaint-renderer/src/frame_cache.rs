@@ -1219,6 +1219,34 @@ mod tests {
     use lumapaint_core::document::{Document, TextSettings};
     use lumapaint_core::vector::VectorText;
 
+    #[test]
+    fn lowering_memory_budget_evicts_old_frames_but_preserves_external_references() {
+        let mut cache = FrameRasterCache::default();
+        let pixels = Arc::new(CroppedFrame {
+            pixels: vec![128; 768 * 1024],
+            origin: (0, 0),
+            width: 256,
+        });
+        for index in 0..3 {
+            let key = ("layer".into(), index.to_string(), 0, (256, 768));
+            let entry = Entry {
+                source: "source".into(),
+                size: (256, 768),
+                pixels: Arc::clone(&pixels),
+                fully_contained: true,
+                last_used: index,
+            };
+            cache.used_bytes += glyph_entry_bytes(&key, &entry);
+            cache.entries.insert(key, entry);
+        }
+        cache.set_memory_limit(1024 * 1024);
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.entries.keys().next().unwrap().1, "2");
+        assert!(cache.used_bytes <= 1024 * 1024);
+        assert_eq!(pixels.pixels[0], 128);
+        assert_eq!(pixels.len(), 768 * 1024);
+    }
+
     fn text(content: &str, y: f32) -> TextSettings {
         TextSettings {
             id: None,

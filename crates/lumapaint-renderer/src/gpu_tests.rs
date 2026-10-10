@@ -867,6 +867,189 @@ fn gpu_v1_and_tile_brush_zoom_retina_diagnostic() {
     }
 }
 
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_workspace_shared_pixels_preserve_diff_uploads() {
+    let gpu = Gpu::new();
+    let mut doc = Document::default();
+    doc.import_svg(
+        "image".into(),
+        r##"<svg width="960" height="640"><rect x="200" y="100" width="400" height="300" fill="#404040"/></svg>"##
+            .into(),
+    )
+    .unwrap();
+    let id = doc.svg_layers().next().unwrap().id.clone();
+    let viewport = Viewport::new(64., 64., 1., 1., false).unwrap();
+    let mut cache = workspace::WorkspaceCache::default();
+    let initial = cache
+        .prepare(&doc, viewport, [0., 0.])
+        .unwrap()
+        .unwrap()
+        .remove(0);
+    let texture = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: Some("Shared workspace upload regression"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &initial.pixels,
+    );
+    let mut previous = initial.pixels;
+    for step in 0..3 {
+        if step == 0 {
+            let mut effects = lumapaint_core::layer_effects::LayerEffects {
+                enabled: true,
+                ..Default::default()
+            };
+            effects.values[0] = 1.;
+            doc.set_layer_effects(&id, effects).unwrap();
+        } else if step == 1 {
+            doc.undo();
+        } else {
+            doc.redo();
+        }
+        let next = cache
+            .prepare(&doc, viewport, [0., 0.])
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        let dirty = changed_svg_rect(&previous, &next.pixels, 256);
+        assert!(
+            dirty.is_some(),
+            "shared old pixels must survive the next edit"
+        );
+        assert!(dirty.unwrap()[2] < 64, "exercise padded source rows");
+        upload_svg_rect(&gpu.queue, &texture, &next.pixels, 256, dirty);
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 64 * 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(64),
+                },
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let actual = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+        buffer.unmap();
+        let fresh = workspace::WorkspaceCache::default()
+            .prepare(&doc, viewport, [0., 0.])
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        assert_eq!(&actual, fresh.pixels.as_ref());
+        previous = next.pixels;
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_svg_strided_upload_preserves_padding_and_bottom_right_edges() {
+    let gpu = Gpu::new();
+    let size = wgpu::Extent3d {
+        width: 65,
+        height: 7,
+        depth_or_array_layers: 1,
+    };
+    let source: Vec<u8> = (0..65 * 7 * 4).map(|i| (i % 251) as u8).collect();
+    for rect in [[2, 1, 3, 4], [64, 6, 1, 1], [62, 4, 3, 3], [0, 0, 65, 7]] {
+        let texture = gpu.device.create_texture_with_data(
+            &gpu.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("Strided upload edge regression"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &vec![0; source.len()],
+        );
+        upload_svg_rect(&gpu.queue, &texture, &source, 260, Some(rect));
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 512 * 7,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(512),
+                    rows_per_image: Some(7),
+                },
+            },
+            size,
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let actual = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+        buffer.unmap();
+        let [x, y, w, h] = rect;
+        for row in 0..7 {
+            for col in 0..65 {
+                let expected = if (x..x + w).contains(&col) && (y..y + h).contains(&row) {
+                    &source[row * 260 + col * 4..][..4]
+                } else {
+                    &[0; 4]
+                };
+                assert_eq!(
+                    &actual[row * 512 + col * 4..][..4],
+                    expected,
+                    "{rect:?} at {col},{row}"
+                );
+            }
+        }
+    }
+}
+
 fn save_image(name: &str, pixels: Vec<u8>) {
     if let Ok(dir) = std::env::var("LUMAPAINT_GPU_ARTIFACTS") {
         std::fs::create_dir_all(&dir).unwrap();
@@ -2484,7 +2667,7 @@ fn verify_object_texture_moves(shared: bool) {
                 _capacity_lease: gpu_metrics::CachedTextureLease::new(&texture),
                 source_identity: None,
                 gpu_effects: false,
-                comparison_pixels: vec![],
+                comparison_pixels: Default::default(),
                 fully_contained: true,
                 source: String::new(),
                 opacity: 1.,

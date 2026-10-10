@@ -3,6 +3,8 @@
 mod crop_tool;
 #[path = "gradient_tool_macos.rs"]
 mod gradient_tool;
+#[path = "input_timing_macos.rs"]
+mod input_timing;
 #[path = "timeline_macos.rs"]
 pub(crate) mod timeline;
 #[path = "window_sessions_macos.rs"]
@@ -774,6 +776,12 @@ impl PaintView {
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
         let _input = (phase != 3).then(lumapaint_core::performance::input_event);
+        let _handler = input_timing::Stage::new(match phase {
+            0 => "pointer_down",
+            1 => "pointer_drag",
+            2 => "pointer_up",
+            _ => "pointer_hover",
+        });
         if phase == 0
             && timeline::active()
             && !matches!(
@@ -2861,6 +2869,7 @@ fn vector_select_pointer(
             if offset != [0.0, 0.0] {
                 // Present the release position with the existing drag textures before
                 // committing. The worker can then prepare the new SVG without a blank frame.
+                let release_preview = input_timing::Stage::new("vector_release_preview");
                 CANVAS.with(|slot| -> Result<(), String> {
                     let mut slot = slot.borrow_mut();
                     if let Some(canvas) = slot.as_mut() {
@@ -2890,6 +2899,8 @@ fn vector_select_pointer(
                     }
                     Ok(())
                 })?;
+                drop(release_preview);
+                let _commit = input_timing::Stage::new("vector_release_commit");
                 if if duplicate {
                     document.duplicate_selected_vectors(offset[0], offset[1])?
                 } else {
@@ -3441,20 +3452,32 @@ pub fn apply_memory_preferences() -> Result<(), String> {
     window_sessions::manage_memory(&app.state::<crate::resource_memory::Resources>().0)
 }
 fn emit_document() {
+    let _emit = input_timing::Stage::new("document_notify");
+    let memory_stage = input_timing::Stage::new("document_memory_policy");
     if let Some(app) = APP.get() {
         let memory = app.state::<crate::resource_memory::Resources>().0.clone();
         if let Err(error) = window_sessions::manage_memory(&memory) {
             emit_error(error);
         }
     }
+    drop(memory_stage);
+    let checkpoint_stage = input_timing::Stage::new("document_checkpoint_prepare");
     checkpoint();
-    if ACTIVE_TILED_DOCUMENT.with(|document| document.borrow().is_none()) {
-        if let Some(app) = APP.get() {
-            let snapshot = DOCUMENT.with(|doc| doc.borrow().snapshot());
-            let _ = app.emit_to(current_label(), "document-changed", snapshot);
-        }
+    drop(checkpoint_stage);
+    let snapshot_stage = input_timing::Stage::new("document_snapshot_emit");
+    // Workspace updates include the active document. Deliver that state once,
+    // including an empty workspace when the final tab closes.
+    let workspace = APP.get().map(|_| {
+        lumapaint_core::performance::count("host.document_notification_snapshot_builds", 1);
+        workspace_snapshot()
+    });
+    drop(snapshot_stage);
+    let workspace_stage = input_timing::Stage::new("document_workspace_emit");
+    if let Some(workspace) = workspace {
+        emit_workspace_snapshot(workspace);
     }
-    emit_workspace();
+    drop(workspace_stage);
+    let _shared = input_timing::Stage::new("document_shared_notify");
     window_sessions::shared_changed();
 }
 fn report_edit(action: DocumentAction) {
@@ -4449,8 +4472,11 @@ fn request_redraw() -> Result<(), String> {
     }
     let view = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.view.clone()));
     if let Some(view) = view {
-        FRAME_REQUESTED.with(|requested| requested.set(true));
-        view.request_frame();
+        // An active display link (or pending AppKit layer update) already
+        // owns the next frame. Keep marking inputs above for latency tracking.
+        if !FRAME_REQUESTED.with(|requested| requested.replace(true)) {
+            view.request_frame();
+        }
     }
     Ok(())
 }
@@ -4496,6 +4522,7 @@ fn emit_ruler_viewport(viewport: Viewport) {
 }
 
 fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
+    let _stage = input_timing::Stage::new("canvas_redraw");
     if let Some(marker) = lumapaint_core::performance::input_started() {
         canvas.renderer.mark_input(marker);
     }
@@ -5581,8 +5608,13 @@ pub fn workspace_snapshot() -> DocumentWorkspaceSnapshot {
 }
 
 fn emit_workspace() {
+    if APP.get().is_some() {
+        emit_workspace_snapshot(workspace_snapshot());
+    }
+}
+
+fn emit_workspace_snapshot(snapshot: DocumentWorkspaceSnapshot) {
     if let Some(app) = APP.get() {
-        let snapshot = workspace_snapshot();
         let label = current_label();
         if let Some(window) = app.get_webview_window(&label) {
             let title = snapshot.active.as_ref().map_or_else(
@@ -5615,6 +5647,7 @@ fn emit_workspace() {
                 }
             });
         }
+        let _delivery = input_timing::Stage::new("document_workspace_delivery");
         let _ = app.emit_to(label, "documents-changed", snapshot);
     }
 }
@@ -6031,6 +6064,30 @@ fn native_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_notification_preserves_payloads() {
+        let mut active = Document::default().snapshot();
+        active.name = "English 日本語 简体中文 \"quoted\"\nline".into();
+        active.file_name = Some("日本語\\folder\\简体中文.lumapaint".into());
+        for active in [Some(active), None] {
+            let snapshot = DocumentWorkspaceSnapshot {
+                active_id: active.as_ref().map(|_| 42),
+                active,
+                documents: vec![DocumentTabSnapshot {
+                    id: 42,
+                    file_name: Some("English 日本語 简体中文".into()),
+                    dirty: true,
+                    format: "legacy",
+                }],
+            };
+            let workspace = serde_json::to_string(&snapshot).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&workspace).unwrap(),
+                serde_json::to_value(&snapshot).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn tiled_layer_selection_blend_unlock_history_and_snapshot_stay_in_rust() {

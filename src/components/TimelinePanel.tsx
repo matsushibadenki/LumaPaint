@@ -52,7 +52,7 @@ export function TimelinePanel({locale}:{locale:Locale}) {
   },[]);
   useEffect(()=>{
     alive.current=true;void command({action:'get'});
-    const events=['document-changed','documents-changed'];
+    const events=['documents-changed'];
     let refresh:ReturnType<typeof setTimeout>;
     const listeners=events.map(event=>getCurrentWebviewWindow().listen(event,()=>{clearTimeout(refresh);refresh=setTimeout(()=>void command({action:'get'},true),30);}).catch(()=>()=>{}));
     return()=>{alive.current=false;clearTimeout(refresh);listeners.forEach(p=>void p.then(unlisten=>unlisten()).catch(()=>{}));void serial.current.then(()=>invoke('timeline',{request:{action:'stop'}})).catch(()=>{});};
