@@ -6486,6 +6486,66 @@ mod detailed_motion_tests {
         (source, pixels)
     }
     #[test]
+    fn extruded_text_has_solid_sidewalls_and_preserves_native_artwork() {
+        let (mut doc, layer) = text_document("OB8 永", "Arial");
+        doc.set_motion_clip(
+            &layer,
+            Clip {
+                id: "solid".into(),
+                extruded: true,
+                preset: "tx-layered-depth".into(),
+                duration: 60,
+                mesh_depth: 20.,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = serde_json::to_value(doc.document_state()).unwrap();
+        let render = |doc: &Document| {
+            let mut preview = doc.clone_for_rendering();
+            preview.evaluate_animation_with_outlines(doc, 17, Some(&text_outlines::outline));
+            let svg = preview.svg_layers().find(|l| l.id == layer).unwrap();
+            let scene = svg.motion_scene.as_ref().unwrap();
+            assert!(
+                scene
+                    .surfaces
+                    .iter()
+                    .flat_map(|s| s.triangles.iter().flatten())
+                    .any(|v| v.color.is_some()),
+                "actual glyph outlines must produce sides: {:?}",
+                svg.vector_objects
+                    .iter()
+                    .map(|o| (
+                        o.text.is_some(),
+                        o.path.data.len(),
+                        o.blend_mode.clone(),
+                        o.fill,
+                        lumapaint_core::bezier::cubic_contours(&o.path.data).map(|c| c
+                            .iter()
+                            .map(|(p, closed)| (
+                                p.len(),
+                                *closed,
+                                lumapaint_core::bezier::flattened(p).len()
+                            ))
+                            .collect::<Vec<_>>())
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            assert!(scene.surfaces.iter().all(|s| s.triangles.len() < 32768));
+            rasterize_svg(&svg.source, 256, 192).unwrap()
+        };
+        let first = render(&doc);
+        assert!(first.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+        let saved = lumapaint_formats::native::encode_state(&doc.document_state()).unwrap();
+        let loaded = lumapaint_formats::native::decode(&saved).unwrap();
+        assert_eq!(first, render(&loaded));
+        assert_eq!(
+            original,
+            serde_json::to_value(doc.document_state()).unwrap()
+        );
+        assert!(doc.svg_layers().all(|l| l.motion_scene.is_none()));
+    }
+    #[test]
     fn mixed_script_fallback_preserves_variable_axes() {
         for size in [24., 48.] {
             let (mut doc, layer) = text_document("Motion ffi e\u{301} 日本語 中文", "sans-serif");

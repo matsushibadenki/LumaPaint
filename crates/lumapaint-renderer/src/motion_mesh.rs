@@ -13,6 +13,7 @@ struct Vertex {
     uv: [f32; 2],
     light: f32,
     opacity: f32,
+    color: [f32; 4],
 }
 struct Image {
     _lease: crate::gpu_metrics::CachedTextureLease,
@@ -81,9 +82,9 @@ impl Display {
         let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("Motion mesh perspective"),source:wgpu::ShaderSource::Wgsl(r#"
 @group(0) @binding(0) var image:texture_2d<f32>;
 @group(0) @binding(1) var smp:sampler;
-struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) light:f32,@location(2) opacity:f32}
-@vertex fn vs_main(@location(0) position:vec4<f32>,@location(1) uv:vec2<f32>,@location(2) light:f32,@location(3) opacity:f32)->Out {var o:Out;o.position=position;o.uv=uv;o.light=light;o.opacity=opacity;return o;}
-@fragment fn fs_main(o:Out)->@location(0) vec4<f32>{let color=textureSample(image,smp,o.uv);if(color.a*o.opacity<.001){discard;}return vec4(color.rgb*o.light,color.a)*o.opacity;}
+struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) light:f32,@location(2) opacity:f32,@location(3) color:vec4<f32>}
+@vertex fn vs_main(@location(0) position:vec4<f32>,@location(1) uv:vec2<f32>,@location(2) light:f32,@location(3) opacity:f32,@location(4) color:vec4<f32>)->Out {var o:Out;o.position=position;o.uv=uv;o.light=light;o.opacity=opacity;o.color=color;return o;}
+@fragment fn fs_main(o:Out)->@location(0) vec4<f32>{let sampled=textureSample(image,smp,o.uv);let color=select(sampled,o.color,o.color.a>=0.);if(color.a*o.opacity<.001){discard;}return vec4(color.rgb*o.light,color.a)*o.opacity;}
 "#.into())});
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Motion mesh depth-tested triangles"),
@@ -93,9 +94,9 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 32,
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x2,2=>Float32,3=>Float32],
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x2,2=>Float32,3=>Float32,4=>Float32x4],
                 })],
             },
             primitive: Default::default(),
@@ -288,6 +289,7 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                         uv: vertex.uv,
                         light: vertex.light,
                         opacity: surface.opacity,
+                        color: vertex.color.unwrap_or([-1.; 4]),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -302,7 +304,10 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                     usage: wgpu::BufferUsages::VERTEX,
                 }
             );
-            crate::performance::count("motion_mesh_vertex_upload_bytes", (data.len() * 32) as u64);
+            crate::performance::count(
+                "motion_mesh_vertex_upload_bytes",
+                (data.len() * std::mem::size_of::<Vertex>()) as u64,
+            );
             batches.push(Batch {
                 buffer,
                 count: data.len() as u32,
@@ -516,6 +521,65 @@ mod tests {
             serde_json::json!({"id":"mesh","name":"Mesh","visible":true,"source":"<svg/>"}),
         )
         .unwrap()
+    }
+    #[test]
+    #[ignore = "requires a real GPU"]
+    fn gpu_extrusion_preserves_counters_and_shades_visible_sidewalls() {
+        let (device, queue) = gpu();
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut display = Display::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut layer = layer();
+        let object:lumapaint_core::vector::VectorObject=serde_json::from_value(serde_json::json!({"id":"ring","name":"Ring","path":{"data":"M24 24H104V104H24Z M44 44V84H84V44Z","fillRule":"nonZero"},"transform":[1,0,0,1,0,0],"fill":{"color":[40,120,220,255]},"stroke":null,"strokeWidth":0,"visible":true})).unwrap();
+        let mut clip = Clip {
+            extruded: true,
+            angle: 0.,
+            mesh_depth: 20.,
+            rotation_x: 0.,
+            rotation_y: 0.,
+            camera_distance: 300.,
+            ..Default::default()
+        };
+        let source = "<path d='M24 24H104V104H24Z M44 44V84H84V44Z' fill='#2878dc'/>";
+        let preset = motion::preset("tx-layered-depth").unwrap();
+        let mut render = |clip: &Clip| {
+            let surface = mesh::surface_for_object(
+                source.into(),
+                [24., 24., 104., 104.],
+                clip,
+                preset,
+                0.,
+                0,
+                1,
+                24,
+                &object,
+            );
+            assert!(
+                surface
+                    .triangles
+                    .iter()
+                    .flatten()
+                    .any(|v| v.color.is_some())
+                    || clip.mesh_depth == 0.
+            );
+            layer.motion_scene = Some(Arc::new(mesh::Scene {
+                surfaces: vec![surface],
+            }));
+            display.begin_frame(&HashSet::from(["mesh".into()]));
+            assert!(display.prepare(&device, &queue, &layer, viewport()));
+            pixels(&display, &device, &queue, "mesh")
+        };
+        let front = render(&clip);
+        assert_eq!(front[(64 * 128 + 64) * 4 + 3], 0, "hole must remain open");
+        clip.rotation_y = 70.;
+        let solid = render(&clip);
+        clip.mesh_depth = 0.;
+        let flat = render(&clip);
+        assert_ne!(solid, flat, "edge-on letters must retain visible thickness");
+        assert!(
+            solid.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
+                > flat.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
+        );
+        assert!(pollster::block_on(scope.pop()).is_none());
     }
     #[test]
     #[ignore = "requires a real GPU"]

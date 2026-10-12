@@ -65,3 +65,7 @@ macOS／Apple M4／Metalで実施。
 - [KanjiVGのSVG仕様](https://kanjivg.tagaini.net/svg-format.html)：パスの順序と方向が筆順に対応する。[固定ソースと加工内容](../crates/lumapaint-core/assets/kanjivg/README.md)。データと派生データはCC BY-SA 3.0、アプリのソースは別。描画SVGに帰属情報を含む。
 - [Google Fontsの固定ソース](../crates/lumapaint-renderer/assets/fonts/README.md)：Roboto Flex／Noto Sans JPはSIL OFL 1.1。元のバイナリは未変更。
 - 出典・著作権・全文ライセンスは `third-party-notices/` にコピーし、既存のTauriバンドル設定で配布する。
+
+## その後の押し出し対応
+
+この記録の「次の差分」に挙げた字形側面と互換描画の改善を進めた。[押し出し・適応UV分割・照明の追加記録](motion-extrusion-2026-10-12.md)を参照。上記の素材・検証件数・ソースハッシュは先行段階の記録として保持する。

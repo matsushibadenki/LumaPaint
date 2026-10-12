@@ -1103,7 +1103,7 @@ pub(crate) fn apply(
                                         | Operation::StrokeTrim
                                         | Operation::Morph
                                         | Operation::MeshPlane
-                                )
+                                ) || (clip.extruded && *o == Operation::DepthStack)
                             })
                         })
                 });
@@ -1335,7 +1335,7 @@ pub(crate) fn apply(
                     clip.objects.len()
                 };
                 let p = clip.progress(frame, rank, count).unwrap_or(0.);
-                mesh::surface(
+                mesh::surface_for_object(
                     source,
                     object_bounds(object),
                     clip,
@@ -1344,6 +1344,7 @@ pub(crate) fn apply(
                     rank,
                     count,
                     fps,
+                    object,
                 )
             } else {
                 let bounds = object_bounds(object);

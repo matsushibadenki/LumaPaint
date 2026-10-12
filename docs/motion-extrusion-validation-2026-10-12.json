@@ -1,0 +1,106 @@
+{
+  "date": "2026-10-12",
+  "stage": "Solid glyph extrusion and bounded portable UV/lighting approximation",
+  "environment": {
+    "os": "macOS",
+    "gpu": "Apple M4",
+    "backend": "Metal"
+  },
+  "scope": [
+    "tx-motext-falloff",
+    "tx-layered-depth"
+  ],
+  "legacy": "missing extruded flag defaults false; new MoText UI defaults true; layered UI defaults false",
+  "checks": {
+    "core": {
+      "passed": 343,
+      "ignored": 1
+    },
+    "rendererSkia": {
+      "passed": 275,
+      "ignored": 60,
+      "includes": "all 782 presets at four frames"
+    },
+    "explicitMetalTests": {
+      "passed": 2
+    },
+    "clippyCoreRendererAllTargetsSkia": "passed (-D warnings)",
+    "priorHostAllTargetsClippy": "passed before final private geometry refinement",
+    "frontend": "passed, existing main chunk warning",
+    "architecture": "passed",
+    "ui": {
+      "browser": "Brave Browser",
+      "width": 240,
+      "scrollWidth": 240,
+      "locales": [
+        "ja",
+        "en",
+        "zh-CN"
+      ],
+      "savedMode": true,
+      "stackModeShowsCopies": true,
+      "console": "external browser extension warnings; no app error or Vite overlay",
+      "transport": "UI-only test adapter; rendering tested independently"
+    },
+    "nativeBuild": "passed (tauri/custom-protocol, offline locked)",
+    "nativeSmoke": "API-generated OB8 永 fixture: visible extrusion and counters during playback; original text restored after stop; input file unchanged"
+  },
+  "limitations": [
+    "bounded tessellation uses 0.2px curve flatness target with max recursion 10",
+    "open/complex/self-crossing/oversized or unoutlineable glyphs keep stack fallback",
+    "SVG uses adaptive affine triangles and painter ordering, not a GPU depth buffer",
+    "no claim of complete pixel parity or 60fps"
+  ],
+  "sources": [
+    {
+      "path": "crates/lumapaint-core/src/motion.rs",
+      "sha256": "dcd996571a6e419767a3f71e35d71da3842cd0c90bce1b887c38d967f937a4e1",
+      "bytes": 36268
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/evaluate.rs",
+      "sha256": "7d36457e77ef3e563b51dd371dd82b116b9483fa232290a23bfe3b29c624e5db",
+      "bytes": 56102
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/mesh.rs",
+      "sha256": "3e9ed09b797fa0eb08faf525cb1a2c7a47cd204a3126f8e3219890fb2029c10b",
+      "bytes": 20171
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/extrude.rs",
+      "sha256": "bb76fd2f1f2962cd7095585d0ce6dabf532fb4b64926f7b2994ccf646bad12b2",
+      "bytes": 11638
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/lib.rs",
+      "sha256": "d72788e21930c7dadf0534ff4737a1c6080b0118f9d6caac1eaf9d9fa0dd9e0c",
+      "bytes": 262214
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/motion_mesh.rs",
+      "sha256": "0d5f8f980bf8fc612609c5ab4805b5a84433ce85aed5c0a82ca81a7dd7ea5430",
+      "bytes": 26153
+    },
+    {
+      "path": "src/components/MotionPanel.tsx",
+      "sha256": "75f6434c0adc8cb54aff51420a82156a95efa6b54f137d21ecd063f1f85fb3e9",
+      "bytes": 24235
+    },
+    {
+      "path": "src/motion-types.ts",
+      "sha256": "c14f178487817c200da454933e0e16d9ac97037b4a1d52e935ba952e59db9bb4",
+      "bytes": 3722
+    },
+    {
+      "path": "src/motion-behavior.ts",
+      "sha256": "d32bcd70ba91276f7dd06ea1b740d4feb69b202960c1b21b24f404bbde354c40",
+      "bytes": 5696
+    },
+    {
+      "path": "src/motion-i18n.ts",
+      "sha256": "7d4e38b488b12cc274e7d9aa4ce0a8d6ff0e508eaaf7d028ec554261323fd415",
+      "bytes": 8290
+    }
+  ]
+}

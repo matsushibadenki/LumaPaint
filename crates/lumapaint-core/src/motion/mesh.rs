@@ -7,6 +7,7 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
     pub normal: [f32; 3],
+    pub color: Option<[f32; 4]>,
 }
 #[derive(Clone, Debug)]
 pub struct Mesh {
@@ -21,6 +22,7 @@ pub struct Projected {
     pub distance: f32,
     pub uv: [f32; 2],
     pub light: f32,
+    pub color: Option<[f32; 4]>,
 }
 #[derive(Clone, Debug)]
 pub struct Surface {
@@ -68,6 +70,7 @@ impl Mesh {
                     position: [angle.sin() * radius, y, angle.cos() * radius - radius],
                     uv: [u, v],
                     normal: [angle.sin(), 0., angle.cos()],
+                    color: None,
                 });
             }
             if i > 0 {
@@ -95,6 +98,7 @@ impl Mesh {
                     position: *position,
                     uv,
                     normal: n,
+                    color: None,
                 });
             }
             mesh.indices
@@ -116,6 +120,7 @@ impl Mesh {
                 position: add(rotate(v.position, rotation), translation),
                 normal: rotate(v.normal, rotation),
                 uv: v.uv,
+                color: v.color,
             })
             .collect::<Vec<_>>();
         let mut triangles = Vec::new();
@@ -146,6 +151,7 @@ impl Mesh {
                         depth: distance / (distance + camera),
                         distance,
                         uv: v.uv,
+                        color: v.color,
                         light: 0.45 + 0.55 * dot(v.normal, [0.25, -0.35, 0.9]).clamp(0., 1.),
                     }
                 });
@@ -204,6 +210,7 @@ fn near_clip(vertices: &[Vertex], limit: f32) -> Vec<Vertex> {
                 }),
                 uv: std::array::from_fn(|i| previous.uv[i] + t * (current.uv[i] - previous.uv[i])),
                 normal: previous.normal,
+                color: previous.color,
             });
         }
         if b {
@@ -231,6 +238,44 @@ pub fn surface(
     index: usize,
     count: usize,
     fps: u32,
+) -> Surface {
+    surface_inner(source, bounds, clip, preset, p, index, count, fps, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub fn surface_for_object(
+    source: String,
+    bounds: [f32; 4],
+    clip: &Clip,
+    preset: &Preset,
+    p: f32,
+    index: usize,
+    count: usize,
+    fps: u32,
+    object: &crate::vector::VectorObject,
+) -> Surface {
+    surface_inner(
+        source,
+        bounds,
+        clip,
+        preset,
+        p,
+        index,
+        count,
+        fps,
+        Some(object),
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn surface_inner(
+    source: String,
+    bounds: [f32; 4],
+    clip: &Clip,
+    preset: &Preset,
+    p: f32,
+    index: usize,
+    count: usize,
+    fps: u32,
+    object: Option<&crate::vector::VectorObject>,
 ) -> Surface {
     let width = (bounds[2] - bounds[0]).max(1.);
     let height = (bounds[3] - bounds[1]).max(1.);
@@ -299,8 +344,19 @@ pub fn surface(
             Mesh::plane(width, height)
         }
     };
-    let mut triangles = mesh.project(rotation, translation, center, clip.camera_distance);
-    if matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff") {
+    let extrusion = object
+        .filter(|_| {
+            clip.extruded && matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff")
+        })
+        .and_then(|object| super::extrude::cached(object, bounds, clip.mesh_depth));
+    let mut triangles = extrusion.as_deref().unwrap_or(&mesh).project(
+        rotation,
+        translation,
+        center,
+        clip.camera_distance,
+    );
+    if extrusion.is_none() && matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff")
+    {
         for copy in 1..=clip.copies {
             let mut offset = translation;
             offset[2] -= clip.mesh_depth * copy as f32 / clip.copies as f32;
@@ -331,9 +387,45 @@ pub fn surface(
         triangles,
     }
 }
-/// Portable raster/export fallback using affine UV interpolation per projected triangle.
-/// Native wgpu rendering uses perspective-correct interpolation and depth testing.
-/// Native display uses the original triangles and perspective-correct GPU UVs.
+// A midpoint in texture/object space projects with distance-weighted screen
+// coordinates. Splitting there reduces the affine fallback's projective error.
+fn midpoint(a: Projected, b: Projected) -> Projected {
+    let distance = (a.distance + b.distance) * 0.5;
+    let camera = a.distance * (1. - a.depth) / a.depth;
+    Projected {
+        point: std::array::from_fn(|i| {
+            (a.point[i] * a.distance + b.point[i] * b.distance) / (a.distance + b.distance)
+        }),
+        uv: std::array::from_fn(|i| (a.uv[i] + b.uv[i]) * 0.5),
+        light: (a.light + b.light) * 0.5,
+        depth: distance / (distance + camera),
+        distance,
+        color: a.color,
+    }
+}
+fn refine(triangle: [Projected; 3], level: u8, budget: &mut usize, out: &mut Vec<[Projected; 3]>) {
+    let edges = [(0, 1, 2), (1, 2, 0), (2, 0, 1)];
+    let (edge, error) = edges
+        .iter()
+        .map(|&(a, b, c)| {
+            let m = midpoint(triangle[a], triangle[b]);
+            let error = (m.point[0] - (triangle[a].point[0] + triangle[b].point[0]) * 0.5)
+                .hypot(m.point[1] - (triangle[a].point[1] + triangle[b].point[1]) * 0.5);
+            ((a, b, c, m), error)
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    if triangle[0].color.is_none() && error > 0.35 && level < 6 && *budget > 0 {
+        *budget -= 1;
+        let (a, b, c, m) = edge;
+        refine([triangle[a], m, triangle[c]], level + 1, budget, out);
+        refine([m, triangle[b], triangle[c]], level + 1, budget, out);
+    } else {
+        out.push(triangle);
+    }
+}
+/// Bounded adaptive UV tessellation and encoded-sRGB lighting for portable SVG.
+/// Native display retains perspective-correct interpolation and depth testing.
 pub fn svg(surface: &Surface, tag: &str) -> String {
     let mut texture = surface
         .source
@@ -344,7 +436,27 @@ pub fn svg(surface: &Surface, tag: &str) -> String {
         texture.replace_range(start..end, "1");
     }
     let mut out = format!("<defs><g id=\"{tag}-texture\">{texture}</g></defs>");
-    for (i, t) in surface.triangles.iter().enumerate() {
+    let mut triangles = Vec::new();
+    let mut budget = 8192usize.saturating_sub(surface.triangles.len());
+    for triangle in &surface.triangles {
+        refine(*triangle, 0, &mut budget, &mut triangles);
+    }
+    let mut lights = std::collections::HashSet::new();
+    for (i, t) in triangles.iter().enumerate() {
+        if let Some(color) = t[0].color {
+            let light = t.iter().map(|v| v.light).sum::<f32>() / 3.;
+            let alpha = color[3];
+            let rgb = color[..3]
+                .iter()
+                .map(|c| {
+                    (c / alpha.max(0.000001) * light * 255.)
+                        .round()
+                        .clamp(0., 255.) as u8
+                })
+                .collect::<Vec<_>>();
+            let _=write!(out,"<polygon points=\"{},{} {},{} {},{}\" fill=\"rgb({},{},{})\" fill-opacity=\"{alpha}\"/>",t[0].point[0],t[0].point[1],t[1].point[0],t[1].point[1],t[2].point[0],t[2].point[1],rgb[0],rgb[1],rgb[2]);
+            continue;
+        }
         let uv = t.map(|v| v.uv);
         let p = t.map(|v| v.point);
         let det = (uv[1][0] - uv[0][0]) * (uv[2][1] - uv[0][1])
@@ -369,13 +481,45 @@ pub fn svg(surface: &Surface, tag: &str) -> String {
         let [a, b, c, d, _, _] = values;
         let e = p[0][0] - a * uv[0][0] - c * uv[0][1];
         let f = p[0][1] - b * uv[0][0] - d * uv[0][1];
-        let _=write!(out,"<defs><clipPath id=\"{tag}-{i}\"><polygon points=\"{},{} {},{} {},{}\"/></clipPath></defs><g clip-path=\"url(#{tag}-{i})\"><use href=\"#{tag}-texture\" transform=\"matrix({a} {b} {c} {d} {e} {f})\"/></g>",p[0][0],p[0][1],p[1][0],p[1][1],p[2][0],p[2][1]);
+        let light = (t.iter().map(|v| v.light).sum::<f32>() / 3. * 1000.).round() as u32;
+        if lights.insert(light) {
+            let value = light as f32 / 1000.;
+            let _=write!(out,"<filter id=\"{tag}-light-{light}\" color-interpolation-filters=\"sRGB\"><feComponentTransfer><feFuncR type=\"linear\" slope=\"{value}\"/><feFuncG type=\"linear\" slope=\"{value}\"/><feFuncB type=\"linear\" slope=\"{value}\"/></feComponentTransfer></filter>");
+        }
+        let _=write!(out,"<defs><clipPath id=\"{tag}-{i}\"><polygon points=\"{},{} {},{} {},{}\"/></clipPath></defs><g clip-path=\"url(#{tag}-{i})\"><use href=\"#{tag}-texture\" filter=\"url(#{tag}-light-{light})\" transform=\"matrix({a} {b} {c} {d} {e} {f})\"/></g>",p[0][0],p[0][1],p[1][0],p[1][1],p[2][0],p[2][1]);
     }
     format!("<g opacity=\"{}\">{out}</g>", surface.opacity)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_uv_refinement_is_bounded_and_uses_projected_midpoints() {
+        let coarse = Mesh::plane(120., 80.).project([0., 65., 0.], [0.; 3], [100., 100.], 180.);
+        let mut result = vec![];
+        let mut budget = 8192 - coarse.len();
+        for t in &coarse {
+            refine(*t, 0, &mut budget, &mut result);
+        }
+        assert!(result.len() > coarse.len() && result.len() <= 8192);
+        let error = |triangles: &[[Projected; 3]]| {
+            triangles
+                .iter()
+                .flat_map(|t| {
+                    [(0, 1), (1, 2), (2, 0)].map(|(a, b)| {
+                        let m = midpoint(t[a], t[b]);
+                        (m.point[0] - (t[a].point[0] + t[b].point[0]) * 0.5)
+                            .hypot(m.point[1] - (t[a].point[1] + t[b].point[1]) * 0.5)
+                    })
+                })
+                .fold(0., f32::max)
+        };
+        assert!(error(&result) < error(&coarse) * 0.1);
+        let mut budget = 1;
+        let mut limited = vec![];
+        refine(coarse[0], 0, &mut budget, &mut limited);
+        assert_eq!(limited.len(), 2);
+    }
     #[test]
     fn mesh_topology_perspective_and_near_clip() {
         let mesh = Mesh::cuboid(100., 80., 60.);

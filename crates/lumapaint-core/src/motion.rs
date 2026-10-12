@@ -457,6 +457,7 @@ pub struct Clip {
     pub font_axes: Vec<AxisMotion>,
     pub stroke_gap_ms: f32,
     pub stroke_width: f32,
+    pub extruded: bool,
     pub mesh_depth: f32,
     pub camera_distance: f32,
     pub rotation_x: f32,
@@ -498,6 +499,7 @@ impl Default for Clip {
             font_axes: vec![],
             stroke_gap_ms: 100.,
             stroke_width: 4.,
+            extruded: false,
             mesh_depth: 80.,
             camera_distance: 600.,
             rotation_x: -20.,
@@ -720,6 +722,8 @@ pub(crate) fn random(seed: u32, index: u32) -> f32 {
 #[path = "motion/kanji.rs"]
 pub mod kanji;
 
+#[path = "motion/extrude.rs"]
+mod extrude;
 #[path = "motion/mesh.rs"]
 pub mod mesh;
 

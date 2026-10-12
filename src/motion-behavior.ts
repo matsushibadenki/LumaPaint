@@ -18,6 +18,7 @@ const groups:[string[],Record<Locale,string>][]=[
  [['kanjiStroke'],{ja:'KanjiVGの正しい画順と方向で、長さに応じて漢字を書きます。',en:'Draw kanji using canonical KanjiVG stroke order and direction, with timing based on stroke length.','zh-CN':'按KanjiVG标准笔顺和方向书写汉字，时长依据笔画长度。'}],
 ];
 export function motionBehavior(preset:MotionPreset,locale:Locale):string {
+ if(['tx-layered-depth','tx-motext-falloff'].includes(preset.id))return ({ja:'文字の輪郭に前面・背面・内側を含む側面を作ります。「立体押し出し」をオフにすると層の重なりに戻ります。輪郭化できない文字は層で描画します。',en:'Build front, back and inner sidewalls from glyph outlines. Turn off solid extrusion for stacked layers. Glyphs without supported outlines retain layers.','zh-CN':'根据字形轮廓生成前面、背面和内侧面。关闭立体挤出可使用堆叠层；无法转换轮廓的字符保留堆叠效果。'})[locale];
  const sentences=groups.filter(([operations])=>preset.operations.some(op=>operations.includes(op))).map(([,text])=>text[locale]);
  if(preset.actors?.length)sentences.push(({ja:'複数要素の反応は、登録順に押下・保持・反動のタイミングを適用します。',en:'Multiple elements follow authored press, hold and rebound timings in object order.','zh-CN':'多个元素按对象顺序应用按下、保持和反弹的时序。'})[locale]);
  return sentences.join(' ');
