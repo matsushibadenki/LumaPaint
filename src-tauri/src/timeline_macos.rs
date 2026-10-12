@@ -1,6 +1,8 @@
 use super::*;
 use crate::timeline::{Data, Layer, Request, Response};
 use lumapaint_core::document::animation::Keyframe;
+type OutlineCache =
+    std::collections::HashMap<String, (usize, Vec<lumapaint_core::vector::VectorObject>)>;
 
 struct Runtime {
     document_id: u64,
@@ -11,6 +13,7 @@ struct Runtime {
     preview: Option<Document>,
     editing: Option<(String, u32, u64)>,
     gpu_frame: Option<u32>,
+    outlines: RefCell<OutlineCache>,
 }
 thread_local! { static RUNTIMES: RefCell<std::collections::HashMap<String, Runtime>> = RefCell::new(std::collections::HashMap::new()); }
 fn identity() -> (u64, u64) {
@@ -26,6 +29,7 @@ fn reset_stale(runtime: &mut Runtime) {
         runtime.preview = None;
         runtime.rendered_frame = None;
         runtime.gpu_frame = None;
+        runtime.outlines.borrow_mut().clear();
         if id != runtime.document_id {
             runtime.frame = 0;
             runtime.editing = None;
@@ -84,7 +88,30 @@ fn evaluate(runtime: &mut Runtime) -> bool {
         let preview = runtime
             .preview
             .get_or_insert_with(|| doc.clone_for_rendering());
-        preview.evaluate_animation(&doc, runtime.frame);
+        let cache = &runtime.outlines;
+        let outline = |source: &str, object: &lumapaint_core::vector::VectorObject| {
+            if let Some((_, objects)) = cache.borrow().get(source) {
+                return Ok(objects.clone());
+            }
+            let objects = lumapaint_renderer::text_outlines::outline(source, object)?;
+            let bytes = source.len()
+                + objects
+                    .iter()
+                    .map(|o| o.path.data.len() + o.control_points.len() * 8)
+                    .sum::<usize>();
+            if bytes <= 8 * 1024 * 1024 {
+                let mut cache = cache.borrow_mut();
+                if cache.len() >= 64
+                    || cache.values().map(|(charge, _)| *charge).sum::<usize>() + bytes
+                        > 8 * 1024 * 1024
+                {
+                    cache.clear();
+                }
+                cache.insert(source.into(), (bytes, objects.clone()));
+            }
+            Ok::<_, String>(objects)
+        };
+        preview.evaluate_animation_with_outlines(&doc, runtime.frame, Some(&outline));
         true
     })
 }
@@ -131,6 +158,17 @@ fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
     Ok(changed)
 }
 pub(crate) fn command(request: Request) -> Result<Response, String> {
+    if let Request::SetMotion { document_id, .. }
+    | Request::RemoveMotion { document_id, .. }
+    | Request::MoveMotion { document_id, .. }
+    | Request::StopMotion { document_id } = &request
+    {
+        if *document_id != identity().0 {
+            return Err(
+                "The document changed / ドキュメントが切り替わりました / 文档已切换".into(),
+            );
+        }
+    }
     if !DOCUMENT_OPEN.with(|d| d.get()) {
         close(&current_label());
         return Ok(Response {
@@ -144,6 +182,14 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         return Err("Animation is available for standard documents / 標準ドキュメントでアニメーションを使用できます / 动画适用于标准文档".into());
     }
     let tick = matches!(request, Request::Tick);
+    let transport_changed = matches!(
+        request,
+        Request::Play
+            | Request::Pause
+            | Request::Stop
+            | Request::StopMotion { .. }
+            | Request::Seek { .. }
+    );
     if !matches!(request, Request::Tick | Request::Get | Request::Pause) {
         ensure_document_open()?;
     }
@@ -160,6 +206,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             started: None,
             preview: None,
             editing: None,
+            outlines: Default::default(),
             gpu_frame: None,
         });
         if let Request::Seek { frame } = &request {
@@ -169,7 +216,11 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         }
         if matches!(
             request,
-            Request::Seek { .. } | Request::Play | Request::Stop | Request::Load { .. }
+            Request::Seek { .. }
+                | Request::Play
+                | Request::Stop
+                | Request::StopMotion { .. }
+                | Request::Load { .. }
         ) {
             changed |= record_edit(runtime)?;
         }
@@ -209,7 +260,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             Request::Pause => {
                 runtime.started = None;
             }
-            Request::Stop => {
+            Request::Stop | Request::StopMotion { .. } => {
                 runtime.started = None;
                 runtime.preview = None;
                 runtime.gpu_frame = None;
@@ -247,6 +298,9 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                         | Request::MoveKey { .. }
                         | Request::Remove { .. }
                         | Request::Duplicate { .. }
+                        | Request::SetMotion { .. }
+                        | Request::RemoveMotion { .. }
+                        | Request::MoveMotion { .. }
                 );
                 DOCUMENT.with(|d| -> Result<(), String> {
                     let mut doc = d.borrow_mut();
@@ -298,6 +352,18 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                             frame,
                             property,
                         } => doc.remove_animation_key(&layer, frame, property),
+                        Request::SetMotion { layer, clip, .. } => {
+                            doc.set_motion_clip(&layer, *clip)
+                        }
+                        Request::RemoveMotion { layer, id, .. } => {
+                            doc.remove_motion_clip(&layer, &id)
+                        }
+                        Request::MoveMotion {
+                            layer,
+                            id,
+                            position,
+                            ..
+                        } => doc.move_motion_clip(&layer, &id, position),
                         _ => unreachable!(),
                     }
                 })?;
@@ -345,11 +411,14 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                                 .map(|t| t.cels.keys().copied().collect())
                                 .unwrap_or_default(),
                             channels: track.map(|t| t.channels.clone()).unwrap_or_default(),
+                            motions: track.map(|t| t.motions.clone()).unwrap_or_default(),
                         }
                     })
                     .collect();
                 Data {
+                    document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
                     selected_layer,
+                    selected_objects: doc.selected_vector_ids().to_vec(),
                     fps: a.fps,
                     duration: a.duration,
                     looping: a.looping,
@@ -366,6 +435,11 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
     })?;
     if changed {
         emit_document();
+    }
+    if transport_changed {
+        if let Some(app) = APP.get() {
+            let _ = app.emit_to(current_label(), "timeline-changed", ());
+        }
     }
     if redraw_needed {
         redraw()?;
@@ -395,6 +469,38 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn stale_motion_commands_and_panel_cleanup_cannot_change_another_document() {
+        let _restore = setup();
+        let id = identity().0.wrapping_add(1);
+        let revision = DOCUMENT.with(|d| d.borrow().revision());
+        for request in [
+            Request::SetMotion {
+                document_id: id,
+                layer: "foreign".into(),
+                clip: Box::new(lumapaint_core::motion::Clip {
+                    id: "clip".into(),
+                    ..Default::default()
+                }),
+            },
+            Request::RemoveMotion {
+                document_id: id,
+                layer: "foreign".into(),
+                id: "clip".into(),
+            },
+            Request::MoveMotion {
+                document_id: id,
+                layer: "foreign".into(),
+                id: "clip".into(),
+                position: 0,
+            },
+            Request::StopMotion { document_id: id },
+        ] {
+            assert!(command(request).is_err());
+        }
+        assert_eq!(DOCUMENT.with(|d| d.borrow().revision()), revision);
+        assert!(RUNTIMES.with(|r| r.borrow().is_empty()));
     }
     #[test]
     fn timeline_queries_and_idle_ticks_do_not_commit_live_paint() {

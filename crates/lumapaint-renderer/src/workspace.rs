@@ -237,6 +237,7 @@ impl WorkspaceCache {
                 (source_pixels, pixels, retained_layer)
             } else if let Some(tiles) = tiles {
                 let old = old.unwrap();
+                let tile_objects = tile_object_bounds(layer);
                 let mut source_pixels = old.source_pixels;
                 let mut pixels = old.pixels;
                 let source_output = Arc::make_mut(&mut source_pixels);
@@ -256,8 +257,11 @@ impl WorkspaceCache {
                     {
                         self.rasterizations += 1;
                     }
+                    let tile_source = tile_objects
+                        .as_ref()
+                        .map(|bounds| tile_svg(layer, bounds, document.dimensions(), tile_rect));
                     let mut tile = vector::rasterize_svg_workspace(
-                        &layer.source,
+                        tile_source.as_deref().unwrap_or(&layer.source),
                         [document.dimensions().0, document.dimensions().1],
                         [right - left, bottom - top],
                         tile_rect,
@@ -377,6 +381,60 @@ fn apply_opacity(pixels: &mut [u8], opacity: f32) {
             *value = (*value as f32 * opacity).round() as u8;
         }
     }
+}
+
+// Called only after dirty_tiles has verified canonical SVG. Keep the complete
+// source for clipping relationships and objects whose drawing bounds are unknown.
+fn tile_object_bounds(layer: &SvgLayer) -> Option<Vec<[f64; 4]>> {
+    static FULL_SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FULL_SOURCE.get_or_init(|| {
+        lumapaint_core::performance::enabled()
+            && std::env::var("LUMAPAINT_WORKSPACE_TILE_FULL_SVG").as_deref() == Ok("1")
+    }) || layer
+        .vector_objects
+        .iter()
+        .any(|object| object.clipping_group.is_some())
+    {
+        return None;
+    }
+    layer
+        .vector_objects
+        .iter()
+        .map(|object| {
+            if object.image_frame.is_some() {
+                None
+            } else {
+                object.conservative_drawing_bounds()
+            }
+        })
+        .collect()
+}
+
+fn tile_svg(layer: &SvgLayer, bounds: &[[f64; 4]], document: (u32, u32), rect: [f32; 4]) -> String {
+    let left = f64::from(rect[0]);
+    let top = f64::from(rect[1]);
+    let right = left + f64::from(rect[2]);
+    let bottom = top + f64::from(rect[3]);
+    let objects: Vec<_> = layer
+        .vector_objects
+        .iter()
+        .zip(bounds)
+        .filter(|(_, bounds)| {
+            let precision =
+                bounds.iter().fold(1.0_f64, |v, b| v.max(b.abs())) * f64::from(f32::EPSILON) * 8.;
+            bounds[2] + precision >= left
+                && bounds[3] + precision >= top
+                && bounds[0] - precision <= right
+                && bounds[1] - precision <= bottom
+        })
+        .map(|(object, _)| object.clone())
+        .collect();
+    lumapaint_core::performance::count("workspace_tile_objects_drawn", objects.len() as u64);
+    lumapaint_core::performance::count(
+        "workspace_tile_objects_culled",
+        (layer.vector_objects.len() - objects.len()) as u64,
+    );
+    lumapaint_core::document::vector_svg(document.0, document.1, &objects)
 }
 
 /// Unknown imported CSS, filters or text metrics require a complete update.
@@ -803,6 +861,30 @@ mod tests {
         moved.transform[4] += 45.;
         document.upsert_vector_object(&layer, moved).unwrap();
         let after = document.svg_layers().find(|l| l.id == layer).unwrap();
+        let bounds = tile_object_bounds(after).unwrap();
+        // Padded tile crosses the overlapping translucent objects. Culling
+        // preserves compositing order, antialiasing phase and off-page mapping.
+        for rect in [
+            [220., 190., 100., 130.],
+            [-10., 190., 100., 130.],
+            [800., 400., 80., 90.],
+        ] {
+            let culled = tile_svg(after, &bounds, document.dimensions(), rect);
+            let full = vector::rasterize_svg_workspace(&after.source, [960, 640], [200, 180], rect)
+                .unwrap();
+            let partial =
+                vector::rasterize_svg_workspace(&culled, [960, 640], [200, 180], rect).unwrap();
+            assert_eq!(full, partial);
+            if rect[0] == 800. {
+                assert!(!culled.contains("<path"));
+            }
+        }
+        let mut masked = after.clone();
+        masked.vector_objects[0].clipping_group = Some("clip".into());
+        assert!(tile_object_bounds(&masked).is_none());
+        let mut unknown = after.clone();
+        unknown.vector_objects[0].control_points.clear();
+        assert!(tile_object_bounds(&unknown).is_none());
         let tiles = dirty_tiles(
             &before,
             after,

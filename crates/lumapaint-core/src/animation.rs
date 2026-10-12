@@ -29,6 +29,8 @@ pub struct Track {
     pub channels: BTreeMap<Property, Vec<Keyframe>>,
     /// Explicit pivot in document pixels, fixed when the first key is created.
     pub anchor: [f32; 2],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub motions: Vec<crate::motion::Clip>,
 }
 // Array entries retain numeric frame types through the native envelope's serde
 // flatten buffer (JSON object keys become strings in that representation).
@@ -147,6 +149,7 @@ impl Animation {
                 _ => false,
             };
             same_cel
+                && (track.motions.iter().all(|m| !m.enabled) || a == b)
                 && track
                     .channels
                     .keys()
@@ -166,6 +169,8 @@ impl Animation {
         let mut bytes = 0usize;
         let mut frames = 0;
         let mut total_keys = 0;
+        let mut total_motions = 0;
+        let mut motion_bytes = 0usize;
         for (id, track) in &self.tracks {
             if id.is_empty()
                 || id.len() > 256
@@ -211,11 +216,165 @@ impl Animation {
                     return Err("Invalid animation keyframe".into());
                 }
             }
+            total_motions += track.motions.len();
+            if track
+                .motions
+                .iter()
+                .filter(|m| {
+                    m.enabled
+                        && crate::motion::preset(&m.preset).is_some_and(|p| {
+                            p.operations.contains(&crate::motion::Operation::Repeat)
+                        })
+                })
+                .fold(1u64, |total, clip| {
+                    total.saturating_mul(clip.copies as u64 + 1)
+                })
+                > 125
+            {
+                return Err("Trail expansion exceeds the layer budget / 残像の展開数が上限を超えます / 残影展开超过图层预算".into());
+            }
+            if track.motions.len() > 64
+                || total_motions > 512
+                || (!track.cels.is_empty() && !track.motions.is_empty())
+            {
+                return Err("Motion clip budget exceeded".into());
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            for motion in &track.motions {
+                motion.validate(self.duration)?;
+                motion_bytes = motion_bytes.saturating_add(motion.bytes());
+                if motion_bytes > 2 * 1024 * 1024 {
+                    return Err("Motion parameter budget exceeded".into());
+                }
+                if !ids.insert(&motion.id) {
+                    return Err("Duplicate motion clip".into());
+                }
+            }
         }
         Ok(())
     }
 }
 impl Document {
+    pub fn set_motion_clip(
+        &mut self,
+        layer_id: &str,
+        clip: crate::motion::Clip,
+    ) -> Result<(), String> {
+        self.animation_layer(layer_id, false)?;
+        clip.validate(18000)?;
+        if let Some(layer) = self.svg_layers.iter().find(|l| l.id == layer_id) {
+            if !clip.morph_target.is_empty() {
+                let count = crate::bezier::cubic_contours(&clip.morph_target)?.len();
+                if !layer.vector_layer
+                    || layer
+                        .vector_objects
+                        .iter()
+                        .filter(|o| clip.objects.is_empty() || clip.objects.contains(&o.id))
+                        .any(|o| {
+                            o.text.is_some()
+                                || o.image_frame.is_some()
+                                || crate::bezier::cubic_contours(&o.path.data)
+                                    .map_or(true, |p| p.len() != count)
+                        })
+                {
+                    return Err("Select editable paths with matching contour counts / 同じ輪郭数の編集可能なパスを選択してください / 请选择轮廓数量相同的可编辑路径".into());
+                }
+            }
+            if clip
+                .objects
+                .iter()
+                .any(|id| !layer.vector_objects.iter().any(|o| &o.id == id))
+            {
+                return Err("Motion target no longer exists".into());
+            }
+            if !clip.objects.is_empty()
+                && (!layer.vector_layer
+                    || layer
+                        .vector_objects
+                        .iter()
+                        .any(|o| o.clipping_group.is_some()))
+            {
+                return Err("Use the whole layer for retained SVG or clipping groups / SVG・クリッピンググループはレイヤー全体を対象にしてください / SVG及剪切组请选择整个图层".into());
+            }
+            if crate::motion::preset(&clip.preset).is_some_and(|p| {
+                p.category.starts_with("tx-")
+                    || p.operations.iter().any(|op| {
+                        matches!(
+                            op,
+                            crate::motion::Operation::Counter
+                                | crate::motion::Operation::TextSwap
+                                | crate::motion::Operation::Typewriter
+                                | crate::motion::Operation::Scramble
+                        )
+                    })
+            }) && !layer.vector_objects.iter().any(|o| {
+                o.text.is_some() && (clip.objects.is_empty() || clip.objects.contains(&o.id))
+            }) {
+                return Err("Select editable text for a text motion / 文字モーションの対象に編集可能な文字を選択してください / 文字动效请选择可编辑文字".into());
+            }
+        }
+        let mut next = self.animation.as_ref().clone();
+        next.duration = next.duration.max(clip.start + clip.duration * clip.repeats);
+        let track = next.tracks.entry(layer_id.into()).or_insert_with(|| Track {
+            anchor: [self.width as f32 * 0.5, self.height as f32 * 0.5],
+            ..Default::default()
+        });
+        if !track.cels.is_empty() {
+            return Err("Motion requires a vector track".into());
+        }
+        if let Some(old) = track.motions.iter_mut().find(|m| m.id == clip.id) {
+            *old = clip;
+        } else {
+            track.motions.push(clip);
+        }
+        if let Some(layer) = self.svg_layers.iter().find(|l| l.id == layer_id) {
+            let overhead = track
+                .motions
+                .iter()
+                .filter(|m| m.enabled)
+                .map(|m| 16_384usize.saturating_add(m.particle_count as usize * 256))
+                .sum::<usize>();
+            let objects = layer.vector_objects.len().max(1);
+            if layer
+                .source
+                .len()
+                .saturating_add(overhead.saturating_mul(objects))
+                > 4 * 1024 * 1024
+            {
+                return Err("Motion preview exceeds the layer budget / モーションの描画量が上限を超えます / 动效预览超过图层预算".into());
+            }
+        }
+        self.commit_animation(next)
+    }
+    pub fn remove_motion_clip(&mut self, layer_id: &str, clip_id: &str) -> Result<(), String> {
+        self.animation_layer(layer_id, false)?;
+        let mut next = self.animation.as_ref().clone();
+        if let Some(track) = next.tracks.get_mut(layer_id) {
+            track.motions.retain(|m| m.id != clip_id);
+        }
+        self.commit_animation(next)
+    }
+    pub fn move_motion_clip(
+        &mut self,
+        layer_id: &str,
+        clip_id: &str,
+        position: usize,
+    ) -> Result<(), String> {
+        self.animation_layer(layer_id, false)?;
+        let mut next = self.animation.as_ref().clone();
+        let track = next.tracks.get_mut(layer_id).ok_or("No motion track")?;
+        if position >= track.motions.len() {
+            return Err("Invalid motion order".into());
+        }
+        let old = track
+            .motions
+            .iter()
+            .position(|m| m.id == clip_id)
+            .ok_or("No motion clip")?;
+        let clip = track.motions.remove(old);
+        track.motions.insert(position, clip);
+        self.commit_animation(next)
+    }
     pub fn animation(&self) -> &Animation {
         &self.animation
     }
@@ -448,6 +607,14 @@ impl Document {
     /// Update only animated layers in a retained preview document. Callers rebuild
     /// this preview when the source revision changes, never per display refresh.
     pub fn evaluate_animation(&mut self, source: &Document, frame: u32) {
+        self.evaluate_animation_with_outlines(source, frame, None);
+    }
+    pub fn evaluate_animation_with_outlines(
+        &mut self,
+        source: &Document,
+        frame: u32,
+        outlines: Option<&crate::motion::Outline<'_>>,
+    ) {
         let frame = frame.min(source.animation.duration - 1);
         let previous_layers: Vec<_> = self
             .svg_layers
@@ -467,7 +634,7 @@ impl Document {
                     },
                 );
             }
-            if track.channels.is_empty() {
+            if track.channels.is_empty() && track.motions.is_empty() {
                 continue;
             }
             let Some(original) = source
@@ -514,6 +681,14 @@ impl Document {
                     .unwrap_or(&original.source);
                 format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\"><g transform=\"matrix({a} {b} {c} {d} {e} {f})\">{content}</g></svg>",self.width,self.height)
             };
+            crate::motion::apply(
+                layer,
+                &track.motions,
+                frame,
+                source.animation.fps,
+                [self.width, self.height],
+                outlines,
+            );
         }
         self.selected_vector_objects.clear();
         self.selection = None;

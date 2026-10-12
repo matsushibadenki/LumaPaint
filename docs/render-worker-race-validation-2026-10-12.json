@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-12",
+  "scope": "Release-frame skip identity and SVG worker completion identity, state/queue regression checks",
+  "changes": [
+    "Compare the entire presentation Viewport before consuming the one-time redundant release draw skip.",
+    "Reject stale worker completion before installing pixels or reporting errors, preserving the newer pending job."
+  ],
+  "source_sha256": {
+    "src-tauri/src/canvas_macos.rs": "2c9996448d4e8b357ec85fbd5a54c4aa0369b6297b219ebc43c96ab7f7a996ca",
+    "crates/lumapaint-renderer/src/lib.rs": "c19cf13e6b66d245e313dc65df0b024a6ee9f2538fd78352ad455db6c2cbb5c6"
+  },
+  "tests": {
+    "release_frame_filter": {
+      "passed": 2,
+      "failed": 0
+    },
+    "host_library": {
+      "passed": 179,
+      "failed": 0,
+      "ignored": 1,
+      "ignored_scope": "manual verification"
+    },
+    "host_clippy": {
+      "passed": true,
+      "warnings_denied": true
+    },
+    "renderer_without_skia_check": {
+      "passed": true
+    },
+    "input_latency_aggregation_passed": 4,
+    "format_boundary_whitespace": "passed"
+  },
+  "cases": [
+    "Same document/revision/canvas and viewport consumes reuse exactly once.",
+    "Changed document, revision or canvas rejects and consumes reuse.",
+    "200% -> 50%, pan in either axis, size, scale, document dimensions, dark mode, pasteboard and canvas colors reject reuse.",
+    "Document-coordinate worker result remains valid across view-only changes.",
+    "Obsolete completion preserves the newer pending job.",
+    "Current completion clears its pending job.",
+    "Different window job is not cancelled and remains ahead of the newest same-window job.",
+    "Complete release-frame retention ends only when the matching display is ready."
+  ],
+  "limitations": [
+    "Queue dequeue models an in-flight job; tests do not execute raster work on another thread or inspect rendered pixels.",
+    "No new Release GUI race capture or paired input-latency measurement in this record.",
+    "The complete-frame hold while the worker is pending remains independent from the one-time redundant-draw skip.",
+    "Physical input-to-photon delay and other operating systems are not tested."
+  ]
+}

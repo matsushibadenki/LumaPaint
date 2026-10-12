@@ -3,12 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale } from '../i18n';
 import { Icon } from './Icon';
+import type { MotionClip, MotionCatalog } from '../motion-types';
 
 type Property = 'x'|'y'|'scaleX'|'scaleY'|'rotation'|'opacity';
 type Interpolation = 'linear'|'hold'|'ease';
 type Key = {frame:number;value:number;interpolation:Interpolation};
-type Layer = {id:string;name:string;pixel:boolean;locked:boolean;cels:number[];channels:Partial<Record<Property,Key[]>>};
-type Data = {selectedLayer?:string;fps:number;duration:number;looping:boolean;layers:Layer[]};
+type Layer = {id:string;name:string;pixel:boolean;locked:boolean;cels:number[];channels:Partial<Record<Property,Key[]>>;motions:MotionClip[]};
+type Data = {documentId:number;selectedLayer?:string;fps:number;duration:number;looping:boolean;layers:Layer[]};
 type State = {frame:number;playing:boolean;preview:boolean;data:Data|null};
 const properties:Property[]=['x','y','scaleX','scaleY','rotation','opacity'];
 const labels={
@@ -28,6 +29,9 @@ function sample(layer:Layer|undefined,p:Property,frame:number):number {
 }
 export function TimelinePanel({locale}:{locale:Locale}) {
   const t=labels[locale];
+  const [catalog,setCatalog]=useState<MotionCatalog|null>(null);
+  const motionDrag=useRef<{x:number;layer:string;clip:MotionClip}|null>(null);
+  useEffect(()=>{let alive=true;void invoke<MotionCatalog>('motion_catalog').then(c=>{if(alive)setCatalog(c);}).catch(()=>{});return()=>{alive=false;};},[]);
   const [state,setState]=useState<State>({frame:0,playing:false,preview:false,data:null});
   const [layerId,setLayerId]=useState('');
   const [property,setProperty]=useState<Property>('x');
@@ -52,7 +56,7 @@ export function TimelinePanel({locale}:{locale:Locale}) {
   },[]);
   useEffect(()=>{
     alive.current=true;void command({action:'get'});
-    const events=['documents-changed'];
+    const events=['documents-changed','timeline-changed'];
     let refresh:ReturnType<typeof setTimeout>;
     const listeners=events.map(event=>getCurrentWebviewWindow().listen(event,()=>{clearTimeout(refresh);refresh=setTimeout(()=>void command({action:'get'},true),30);}).catch(()=>()=>{}));
     return()=>{alive.current=false;clearTimeout(refresh);listeners.forEach(p=>void p.then(unlisten=>unlisten()).catch(()=>{}));void serial.current.then(()=>invoke('timeline',{request:{action:'stop'}})).catch(()=>{});};
@@ -116,6 +120,7 @@ export function TimelinePanel({locale}:{locale:Locale}) {
             <div className="timeline-row"><button className="timeline-track-name" onClick={()=>selectLayer(item.id)}><span>{item.pixel?'▣':'◇'} {item.name}{item.locked?' 🔒':''}</span><small>{item.pixel?t.pixel:t.vector}</small></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{selectLayer(item.id);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
               {item.pixel?item.cels.map((frame,index)=><button key={frame} className="timeline-cel" aria-label={`${item.name} · ${t.frame} ${frame+1}`} title={`${t.frame} ${frame+1}`} data-current={state.frame>=frame&&state.frame<(item.cels[index+1]??data.duration)} style={{left:frame*zoom,width:Math.max(4,((item.cels[index+1]??data.duration)-frame)*zoom-2)}} onClick={e=>{e.stopPropagation();selectLayer(item.id);seek(frame);}}>● <span>{frame+1}</span></button>):<span className="timeline-vector-bar"/>}
             </div></div>
+            {!item.pixel&&(item.motions??[]).map(clip=>{const name=catalog?.presets.find(p=>p.id===clip.preset)?.names[locale]??clip.preset;return <div className="timeline-row timeline-motion-row" key={clip.id}><button className="timeline-track-name" title={name} onClick={()=>{selectLayer(item.id);seek(clip.start);}}>{name}</button><div className="timeline-lane" style={{width:timelineWidth}}><button className="timeline-motion-clip" data-enabled={clip.enabled} data-current={state.frame>=clip.start&&state.frame<clip.start+clip.duration*clip.repeats} aria-label={`${name} · ${t.frame} ${clip.start+1}`} title={`${name} · ${clip.start+1}–${clip.start+clip.duration*clip.repeats}`} style={{left:clip.start*zoom,width:Math.max(8,clip.duration*clip.repeats*zoom-2)}} onClick={()=>{if(movedKey.current){movedKey.current=false;return;}selectLayer(item.id);seek(clip.start);}} onPointerDown={e=>{if(busy||state.playing||item.locked)return;motionDrag.current={x:e.clientX,layer:item.id,clip};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerCancel={()=>{motionDrag.current=null;}} onPointerUp={e=>{const drag=motionDrag.current;motionDrag.current=null;if(!drag)return;const start=Math.max(0,Math.min(18000-drag.clip.duration*drag.clip.repeats,drag.clip.start+Math.round((e.clientX-drag.x)/zoom)));if(start!==drag.clip.start){movedKey.current=true;void command({action:'setMotion',documentId:data.documentId,layer:drag.layer,clip:{...drag.clip,start}});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{name}</button></div></div>;})}
             {!item.pixel&&layerId===item.id&&properties.map(p=><div className="timeline-row timeline-property-row" key={p}><button className="timeline-track-name" data-selected={property===p} onClick={()=>setProperty(p)}>{t[p]}<span>{sample(item,p,state.frame)}</span></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{setProperty(p);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
               {(item.channels[p]??[]).map(key=><button key={key.frame} className="timeline-key" data-current={key.frame===state.frame&&property===p} title={`${t[p]} · ${key.frame+1} · ${key.value}`} aria-label={`${t[p]} · ${t.frame} ${key.frame+1}`} style={{left:key.frame*zoom}} onClick={e=>{e.stopPropagation();if(movedKey.current){movedKey.current=false;return;}setProperty(p);seek(key.frame);}} onPointerDown={e=>{if(disabled)return;e.stopPropagation();drag.current={x:e.clientX,frame:key.frame,layer:item.id,property:p,key};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerUp={e=>{const d=drag.current;drag.current=null;if(!d||!d.property||!d.key)return;const frame=Math.max(0,Math.min(data.duration-1,d.frame+Math.round((e.clientX-d.x)/zoom)));if(frame!==d.frame){movedKey.current=true;void command({action:'moveKey',layer:d.layer,from:d.frame,frame,property:d.property});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{key.interpolation==='hold'?'■':'◆'}</button>)}
             </div></div>)}

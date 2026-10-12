@@ -65,7 +65,7 @@ pub const MIN_SCREEN_ZOOM: f32 = 0.0313;
 pub const MAX_SCREEN_ZOOM: f32 = 640.0;
 pub const MAX_CANVAS_PAN: f32 = 8_388_608.0;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     pub width: u32,
     pub height: u32,
@@ -6273,4 +6273,143 @@ mod brush_settings_tests;
 
 pub fn process_rss_bytes() -> Option<u64> {
     process_memory::current_rss()
+}
+
+#[cfg(all(test, feature = "skia"))]
+mod motion_raster_tests {
+    use super::*;
+    use lumapaint_core::{
+        document::TextSettings,
+        motion::{self, Clip},
+        vector::{VectorObject, VectorText},
+    };
+
+    fn artwork() -> (Document, String, String) {
+        let mut doc = Document::default();
+        let shape = doc.add_vector_layer().unwrap();
+        let object:VectorObject=serde_json::from_value(serde_json::json!({"id":"motion-shape","name":"Motion shape","path":{"data":"M20 20H120V100H20Z","fillRule":"nonZero"},"kind":"rectangle","controlPoints":[[20,20],[120,100]],"transform":[1,0,0,1,0,0],"fill":{"color":[200,40,60,255]},"stroke":null,"strokeWidth":0,"visible":true})).unwrap();
+        doc.upsert_vector_object(&shape, object).unwrap();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "Motion 日本語 中文".into(),
+                font_size: 24.,
+                box_width: 220.,
+                ..Default::default()
+            },
+            position: [20., 40.],
+            color: [20, 60, 220],
+        })
+        .unwrap();
+        let text = doc
+            .svg_layers()
+            .find(|l| l.vector_objects.iter().any(|o| o.text.is_some()))
+            .unwrap()
+            .id
+            .clone();
+        (doc, shape, text)
+    }
+    fn frame(doc: &Document, layer: &str, frame: u32) -> Vec<u8> {
+        let mut preview = doc.clone_for_rendering();
+        preview.evaluate_animation_with_outlines(doc, frame, Some(&text_outlines::outline));
+        let pixels = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rasterize_svg(
+                &preview.svg_layers().find(|l| l.id == layer).unwrap().source,
+                128,
+                128,
+            )
+        }))
+        .unwrap_or_else(|_| {
+            panic!(
+                "Motion raster panic at frame {frame}: {}",
+                doc.animation().tracks[layer].motions[0].preset
+            )
+        })
+        .unwrap();
+        pixels
+    }
+    #[test]
+    fn motion_wipe_has_empty_half_and_complete_raster_and_native_round_trip() {
+        let (mut doc, layer, _) = artwork();
+        doc.set_motion_clip(
+            &layer,
+            Clip {
+                id: "wipe".into(),
+                preset: "mask-wipe".into(),
+                duration: 60,
+                curve: Some(motion::Curve::Linear),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let count = |pixels: Vec<u8>| {
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 0)
+                .count()
+        };
+        let start = count(frame(&doc, &layer, 0));
+        let middle = count(frame(&doc, &layer, 29));
+        let end = count(frame(&doc, &layer, 59));
+        assert_eq!(start, 0);
+        assert!(middle > 0 && middle < end, "{start} {middle} {end}");
+        let bytes = lumapaint_formats::native::encode_state(&doc.document_state()).unwrap();
+        let loaded = lumapaint_formats::native::decode(&bytes).unwrap();
+        assert_eq!(frame(&doc, &layer, 29), frame(&loaded, &layer, 29));
+    }
+    #[test]
+    fn every_reference_program_rasterizes_and_text_outlines_are_visible() {
+        let (source, shape, text) = artwork();
+        let mut unchanged = Vec::new();
+        for preset in &motion::catalog().presets {
+            let mut doc = source.clone();
+            let layer = if preset.category.starts_with("tx-")
+                || preset.operations.iter().any(|op| {
+                    matches!(
+                        op,
+                        motion::Operation::Counter
+                            | motion::Operation::TextSwap
+                            | motion::Operation::Typewriter
+                            | motion::Operation::Scramble
+                    )
+                }) {
+                &text
+            } else {
+                &shape
+            };
+            doc.set_motion_clip(
+                layer,
+                Clip {
+                    id: "clip".into(),
+                    preset: preset.id.clone(),
+                    duration: 60,
+                    distance: 30.,
+                    particle_count: 8,
+                    alternate_text: "Next 次 中文".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let pixels = frame(&doc, layer, 29);
+            let start = frame(&doc, layer, 0);
+            let end = frame(&doc, layer, 59);
+            let reaction = frame(&doc, layer, 17);
+            if start == pixels && pixels == end && pixels == reaction {
+                unchanged.push(preset.id.clone());
+            }
+            assert_eq!(pixels.len(), 128 * 128 * 4, "{}", preset.id);
+            if preset.id == "tx-outline-draw" {
+                assert!(
+                    pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+                    "text outline should draw at half time"
+                );
+            }
+        }
+        assert!(
+            unchanged.is_empty(),
+            "Programs with no visible motion: {unchanged:?}"
+        );
+    }
 }

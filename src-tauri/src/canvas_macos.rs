@@ -83,7 +83,7 @@ static RASTER_SENDER: OnceLock<crate::render_queue::LatestSender<RasterJob>> = O
 static TILE_SENDER: OnceLock<crate::render_queue::LatestSender<TileJob>> = OnceLock::new();
 static NEXT_CANVAS_TOKEN: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RasterKey {
     document_id: u64,
     revision: u64,
@@ -159,6 +159,44 @@ fn render_metrics_enabled() -> bool {
     lumapaint_renderer::performance::enabled()
 }
 
+// Diagnostic controls are opt-in and never change ordinary execution.
+fn diagnostic_worker_delay_ms(enabled: bool, value: Option<&str>) -> u64 {
+    if !enabled {
+        return 0;
+    }
+    value
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v <= 10_000)
+        .unwrap_or(0)
+}
+fn worker_diagnostic_delay() -> u64 {
+    static DELAY: OnceLock<u64> = OnceLock::new();
+    *DELAY.get_or_init(|| {
+        diagnostic_worker_delay_ms(
+            render_metrics_enabled(),
+            std::env::var("LUMAPAINT_SVG_WORKER_DELAY_MS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+fn worker_copy_baseline() -> bool {
+    static BASELINE: OnceLock<bool> = OnceLock::new();
+    *BASELINE.get_or_init(|| {
+        render_metrics_enabled()
+            && std::env::var("LUMAPAINT_SVG_WORKER_COPY_BASELINE").as_deref() == Ok("1")
+    })
+}
+fn trace_worker_race(event: &str, key: RasterKey, viewport: Option<Viewport>) {
+    if worker_diagnostic_delay() == 0 {
+        return;
+    }
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    let tick = ORIGIN.get_or_init(Instant::now).elapsed().as_nanos();
+    eprintln!("lumapaint-svg-race event={event} tick_ns={tick} document={} revision={} canvas={} view={viewport:?}",
+        key.document_id, key.revision, key.canvas_token);
+}
+
 pub fn initialize(app: tauri::AppHandle) {
     let _ = APP.set(app.clone());
     let tile_app = app.clone();
@@ -181,6 +219,7 @@ pub fn initialize(app: tauri::AppHandle) {
                 let _metrics = lumapaint_renderer::performance::batch("host.svg_worker_job");
                 let queued_for = job.queued_at.elapsed();
                 let started = Instant::now();
+                trace_worker_race("worker_begin", job.key, None);
                 let before_rasterized = frame_cache.rasterized_frames;
                 let before_reused = frame_cache.reused_frames;
                 let before_evicted = frame_cache.stats().evicted_entries;
@@ -201,9 +240,18 @@ pub fn initialize(app: tauri::AppHandle) {
                 // pixels or report obsolete errors. The newest job is queued.
                 if receiver.superseded(job.key.canvas_token) {
                     lumapaint_renderer::performance::count("host.svg_worker_cancelled", 1);
+                    trace_worker_race("worker_cancelled", job.key, None);
                     continue;
                 }
                 let cpu_time = started.elapsed();
+                // Hold an actually rasterized result after its normal cancellation check.
+                // UI edits during this diagnostic interval exercise the completion identity gate.
+                let delay = worker_diagnostic_delay();
+                if delay > 0 {
+                    trace_worker_race("result_hold", job.key, None);
+                    std::thread::sleep(Duration::from_millis(delay));
+                    trace_worker_race("result_dispatch", job.key, None);
+                }
                 if render_metrics_enabled() {
                     eprintln!("lumapaint-svg-worker-profile {:?}", lumapaint_renderer::performance::take_and_publish());
                     let stats = frame_cache.stats();
@@ -2913,7 +2961,9 @@ fn vector_select_pointer(
                     if release_presented && !duplicate && reuse_release_enabled() {
                         CANVAS.with(|slot| {
                             if let Some(canvas) = slot.borrow_mut().as_mut() {
-                                canvas.reusable_release_frame = canvas.pending_vector_commit;
+                                canvas.reusable_release_frame = canvas
+                                    .pending_vector_commit
+                                    .map(|key| (key, canvas.viewport));
                             }
                         });
                     }
@@ -2931,8 +2981,12 @@ fn reuse_release_enabled() -> bool {
             && std::env::var_os("LUMAPAINT_REDUNDANT_RELEASE_DRAW").is_some()
     })
 }
-fn take_reusable_release_frame(frame: &mut Option<RasterKey>, current: RasterKey) -> bool {
-    frame.take() == Some(current)
+fn take_reusable_release_frame(
+    frame: &mut Option<(RasterKey, Viewport)>,
+    current: RasterKey,
+    viewport: Viewport,
+) -> bool {
+    frame.take() == Some((current, viewport))
 }
 
 fn hold_vector_commit_frame(document: &Document) {
@@ -4850,7 +4904,11 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
                 revision: document.revision(),
                 canvas_token: canvas.token,
             };
-            let reusable = take_reusable_release_frame(&mut canvas.reusable_release_frame, current);
+            let reusable = take_reusable_release_frame(
+                &mut canvas.reusable_release_frame,
+                current,
+                canvas.viewport,
+            );
             let waiting = waiting_for_vector_commit(
                 &mut canvas.pending_vector_commit,
                 current,
@@ -5110,18 +5168,35 @@ fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), S
         revision: document.revision(),
         canvas_token: canvas.token,
     };
+    // The control restores copy placement only; readiness/routing stay identical.
+    let baseline = worker_copy_baseline();
+    let baseline_layers = baseline.then(|| {
+        canvas
+            .renderer
+            .missing_svg_layers(document, canvas.viewport)
+    });
     if raster_request_handled(
         &mut canvas.raster_job,
         &mut canvas.raster_failure,
         key,
         || canvas.renderer.svg_layers_ready(document, canvas.viewport),
     ) {
-        lumapaint_core::performance::count("host.svg_job_duplicate_snapshot_avoided", 1);
+        lumapaint_core::performance::count(
+            if baseline {
+                "host.svg_job_duplicate_snapshot_restored"
+            } else {
+                "host.svg_job_duplicate_snapshot_avoided"
+            },
+            1,
+        );
+        trace_worker_race("request_dedup", key, Some(canvas.viewport));
         return Ok(());
     }
-    let layers = canvas
-        .renderer
-        .missing_svg_layers(document, canvas.viewport);
+    let layers = baseline_layers.unwrap_or_else(|| {
+        canvas
+            .renderer
+            .missing_svg_layers(document, canvas.viewport)
+    });
     if layers.is_empty() {
         canvas.raster_job = None;
         canvas.raster_failure = None;
@@ -5144,11 +5219,26 @@ fn schedule_raster_job(canvas: &mut Canvas, document: &Document) -> Result<(), S
             queued_at: Instant::now(),
         },
     ) {
-        Ok(()) => canvas.raster_job = Some(key),
+        Ok(()) => {
+            canvas.raster_job = Some(key);
+            trace_worker_race("request", key, Some(canvas.viewport));
+        }
         Err(TrySendError::Full(_)) => {} // Completion of the running job retries the latest state.
         Err(TrySendError::Disconnected(_)) => return Err("SVG raster worker stopped".into()),
     }
     Ok(())
+}
+
+// An obsolete completion must not clear the newer job or install its pixels/errors.
+fn accept_raster_result(
+    pending: &mut Option<RasterKey>,
+    completed: RasterKey,
+    current: RasterKey,
+) -> bool {
+    if *pending == Some(completed) {
+        *pending = None;
+    }
+    completed == current
 }
 
 fn finish_raster_job(
@@ -5167,22 +5257,37 @@ fn finish_raster_job(
         let Some(canvas) = slot.as_mut() else {
             return false;
         };
-        if canvas.raster_job == Some(key) {
-            canvas.raster_job = None;
-        }
-        if !key.matches(document_id, revision, canvas.token) {
+        let current = RasterKey {
+            document_id,
+            revision,
+            canvas_token: canvas.token,
+        };
+        if !accept_raster_result(&mut canvas.raster_job, key, current) {
+            lumapaint_core::performance::count("host.svg_worker_stale_results_rejected", 1);
+            trace_worker_race("result_rejected", key, Some(canvas.viewport));
             return false;
         }
+        trace_worker_race("result_accepted", key, Some(canvas.viewport));
         match result {
             Ok(layers) => {
                 // Shared Metal textures may have completed on the UI thread while
                 // this compatibility job was running. Do not upload duplicate pixels.
                 let missing: std::collections::HashSet<_> = DOCUMENT.with(|document| {
-                    canvas
-                        .renderer
-                        .missing_svg_layer_ids(&document.borrow(), canvas.viewport)
-                        .map(str::to_owned)
-                        .collect()
+                    let document = document.borrow();
+                    if worker_copy_baseline() {
+                        canvas
+                            .renderer
+                            .missing_svg_layers(&document, canvas.viewport)
+                            .into_iter()
+                            .map(|layer| layer.id)
+                            .collect()
+                    } else {
+                        canvas
+                            .renderer
+                            .missing_svg_layer_ids(&document, canvas.viewport)
+                            .map(str::to_owned)
+                            .collect()
+                    }
                 });
                 for layer in layers {
                     if !missing.contains(layer.id()) {
@@ -5331,7 +5436,7 @@ struct Canvas {
     raster_job: Option<RasterKey>,
     raster_failure: Option<RasterKey>,
     pending_vector_commit: Option<RasterKey>,
-    reusable_release_frame: Option<RasterKey>,
+    reusable_release_frame: Option<(RasterKey, Viewport)>,
     tile_job: Option<TileKey>,
     tile_ready: Option<TileKey>,
     tile_failure: Option<TileKey>,
@@ -7042,15 +7147,27 @@ mod tests {
     }
 
     #[test]
+    fn worker_delay_is_diagnostic_only_bounded_and_rejects_invalid_values() {
+        for value in [None, Some(""), Some("-1"), Some("10001"), Some("bad")] {
+            assert_eq!(diagnostic_worker_delay_ms(true, value), 0);
+        }
+        assert_eq!(diagnostic_worker_delay_ms(false, Some("10000")), 0);
+        assert_eq!(diagnostic_worker_delay_ms(true, Some("0")), 0);
+        assert_eq!(diagnostic_worker_delay_ms(true, Some("10000")), 10000);
+        assert_eq!(diagnostic_worker_delay_ms(true, Some("500")), 500);
+    }
+
+    #[test]
     fn release_frame_reuse_is_once_only_and_rejects_other_document_revision_or_canvas() {
         let key = RasterKey {
             document_id: 7,
             revision: 12,
             canvas_token: 3,
         };
-        let mut frame = Some(key);
-        assert!(take_reusable_release_frame(&mut frame, key));
-        assert!(!take_reusable_release_frame(&mut frame, key));
+        let viewport = Viewport::new(800., 500., 1., 1., false).unwrap();
+        let mut frame = Some((key, viewport));
+        assert!(take_reusable_release_frame(&mut frame, key, viewport));
+        assert!(!take_reusable_release_frame(&mut frame, key, viewport));
         for changed in [
             RasterKey {
                 document_id: 8,
@@ -7065,11 +7182,103 @@ mod tests {
                 ..key
             },
         ] {
-            let mut frame = Some(key);
-            assert!(!take_reusable_release_frame(&mut frame, changed));
+            let mut frame = Some((key, viewport));
+            assert!(!take_reusable_release_frame(&mut frame, changed, viewport));
             assert!(frame.is_none());
         }
     }
+    #[test]
+    fn release_frame_rejects_view_changes_while_worker_is_running() {
+        let key = RasterKey {
+            document_id: 7,
+            revision: 12,
+            canvas_token: 3,
+        };
+        let view = Viewport::new(800., 500., 1., 1., false)
+            .unwrap()
+            .with_screen_zoom(2.);
+        let (sender, receiver) = crate::render_queue::channel();
+        sender.try_send(key.canvas_token, key).unwrap();
+        let running = receiver.recv().unwrap();
+        for changed in [
+            view.with_screen_zoom(0.5),
+            Viewport { pan_x: 10., ..view },
+            Viewport { pan_y: 10., ..view },
+            Viewport { width: 900, ..view },
+            Viewport {
+                height: 600,
+                ..view
+            },
+            Viewport { scale: 2., ..view },
+            Viewport {
+                document_width: 1600.,
+                ..view
+            },
+            Viewport {
+                document_height: 1000.,
+                ..view
+            },
+            Viewport { dark: true, ..view },
+            Viewport {
+                pasteboard_color: Some([20, 30, 40]),
+                ..view
+            },
+            Viewport {
+                canvas_color: lumapaint_core::document::CanvasColor::Transparent,
+                ..view
+            },
+        ] {
+            let mut frame = Some((key, view));
+            assert!(!take_reusable_release_frame(&mut frame, key, changed));
+            assert!(frame.is_none());
+            // CPU raster results are document based, and remain valid after a view change.
+            assert!(running.matches(key.document_id, key.revision, key.canvas_token));
+        }
+        let newer = RasterKey {
+            revision: 13,
+            ..key
+        };
+        sender
+            .try_send(
+                99,
+                RasterKey {
+                    canvas_token: 99,
+                    ..key
+                },
+            )
+            .unwrap();
+        assert!(!receiver.superseded(key.canvas_token));
+        sender.try_send(key.canvas_token, newer).unwrap();
+        assert!(receiver.superseded(key.canvas_token));
+        assert!(!running.matches(newer.document_id, newer.revision, newer.canvas_token));
+        let mut job = Some(newer);
+        assert!(!accept_raster_result(&mut job, running, newer));
+        assert!(job == Some(newer));
+        for changed in [
+            RasterKey {
+                document_id: 8,
+                ..key
+            },
+            RasterKey {
+                canvas_token: 4,
+                ..key
+            },
+        ] {
+            let mut job = Some(changed);
+            assert!(!accept_raster_result(&mut job, running, changed));
+            assert!(job == Some(changed));
+        }
+
+        assert_eq!(receiver.recv().unwrap().canvas_token, 99);
+        assert!(receiver.recv().unwrap() == newer);
+        assert!(accept_raster_result(&mut job, newer, newer));
+        assert!(job.is_none());
+        let mut pending = Some(newer);
+        assert!(waiting_for_vector_commit(&mut pending, newer, true));
+        assert!(!waiting_for_vector_commit(&mut pending, newer, false));
+        assert!(pending.is_none());
+    }
+
     #[test]
     fn raster_request_waits_without_payload_rebuild_and_recovers_when_display_is_ready() {
         let key = RasterKey {

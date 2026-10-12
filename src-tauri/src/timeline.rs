@@ -13,6 +13,10 @@ pub enum Request {
     Play,
     Pause,
     Stop,
+    StopMotion {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+    },
     Seek {
         frame: u32,
     },
@@ -53,6 +57,25 @@ pub enum Request {
         frame: u32,
         property: Option<Property>,
     },
+    SetMotion {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        clip: Box<lumapaint_core::motion::Clip>,
+    },
+    RemoveMotion {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        id: String,
+    },
+    MoveMotion {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        id: String,
+        position: usize,
+    },
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +88,9 @@ pub struct Response {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Data {
+    pub document_id: u64,
     pub selected_layer: String,
+    pub selected_objects: Vec<String>,
     pub fps: u32,
     pub duration: u32,
     pub looping: bool,
@@ -81,6 +106,11 @@ pub struct Layer {
     pub cels: Vec<u32>,
     pub channels:
         std::collections::BTreeMap<Property, Vec<lumapaint_core::document::animation::Keyframe>>,
+    pub motions: Vec<lumapaint_core::motion::Clip>,
+}
+#[tauri::command]
+pub fn motion_catalog() -> &'static lumapaint_core::motion::Catalog {
+    lumapaint_core::motion::catalog()
 }
 #[tauri::command]
 pub async fn timeline(window: tauri::WebviewWindow, request: Request) -> Result<Response, String> {

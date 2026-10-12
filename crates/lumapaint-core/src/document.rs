@@ -9694,14 +9694,20 @@ fn empty_vector_svg(width: u32, height: u32) -> String {
 
 pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
     use std::fmt::Write;
+    static SCAN_ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let scan_all = *SCAN_ALL.get_or_init(|| {
+        crate::performance::enabled()
+            && std::env::var("LUMAPAINT_VECTOR_SVG_SCAN_ALL_OBJECTS").as_deref() == Ok("1")
+    });
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
     );
-    for (i, mask) in objects
+    let masks: Vec<_> = objects
         .iter()
         .enumerate()
-        .filter(|(_, o)| o.clipping_group.is_some())
-    {
+        .filter(|(_, o)| scan_all || o.clipping_group.is_some())
+        .collect();
+    for &(i, mask) in masks.iter().filter(|(_, o)| o.clipping_group.is_some()) {
         let matrix = slot_matrix(mask.transform);
         let rule = if mask.path.fill_rule == crate::vector::FillRule::EvenOdd {
             "evenodd"
@@ -9728,7 +9734,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
             object.opacity, object.blend_mode
         );
         let mut clips = 1;
-        for (i, mask) in objects.iter().enumerate() {
+        for &(i, mask) in &masks {
             if mask
                 .clipping_group
                 .as_ref()
@@ -13674,6 +13680,11 @@ fn animation_history_bytes(animation: &animation::Animation) -> usize {
                     .channels
                     .values()
                     .map(|keys| keys.len() * std::mem::size_of::<animation::Keyframe>())
+                    .sum::<usize>()
+                + track
+                    .motions
+                    .iter()
+                    .map(crate::motion::Clip::bytes)
                     .sum::<usize>()
         })
         .sum()

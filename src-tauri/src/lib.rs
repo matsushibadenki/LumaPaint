@@ -233,6 +233,7 @@ pub fn run() {
             ai::ai_generate,
             ai::ai_cancel,
             timeline::timeline,
+            timeline::motion_catalog,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,

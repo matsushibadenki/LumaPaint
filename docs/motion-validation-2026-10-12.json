@@ -1,0 +1,94 @@
+{
+  "date": "2026-10-12",
+  "reference": "https://motion-reference.takayustudio.jp/",
+  "catalog": {
+    "categories": 64,
+    "presets": 782,
+    "numeric_actor_programs": 185
+  },
+  "environment": {
+    "os": "macOS",
+    "gpu": "Apple M4 / Metal"
+  },
+  "checks": {
+    "core_all": {
+      "passed": 338,
+      "ignored": 1
+    },
+    "native_all": {
+      "passed": 180,
+      "ignored": 1
+    },
+    "native_stale_motion_requests": {
+      "passed": 1
+    },
+    "motion_raster": {
+      "passed": 2,
+      "presets": 782,
+      "frames": [
+        0,
+        17,
+        29,
+        59
+      ],
+      "visible_change_per_preset": true,
+      "native_codec_pixel_equality": true
+    },
+    "typescript": "passed",
+    "frontend_build": "passed, existing main chunk size warning",
+    "architecture": "passed",
+    "clippy_selected_packages_all_targets": "passed"
+  },
+  "ui": {
+    "native": [
+      "create vector artwork",
+      "add clip",
+      "edit duration",
+      "seek and observe canvas",
+      "play and pause",
+      "save and inspect JSON",
+      "float panel"
+    ],
+    "browser_component_fixture": [
+      "ja",
+      "en",
+      "zh-CN",
+      "search",
+      "add",
+      "custom spring damping",
+      "apply",
+      "duplicate",
+      "morph target path"
+    ],
+    "narrow_panel": {
+      "requested_width": 240,
+      "content_width": 238,
+      "scroll_width": 238,
+      "controls_outside": []
+    },
+    "fixture_removed": true
+  },
+  "scope": {
+    "timeline_adaptations": true,
+    "pixel_identical_reference_parity": false,
+    "real_3d_meshes": false,
+    "real_variable_font_axes": false,
+    "correct_kanji_stroke_data": false,
+    "audio_analysis": false,
+    "web_event_triggers": false
+  },
+  "source_sha256": {
+    "crates/lumapaint-core/src/motion.rs": "27c6f3cba9187c98fd4f921a7f0df5eec63613727c00d4ae028798eecf74fe46",
+    "crates/lumapaint-core/src/motion/evaluate.rs": "3277a124ba5631c030cd1a9f7e12da911c75d584bcf81c634b3c7cdd248f5942",
+    "crates/lumapaint-core/src/motion/catalog.json": "78b20bb15e2443db53136e60cfd38d848776eadb9652b99483b8f4258799d81f",
+    "crates/lumapaint-core/src/animation.rs": "8cfdd8710fabd550f79ae488c4fe78188f30efa83e9548847829c0b7fd84c2e7",
+    "crates/lumapaint-renderer/src/lib.rs": "1f8b25333313c033b1de1424473d77a95deee0e194bd27bb23518602b277762e",
+    "src-tauri/src/timeline.rs": "1ffd07b9702f32c310914b792850aed33d3f61f515006e8890561bcc1e50e4e4",
+    "src-tauri/src/timeline_macos.rs": "def0be644c28e82867b6139031f6055237d16fdec6850a2a19e378fe69555983",
+    "src/components/MotionPanel.tsx": "cf1b80b3fd89cf4312061a271366336c6faa15158e9b92ac90516f91df984baa",
+    "src/components/TimelinePanel.tsx": "6215aff03c81153c5f4de91ecf3e8af169a8824ad68d66069d33a612d8f0d7d1",
+    "src/motion-types.ts": "c68df2bf0b3301447fac7ce7899a57d03c9a6f598f6225df55ba4192b0d2e3c8",
+    "src/motion-i18n.ts": "ba77822d3a92ea7a12bd22b9a737c2f30ce166c9a4400cd376ad9cf59bb5b4e6",
+    "src/motion-behavior.ts": "8eab2a78e0f590e7eb3f2127d2975cd05e76d5900cb55a4eb8ff3159a94be26b"
+  }
+}

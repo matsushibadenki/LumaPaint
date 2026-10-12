@@ -20,9 +20,9 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-10-06)
+## Dependency inventory (2026-10-12)
 
-`cargo-license-inventory.json` inventories 629 locked Cargo packages across
+`cargo-license-inventory.json` inventories 626 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:
@@ -38,7 +38,7 @@ Intel, Windows and Linux binary dependencies still need validation on their
 actual target systems.
 
 Additional fixed source notices:
-- iOverlay 9.0.0: https://github.com/iShape-Rust/iOverlay/tree/26782e3b93f9b7d2516e7653f3d56eebc31af798
+- iOverlay 9.0.1: https://github.com/iShape-Rust/iOverlay/tree/7a9e659a0355af272cb26383be169557a78e5ea4
 - iKeySort 0.11.0: https://github.com/iShape-Rust/iKeySort/tree/d8c914dc29afd4d4824dacd2c134dbc16168e78c
 - simplecss 0.2.2: locked crates.io source, local changes documented in vendor/simplecss/LUMAPAINT-PATCHES.md
 
@@ -50,9 +50,14 @@ freetype-rs 0.38.0 and freetype-sys 0.23.0 are statically bundled for the PDF
 font reader, independently of Skia. Their MIT notices are included here. The
 bundled native FreeType uses the FTL option; its own FTL and libpng notice are
 included as pdf-freetype-FTL.TXT and pdf-freetype-libpng-LICENSE.
-Portions of this software are copyright © 2024 The FreeType Project
+Portions of this software are copyright © 2026 The FreeType Project
 (www.freetype.org). All rights reserved.
 
 The local freetype-sys build fixes are documented in
 vendor/freetype-sys/LUMAPAINT-PATCHES.md; original native source licenses remain
 in that directory. Windows zlib headers and linkage come from libz-sys metadata.
+
+The PDF reader bundles FreeType 2.14.3 and libpng 1.6.59 as of 2026-10-12.
+Upstream sources and archive SHA-256 values are recorded in
+`vendor/freetype-sys/LUMAPAINT-PATCHES.md`. These versions do not replace
+Skia’s independently managed codec/font dependencies.
