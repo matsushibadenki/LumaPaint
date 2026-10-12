@@ -922,6 +922,7 @@ fn process_chunk(
             span.small_caps,
             span.apply_kerning,
             &span.font.variations,
+            span.font.explicit_variations,
             span.font_size.get(),
             span.font_optical_sizing,
             writing_mode == WritingMode::TopToBottom,
@@ -1340,6 +1341,7 @@ pub(crate) fn shape_text(
     small_caps: bool,
     apply_kerning: bool,
     variations: &[crate::FontVariation],
+    preserve_primary: bool,
     font_size: f32,
     font_optical_sizing: crate::FontOpticalSizing,
     vertical: bool,
@@ -1395,10 +1397,28 @@ pub(crate) fn shape_text(
             .unwrap_or_default();
 
             let all_matched = fallback_glyphs.iter().all(|g| !g.is_missing());
-            if all_matched {
+            if all_matched && !preserve_primary {
                 // Replace all glyphs when all of them were matched.
                 glyphs = fallback_glyphs;
                 break 'outer;
+            }
+
+            if preserve_primary {
+                // Match UTF-8 shaping clusters, not glyph indices. Different
+                // fonts may produce different ligature/mark glyph counts.
+                let missing: HashSet<_> = glyphs.iter().filter(|g|g.is_missing()).map(|g|g.byte_idx.0).collect();
+                let mut replaced=HashSet::new();
+                let mut merged=Vec::new();
+                for glyph in &glyphs {
+                    let offset=glyph.byte_idx.0;
+                    let fallback=fallback_glyphs.iter().filter(|g|g.byte_idx.0==offset).collect::<Vec<_>>();
+                    if missing.contains(&offset) && !fallback.is_empty() && fallback.iter().all(|g|!g.is_missing()) {
+                        if replaced.insert(offset) {merged.extend(fallback.into_iter().cloned());}
+                    } else {merged.push(glyph.clone());}
+                }
+                glyphs=merged;
+                used_fonts.push(fallback_font.id);
+                continue 'outer;
             }
 
             // We assume, that shaping with an any font will produce the same amount of glyphs.

@@ -301,7 +301,7 @@ fn sample(preset: &Preset, clip: &Clip, p: f32, index: usize, count: usize, fps:
             Operation::Tracking => {
                 s.x += (norm - 0.5) * distance * (1. - q);
             }
-            Operation::FontAxes | Operation::KanjiStroke => {},
+            Operation::FontAxes | Operation::KanjiStroke => {}
             Operation::Weight => s.sx *= 1. + 0.2 * pulse * strength,
             Operation::Underline
             | Operation::Highlight
@@ -591,9 +591,13 @@ fn text_motion(object: &mut VectorObject, clip: &Clip, preset: &Preset, frame: u
                     | Operation::Caption
                     | Operation::Tracking
                     | Operation::Weight
+                    | Operation::FontAxes
             )
         })
     {
+        return;
+    }
+    if preset.operations.contains(&Operation::KanjiStroke) {
         return;
     }
     let color = object.fill.map_or([32, 32, 32], |fill| {
@@ -672,9 +676,44 @@ fn text_motion(object: &mut VectorObject, clip: &Clip, preset: &Preset, frame: u
             style.baseline_shift += (1. - local) * clip.distance * clip.strength * 0.2;
         }
         if has(Operation::FontAxes) {
-            if !clip.variable_font.is_empty() {style.font_family=clip.variable_font.clone();style.bold=false;style.italic=false;}
-            let amount=if preset.cyclic || preset.id.contains("wave") || preset.id.contains("breathe") || preset.id.contains("pulse") || preset.id.contains("pressure") || preset.id.contains("stretch") || preset.id.contains("proximity") {(1.-(TAU*local*clip.frequency).cos())*0.5}else{clip.curve.unwrap_or(preset.curve).sample(local,local*clip.duration as f32/fps as f32,clip.seed).clamp(0.,1.)};
-            for axis in &clip.font_axes {style.font_axes.insert(axis.tag.clone(),axis.from+(axis.to-axis.from)*amount*clip.strength.min(1.));}
+            let defaults = default_axes(&preset.id);
+            let axes = if clip.font_axes.is_empty() {
+                &defaults
+            } else {
+                &clip.font_axes
+            };
+            style.font_family = if !clip.variable_font.is_empty() {
+                clip.variable_font.clone()
+            } else if original.content.chars().any(kanji::is_cjk)
+                && axes.iter().all(|a| a.tag == "wght")
+            {
+                "LumaPaint Noto Sans JP".into()
+            } else {
+                "LumaPaint Roboto Flex".into()
+            };
+            style.bold = false;
+            style.italic = false;
+            let amount = if preset.cyclic
+                || preset.id.contains("wave")
+                || preset.id.contains("breathe")
+                || preset.id.contains("pulse")
+                || preset.id.contains("pressure")
+                || preset.id.contains("stretch")
+                || preset.id.contains("proximity")
+            {
+                (1. - (TAU * local * clip.frequency).cos()) * 0.5
+            } else {
+                clip.curve
+                    .unwrap_or(preset.curve)
+                    .sample(local, local * clip.duration as f32 / fps as f32, clip.seed)
+                    .clamp(0., 1.)
+            };
+            for axis in axes {
+                style.font_axes.insert(
+                    axis.tag.clone(),
+                    axis.from + (axis.to - axis.from) * amount * clip.strength.min(1.),
+                );
+            }
         }
         if has(Operation::Weight) {
             style.bold = local > 0.5;
@@ -1032,7 +1071,25 @@ pub(crate) fn apply(
     if let Some(resolve) = outlines.filter(|_| layer.vector_layer) {
         let mut expanded = Vec::new();
         for object in &layer.vector_objects {
-            let needs_outline = object.text.is_some()
+            let dynamic_text = clips.iter().any(|clip| {
+                clip.enabled
+                    && clip.progress(frame, 0, 1).is_some()
+                    && preset(&clip.preset).is_some_and(|p| {
+                        p.operations.iter().any(|op| {
+                            matches!(
+                                op,
+                                Operation::FontAxes
+                                    | Operation::KanjiStroke
+                                    | Operation::Counter
+                                    | Operation::Typewriter
+                                    | Operation::Scramble
+                                    | Operation::TextSwap
+                            )
+                        })
+                    })
+            });
+            let needs_outline = !dynamic_text
+                && object.text.is_some()
                 && clips.iter().any(|clip| {
                     clip.enabled
                         && clip.strength > 0.
@@ -1045,6 +1102,7 @@ pub(crate) fn apply(
                                     Operation::StrokeDraw
                                         | Operation::StrokeTrim
                                         | Operation::Morph
+                                        | Operation::MeshPlane
                                 )
                             })
                         })
@@ -1104,6 +1162,16 @@ pub(crate) fn apply(
             );
             source = wrap(source, &s, clip, bounds, &format!("lm-{i}"), *p, preset);
             source.push_str(&particles(clip, preset, *p, bounds));
+            if mesh::enabled(preset) {
+                let surface = mesh::surface(source, bounds, clip, preset, *p, 0, 1, fps);
+                source = mesh::svg(&surface, &format!("lm-import-mesh-{i}"));
+                layer.motion_scene = Some(std::sync::Arc::new(mesh::Scene {
+                    surfaces: vec![surface],
+                }));
+            } else if layer.motion_scene.is_some() {
+                layer.motion_scene = None;
+            }
+
             if source.len() > SOURCE_LIMIT {
                 layer.vector_layer = false;
                 return;
@@ -1188,7 +1256,20 @@ pub(crate) fn apply(
                 preset.category.starts_with("tx-")
                     && (clip.objects.is_empty() || clip.objects.contains(&object.id))
             });
-        let source = if glyph_motion {
+        let kanji_clip = active.iter().rev().find(|(clip, preset, _)| {
+            preset.operations.contains(&Operation::KanjiStroke)
+                && (clip.objects.is_empty() || clip.objects.contains(&object.id))
+        });
+        let source = if let Some((clip, _, _)) = kanji_clip {
+            noncanonical = true;
+            kanji::source(
+                object,
+                clip,
+                clip.progress(frame, object_index, object_count)
+                    .unwrap_or(0.),
+                dimensions,
+            )
+        } else if glyph_motion {
             noncanonical = true;
             glyph_source(object, &active, frame, fps, dimensions)
         } else {
@@ -1268,7 +1349,7 @@ pub(crate) fn apply(
                 let bounds = object_bounds(object);
                 let width = (bounds[2] - bounds[0]).max(1.);
                 let height = (bounds[3] - bounds[1]).max(1.);
-                mesh::Surface{size:[width,height],source:format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"{} {} {width} {height}\">{source}</svg>",bounds[0],bounds[1]),triangles:mesh::Mesh::plane(width,height).project([0.;3],[0.;3],[(bounds[0]+bounds[2])*0.5,(bounds[1]+bounds[3])*0.5],600.)}
+                mesh::Surface{opacity:1.,size:[width,height],source:format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"{} {} {width} {height}\">{source}</svg>",bounds[0],bounds[1]),triangles:mesh::Mesh::plane(width,height).project([0.;3],[0.;3],[(bounds[0]+bounds[2])*0.5,(bounds[1]+bounds[3])*0.5],600.)}
             };
             source = mesh::svg(&surface, &format!("lm-mesh-{object_index}"));
             scene.surfaces.push(surface);

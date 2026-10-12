@@ -1,0 +1,170 @@
+{
+  "date": "2026-10-12",
+  "environment": {
+    "os": "macOS",
+    "gpu": "Apple M4",
+    "backend": "Metal"
+  },
+  "scope": "Timeline priority: meshes, real variable axes and canonical Japanese kanji stroke order; no claim of complete visual parity with the 782 reference demos",
+  "coverage": {
+    "referencePresets": 782,
+    "meshPresets": 13,
+    "fontAxisPresets": 9,
+    "kanjiPresets": 1,
+    "kanjiCharacters": 6626
+  },
+  "checks": {
+    "coreFull": {
+      "passed": 340,
+      "ignored": 1
+    },
+    "allBundledKanjiGeometryAdditional": "passed",
+    "rendererFullSkia": {
+      "passed": 274,
+      "ignored": 59
+    },
+    "explicitMetalMeshTest": "passed",
+    "hostFull": {
+      "passed": 182,
+      "ignored": 1
+    },
+    "frontendBuild": "passed; existing main chunk size warning",
+    "architecture": "passed",
+    "ui": {
+      "locales": [
+        "ja",
+        "en",
+        "zh-CN"
+      ],
+      "panelWidth": 240,
+      "scrollWidth": 240,
+      "transport": "UI-only test adapter; native rendering tested independently",
+      "native": "loaded cube, playback, return to unchanged artwork"
+    },
+    "clippyAllTargets": "passed (-D warnings)",
+    "format": "passed",
+    "whitespace": "passed"
+  },
+  "sources": [
+    {
+      "path": "crates/lumapaint-core/src/motion.rs",
+      "bytes": 36172,
+      "sha256": "6c7f897c703401a2ec605235e62cc57d3ecea2ba0c72a11672a1e07aaf1f4c0f"
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/evaluate.rs",
+      "bytes": 56013,
+      "sha256": "42bf6ae5302510249d8bad7d145c5bf686aab056fef111f9d5151784a02b67ab"
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/mesh.rs",
+      "bytes": 14736,
+      "sha256": "70d9d6d9f3a1daf28f92647608f3495696427ebd3130cb3e4e2bcd66deceda9c"
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/kanji.rs",
+      "bytes": 9863,
+      "sha256": "f6b4c779aef72e5bcbf95ff444a60dc2150aa7ff451889a6a9908e931e35ce4f"
+    },
+    {
+      "path": "crates/lumapaint-core/src/motion/catalog.json",
+      "bytes": 979437,
+      "sha256": "2576df3b54ca754381f8ca64d22cb209180e2cbac6fec96950e221890d9e0ef2"
+    },
+    {
+      "path": "crates/lumapaint-core/src/animation.rs",
+      "bytes": 35357,
+      "sha256": "0116a27fccba337ce5d5004453cd09ef5bc895b37259967e8d23243d21cde4db"
+    },
+    {
+      "path": "crates/lumapaint-core/src/document.rs",
+      "bytes": 540924,
+      "sha256": "1a6f1fe363b430637e6d6b00d8b870fbbd751fa812f906d80a752eca86acbc87"
+    },
+    {
+      "path": "crates/lumapaint-core/src/vector.rs",
+      "bytes": 85316,
+      "sha256": "e54e23f698b42ee6c4b183bcb55c5221424799cfb59664b45cba54ce8cd00da3"
+    },
+    {
+      "path": "crates/lumapaint-core/assets/kanjivg/strokes.json",
+      "bytes": 6747277,
+      "sha256": "9bd8138c406654bfadf8f40d32d00d3c6b6b5266ed58e07bcd7caf6945c2eac5"
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/motion_mesh.rs",
+      "bytes": 23290,
+      "sha256": "59cd4eea86a9e82b7d39ff5054724973cb9dafd9b13dad7bf9a3d5fd5f9cffb1"
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/lib.rs",
+      "bytes": 259649,
+      "sha256": "f42b546bba28eccef56a3e34d39346386bcb65d5162555f1c126b1a5488f23cd"
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/vector.rs",
+      "bytes": 128932,
+      "sha256": "f45ad5acc7adc265a3d83987edf62c3b51b38f16c0490eb41d593545a3a604b7"
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/vector/kerning.rs",
+      "bytes": 17034,
+      "sha256": "d12b2baa75dc8c338d56dba6706735852ffa85701d9dedec10e384d83b4dbfd8"
+    },
+    {
+      "path": "crates/lumapaint-renderer/src/vector/font_viewer.rs",
+      "bytes": 9746,
+      "sha256": "0faccdbf78a45167f605af1a06845a8084ca6104e72edab025f10615fe2cc26e"
+    },
+    {
+      "path": "crates/lumapaint-renderer/assets/fonts/RobotoFlex.ttf",
+      "bytes": 1787292,
+      "sha256": "9b523f7d82593df0107173849ebb8c817471a1df4b4fb2c3cbf40cfd810c8281"
+    },
+    {
+      "path": "crates/lumapaint-renderer/assets/fonts/NotoSansJP.ttf",
+      "bytes": 9589900,
+      "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
+    },
+    {
+      "path": "src-tauri/src/timeline_macos.rs",
+      "bytes": 26577,
+      "sha256": "eca99c55ba1a92f9992f3ba5624b4f5847cd0fb2416cacc33069ffe00a09831c"
+    },
+    {
+      "path": "src/components/MotionPanel.tsx",
+      "bytes": 23969,
+      "sha256": "8dce44a719e083c1411896e88e460cd23c1ea67f0507bbecfbe1896ff7605f01"
+    },
+    {
+      "path": "src/motion-types.ts",
+      "bytes": 3664,
+      "sha256": "42d64838cb317b18f85f45b28d374caf23c97b405657af162c5efbe952cd98a2"
+    },
+    {
+      "path": "src/motion-i18n.ts",
+      "bytes": 8209,
+      "sha256": "dc78ce6c2a4037cd68229945438442023bb418656d25deb89a9638903dd6db39"
+    },
+    {
+      "path": "src/motion-behavior.ts",
+      "bytes": 5088,
+      "sha256": "2b1d0e3ffa1fc0afac6c81174013247615629545c9f1fd5db5b0e76713b566cb"
+    },
+    {
+      "path": "vendor/usvg/src/parser/text.rs",
+      "bytes": 33480,
+      "sha256": "1281ebc9e05184970d4af6de32f3d6bd101df8b1e00cd825c0b7fe61018e05d9"
+    },
+    {
+      "path": "vendor/usvg/src/tree/text.rs",
+      "bytes": 19098,
+      "sha256": "a8def87358376a81d97c0e18b02c83af0e371b68c167396b1bdadb3edf93db0b"
+    },
+    {
+      "path": "vendor/usvg/src/text/layout.rs",
+      "bytes": 67498,
+      "sha256": "8589b07d6ff44c6bb6435eb1904d6ffc26d107b4ba09c5e52065891784649722"
+    }
+  ]
+}

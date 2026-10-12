@@ -863,7 +863,8 @@ impl VectorText {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
-        if (self.content.trim().is_empty() && self.box_height.is_none())
+        if !valid_font_axes(&self.font_axes)
+            || (self.content.trim().is_empty() && self.box_height.is_none())
             || self.content.chars().count() > 4096
             || self.content.split('\n').count() > 64
             || self

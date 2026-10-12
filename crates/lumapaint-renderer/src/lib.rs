@@ -6446,3 +6446,169 @@ mod motion_raster_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "skia"))]
+mod detailed_motion_tests {
+    use super::*;
+    use lumapaint_core::{
+        document::TextSettings,
+        motion::{AxisMotion, Clip},
+        vector::VectorText,
+    };
+    fn text_document(content: &str, family: &str) -> (Document, String) {
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: content.into(),
+                font_family: family.into(),
+                font_size: 72.,
+                box_width: 600.,
+                ..Default::default()
+            },
+            position: [40., 50.],
+            color: [30, 60, 180],
+        })
+        .unwrap();
+        let layer = doc.svg_layers().next().unwrap().id.clone();
+        (doc, layer)
+    }
+    fn source_at(doc: &Document, layer: &str, frame: u32) -> (String, Vec<u8>) {
+        let mut preview = doc.clone_for_rendering();
+        preview.evaluate_animation(doc, frame);
+        let source = preview
+            .svg_layers()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .source
+            .clone();
+        let pixels = rasterize_svg(&source, 256, 192).unwrap();
+        (source, pixels)
+    }
+    #[test]
+    fn mixed_script_fallback_preserves_variable_axes() {
+        for size in [24., 48.] {
+            let (mut doc, layer) = text_document("Motion ffi e\u{301} 日本語 中文", "sans-serif");
+            let mut state = doc.document_state();
+            state.svg_layers[0].vector_objects[0]
+                .text
+                .as_mut()
+                .unwrap()
+                .font_size = size;
+            doc = Document::from_document_state(state).unwrap();
+            doc.set_motion_clip(
+                &layer,
+                Clip {
+                    id: "probe".into(),
+                    preset: "tx-width-stretch".into(),
+                    duration: 60,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (a, p) = source_at(&doc, &layer, 0);
+            let (b, q) = source_at(&doc, &layer, 17);
+            assert!(a.contains("font-variation-settings:"));
+            assert!(b.contains("font-variation-settings:"));
+            assert_ne!(
+                p, q,
+                "mixed-script wdth at {size}px must alter actual glyphs"
+            );
+        }
+    }
+    #[test]
+    fn variable_axes_change_real_glyphs_and_survive_native_save() {
+        for (family, content, tag, from, to) in [
+            ("LumaPaint Roboto Flex", "VARIATION ABC", "wght", 200., 900.),
+            ("LumaPaint Roboto Flex", "WIDE ABC", "wdth", 75., 125.),
+            ("LumaPaint Roboto Flex", "SLANT ABC", "slnt", 0., -10.),
+            ("LumaPaint Noto Sans JP", "永日語", "wght", 200., 900.),
+        ] {
+            let (mut doc, layer) = text_document(content, family);
+            doc.set_motion_clip(
+                &layer,
+                Clip {
+                    id: "axis".into(),
+                    preset: "tx-thin-to-bold-in".into(),
+                    duration: 60,
+                    variable_font: family.into(),
+                    font_axes: vec![AxisMotion {
+                        tag: tag.into(),
+                        from,
+                        to,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let (a, first) = source_at(&doc, &layer, 0);
+            let (b, last) = source_at(&doc, &layer, 59);
+            assert!(a.contains("font-variation-settings"));
+            assert!(a.contains(&format!("'{tag}' {from}")));
+            assert!(b.contains(&format!("'{tag}' {to}")));
+            eprintln!(
+                "{family} {tag} ink {} -> {}",
+                first.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count(),
+                last.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
+            );
+            assert!(first != last, "{family} {tag} must vary real pixels");
+            let mut preview = doc.clone_for_rendering();
+            preview.evaluate_animation(&doc, 29);
+            assert!(preview.svg_layers().next().unwrap().vector_objects[0]
+                .text
+                .as_ref()
+                .unwrap()
+                .runs
+                .iter()
+                .all(|r| r.style.scale_x == 1. && r.style.scale_y == 1. && !r.style.bold));
+            let saved = lumapaint_formats::native::encode_state(&doc.document_state()).unwrap();
+            let loaded = lumapaint_formats::native::decode(&saved).unwrap();
+            assert_eq!(
+                source_at(&doc, &layer, 29).1,
+                source_at(&loaded, &layer, 29).1
+            );
+        }
+    }
+    #[test]
+    fn kanji_draws_ordered_centerlines_and_reports_unavailable_characters() {
+        let (mut doc, layer) = text_document("永日", "LumaPaint Noto Sans JP");
+        doc.set_motion_clip(
+            &layer,
+            Clip {
+                id: "stroke".into(),
+                preset: "tx-kanji-stroke-order".into(),
+                duration: 120,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (start, a) = source_at(&doc, &layer, 0);
+        let (mid, b) = source_at(&doc, &layer, 29);
+        let (end, c) = source_at(&doc, &layer, 119);
+        assert!(!start.contains("stroke-dasharray"));
+        assert!(mid.contains("CC BY-SA 3.0"));
+        assert!(end.contains(&lumapaint_core::motion::kanji::glyph('永').unwrap().strokes[0].path));
+        assert_eq!(a.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count(), 0);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert!(end.contains("stroke-dashoffset=\"0\""));
+        for content in ["\u{323af}", "永\u{e0100}"] {
+            let (mut unsupported, layer) = text_document(content, "LumaPaint Noto Sans JP");
+            let before = serde_json::to_value(unsupported.document_state()).unwrap();
+            assert!(unsupported
+                .set_motion_clip(
+                    &layer,
+                    Clip {
+                        id: "missing".into(),
+                        preset: "tx-kanji-stroke-order".into(),
+                        ..Default::default()
+                    }
+                )
+                .is_err());
+            assert_eq!(
+                before,
+                serde_json::to_value(unsupported.document_state()).unwrap()
+            );
+        }
+    }
+}

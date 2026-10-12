@@ -205,9 +205,9 @@ pub fn advances(text: &VectorText, color: [u8; 3]) -> Vec<Advance> {
 fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)>)> {
     let mut fonts = super::system_fonts();
     let vertical = text.writing_mode == WritingMode::Vertical;
-    let mut cache: HashMap<(usvg::fontdb::ID, String, Vec<(String, u32)>), GlyphShape> =
-        HashMap::new();
-    let mut pairs: HashMap<(usvg::fontdb::ID, String, Vec<(String, u32)>), f32> = HashMap::new();
+    type AxisGlyphKey = (usvg::fontdb::ID, String, Vec<(String, u32)>);
+    let mut cache: HashMap<AxisGlyphKey, GlyphShape> = HashMap::new();
+    let mut pairs: HashMap<AxisGlyphKey, f32> = HashMap::new();
     let mut support = HashMap::new();
     let resolver = super::font_resolver();
     let mut parts = Vec::new();
@@ -307,17 +307,27 @@ fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)
                     return None;
                 }
                 let other_id = (*other_id)?;
-                let right = cache.entry((other_id, (*other).into(),other_style.font_axes.iter().map(|(t,v)|(t.clone(),v.to_bits())).collect())).or_insert_with(|| {
-                    fonts
-                        .with_face_data(other_id, |data, index| {
-                            shape(data, index, other, vertical, false, &other_style.font_axes)
-                        })
-                        .flatten()
-                        .unwrap_or(GlyphShape {
-                            advance: 1.,
-                            edges: Vec::new(),
-                        })
-                });
+                let right = cache
+                    .entry((
+                        other_id,
+                        (*other).into(),
+                        other_style
+                            .font_axes
+                            .iter()
+                            .map(|(t, v)| (t.clone(), v.to_bits()))
+                            .collect(),
+                    ))
+                    .or_insert_with(|| {
+                        fonts
+                            .with_face_data(other_id, |data, index| {
+                                shape(data, index, other, vertical, false, &other_style.font_axes)
+                            })
+                            .flatten()
+                            .unwrap_or(GlyphShape {
+                                advance: 1.,
+                                edges: Vec::new(),
+                            })
+                    });
                 Some(optical(&left, right))
             })
         } else {
@@ -347,7 +357,8 @@ fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)
     output
 }
 fn compatible(a: &TextStyle, b: &TextStyle) -> bool {
-    a.font_size == b.font_size
+    a.font_axes == b.font_axes
+        && a.font_size == b.font_size
         && a.scale_x == b.scale_x
         && a.scale_y == b.scale_y
         && a.baseline_shift == b.baseline_shift

@@ -157,6 +157,70 @@ fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
     runtime.editing = None;
     Ok(changed)
 }
+fn validate_motion_font(
+    doc: &Document,
+    layer: &str,
+    clip: &lumapaint_core::motion::Clip,
+) -> Result<(), String> {
+    if !clip.enabled
+        || !lumapaint_core::motion::preset(&clip.preset).is_some_and(|preset| {
+            preset
+                .operations
+                .contains(&lumapaint_core::motion::Operation::FontAxes)
+        })
+    {
+        return Ok(());
+    }
+    let defaults = lumapaint_core::motion::default_axes(&clip.preset);
+    let axes = if clip.font_axes.is_empty() {
+        &defaults
+    } else {
+        &clip.font_axes
+    };
+    let families = if clip.variable_font.is_empty() {
+        doc.svg_layers()
+            .filter(|svg| svg.id == layer)
+            .flat_map(|svg| svg.vector_objects.iter())
+            .filter(|o| clip.objects.is_empty() || clip.objects.contains(&o.id))
+            .filter_map(|o| o.text.as_ref())
+            .map(|text| {
+                if text
+                    .content
+                    .chars()
+                    .any(lumapaint_core::motion::kanji::is_cjk)
+                    && axes.iter().all(|a| a.tag == "wght")
+                {
+                    "LumaPaint Noto Sans JP"
+                } else {
+                    "LumaPaint Roboto Flex"
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::from([clip.variable_font.as_str()])
+    };
+    let fonts = lumapaint_renderer::vector::font_viewer::variable_catalog();
+    for family in families {
+        let font = fonts
+            .iter()
+            .find(|font| font.family == family)
+            .ok_or("Variable font unavailable / 可変フォントが見つかりません / 未找到可变字体")?;
+        for axis in axes {
+            let limits = font.axes.iter().find(|a| a.tag == axis.tag).ok_or(
+                "Unsupported font axis / このフォントは指定の軸に対応していません / 字体不支持该轴",
+            )?;
+            if axis.from < limits.minimum
+                || axis.from > limits.maximum
+                || axis.to < limits.minimum
+                || axis.to > limits.maximum
+            {
+                return Err("Font axis outside its range / フォント軸の指定範囲を超えています / 字体轴超出范围".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn command(request: Request) -> Result<Response, String> {
     if let Request::SetMotion { document_id, .. }
     | Request::RemoveMotion { document_id, .. }
@@ -353,6 +417,8 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                             property,
                         } => doc.remove_animation_key(&layer, frame, property),
                         Request::SetMotion { layer, clip, .. } => {
+                            clip.validate(18000)?;
+                            validate_motion_font(&doc, &layer, &clip)?;
                             doc.set_motion_clip(&layer, *clip)
                         }
                         Request::RemoveMotion { layer, id, .. } => {
@@ -469,6 +535,47 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn variable_font_validation_uses_actual_axes_and_ranges() {
+        use lumapaint_core::{
+            document::TextSettings,
+            motion::{AxisMotion, Clip},
+            vector::VectorText,
+        };
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "日本語 Motion".into(),
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [0; 3],
+        })
+        .unwrap();
+        let layer = doc.svg_layers().next().unwrap().id.clone();
+        let mut clip = Clip {
+            id: "axes".into(),
+            preset: "tx-weight-wave".into(),
+            ..Default::default()
+        };
+        assert!(validate_motion_font(&doc, &layer, &clip).is_ok());
+        clip.variable_font = "LumaPaint Noto Sans JP".into();
+        clip.font_axes = vec![AxisMotion {
+            tag: "wdth".into(),
+            from: 75.,
+            to: 125.,
+        }];
+        assert!(validate_motion_font(&doc, &layer, &clip).is_err());
+        clip.variable_font = "LumaPaint Roboto Flex".into();
+        assert!(validate_motion_font(&doc, &layer, &clip).is_ok());
+        clip.font_axes[0].to = 10000.;
+        assert!(validate_motion_font(&doc, &layer, &clip).is_err());
+        clip.variable_font = "unavailable motion test font".into();
+        assert!(validate_motion_font(&doc, &layer, &clip).is_err());
+        clip.enabled = false;
+        assert!(validate_motion_font(&doc, &layer, &clip).is_ok());
     }
     #[test]
     fn stale_motion_commands_and_panel_cleanup_cannot_change_another_document() {

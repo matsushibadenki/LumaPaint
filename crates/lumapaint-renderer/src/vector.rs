@@ -20,8 +20,33 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
         .get_or_init(|| {
             let mut fonts = usvg::fontdb::Database::new();
             lumapaint_fonts::load_system_fonts(&mut fonts);
-            fonts.load_font_data(include_bytes!("../assets/fonts/RobotoFlex.ttf").to_vec());
-            fonts.load_font_data(include_bytes!("../assets/fonts/NotoSansJP.ttf").to_vec());
+            for (bytes, family) in [
+                (
+                    include_bytes!("../assets/fonts/RobotoFlex.ttf").as_slice(),
+                    "LumaPaint Roboto Flex",
+                ),
+                (
+                    include_bytes!("../assets/fonts/NotoSansJP.ttf").as_slice(),
+                    "LumaPaint Noto Sans JP",
+                ),
+            ] {
+                let existing = fonts
+                    .faces()
+                    .map(|face| face.id)
+                    .collect::<std::collections::HashSet<_>>();
+                fonts.load_font_data(bytes.to_vec());
+                let added = fonts
+                    .faces()
+                    .filter(|face| !existing.contains(&face.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for mut face in added {
+                    fonts.remove_face(face.id);
+                    let language = face.families[0].1;
+                    face.families = vec![(family.into(), language)];
+                    fonts.push_face_info(face);
+                }
+            }
             configure_generic_font_families(&mut fonts);
             Arc::new(fonts)
         })

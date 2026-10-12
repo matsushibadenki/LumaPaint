@@ -12,7 +12,7 @@ struct Vertex {
     position: [f32; 4],
     uv: [f32; 2],
     light: f32,
-    padding: f32,
+    opacity: f32,
 }
 struct Image {
     _lease: crate::gpu_metrics::CachedTextureLease,
@@ -31,8 +31,13 @@ struct Batch {
     image: Arc<Image>,
 }
 struct Layer {
+    _target_lease: crate::gpu_metrics::CachedTextureLease,
     target: native_composite::Composite,
+    _depth_lease: crate::gpu_metrics::CachedTextureLease,
+    _color_lease: crate::gpu_metrics::CachedTextureLease,
     _depth: wgpu::Texture,
+    _color: wgpu::Texture,
+    color: wgpu::TextureView,
     depth: wgpu::TextureView,
     batches: Vec<Batch>,
 }
@@ -76,9 +81,9 @@ impl Display {
         let shader=device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("Motion mesh perspective"),source:wgpu::ShaderSource::Wgsl(r#"
 @group(0) @binding(0) var image:texture_2d<f32>;
 @group(0) @binding(1) var smp:sampler;
-struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) light:f32}
-@vertex fn vs_main(@location(0) position:vec4<f32>,@location(1) uv:vec2<f32>,@location(2) light:f32)->Out {var o:Out;o.position=position;o.uv=uv;o.light=light;return o;}
-@fragment fn fs_main(o:Out)->@location(0) vec4<f32>{let color=textureSample(image,smp,o.uv);if(color.a<.001){discard;}return vec4(color.rgb*o.light,color.a);}
+struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) light:f32,@location(2) opacity:f32}
+@vertex fn vs_main(@location(0) position:vec4<f32>,@location(1) uv:vec2<f32>,@location(2) light:f32,@location(3) opacity:f32)->Out {var o:Out;o.position=position;o.uv=uv;o.light=light;o.opacity=opacity;return o;}
+@fragment fn fs_main(o:Out)->@location(0) vec4<f32>{let color=textureSample(image,smp,o.uv);if(color.a*o.opacity<.001){discard;}return vec4(color.rgb*o.light,color.a)*o.opacity;}
 "#.into())});
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Motion mesh depth-tested triangles"),
@@ -90,7 +95,7 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 32,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x2,2=>Float32],
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x2,2=>Float32,3=>Float32],
                 })],
             },
             primitive: Default::default(),
@@ -101,7 +106,7 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState{count:4,..Default::default()},
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
@@ -243,19 +248,18 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
         let Some(scene) = &layer.motion_scene else {
             return false;
         };
-        if scene.surfaces.len() > 64 || v.width as u64 * v.height as u64 * 8 > 64 * 1024 * 1024 {
+        if scene.surfaces.len() > 64 || v.width as u64 * v.height as u64 * 36 > 128 * 1024 * 1024 {
             return false;
         }
-        let existing = self
-            .layers
-            .get(&layer.id)
-            .map_or(0, |l| l.target.size[0] as u64 * l.target.size[1] as u64 * 8);
+        let existing = self.layers.get(&layer.id).map_or(0, |l| {
+            l.target.size[0] as u64 * l.target.size[1] as u64 * 36
+        });
         let total = self
             .layers
             .values()
-            .map(|l| l.target.size[0] as u64 * l.target.size[1] as u64 * 8)
+            .map(|l| l.target.size[0] as u64 * l.target.size[1] as u64 * 36)
             .sum::<u64>();
-        if total - existing + v.width as u64 * v.height as u64 * 8 > 64 * 1024 * 1024 {
+        if total - existing + v.width as u64 * v.height as u64 * 36 > 128 * 1024 * 1024 {
             return false;
         }
         let scale = v.screen_zoom() * v.scale;
@@ -283,18 +287,21 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                         position: [x * w, y * w, vertex.depth * w, w],
                         uv: vertex.uv,
                         light: vertex.light,
-                        padding: 0.,
+                        opacity: surface.opacity,
                     }
                 })
                 .collect::<Vec<_>>();
             if data.is_empty() {
                 continue;
             }
-            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Motion mesh vertices"),
-                contents: bytemuck::cast_slice(&data),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+            let buffer = crate::gpu_metrics::create_buffer_init!(
+                device,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("Motion mesh vertices"),
+                    contents: bytemuck::cast_slice(&data),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }
+            );
             crate::performance::count("motion_mesh_vertex_upload_bytes", (data.len() * 32) as u64);
             batches.push(Batch {
                 buffer,
@@ -318,7 +325,7 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                         depth_or_array_layers: 1
                     },
                     mip_level_count: 1,
-                    sample_count: 1,
+                    sample_count: 4,
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Depth32Float,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -326,11 +333,34 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
                 }
             );
             let view = depth.create_view(&Default::default());
+            let color = crate::gpu_metrics::create_texture!(
+                device,
+                &wgpu::TextureDescriptor {
+                    label: Some("Motion mesh MSAA"),
+                    size: wgpu::Extent3d {
+                        width: v.width,
+                        height: v.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 4,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                }
+            );
+            let color_view = color.create_view(&Default::default());
             self.layers.insert(
                 layer.id.clone(),
                 Layer {
+                    _target_lease: crate::gpu_metrics::CachedTextureLease::new(&target._texture),
                     target,
+                    _depth_lease: crate::gpu_metrics::CachedTextureLease::new(&depth),
+                    _color_lease: crate::gpu_metrics::CachedTextureLease::new(&color),
                     _depth: depth,
+                    _color: color,
+                    color: color_view,
                     depth: view,
                     batches: Vec::new(),
                 },
@@ -339,7 +369,8 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
         let prepared = self.layers.get_mut(&layer.id).unwrap();
         prepared.batches = batches;
         prepared.target.opacity = layer.effective_opacity();
-        queue.write_buffer(
+        crate::gpu_metrics::write_buffer!(
+            queue,
             &prepared.target.uniform,
             0,
             bytemuck::cast_slice(&[prepared.target.opacity, 0., 0., 0.]),
@@ -354,12 +385,12 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Motion mesh GPU projection"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &layer.target.view,
+                    view: &layer.color,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: Some(&layer.target.view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
+                        store: wgpu::StoreOp::Discard,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -385,5 +416,172 @@ struct Out {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@loc
         pass.set_pipeline(&self.composite.draw);
         pass.set_bind_group(0, &self.layers[id].target.binding, &[]);
         pass.draw(0..6, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lumapaint_core::motion::{self, mesh, Clip};
+    fn gpu() -> (wgpu::Device, wgpu::Queue) {
+        pollster::block_on(async {
+            let adapter = wgpu::Instance::default()
+                .request_adapter(&Default::default())
+                .await
+                .expect("real GPU");
+            eprintln!("motion mesh adapter: {:?}", adapter.get_info());
+            adapter.request_device(&Default::default()).await.unwrap()
+        })
+    }
+    fn pixels(display: &Display, device: &wgpu::Device, queue: &wgpu::Queue, id: &str) -> Vec<u8> {
+        let size = wgpu::Extent3d {
+            width: 128,
+            height: 128,
+            depth_or_array_layers: 1,
+        };
+        let output = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Mesh test output"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = output.create_view(&Default::default());
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 128 * 128 * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        display.encode(&mut encoder);
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            display.draw(&mut pass, id);
+        }
+        encoder.copy_texture_to_buffer(
+            output.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(512),
+                    rows_per_image: Some(128),
+                },
+            },
+            size,
+        );
+        queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        rx.recv().unwrap().unwrap();
+        let bytes = read.slice(..).get_mapped_range().unwrap().to_vec();
+        read.unmap();
+        bytes
+    }
+    fn viewport() -> Viewport {
+        Viewport {
+            width: 128,
+            height: 128,
+            scale: 1.,
+            zoom: 1.6,
+            pasteboard_color: None,
+            dark: false,
+            pan_x: 0.,
+            pan_y: 0.,
+            document_width: 128.,
+            document_height: 128.,
+            canvas_color: lumapaint_core::document::CanvasColor::Transparent,
+        }
+    }
+    fn layer() -> SvgLayer {
+        serde_json::from_value(
+            serde_json::json!({"id":"mesh","name":"Mesh","visible":true,"source":"<svg/>"}),
+        )
+        .unwrap()
+    }
+    #[test]
+    #[ignore = "requires a real GPU"]
+    fn gpu_motion_mesh_reuses_textures_and_depth_tests_transparent_surfaces() {
+        let (device, queue) = gpu();
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut display = Display::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut layer = layer();
+        let clip = Clip {
+            angle: 360.,
+            mesh_depth: 40.,
+            camera_distance: 300.,
+            ..Default::default()
+        };
+        let preset = motion::preset("3d-cube").unwrap();
+        let source = "<rect x='24' y='24' width='80' height='80' fill='#d43b25'/>";
+        let mut frames = Vec::new();
+        let mut first = None;
+        for p in [0., 0.23, 0.51] {
+            layer.motion_scene = Some(Arc::new(mesh::Scene {
+                surfaces: vec![mesh::surface(
+                    source.into(),
+                    [24., 24., 104., 104.],
+                    &clip,
+                    preset,
+                    p,
+                    0,
+                    1,
+                    24,
+                )],
+            }));
+            display.begin_frame(&HashSet::from(["mesh".into()]));
+            assert!(display.prepare(&device, &queue, &layer, viewport()));
+            let image = display.textures[0].image.clone();
+            if let Some(first) = &first {
+                assert!(Arc::ptr_eq(first, &image));
+            } else {
+                first = Some(image);
+            }
+            let raster = pixels(&display, &device, &queue, "mesh");
+            assert!(raster.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+            frames.push(raster);
+        }
+        assert_ne!(frames[0], frames[1]);
+        assert_ne!(frames[1], frames[2]);
+        assert_eq!(display.textures.len(), 1);
+        let make = |color: &str, z: f32, opacity: f32| {
+            mesh::Surface{opacity,size:[80.,80.],source:format!("<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80'><rect width='80' height='80' fill='{color}'/></svg>"),triangles:mesh::Mesh::plane(80.,80.).project([0.;3],[0.,0.,z],[64.,64.],300.)}
+        };
+        for opacity in [1., 0.] {
+            layer.motion_scene = Some(Arc::new(mesh::Scene {
+                surfaces: vec![make("blue", 60., opacity), make("red", 0., 1.)],
+            }));
+            display.begin_frame(&HashSet::from(["mesh".into()]));
+            assert!(display.prepare(&device, &queue, &layer, viewport()));
+            let raster = pixels(&display, &device, &queue, "mesh");
+            let pixel = &raster[(64 * 128 + 64) * 4..][..4];
+            if opacity == 1. {
+                assert!(pixel[2] > pixel[0], "near blue must survive far red");
+            } else {
+                assert!(
+                    pixel[0] > pixel[2],
+                    "transparent front must not write depth"
+                );
+            }
+        }
+        assert!(pollster::block_on(error_scope.pop()).is_none());
     }
 }

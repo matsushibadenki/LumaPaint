@@ -4,6 +4,8 @@ Source: [Motion Reference](https://motion-reference.takayustudio.jp/). The rende
 
 All IDs have independent Rust timeline programs. The website’s implementation, descriptions, HTML and demonstration artwork are not bundled. Names and IDs identify the functional presets. Chinese names and interface text are localized. 185 programs retain numeric tracks for individual actors; the remaining programs compose the motion kernels and character layout operations.
 
+See [the mesh, real-axis and stroke-order implementation](motion-detail-2026-10-12.md) for the follow-up validation and remaining visual differences.
+
 ## Category inventory
 
 | Category | 日本語 | English | 简体中文 | Types |
@@ -366,7 +368,7 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `catalog-ui-spatial-radial-command-bloom` | 放射コマンドブルーム | `ui-spatial` | 1194 | `spring` | glow, scale | 6 |
 | `catalog-ui-spatial-spatial-breadcrumb` | 空間パンくず | `ui-spatial` | 641 | `spring` | parallax | 3 |
 | `catalog-ui-spatial-perspective-dock` | 遠近ドック | `ui-spatial` | 948 | `power` | parallax | 5 |
-| `catalog-ui-spatial-layer-peel` | レイヤーピール | `ui-spatial` | 1155 | `power` | flipY | 1 |
+| `catalog-ui-spatial-layer-peel` | レイヤーピール | `ui-spatial` | 1155 | `power` | meshPlane | 1 |
 | `catalog-ui-spatial-tooltip-orbit` | ツールチップ軌道 | `ui-spatial` | 1122 | `spring` | orbit | 1 |
 | `catalog-ui-spatial-depth-lens` | 奥行きレンズ | `ui-spatial` | 1169 | `power` | parallax | 1 |
 | `catalog-ui-spatial-magnetic-constellation` | 磁気コンステレーション | `ui-spatial` | 616 | `spring` | gather | 6 |
@@ -378,7 +380,7 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `catalog-ui-spatial-spatial-search` | 空間検索リビール | `ui-spatial` | 898 | `spring` | arc | 3 |
 | `catalog-ui-spatial-orbit-context` | 軌道コンテキストメニュー | `ui-spatial` | 1285 | `spring` | orbit | 3 |
 | `catalog-ui-spatial-depth-stack-reorder` | 奥行きスタック並べ替え | `ui-spatial` | 1332 | `power` | reorder | 3 |
-| `catalog-ui-spatial-calendar-fold` | 遠近カレンダーフォールド | `ui-spatial` | 1119 | `power` | flipX | 1 |
+| `catalog-ui-spatial-calendar-fold` | 遠近カレンダーフォールド | `ui-spatial` | 1119 | `power` | meshPlane | 1 |
 | `catalog-ui-spatial-cursor-raycast` | カーソルレイキャスト選択 | `ui-spatial` | 566 | `power` | parallax | 2 |
 | `catalog-ui-spatial-spatial-audio-locator` | 空間オーディオロケーター | `ui-spatial` | 873 | `linear` | audioPulse | 3 |
 | `catalog-ui-material-liquid-tab-bridge` | 液体タブブリッジ | `ui-material` | 920 | `power` | morph | 2 |
@@ -402,14 +404,14 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `catalog-ui-material-chrome-ripple` | クローム面リップル | `ui-material` | 986 | `power` | displace, repeat | 2 |
 | `catalog-ui-material-clay-icon-morph` | クレイアイコンモーフ | `ui-material` | 933 | `power` | morph | 1 |
 | `catalog-kinetic-type-glyph-slot-roll` | グリフスロットロール | `tx-swap` | 1160 | `back` | spin | 4 |
-| `catalog-kinetic-type-variable-font-pulse` | 可変フォントパルス | `tx-variable` | 867 | `power` | pulse | 0 |
+| `catalog-kinetic-type-variable-font-pulse` | 可変フォントパルス | `tx-variable` | 867 | `power` | fontAxes | 0 |
 | `catalog-kinetic-type-character-magnetize` | 文字マグネット整列 | `tx-physics` | 1088 | `spring` | gather | 5 |
 | `catalog-kinetic-type-line-break-reflow` | 改行リフロー | `tx-layout` | 955 | `power` | reorder | 2 |
 | `catalog-kinetic-type-terminal-decode` | ターミナルデコード | `tx-typing` | 842 | `linear` | scramble | 7 |
 | `catalog-kinetic-type-counterweight-headline` | カウンターウェイト見出し | `tx-layout` | 1229 | `spring` | scale, reorder | 1 |
 | `catalog-kinetic-type-echo-caption` | エコートレイル字幕 | `tx-caption` | 1396 | `expo` | caption | 3 |
 | `catalog-kinetic-type-letter-collision` | 文字衝突バウンス | `tx-physics` | 1024 | `power` | hop | 2 |
-| `catalog-kinetic-type-type-tunnel` | 文字遠近トンネル | `tx-depth` | 1251 | `linear` | flipX | 4 |
+| `catalog-kinetic-type-type-tunnel` | 文字遠近トンネル | `tx-depth` | 1251 | `linear` | depthStack | 4 |
 | `catalog-kinetic-type-chapter-index-scrub` | 章番号スクラブ | `tx-scroll` | 1298 | `linear` | highlight | 2 |
 | `catalog-kinetic-type-focus-word-explosion` | 注目語エクスプロージョン | `tx-emphasis` | 792 | `expo` | blur | 5 |
 | `catalog-kinetic-type-mono-data-shuffle` | 等幅データシャッフル | `tx-counter` | 999 | `power` | reorder | 6 |
@@ -626,9 +628,9 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `lk-pixel` | ピクセル化（粗くする） | `look` | 600 | `steps` | blocks | 0 |
 | `lk-vignette` | ビネット（呼吸する周辺減光） | `look` | 3000 | `sine` | iris | 0 |
 | `lk-crt` | CRT（走査線） | `look` | 3000 | `linear` | noise, blinds | 0 |
-| `3d-cube` | 立方体の回転 | `depth3d` | 4000 | `linear` | flipY, shadow | 0 |
-| `3d-coverflow` | カバーフロー | `depth3d` | 500 | `spring` | flipY, reorder | 0 |
-| `3d-depth` | 奥行きのある重なり | `depth3d` | 4000 | `linear` | parallax, scale, fade | 0 |
+| `3d-cube` | 立方体の回転 | `depth3d` | 4000 | `linear` | cube | 0 |
+| `3d-coverflow` | カバーフロー | `depth3d` | 500 | `spring` | coverflow | 0 |
+| `3d-depth` | 奥行きのある重なり | `depth3d` | 4000 | `linear` | depthStack | 0 |
 | `sd-cues` | SFX を拍に置く | `sound` | 120 | `expo` | audioPulse | 0 |
 | `sd-bars` | オーディオビジュアライザー | `sound` | 100 | `power` | audioPulse | 0 |
 | `sd-duck` | サイドチェイン・ダック | `sound` | 100 | `power` | audioDuck | 0 |
@@ -749,23 +751,23 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `tx-vhs-scanline` | VHS 走査線ノイズ | `tx-glitch` | 3000 | `linear` | chromatic, shake | 0 |
 | `tx-pixel-mosaic` | モザイク解像 | `tx-glitch` | 720 | `steps` | blocks | 0 |
 | `tx-melt-drip` | 溶けて垂れる | `tx-glitch` | 2000 | `power` | displace | 0 |
-| `tx-flip-up-3d` | 3D フリップアップ | `tx-depth` | 800 | `expo` | slideY, flipY | 0 |
+| `tx-flip-up-3d` | 3D フリップアップ | `tx-depth` | 800 | `expo` | meshPlane | 0 |
 | `tx-swing-door` | スイングドア | `tx-depth` | 1000 | `expo` | swing | 0 |
-| `tx-z-fly-in` | 奥から飛来 | `tx-depth` | 900 | `back` | flipX | 0 |
+| `tx-z-fly-in` | 奥から飛来 | `tx-depth` | 900 | `back` | depthStack | 0 |
 | `tx-tumble-in` | 回転落下イン | `tx-depth` | 1300 | `power` | spin, slideX | 0 |
-| `tx-roll-flip-hover` | 3D ロールフリップ | `tx-depth` | 400 | `power` | flipY, spin | 0 |
-| `tx-cylinder-text` | 3D 円筒テキスト | `tx-depth` | 6000 | `linear` | flipX | 0 |
-| `tx-layered-depth` | レイヤー奥行き文字 | `tx-depth` | 600 | `spring` | flipX | 0 |
-| `tx-paper-fold` | 折りたたみ | `tx-depth` | 700 | `power` | flipX, blinds | 0 |
-| `tx-motext-falloff` | エフェクター掃引(MoText) | `tx-depth` | 1700 | `spring` | flipX | 0 |
-| `tx-weight-wave` | ウェイトウェーブ | `tx-variable` | 1600 | `power` | weight, wave | 0 |
-| `tx-width-stretch` | 可変幅ストレッチ | `tx-variable` | 600 | `power` | jelly, scaleX | 0 |
-| `tx-weight-breathe` | ウェイト呼吸 | `tx-variable` | 3000 | `power` | pulse, weight | 0 |
-| `tx-thin-to-bold-in` | 細→太で出現 | `tx-variable` | 900 | `power` | weight | 0 |
-| `tx-slant-swing` | 傾き(slnt)スイング | `tx-variable` | 2000 | `power` | swing, skew | 0 |
-| `tx-width-slant-scroll` | 速度で幅・傾き変化 | `tx-variable` | 800 | `spring` | scaleX, skew | 0 |
-| `tx-text-pressure` | テキストプレッシャー | `tx-variable` | 300 | `linear` | squash | 0 |
-| `tx-variable-proximity` | 可変プロキシミティ | `tx-variable` | 300 | `power` | weight | 0 |
+| `tx-roll-flip-hover` | 3D ロールフリップ | `tx-depth` | 400 | `power` | meshPlane | 0 |
+| `tx-cylinder-text` | 3D 円筒テキスト | `tx-depth` | 6000 | `linear` | meshPlane | 0 |
+| `tx-layered-depth` | レイヤー奥行き文字 | `tx-depth` | 600 | `spring` | depthStack | 0 |
+| `tx-paper-fold` | 折りたたみ | `tx-depth` | 700 | `power` | meshPlane | 0 |
+| `tx-motext-falloff` | エフェクター掃引(MoText) | `tx-depth` | 1700 | `spring` | depthStack | 0 |
+| `tx-weight-wave` | ウェイトウェーブ | `tx-variable` | 1600 | `power` | fontAxes | 0 |
+| `tx-width-stretch` | 可変幅ストレッチ | `tx-variable` | 600 | `power` | fontAxes | 0 |
+| `tx-weight-breathe` | ウェイト呼吸 | `tx-variable` | 3000 | `power` | fontAxes | 0 |
+| `tx-thin-to-bold-in` | 細→太で出現 | `tx-variable` | 900 | `power` | fontAxes | 0 |
+| `tx-slant-swing` | 傾き(slnt)スイング | `tx-variable` | 2000 | `power` | fontAxes | 0 |
+| `tx-width-slant-scroll` | 速度で幅・傾き変化 | `tx-variable` | 800 | `spring` | fontAxes | 0 |
+| `tx-text-pressure` | テキストプレッシャー | `tx-variable` | 300 | `linear` | fontAxes | 0 |
+| `tx-variable-proximity` | 可変プロキシミティ | `tx-variable` | 300 | `power` | fontAxes | 0 |
 | `tx-scroll-word-highlight` | スクロールで単語明転 | `tx-scroll` | 3800 | `linear` | spin, glow, highlight | 0 |
 | `tx-view-timeline-words` | CSS view() 単語リビール | `tx-scroll` | 3800 | `linear` | highlight | 0 |
 | `tx-scroll-blur-tilt` | 傾き+ブラー解像 | `tx-scroll` | 3800 | `linear` | spin, tilt, blur | 0 |
@@ -828,7 +830,7 @@ Durations are initial active durations in milliseconds, rounded to document fram
 | `tx-tategaki-reveal` | 縦書きリビール | `tx-japanese` | 500 | `expo` | typewriter | 0 |
 | `tx-ruby-sync` | ルビ同期リビール | `tx-japanese` | 600 | `power` | typewriter | 0 |
 | `tx-ime-conversion` | かな漢字変換 | `tx-japanese` | 100 | `steps` | scramble, textSwap | 0 |
-| `tx-kanji-stroke-order` | 漢字書き順 | `tx-japanese` | 300 | `power` | strokeDraw | 0 |
+| `tx-kanji-stroke-order` | 漢字書き順 | `tx-japanese` | 300 | `power` | kanjiStroke | 0 |
 | `tx-brush-write-on` | 筆文字ライトオン | `tx-japanese` | 350 | `power` | strokeDraw | 0 |
 | `tx-onomatopoeia-impact` | 擬音インパクト | `tx-japanese` | 167 | `sine` | typewriter | 0 |
 | `tx-lyric-tame-tsume` | リリックモーション(タメツメ) | `tx-japanese` | 300 | `bezier` | typewriter | 0 |

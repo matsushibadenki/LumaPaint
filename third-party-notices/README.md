@@ -61,3 +61,16 @@ The PDF reader bundles FreeType 2.14.3 and libpng 1.6.59 as of 2026-10-12.
 Upstream sources and archive SHA-256 values are recorded in
 `vendor/freetype-sys/LUMAPAINT-PATCHES.md`. These versions do not replace
 Skia’s independently managed codec/font dependencies.
+
+## Timeline motion assets (2026-10-12)
+
+Bundled Roboto Flex and Noto Sans JP variable fonts use SIL OFL 1.1.
+Unmodified binaries are loaded only into the Rust process. Their copyright
+and license notices are in RobotoFlex-OFL.txt and NotoSansJP-OFL.txt;
+variable-fonts-attribution.md records the pinned upstream source.
+
+Kanji stroke paths derive from KanjiVG (Ulrich Apel and contributors),
+CC BY-SA 3.0. KanjiVG-attribution.md describes the source revision and
+normalization; KanjiVG-CC-BY-SA-3.0.txt includes the license. Stroke-path
+data and adaptations retain that license; the application source is separate.
+Generated stroke SVG includes attribution metadata.

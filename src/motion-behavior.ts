@@ -13,6 +13,9 @@ const groups:[string[],Record<Locale,string>][]=[
  [['repeat','particles','confetti','snow','embers','fireworks','coalesce'],{ja:'複製・残像・粒子を生成します。シードを固定すると同じ動きを再現できます。',en:'Generate copies, trails or particles; a fixed seed reproduces the motion.', 'zh-CN':'生成副本、残影或粒子，固定种子可重现相同运动。'}],
  [['typewriter','scramble','textSwap','counter','tracking','underline','highlight','caption','lines'],{ja:'文字内容・文字単位の遅延・組版を時間変化させます。',en:'Animate text content, character timing or layout.', 'zh-CN':'改变文字内容、逐字时序或排版。'}],
  [['audioPulse','audioDuck','beat','walk','blink','tail','hold'],{ja:'設定した周期に沿ってリズムや反復動作を再生します。',en:'Play rhythmic or repeated movement at the configured frequency.', 'zh-CN':'按照设定周期播放节奏或重复动作。'}],
+ [['meshPlane','cube','depthStack','coverflow'],{ja:'立体メッシュを透視投影します。奥行き・カメラ距離・3軸の回転を調整します。',en:'Project a 3D mesh with perspective. Adjust depth, camera distance and rotation on three axes.','zh-CN':'以透视方式投影立体网格，可调节景深、镜头距离和三轴旋转。'}],
+ [['fontAxes'],{ja:'可変フォントの実軸を動かします。フォントごとの対応軸と範囲を使います。',en:'Animate real variable-font axes within the selected font’s supported ranges.','zh-CN':'在所选字体支持的范围内调整真实可变字体轴。'}],
+ [['kanjiStroke'],{ja:'KanjiVGの正しい画順と方向で、長さに応じて漢字を書きます。',en:'Draw kanji using canonical KanjiVG stroke order and direction, with timing based on stroke length.','zh-CN':'按KanjiVG标准笔顺和方向书写汉字，时长依据笔画长度。'}],
 ];
 export function motionBehavior(preset:MotionPreset,locale:Locale):string {
  const sentences=groups.filter(([operations])=>preset.operations.some(op=>operations.includes(op))).map(([,text])=>text[locale]);

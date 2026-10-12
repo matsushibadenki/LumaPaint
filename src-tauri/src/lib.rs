@@ -234,6 +234,7 @@ pub fn run() {
             ai::ai_cancel,
             timeline::timeline,
             timeline::motion_catalog,
+            timeline::motion_fonts,
             canvas::set_vector_appearance,
             canvas::ungroup_selected_vectors,
             canvas::edit_selected_paths,

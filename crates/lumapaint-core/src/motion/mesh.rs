@@ -12,6 +12,7 @@ pub struct Vertex {
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    pub cull_back: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Projected {
@@ -23,6 +24,7 @@ pub struct Projected {
 }
 #[derive(Clone, Debug)]
 pub struct Surface {
+    pub opacity: f32,
     pub size: [f32; 2],
     pub source: String,
     pub triangles: Vec<[Projected; 3]>,
@@ -51,10 +53,35 @@ impl Mesh {
             [[-x, y, z], [x, y, z], [x, y, -z], [-x, y, -z]],
         ])
     }
+    pub fn cylinder(width: f32, height: f32) -> Self {
+        let radius = width / std::f32::consts::PI;
+        let mut mesh = Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            cull_back: true,
+        };
+        for i in 0..=32 {
+            let u = i as f32 / 32.;
+            let angle = (u - 0.5) * std::f32::consts::TAU;
+            for (y, v) in [(-height * 0.5, 0.), (height * 0.5, 1.)] {
+                mesh.vertices.push(Vertex {
+                    position: [angle.sin() * radius, y, angle.cos() * radius - radius],
+                    uv: [u, v],
+                    normal: [angle.sin(), 0., angle.cos()],
+                });
+            }
+            if i > 0 {
+                let b = (i - 1) * 2;
+                mesh.indices.extend([b, b + 2, b + 1, b + 1, b + 2, b + 3]);
+            }
+        }
+        mesh
+    }
     fn faces(faces: &[[[f32; 3]; 4]]) -> Self {
         let mut mesh = Self {
             vertices: Vec::new(),
             indices: Vec::new(),
+            cull_back: faces.len() > 1,
         };
         for face in faces {
             let a = sub(face[1], face[0]);
@@ -92,7 +119,13 @@ impl Mesh {
             })
             .collect::<Vec<_>>();
         let mut triangles = Vec::new();
-        for indices in self.indices.chunks_exact(3) {
+        for indices in self.indices.as_chunks::<3>().0 {
+            if self.cull_back {
+                let v = &vertices[indices[0] as usize];
+                if dot(v.normal, sub([0., 0., camera], v.position)) <= 0. {
+                    continue;
+                }
+            }
             let polygon = near_clip(
                 &[
                     vertices[indices[0] as usize].clone(),
@@ -113,7 +146,7 @@ impl Mesh {
                         depth: distance / (distance + camera),
                         distance,
                         uv: v.uv,
-                        light: 0.45 + 0.55 * dot(v.normal, [0.25, -0.35, 0.9]).max(0.).min(1.),
+                        light: 0.45 + 0.55 * dot(v.normal, [0.25, -0.35, 0.9]).clamp(0., 1.),
                     }
                 });
                 if triangle.iter().all(|v| {
@@ -188,6 +221,7 @@ pub fn enabled(preset: &Preset) -> bool {
         )
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub fn surface(
     source: String,
     bounds: [f32; 4],
@@ -215,14 +249,26 @@ pub fn surface(
         .unwrap_or(preset.curve)
         .sample(p, p * clip.duration as f32 / fps as f32, clip.seed)
         .clamp(0., 1.);
+    if matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff") {
+        rotation[0] +=
+            (std::f32::consts::TAU * p * clip.frequency).sin() * clip.angle * 0.1 * clip.strength;
+        rotation[1] +=
+            (std::f32::consts::TAU * p * clip.frequency).cos() * clip.angle * 0.1 * clip.strength;
+    }
     let mesh = if preset.operations.contains(&Operation::Cube) {
         rotation[1] += clip.angle * p * clip.strength;
         rotation[0] += clip.angle * p * 0.37 * clip.strength;
         Mesh::cuboid(width, height, clip.mesh_depth.max(1.))
     } else {
         if preset.operations.contains(&Operation::DepthStack) {
-            translation[2] = (index as f32 - count.saturating_sub(1) as f32) * clip.mesh_depth
-                + q * clip.distance * clip.strength;
+            translation[2] = if preset.id.contains("fly-in") {
+                -(clip.mesh_depth + clip.distance * 3.) * (1. - q) * clip.strength
+            } else if matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff") {
+                0.
+            } else {
+                (index as f32 - count.saturating_sub(1) as f32) * clip.mesh_depth
+                    + q * clip.distance * clip.strength
+            };
         } else if preset.operations.contains(&Operation::Coverflow) {
             let offset = index as f32 - (count.saturating_sub(1) as f32 * 0.5);
             rotation[1] += offset.signum() * clip.angle * (1. - q);
@@ -237,24 +283,61 @@ pub fn surface(
             } else {
                 1
             };
-            rotation[axis] += (1. - q) * clip.angle * clip.strength;
+            rotation[axis] += (1. - q)
+                * clip.angle
+                * clip.strength
+                * if preset.id.contains("flip-up") {
+                    -0.5
+                } else {
+                    1.
+                };
         }
-        Mesh::plane(width, height)
+        if preset.id == "tx-cylinder-text" {
+            rotation[1] += p * 360. * clip.frequency;
+            Mesh::cylinder(width, height)
+        } else {
+            Mesh::plane(width, height)
+        }
     };
-    let triangles = mesh.project(rotation, translation, center, clip.camera_distance);
+    let mut triangles = mesh.project(rotation, translation, center, clip.camera_distance);
+    if matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff") {
+        for copy in 1..=clip.copies {
+            let mut offset = translation;
+            offset[2] -= clip.mesh_depth * copy as f32 / clip.copies as f32;
+            let mut extra = mesh.project(rotation, offset, center, clip.camera_distance);
+            for vertex in extra.iter_mut().flatten() {
+                vertex.light *= 1. - 0.4 * copy as f32 / clip.copies as f32;
+            }
+            triangles.extend(extra);
+        }
+        triangles.sort_by(|a, b| {
+            b.iter()
+                .map(|v| v.distance)
+                .sum::<f32>()
+                .total_cmp(&a.iter().map(|v| v.distance).sum::<f32>())
+        });
+    }
     // Crop the stable texture to its original bounds. No animation transform is
     // included in this source, allowing exact reuse across frames on the GPU.
     let source=format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"{} {} {width} {height}\">{source}</svg>",bounds[0],bounds[1]);
     Surface {
+        opacity: if preset.id.contains("fly-in") || preset.id.contains("flip-up") {
+            q
+        } else {
+            1.
+        },
         size: [width, height],
         source,
         triangles,
     }
 }
-/// Portable raster/export fallback, tessellating perspective UV interpolation.
+/// Portable raster/export fallback using affine UV interpolation per projected triangle.
+/// Native wgpu rendering uses perspective-correct interpolation and depth testing.
 /// Native display uses the original triangles and perspective-correct GPU UVs.
 pub fn svg(surface: &Surface, tag: &str) -> String {
-    let mut texture = surface.source.clone();
+    let mut texture = surface
+        .source
+        .replacen("<svg ", "<svg preserveAspectRatio=\"none\" ", 1);
     for key in ["width", "height"] {
         let start = texture.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
         let end = start + texture[start..].find('"').unwrap();
@@ -288,7 +371,7 @@ pub fn svg(surface: &Surface, tag: &str) -> String {
         let f = p[0][1] - b * uv[0][0] - d * uv[0][1];
         let _=write!(out,"<defs><clipPath id=\"{tag}-{i}\"><polygon points=\"{},{} {},{} {},{}\"/></clipPath></defs><g clip-path=\"url(#{tag}-{i})\"><use href=\"#{tag}-texture\" transform=\"matrix({a} {b} {c} {d} {e} {f})\"/></g>",p[0][0],p[0][1],p[1][0],p[1][1],p[2][0],p[2][1]);
     }
-    out
+    format!("<g opacity=\"{}\">{out}</g>", surface.opacity)
 }
 #[cfg(test)]
 mod tests {
@@ -299,9 +382,9 @@ mod tests {
         assert_eq!(mesh.vertices.len(), 24);
         assert_eq!(mesh.indices.len(), 36);
         let a = mesh.project([20., 35., 0.], [0.; 3], [50., 50.], 200.);
-        assert_eq!(a.len(), 12);
+        assert!(a.len() >= 2 && a.len() <= 6);
         assert!(a.iter().flatten().all(|v| v.depth > 0. && v.depth < 1.));
-        let b = mesh.project([20., 80., 0.], [0., 0., 190.], [50., 50.], 200.);
+        let b = Mesh::plane(100., 80.).project([20., 80., 0.], [0., 0., 190.], [50., 50.], 200.);
         assert!(!b.is_empty());
         assert!(b.iter().flatten().all(|v| v.distance >= 8.));
         assert_ne!(a, b);

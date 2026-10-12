@@ -5,7 +5,16 @@ use serde::Serialize;
 use std::sync::OnceLock;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FontAxis {
+    pub tag: String,
+    pub minimum: f32,
+    pub default: f32,
+    pub maximum: f32,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FontFace {
+    pub axes: Vec<FontAxis>,
     pub postscript: String,
     pub family: String,
     pub style: String,
@@ -15,7 +24,7 @@ pub struct FontFace {
     pub latin: bool,
     pub adobe: bool,
 }
-pub fn catalog() -> &'static [FontFace] {
+fn all_catalog() -> &'static [FontFace] {
     static FACES: OnceLock<Vec<FontFace>> = OnceLock::new();
     FACES.get_or_init(|| {
         let fonts = system_fonts();
@@ -24,7 +33,10 @@ pub fn catalog() -> &'static [FontFace] {
         for info in fonts.faces() {
             if info.post_script_name.is_empty()
                 || info.post_script_name.starts_with('.')
-                || !seen.insert(info.post_script_name.clone())
+                || !seen.insert((
+                    info.post_script_name.clone(),
+                    info.families.first().map(|f| f.0.clone()),
+                ))
             {
                 continue;
             }
@@ -50,10 +62,19 @@ pub fn catalog() -> &'static [FontFace] {
                         }),
                         ['あ', '漢'].iter().all(|c| face.glyph_index(*c).is_some()),
                         ['A', 'z'].iter().all(|c| face.glyph_index(*c).is_some()),
+                        face.variation_axes()
+                            .into_iter()
+                            .map(|axis| FontAxis {
+                                tag: axis.tag.to_string(),
+                                minimum: axis.min_value,
+                                default: axis.def_value,
+                                maximum: axis.max_value,
+                            })
+                            .collect::<Vec<_>>(),
                     ))
                 })
                 .flatten();
-            let Some((style, japanese, latin)) = metadata else {
+            let Some((style, japanese, latin, axes)) = metadata else {
                 continue;
             };
             let adobe = match &info.source {
@@ -63,6 +84,7 @@ pub fn catalog() -> &'static [FontFace] {
                 _ => false,
             };
             output.push(FontFace {
+                axes,
                 postscript: info.post_script_name.clone(),
                 family: info
                     .families
@@ -86,6 +108,31 @@ pub fn catalog() -> &'static [FontFace] {
         output
     })
 }
+pub fn catalog() -> &'static [FontFace] {
+    static VISIBLE: OnceLock<Vec<FontFace>> = OnceLock::new();
+    VISIBLE.get_or_init(|| {
+        let mut seen = std::collections::HashSet::new();
+        all_catalog()
+            .iter()
+            .filter(|font| {
+                !matches!(
+                    font.family.as_str(),
+                    "LumaPaint Roboto Flex" | "LumaPaint Noto Sans JP"
+                )
+            })
+            .filter(|font| seen.insert(font.postscript.clone()))
+            .cloned()
+            .collect()
+    })
+}
+pub fn variable_catalog() -> Vec<FontFace> {
+    all_catalog()
+        .iter()
+        .filter(|font| !font.axes.is_empty())
+        .cloned()
+        .collect()
+}
+
 fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")

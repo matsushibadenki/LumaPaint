@@ -147,6 +147,8 @@ pub struct Font {
     pub(crate) stretch: FontStretch,
     pub(crate) weight: u16,
     pub(crate) variations: Vec<FontVariation>,
+    // Explicit CSS axes must survive font fallback for unrelated characters.
+    pub(crate) explicit_variations: bool,
 }
 
 impl Font {

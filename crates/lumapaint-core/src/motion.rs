@@ -413,9 +413,13 @@ pub enum Order {
     Spiral,
 }
 
-#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-pub struct AxisMotion {pub tag:String,pub from:f32,pub to:f32}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AxisMotion {
+    pub tag: String,
+    pub from: f32,
+    pub to: f32,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -510,7 +514,11 @@ impl Clip {
             + self.alternate_text.len()
             + self.morph_target.len()
             + self.variable_font.len()
-            + self.font_axes.iter().map(|axis| std::mem::size_of::<AxisMotion>()+axis.tag.len()).sum::<usize>()
+            + self
+                .font_axes
+                .iter()
+                .map(|axis| std::mem::size_of::<AxisMotion>() + axis.tag.len())
+                .sum::<usize>()
             + self.path.len() * std::mem::size_of::<[f32; 2]>()
             + self
                 .objects
@@ -562,13 +570,27 @@ impl Clip {
                 != self.objects.len()
             || self.alternate_text.len() > 8192
             || self.morph_target.len() > 32768
-            || self.variable_font.len()>200
+            || self.variable_font.len() > 200
             || self.variable_font.chars().any(char::is_control)
-            || self.font_axes.len()>16
-            || self.font_axes.iter().any(|a|!crate::vector::valid_font_axes(&std::collections::BTreeMap::from([(a.tag.clone(),a.from)])) || !a.to.is_finite() || a.to.abs()>100000.)
-            || self.font_axes.iter().map(|a|&a.tag).collect::<std::collections::BTreeSet<_>>().len()!=self.font_axes.len()
-            || !self.stroke_gap_ms.is_finite() || !(0. ..=1000.).contains(&self.stroke_gap_ms)
-            || !self.stroke_width.is_finite() || !(0.5..=20.).contains(&self.stroke_width)
+            || self.font_axes.len() > 16
+            || self.font_axes.iter().any(|a| {
+                !crate::vector::valid_font_axes(&std::collections::BTreeMap::from([(
+                    a.tag.clone(),
+                    a.from,
+                )])) || !a.to.is_finite()
+                    || a.to.abs() > 100000.
+            })
+            || self
+                .font_axes
+                .iter()
+                .map(|a| &a.tag)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.font_axes.len()
+            || !self.stroke_gap_ms.is_finite()
+            || !(0. ..=1000.).contains(&self.stroke_gap_ms)
+            || !self.stroke_width.is_finite()
+            || !(0.5..=20.).contains(&self.stroke_width)
             || ![
                 self.mesh_depth,
                 self.camera_distance,
@@ -665,6 +687,23 @@ impl Clip {
         } else {
             p
         })
+    }
+}
+
+pub fn default_axes(id: &str) -> Vec<AxisMotion> {
+    let make = |tag: &str, from, to| AxisMotion {
+        tag: tag.into(),
+        from,
+        to,
+    };
+    if id.contains("width-slant") {
+        vec![make("wdth", 75., 125.), make("slnt", 0., -10.)]
+    } else if id.contains("width") || id.contains("pressure") {
+        vec![make("wdth", 75., 125.)]
+    } else if id.contains("slant") {
+        vec![make("slnt", 0., -10.)]
+    } else {
+        vec![make("wght", 200., 900.)]
     }
 }
 
@@ -815,7 +854,7 @@ mod tests {
             .set_text_object(TextSettings {
                 id: None,
                 text: VectorText {
-                    content: "English 日本語 简体中文 👩‍👩‍👦 é".into(),
+                    content: "English 日本語 中文 👩‍👩‍👦 é".into(),
                     ..Default::default()
                 },
                 position: [10., 100.],

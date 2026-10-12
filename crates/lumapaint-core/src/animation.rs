@@ -263,6 +263,36 @@ impl Document {
         self.animation_layer(layer_id, false)?;
         clip.validate(18000)?;
         if let Some(layer) = self.svg_layers.iter().find(|l| l.id == layer_id) {
+            if crate::motion::preset(&clip.preset).is_some_and(|p| {
+                p.operations
+                    .contains(&crate::motion::Operation::KanjiStroke)
+            }) {
+                let contents = layer
+                    .vector_objects
+                    .iter()
+                    .filter(|o| clip.objects.is_empty() || clip.objects.contains(&o.id))
+                    .filter_map(|o| o.text.as_ref())
+                    .map(|text| text.content.as_str())
+                    .collect::<Vec<_>>();
+                let chars = contents
+                    .iter()
+                    .flat_map(|text| text.chars())
+                    .filter(|c| crate::motion::kanji::is_cjk(*c))
+                    .collect::<Vec<_>>();
+                let unsupported_variant = contents.iter().any(|text| {
+                    text.chars().any(|c| {
+                        ('\u{fe00}'..='\u{fe0f}').contains(&c)
+                            || ('\u{e0100}'..='\u{e01ef}').contains(&c)
+                    })
+                });
+                if unsupported_variant
+                    || chars.is_empty()
+                    || chars.len() > 128
+                    || chars.iter().any(|c| !crate::motion::kanji::contains(*c))
+                {
+                    return Err("Select up to 128 kanji with stroke data / 筆順データのある漢字を128字以内で選択してください / 请选择最多128个有笔顺数据的汉字".into());
+                }
+            }
             if !clip.morph_target.is_empty() {
                 let count = crate::bezier::cubic_contours(&clip.morph_target)?.len();
                 if !layer.vector_layer
@@ -302,6 +332,7 @@ impl Document {
                         matches!(
                             op,
                             crate::motion::Operation::Counter
+                                | crate::motion::Operation::FontAxes
                                 | crate::motion::Operation::TextSwap
                                 | crate::motion::Operation::Typewriter
                                 | crate::motion::Operation::Scramble

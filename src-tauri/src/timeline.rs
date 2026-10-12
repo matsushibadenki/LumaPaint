@@ -113,6 +113,10 @@ pub fn motion_catalog() -> &'static lumapaint_core::motion::Catalog {
     lumapaint_core::motion::catalog()
 }
 #[tauri::command]
+pub fn motion_fonts() -> Vec<lumapaint_renderer::vector::font_viewer::FontFace> {
+    lumapaint_renderer::vector::font_viewer::variable_catalog()
+}
+#[tauri::command]
 pub async fn timeline(window: tauri::WebviewWindow, request: Request) -> Result<Response, String> {
     #[cfg(target_os = "macos")]
     {

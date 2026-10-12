@@ -4,15 +4,17 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale } from '../i18n';
 import { motionBehavior } from '../motion-behavior';
 import { motionLabels } from '../motion-i18n';
-import { curveDefaults, newMotion, type Curve, type MotionCatalog, type MotionClip, type MotionPreset, type MotionState } from '../motion-types';
+import { curveDefaults, newMotion, type Curve, type MotionCatalog, type MotionClip, type MotionPreset, type MotionState, type VariableFont, defaultAxes } from '../motion-types';
 import './motion-panel.css';
 
 const curveRanges:Record<string,[number,number,number]>={exponent:[1,8,.1],overshoot:[0,8,.01],amplitude:[1,5,.01],period:[.05,2,.01],restitution:[.1,.95,.01],stiffness:[1,2000,1],damping:[.1,200,.1],mass:[.1,20,.1],count:[1,120,1],strength:[0,2,.01],points:[2,120,1],plateau:[.05,.95,.01],ratio:[1.01,100,.01],cycles:[1,30,.1],decay:[.1,30,.1]};
 type Transport = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
 let catalogPromise:Promise<MotionCatalog>|undefined;
+let fontsPromise:Promise<VariableFont[]>|undefined;
 const defaultTransport:Transport=(command,args)=>invoke(command,args);
 export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;transport?:Transport}) {
   const t=motionLabels[locale];
+  const [fonts,setFonts]=useState<VariableFont[]>([]);
   const [catalog,setCatalog]=useState<MotionCatalog|null>(null);
   const [state,setState]=useState<MotionState>({frame:0,playing:false,preview:false,data:null});
   const [layerId,setLayerId]=useState(''),[category,setCategory]=useState(''),[query,setQuery]=useState('');
@@ -59,6 +61,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
   useEffect(()=>{setDraft(null);setSelectedId('');setPath('');setError('');},[documentId,layerId]);
   const layer=layers.find(item=>item.id===layerId);
   const preset=catalog?.presets.find(item=>item.id===draft?.preset);
+  useEffect(()=>{if(!preset?.operations.includes('fontAxes'))return;let canceled=false;const load=transport===defaultTransport?(fontsPromise??=transport<VariableFont[]>('motion_fonts')):transport<VariableFont[]>('motion_fonts');void load.then(value=>{if(!canceled)setFonts(value);}).catch(cause=>{fontsPromise=undefined;if(!canceled)setError(String(cause));});return()=>{canceled=true;};},[preset,transport]);
   const matches=useMemo(()=>{
     const search=query.trim().toLocaleLowerCase();return catalog?.presets.filter(item=>(!category||item.category===category)&&(!search||item.id.includes(search)||Object.values(item.names).some(name=>name.toLocaleLowerCase().includes(search))))??[];
   },[catalog,category,query]);
@@ -142,6 +145,20 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
         <label className="motion-field"><span>{t.target}</span><select aria-label={t.target} value={draft.objects.length?'selected':'layer'} disabled={disabled} onChange={event=>edit({objects:event.target.value==='selected'?(state.data?.selectedObjects??[]):[]})}><option value="layer">{t.wholeLayer}</option><option value="selected" disabled={!state.data?.selectedObjects.length}>{t.selected} · {state.data?.selectedObjects.length??0}</option></select></label>
         <label className="motion-field"><span>{t.order}</span><select aria-label={t.order} value={draft.order} disabled={disabled} onChange={event=>edit({order:event.target.value})}>{['forward','reverse','center','edges','random','grid','alternating','spiral'].map(order=><option key={order} value={order}>{order==='reverse'?t.reverseOrder:curveLabel(order)}</option>)}</select></label>
         <div className="motion-checks"><label><input type="checkbox" checked={draft.reverse} disabled={disabled} onChange={event=>edit({reverse:event.target.checked})}/>{t.reverse}</label><label><input type="checkbox" checked={draft.yoyo} disabled={disabled} onChange={event=>edit({yoyo:event.target.checked})}/>{t.yoyo}</label></div>
+        {has('cube','meshPlane','depthStack','coverflow')&&<details open><summary>3D</summary><div className="motion-parameter-grid">
+          {number(t.meshDepth,draft.meshDepth??80,value=>edit({meshDepth:value}),0,4096,1,'px')}
+          {number(t.cameraDistance,draft.cameraDistance??600,value=>edit({cameraDistance:value}),64,8192,1,'px')}
+          {number(t.rotationX,draft.rotationX??-20,value=>edit({rotationX:value}),-36000,36000,1,'°')}
+          {number(t.rotationY,draft.rotationY??25,value=>edit({rotationY:value}),-36000,36000,1,'°')}
+          {number(t.rotationZ,draft.rotationZ??0,value=>edit({rotationZ:value}),-36000,36000,1,'°')}
+          {number(t.copies,draft.copies??4,value=>edit({copies:value}),1,24)}
+        </div></details>}
+        {has('fontAxes')&&<details open><summary>{t.fontAxes} <span className="motion-info" title={t.fontInfo}>ⓘ</span></summary>
+          <label className="motion-field"><span>{t.variableFont}</span><select aria-label={t.variableFont} value={draft.variableFont??''} disabled={disabled} onChange={event=>{const font=fonts.find(font=>font.family===event.target.value);const axes=(draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id)).filter(axis=>!font||font.axes.some(a=>a.tag===axis.tag)).map(axis=>{const limits=font?.axes.find(a=>a.tag===axis.tag);return limits?{...axis,from:Math.max(limits.minimum,Math.min(limits.maximum,axis.from)),to:Math.max(limits.minimum,Math.min(limits.maximum,axis.to))}:axis;});edit({variableFont:event.target.value,fontAxes:axes.length?axes:font?[{tag:font.axes[0].tag,from:font.axes[0].minimum,to:font.axes[0].maximum}]:defaultAxes(preset.id)});}}><option value="">{t.autoFont}</option>{fonts.filter((font,index,list)=>list.findIndex(other=>other.family===font.family)===index).map(font=><option key={font.family} value={font.family}>{font.family}</option>)}</select></label>
+          {(draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id)).map((axis,index)=>{const font=fonts.find(font=>font.family===draft.variableFont);const limits=font?.axes.find(a=>a.tag===axis.tag);const axes=draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id);const update=(patch:Partial<typeof axis>)=>edit({fontAxes:axes.map((old,i)=>i===index?{...old,...patch}:old)});return <div className="motion-parameter-grid" key={axis.tag}>{number(`${axis.tag} · ${t.from}`,axis.from,value=>update({from:value}),limits?.minimum??-100000,limits?.maximum??100000,.1)}{number(`${axis.tag} · ${t.to}`,axis.to,value=>update({to:value}),limits?.minimum??-100000,limits?.maximum??100000,.1)}{font&&<select aria-label={`${t.axis} ${index+1}`} value={axis.tag} disabled={disabled} onChange={event=>{const axis=font.axes.find(a=>a.tag===event.target.value)!;update({tag:axis.tag,from:axis.minimum,to:axis.maximum});}}>{font.axes.filter(a=>a.tag===axis.tag||!axes.some(existing=>existing.tag===a.tag)).map(a=><option key={a.tag} value={a.tag}>{a.tag}</option>)}</select>}<button disabled={disabled||axes.length===1} onClick={()=>edit({fontAxes:axes.filter((_,i)=>i!==index)})}>{t.delete}</button></div>;})}
+          <button disabled={disabled||!fonts.find(f=>f.family===draft.variableFont)?.axes.some(a=>!(draft.fontAxes??[]).some(existing=>existing.tag===a.tag))} onClick={()=>{const font=fonts.find(f=>f.family===draft.variableFont);const axis=font?.axes.find(a=>!(draft.fontAxes??[]).some(existing=>existing.tag===a.tag));if(axis)edit({fontAxes:[...(draft.fontAxes??[]),{tag:axis.tag,from:axis.minimum,to:axis.maximum}]});}}>{t.addAxis}</button>
+        </details>}
+        {has('kanjiStroke')&&<details open><summary>{t.program} <span className="motion-info" title={t.strokeInfo}>ⓘ</span></summary><div className="motion-parameter-grid">{number(t.strokeGap,draft.strokeGapMs??100,value=>edit({strokeGapMs:value}),0,1000,1,'ms')}{number(t.strokeWidth,draft.strokeWidth??4,value=>edit({strokeWidth:value}),.5,20,.1)}</div></details>}
         <details open><summary>{t.curve}</summary>
           <label className="motion-check"><input type="checkbox" checked={draft.curve===null} disabled={disabled} onChange={event=>edit({curve:event.target.checked?null:structuredClone(preset.curve)})}/>{t.presetCurve}</label>
           <select aria-label={t.curve} value={curve.kind} disabled={disabled||draft.curve===null} onChange={event=>edit({curve:structuredClone(curveDefaults[event.target.value])})}>{Object.keys(curveDefaults).map(kind=><option key={kind} value={kind}>{curveLabel(kind)}</option>)}</select>

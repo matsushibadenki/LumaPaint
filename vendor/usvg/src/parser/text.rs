@@ -399,6 +399,7 @@ fn convert_font(node: SvgNode, state: &converter::State) -> Font {
     let stretch = conv_font_stretch(node);
     let weight = resolve_font_weight(node);
     let mut variations = parse_font_variation_settings(node);
+    let explicit_variations = !variations.is_empty();
 
     // Auto-map standard font properties to variation axes if not explicitly set.
     // This allows variable fonts to work with regular font-weight/font-stretch properties.
@@ -471,6 +472,7 @@ fn convert_font(node: SvgNode, state: &converter::State) -> Font {
         stretch,
         weight,
         variations,
+        explicit_variations,
     }
 }
 
