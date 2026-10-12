@@ -634,6 +634,7 @@ impl Document {
                 }
                 let mut released_ids = Vec::new();
                 let mut layer = SvgLayer {
+                    motion_scene: None,
                     id: format!("released-guides-{}", self.guides.next_id),
                     name: "Released guides".into(),
                     visible: true,

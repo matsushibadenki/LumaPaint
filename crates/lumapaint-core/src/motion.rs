@@ -333,6 +333,10 @@ pub enum Operation {
     Jelly,
     Spin,
     Swing,
+    MeshPlane,
+    Cube,
+    DepthStack,
+    Coverflow,
     FlipX,
     FlipY,
     Tilt,
@@ -380,6 +384,8 @@ pub enum Operation {
     TextSwap,
     Counter,
     Tracking,
+    FontAxes,
+    KanjiStroke,
     Weight,
     Underline,
     Highlight,
@@ -406,6 +412,10 @@ pub enum Order {
     Alternating,
     Spiral,
 }
+
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct AxisMotion {pub tag:String,pub from:f32,pub to:f32}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -439,6 +449,15 @@ pub struct Clip {
     pub number_to: f64,
     pub path: Vec<[f32; 2]>,
     pub morph_target: String,
+    pub variable_font: String,
+    pub font_axes: Vec<AxisMotion>,
+    pub stroke_gap_ms: f32,
+    pub stroke_width: f32,
+    pub mesh_depth: f32,
+    pub camera_distance: f32,
+    pub rotation_x: f32,
+    pub rotation_y: f32,
+    pub rotation_z: f32,
 }
 impl Default for Clip {
     fn default() -> Self {
@@ -471,6 +490,15 @@ impl Default for Clip {
             number_to: 100.,
             path: vec![],
             morph_target: String::new(),
+            variable_font: String::new(),
+            font_axes: vec![],
+            stroke_gap_ms: 100.,
+            stroke_width: 4.,
+            mesh_depth: 80.,
+            camera_distance: 600.,
+            rotation_x: -20.,
+            rotation_y: 25.,
+            rotation_z: 0.,
         }
     }
 }
@@ -481,6 +509,8 @@ impl Clip {
             + self.preset.len()
             + self.alternate_text.len()
             + self.morph_target.len()
+            + self.variable_font.len()
+            + self.font_axes.iter().map(|axis| std::mem::size_of::<AxisMotion>()+axis.tag.len()).sum::<usize>()
             + self.path.len() * std::mem::size_of::<[f32; 2]>()
             + self
                 .objects
@@ -532,6 +562,27 @@ impl Clip {
                 != self.objects.len()
             || self.alternate_text.len() > 8192
             || self.morph_target.len() > 32768
+            || self.variable_font.len()>200
+            || self.variable_font.chars().any(char::is_control)
+            || self.font_axes.len()>16
+            || self.font_axes.iter().any(|a|!crate::vector::valid_font_axes(&std::collections::BTreeMap::from([(a.tag.clone(),a.from)])) || !a.to.is_finite() || a.to.abs()>100000.)
+            || self.font_axes.iter().map(|a|&a.tag).collect::<std::collections::BTreeSet<_>>().len()!=self.font_axes.len()
+            || !self.stroke_gap_ms.is_finite() || !(0. ..=1000.).contains(&self.stroke_gap_ms)
+            || !self.stroke_width.is_finite() || !(0.5..=20.).contains(&self.stroke_width)
+            || ![
+                self.mesh_depth,
+                self.camera_distance,
+                self.rotation_x,
+                self.rotation_y,
+                self.rotation_z,
+            ]
+            .iter()
+            .all(|v| v.is_finite())
+            || !(0. ..=4096.).contains(&self.mesh_depth)
+            || !(64. ..=8192.).contains(&self.camera_distance)
+            || [self.rotation_x, self.rotation_y, self.rotation_z]
+                .iter()
+                .any(|v| v.abs() > 36000.)
             || !self.number_from.is_finite()
             || !self.number_to.is_finite()
             || self.number_from.abs() > 1e12
@@ -626,6 +677,12 @@ pub(crate) fn random(seed: u32, index: u32) -> f32 {
     n ^= n >> 16;
     n as f64 as f32 / u32::MAX as f32
 }
+
+#[path = "motion/kanji.rs"]
+pub mod kanji;
+
+#[path = "motion/mesh.rs"]
+pub mod mesh;
 
 #[path = "motion/evaluate.rs"]
 mod evaluate;

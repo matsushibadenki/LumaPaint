@@ -20,6 +20,8 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
         .get_or_init(|| {
             let mut fonts = usvg::fontdb::Database::new();
             lumapaint_fonts::load_system_fonts(&mut fonts);
+            fonts.load_font_data(include_bytes!("../assets/fonts/RobotoFlex.ttf").to_vec());
+            fonts.load_font_data(include_bytes!("../assets/fonts/NotoSansJP.ttf").to_vec());
             configure_generic_font_families(&mut fonts);
             Arc::new(fonts)
         })
@@ -471,7 +473,17 @@ fn shape_width(
     }
     let advance = fonts
         .with_face_data(id, |data, index| {
-            let face = rustybuzz::Face::from_slice(data, index)?;
+            let mut face = rustybuzz::Face::from_slice(data, index)?;
+            face.set_variations(
+                &style
+                    .font_axes
+                    .iter()
+                    .map(|(tag, value)| rustybuzz::Variation {
+                        tag: ttf_parser::Tag::from_bytes(tag.as_bytes().try_into().unwrap()),
+                        value: *value,
+                    })
+                    .collect::<Vec<_>>(),
+            );
             let mut buffer = rustybuzz::UnicodeBuffer::new();
             buffer.push_str(content);
             buffer.guess_segment_properties();

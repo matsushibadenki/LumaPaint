@@ -372,6 +372,8 @@ pub struct Stroke {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SvgLayer {
+    #[serde(skip)]
+    pub motion_scene: Option<std::sync::Arc<crate::motion::mesh::Scene>>,
     pub id: String,
     pub name: String,
     pub visible: bool,
@@ -2251,6 +2253,7 @@ impl Document {
         let vector = source.is_none();
         let source = source.unwrap_or_else(|| vector_svg(self.width, self.height, &objects));
         let layer = SvgLayer {
+            motion_scene: None,
             id: id.clone(),
             name: format!("Pasted {serial}"),
             visible: true,
@@ -2426,6 +2429,7 @@ impl Document {
         let id = format!("paint-layer-{serial}");
         let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
+            motion_scene: None,
             id: id.clone(),
             name: format!("Layer {serial}"),
             visible: true,
@@ -2592,6 +2596,7 @@ impl Document {
         self.finish();
         let id = format!("svg-layer-{}", self.svg_layers.len() + 1);
         let layer = SvgLayer {
+            motion_scene: None,
             id,
             name,
             visible: true,
@@ -2645,6 +2650,7 @@ impl Document {
         let id = format!("vector-layer-{serial}");
         let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
+            motion_scene: None,
             id: id.clone(),
             name: format!("Vector Layer {serial}"),
             visible: true,
@@ -2918,6 +2924,7 @@ impl Document {
             return Err("Project contains too much vector data".into());
         }
         let layer = SvgLayer {
+            motion_scene: None,
             id: format!("text-layer-{serial}"),
             name: object.name.clone(),
             visible: true,
@@ -3706,6 +3713,7 @@ impl Document {
         let objects = vec![object];
         let source = vector_svg(self.width, self.height, &objects);
         let layer = SvgLayer {
+            motion_scene: None,
             id: id.clone(),
             name: title.into(),
             source,
@@ -4694,6 +4702,7 @@ impl Document {
         self.selected_vector_objects.clear();
         let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
+            motion_scene: None,
             id: layer_id,
             name: path.name,
             visible: true,
@@ -4728,6 +4737,7 @@ impl Document {
         object.validate()?;
         let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
+            motion_scene: None,
             id: format!("guide-{}", self.svg_layers.len()),
             name: "Path guide".into(),
             visible: true,
@@ -4992,6 +5002,7 @@ impl Document {
         doc.svg_layers.insert(
             index,
             SvgLayer {
+                motion_scene: None,
                 id,
                 name: "Clipping preview".into(),
                 visible: true,
@@ -5707,6 +5718,7 @@ impl Document {
                 layers.insert(
                     result_index,
                     SvgLayer {
+                        motion_scene: None,
                         id,
                         name: "Pathfinder".into(),
                         visible: true,
@@ -10527,9 +10539,22 @@ fn write_text_segment(
         .map_or_else(String::new, |width| {
             format!(r#" textLength="{width}" lengthAdjust="spacing""#)
         });
+    let axes = if style.font_axes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " style=\"font-variation-settings:{}\"",
+            style
+                .font_axes
+                .iter()
+                .map(|(tag, value)| format!("'{tag}' {value}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
     let _ = write!(
         svg,
-        r##"<tspan{x_attribute}{width_attribute} fill="{paint}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" font-kerning="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
+        r##"<tspan{x_attribute}{width_attribute}{axes} fill="{paint}" font-family="{}" font-size="{}" font-weight="{}" font-style="{}" font-kerning="{}" letter-spacing="{}" baseline-shift="{}" text-decoration="{decoration}">{}</tspan>"##,
         escape_xml(family),
         style.font_size,
         if style.bold { 700 } else { 400 },

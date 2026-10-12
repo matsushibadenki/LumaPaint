@@ -50,10 +50,22 @@ pub enum KerningMode {
     JapaneseMonospaced,
 }
 
+pub fn valid_font_axes(axes: &std::collections::BTreeMap<String, f32>) -> bool {
+    axes.len() <= 16
+        && axes.iter().all(|(tag, value)| {
+            tag.len() == 4
+                && tag.bytes().all(|c| c.is_ascii_alphanumeric())
+                && value.is_finite()
+                && value.abs() <= 100000.
+        })
+}
+
 /// Character formatting, independent of paragraph and text-frame layout.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextStyle {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub font_axes: std::collections::BTreeMap<String, f32>,
     #[serde(default)]
     pub no_color: bool,
     pub font_family: String,
@@ -81,6 +93,7 @@ pub struct TextStyle {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextStylePatch {
+    pub font_axes: Option<std::collections::BTreeMap<String, f32>>,
     pub no_color: Option<bool>,
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
@@ -112,6 +125,9 @@ impl TextStyle {
             })
     }
     pub fn apply(&mut self, patch: &TextStylePatch) {
+        if let Some(axes) = &patch.font_axes {
+            self.font_axes = axes.clone();
+        }
         if let Some(value) = patch.scale_x {
             self.scale_x = value;
         }
@@ -163,7 +179,8 @@ impl TextStyle {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.font_family.trim().is_empty()
+        if !valid_font_axes(&self.font_axes)
+            || self.font_family.trim().is_empty()
             || self.font_family.chars().count() > 200
             || self.font_family.chars().any(char::is_control)
             || !(1.0..=512.0).contains(&self.font_size)
@@ -209,6 +226,8 @@ pub enum WritingMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub font_axes: std::collections::BTreeMap<String, f32>,
     #[serde(default)]
     pub no_color: bool,
     /// Point text grows with its content instead of wrapping inside an area frame.
@@ -322,6 +341,7 @@ pub enum MojikumiMode {
 impl Default for VectorText {
     fn default() -> Self {
         Self {
+            font_axes: Default::default(),
             no_color: false,
             change_generation: 0,
             updated_at_ms: 0,
@@ -733,6 +753,7 @@ impl VectorText {
     }
     pub fn base_style(&self, color: [u8; 3]) -> TextStyle {
         TextStyle {
+            font_axes: self.font_axes.clone(),
             no_color: self.no_color,
             font_family: self.font_family.clone(),
             font_size: self.font_size,
@@ -818,7 +839,8 @@ impl VectorText {
         let changed = self.runs != runs;
         self.runs = runs;
         if changed
-            && (patch.font_family.is_some()
+            && (patch.font_axes.is_some()
+                || patch.font_family.is_some()
                 || patch.font_size.is_some()
                 || patch.scale_x.is_some()
                 || patch.scale_y.is_some()

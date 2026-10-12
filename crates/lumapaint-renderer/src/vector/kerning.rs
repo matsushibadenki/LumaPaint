@@ -72,9 +72,27 @@ impl ttf_parser::OutlineBuilder for Outline {
         self.edge(self.start);
     }
 }
-fn shape(data: &[u8], index: u32, value: &str, vertical: bool, kern: bool) -> Option<GlyphShape> {
-    let rb = rustybuzz::Face::from_slice(data, index)?;
-    let face = ttf_parser::Face::parse(data, index).ok()?;
+fn shape(
+    data: &[u8],
+    index: u32,
+    value: &str,
+    vertical: bool,
+    kern: bool,
+    axes: &std::collections::BTreeMap<String, f32>,
+) -> Option<GlyphShape> {
+    let mut rb = rustybuzz::Face::from_slice(data, index)?;
+    let mut face = ttf_parser::Face::parse(data, index).ok()?;
+    let variations = axes
+        .iter()
+        .map(|(tag, value)| rustybuzz::Variation {
+            tag: ttf_parser::Tag::from_bytes(tag.as_bytes().try_into().unwrap()),
+            value: *value,
+        })
+        .collect::<Vec<_>>();
+    rb.set_variations(&variations);
+    for variation in &variations {
+        face.set_variation(variation.tag, variation.value);
+    }
     let mut buffer = rustybuzz::UnicodeBuffer::new();
     buffer.push_str(value);
     buffer.guess_segment_properties();
@@ -187,8 +205,9 @@ pub fn advances(text: &VectorText, color: [u8; 3]) -> Vec<Advance> {
 fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)>)> {
     let mut fonts = super::system_fonts();
     let vertical = text.writing_mode == WritingMode::Vertical;
-    let mut cache: HashMap<(usvg::fontdb::ID, String), GlyphShape> = HashMap::new();
-    let mut pairs: HashMap<(usvg::fontdb::ID, String), f32> = HashMap::new();
+    let mut cache: HashMap<(usvg::fontdb::ID, String, Vec<(String, u32)>), GlyphShape> =
+        HashMap::new();
+    let mut pairs: HashMap<(usvg::fontdb::ID, String, Vec<(String, u32)>), f32> = HashMap::new();
     let mut support = HashMap::new();
     let resolver = super::font_resolver();
     let mut parts = Vec::new();
@@ -215,10 +234,20 @@ fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)
             continue;
         };
         let left = cache
-            .entry((id, (*g).into()))
+            .entry((
+                id,
+                (*g).into(),
+                style
+                    .font_axes
+                    .iter()
+                    .map(|(t, v)| (t.clone(), v.to_bits()))
+                    .collect(),
+            ))
             .or_insert_with(|| {
                 fonts
-                    .with_face_data(id, |data, index| shape(data, index, g, vertical, false))
+                    .with_face_data(id, |data, index| {
+                        shape(data, index, g, vertical, false, &style.font_axes)
+                    })
                     .flatten()
                     .unwrap_or(GlyphShape {
                         advance: 1.,
@@ -236,17 +265,36 @@ fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)
                 && !g.chars().any(char::is_whitespace)
             {
                 let pair = format!("{g}{other}");
-                metric = *pairs.entry((id, pair.clone())).or_insert_with(|| {
-                    fonts
-                        .with_face_data(id, |data, index| {
-                            Some(
-                                shape(data, index, &pair, vertical, true)?.advance
-                                    - shape(data, index, &pair, vertical, false)?.advance,
-                            )
-                        })
-                        .flatten()
-                        .unwrap_or(0.)
-                });
+                metric = *pairs
+                    .entry((
+                        id,
+                        pair.clone(),
+                        style
+                            .font_axes
+                            .iter()
+                            .map(|(t, v)| (t.clone(), v.to_bits()))
+                            .collect(),
+                    ))
+                    .or_insert_with(|| {
+                        fonts
+                            .with_face_data(id, |data, index| {
+                                Some(
+                                    shape(data, index, &pair, vertical, true, &style.font_axes)?
+                                        .advance
+                                        - shape(
+                                            data,
+                                            index,
+                                            &pair,
+                                            vertical,
+                                            false,
+                                            &style.font_axes,
+                                        )?
+                                        .advance,
+                                )
+                            })
+                            .flatten()
+                            .unwrap_or(0.)
+                    });
             }
         }
         let custom = if g.chars().any(char::is_whitespace) {
@@ -259,10 +307,10 @@ fn spacing(text: &VectorText, color: [u8; 3]) -> Vec<(Advance, Option<(f32, f32)
                     return None;
                 }
                 let other_id = (*other_id)?;
-                let right = cache.entry((other_id, (*other).into())).or_insert_with(|| {
+                let right = cache.entry((other_id, (*other).into(),other_style.font_axes.iter().map(|(t,v)|(t.clone(),v.to_bits())).collect())).or_insert_with(|| {
                     fonts
                         .with_face_data(other_id, |data, index| {
-                            shape(data, index, other, vertical, false)
+                            shape(data, index, other, vertical, false, &other_style.font_axes)
                         })
                         .flatten()
                         .unwrap_or(GlyphShape {

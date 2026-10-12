@@ -200,6 +200,10 @@ fn sample(preset: &Preset, clip: &Clip, p: f32, index: usize, count: usize, fps:
                     * strength
                     * if preset.cyclic { 1. } else { (1. - p).powi(2) }
             }
+            Operation::MeshPlane
+            | Operation::Cube
+            | Operation::DepthStack
+            | Operation::Coverflow => {}
             Operation::FlipX => s.sy *= (PI * (1. - q) * strength).cos(),
             Operation::FlipY => s.sx *= (PI * (1. - q) * strength).cos(),
             Operation::Tilt => {
@@ -297,6 +301,7 @@ fn sample(preset: &Preset, clip: &Clip, p: f32, index: usize, count: usize, fps:
             Operation::Tracking => {
                 s.x += (norm - 0.5) * distance * (1. - q);
             }
+            Operation::FontAxes | Operation::KanjiStroke => {},
             Operation::Weight => s.sx *= 1. + 0.2 * pulse * strength,
             Operation::Underline
             | Operation::Highlight
@@ -666,6 +671,11 @@ fn text_motion(object: &mut VectorObject, clip: &Clip, preset: &Preset, frame: u
             style.tracking += (1. - local) * clip.distance * clip.strength / total as f32;
             style.baseline_shift += (1. - local) * clip.distance * clip.strength * 0.2;
         }
+        if has(Operation::FontAxes) {
+            if !clip.variable_font.is_empty() {style.font_family=clip.variable_font.clone();style.bold=false;style.italic=false;}
+            let amount=if preset.cyclic || preset.id.contains("wave") || preset.id.contains("breathe") || preset.id.contains("pulse") || preset.id.contains("pressure") || preset.id.contains("stretch") || preset.id.contains("proximity") {(1.-(TAU*local*clip.frequency).cos())*0.5}else{clip.curve.unwrap_or(preset.curve).sample(local,local*clip.duration as f32/fps as f32,clip.seed).clamp(0.,1.)};
+            for axis in &clip.font_axes {style.font_axes.insert(axis.tag.clone(),axis.from+(axis.to-axis.from)*amount*clip.strength.min(1.));}
+        }
         if has(Operation::Weight) {
             style.bold = local > 0.5;
             style.scale_x *= 1. + 0.25 * (PI * local).sin() * clip.strength;
@@ -1013,6 +1023,7 @@ pub(crate) fn apply(
     dimensions: [u32; 2],
     outlines: Option<&Outline<'_>>,
 ) {
+    layer.motion_scene = None;
     const SOURCE_LIMIT: usize = 4 * 1024 * 1024;
     if layer.source.len() > SOURCE_LIMIT {
         return;
@@ -1110,6 +1121,8 @@ pub(crate) fn apply(
     let mut fragments = Vec::with_capacity(object_count);
     let mut noncanonical = false;
     let mut source_bytes = 0usize;
+    let mut scene = mesh::Scene::default();
+    let has_mesh = active.iter().any(|(_, preset, _)| mesh::enabled(preset));
     for (object_index, object) in layer.vector_objects.iter_mut().enumerate() {
         let mut wrappers = Vec::new();
         for (clip_index, (clip, preset, _)) in active.iter().enumerate() {
@@ -1221,6 +1234,46 @@ pub(crate) fn apply(
             );
             source.push_str(&particles(clip, preset, p, bounds));
         }
+        if has_mesh {
+            let chosen = active.iter().rev().find(|(clip, preset, _)| {
+                mesh::enabled(preset)
+                    && (clip.objects.is_empty() || clip.objects.contains(&object.id))
+            });
+            let surface = if let Some((clip, preset, _)) = chosen {
+                let rank = if clip.objects.is_empty() {
+                    object_index
+                } else {
+                    clip.objects
+                        .iter()
+                        .position(|id| id == &object.id)
+                        .unwrap_or(0)
+                };
+                let count = if clip.objects.is_empty() {
+                    object_count
+                } else {
+                    clip.objects.len()
+                };
+                let p = clip.progress(frame, rank, count).unwrap_or(0.);
+                mesh::surface(
+                    source,
+                    object_bounds(object),
+                    clip,
+                    preset,
+                    p,
+                    rank,
+                    count,
+                    fps,
+                )
+            } else {
+                let bounds = object_bounds(object);
+                let width = (bounds[2] - bounds[0]).max(1.);
+                let height = (bounds[3] - bounds[1]).max(1.);
+                mesh::Surface{size:[width,height],source:format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"{} {} {width} {height}\">{source}</svg>",bounds[0],bounds[1]),triangles:mesh::Mesh::plane(width,height).project([0.;3],[0.;3],[(bounds[0]+bounds[2])*0.5,(bounds[1]+bounds[3])*0.5],600.)}
+            };
+            source = mesh::svg(&surface, &format!("lm-mesh-{object_index}"));
+            scene.surfaces.push(surface);
+            noncanonical = true;
+        }
         source_bytes = source_bytes.saturating_add(source.len());
         if source_bytes > SOURCE_LIMIT {
             // Retain the original SVG for oversized legacy files. Metadata is
@@ -1229,6 +1282,9 @@ pub(crate) fn apply(
             return;
         }
         fragments.push(source);
+    }
+    if has_mesh {
+        layer.motion_scene = Some(std::sync::Arc::new(scene));
     }
     if noncanonical {
         layer.source = format!(

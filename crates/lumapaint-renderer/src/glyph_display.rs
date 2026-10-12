@@ -252,6 +252,7 @@ mod tests {
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let mut display = Display::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let mut layer = SvgLayer {
+            motion_scene: None,
             id: "glyphs".into(),
             name: "glyphs".into(),
             visible: true,

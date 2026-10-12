@@ -52,6 +52,7 @@ impl Document {
             result.svg_layers.insert(
                 0,
                 SvgLayer {
+                    motion_scene: None,
                     id: "clone-stamp-preview-base".into(),
                     name: self.layer_name.clone(),
                     visible: self.visible,

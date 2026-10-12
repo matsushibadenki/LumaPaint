@@ -19,6 +19,7 @@ mod gpu_metrics;
 mod gpu_timing;
 pub mod gradient_raster;
 mod input_latency;
+mod motion_mesh;
 #[cfg(feature = "skia")]
 mod native_bezier;
 mod native_composite;
@@ -1396,6 +1397,7 @@ pub struct Renderer {
     frame_overlay_pipeline: wgpu::RenderPipeline,
     frame_overlay: Option<FrameOverlay>,
     glyph_display: Option<glyph_display::Display>,
+    motion_mesh: motion_mesh::Display,
     guide_draft: Vec<FrameOverlay>,
     image_frame_guides_visible: bool,
     selection_overlay_visible: bool,
@@ -3611,6 +3613,7 @@ impl Renderer {
             performance::count("gpu_timestamps_unsupported", 1);
         }
         let glyph_display = glyph_display::Display::opt_in(&device, format);
+        let motion_mesh = motion_mesh::Display::new(&device, format);
         Ok(Self {
             memory_sampler: performance::enabled().then(process_memory::Sampler::default),
             gpu_timing,
@@ -3630,6 +3633,7 @@ impl Renderer {
             frame_overlay_pipeline,
             frame_overlay: None,
             glyph_display,
+            motion_mesh,
             guide_draft: Vec::new(),
             image_frame_guides_visible: false,
             selection_overlay_visible: true,
@@ -4116,6 +4120,26 @@ impl Renderer {
                 }
             }
         }
+        let mut mesh_layers = std::collections::HashSet::new();
+        self.motion_mesh.begin_frame(
+            &document
+                .visible_svg_layers()
+                .filter(|l| l.motion_scene.is_some())
+                .map(|l| l.id.clone())
+                .collect(),
+        );
+        if !self.outline_view && offset == [0., 0.] && !document.has_document_clipping() {
+            for layer in document.visible_svg_layers() {
+                if !document.has_layer_effects(&layer.id)
+                    && self
+                        .motion_mesh
+                        .prepare(&self.device, &self.queue, layer, viewport)
+                {
+                    mesh_layers.insert(layer.id.clone());
+                    object_layers.insert(layer.id.as_str());
+                }
+            }
+        }
         let mut glyph_layers = std::collections::HashSet::new();
         if let Some(display) = &mut self.glyph_display {
             let visible = document
@@ -4144,7 +4168,10 @@ impl Renderer {
             if document.has_layer_effects(&original.id) {
                 continue;
             }
-            if native_layers.contains(&original.id) || glyph_layers.contains(&original.id) {
+            if native_layers.contains(&original.id)
+                || glyph_layers.contains(&original.id)
+                || mesh_layers.contains(&original.id)
+            {
                 continue;
             }
             if (original.vector_layer || cfg!(all(feature = "skia", target_os = "macos")))
@@ -4695,6 +4722,7 @@ impl Renderer {
         }
         #[cfg(feature = "skia")]
         self.native_geometry.encode(&mut encoder);
+        self.motion_mesh.encode(&mut encoder);
         if let Some(display) = &self.glyph_display {
             display.encode(&mut encoder);
         }
@@ -4721,6 +4749,10 @@ impl Renderer {
                 }
             }
             for layer in document.visible_svg_layers() {
+                if mesh_layers.contains(&layer.id) {
+                    self.motion_mesh.draw(&mut pass, &layer.id);
+                    continue;
+                }
                 if glyph_layers.contains(&layer.id) {
                     self.glyph_display
                         .as_ref()
@@ -5824,6 +5856,7 @@ mod tests {
     #[test]
     fn prepared_svg_keeps_identity_and_applies_effective_opacity() {
         let layer = SvgLayer {
+            motion_scene: None,
             id: "layer-1".into(),
             name: "Sample".into(),
             visible: true,

@@ -21349,7 +21349,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "flipY"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -22663,7 +22663,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "flipX"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -26588,7 +26588,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "pulse"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -27392,7 +27392,7 @@
         "kind": "linear"
       },
       "operations": [
-        "flipX"
+        "depthStack"
       ],
       "stagger": "forward",
       "exit": false,
@@ -39329,8 +39329,7 @@
         "kind": "linear"
       },
       "operations": [
-        "flipY",
-        "shadow"
+        "cube"
       ],
       "stagger": "forward",
       "exit": false,
@@ -39352,8 +39351,7 @@
         "mass": 1
       },
       "operations": [
-        "flipY",
-        "reorder"
+        "coverflow"
       ],
       "stagger": "forward",
       "exit": false,
@@ -39372,9 +39370,7 @@
         "kind": "linear"
       },
       "operations": [
-        "parallax",
-        "scale",
-        "fade"
+        "depthStack"
       ],
       "stagger": "forward",
       "exit": false,
@@ -41953,8 +41949,7 @@
         "mode": "out"
       },
       "operations": [
-        "slideY",
-        "flipY"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -41995,7 +41990,7 @@
         "mode": "out"
       },
       "operations": [
-        "flipX"
+        "depthStack"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42038,8 +42033,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "flipY",
-        "spin"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42058,7 +42052,7 @@
         "kind": "linear"
       },
       "operations": [
-        "flipX"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42080,7 +42074,7 @@
         "mass": 1
       },
       "operations": [
-        "flipX"
+        "depthStack"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42101,8 +42095,7 @@
         "mode": "out"
       },
       "operations": [
-        "flipX",
-        "blinds"
+        "meshPlane"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42124,7 +42117,7 @@
         "mass": 1
       },
       "operations": [
-        "flipX"
+        "depthStack"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42145,8 +42138,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "weight",
-        "wave"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42167,8 +42159,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "jelly",
-        "scaleX"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42189,8 +42180,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "pulse",
-        "weight"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42211,7 +42201,7 @@
         "mode": "out"
       },
       "operations": [
-        "weight"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42232,8 +42222,7 @@
         "mode": "inOut"
       },
       "operations": [
-        "swing",
-        "skew"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42255,8 +42244,7 @@
         "mass": 1
       },
       "operations": [
-        "scaleX",
-        "skew"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42275,7 +42263,7 @@
         "kind": "linear"
       },
       "operations": [
-        "squash"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -42296,7 +42284,7 @@
         "mode": "out"
       },
       "operations": [
-        "weight"
+        "fontAxes"
       ],
       "stagger": "forward",
       "exit": false,
@@ -43614,14 +43602,14 @@
         "en": "Kanji Stroke Order",
         "zh-CN": "汉字·笔画·顺序"
       },
-      "durationMs": 300,
+      "durationMs": 4000,
       "curve": {
         "kind": "power",
         "exponent": 3,
         "mode": "inOut"
       },
       "operations": [
-        "strokeDraw"
+        "kanjiStroke"
       ],
       "stagger": "forward",
       "exit": false,
