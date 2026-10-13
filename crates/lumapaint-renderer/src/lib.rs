@@ -9,6 +9,7 @@ use lumapaint_core::tiles::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
+pub mod animation_cels;
 pub mod frame_cache;
 mod frame_overlay;
 pub mod glyph_atlas;
@@ -1408,6 +1409,8 @@ pub struct Renderer {
     brush_bind_layout: wgpu::BindGroupLayout,
     brush_sampler: wgpu::Sampler,
     svg_pipeline: wgpu::RenderPipeline,
+    onion_pipeline: wgpu::RenderPipeline,
+    onion_underlay_pipeline: wgpu::RenderPipeline,
     workspace_pipeline: wgpu::RenderPipeline,
     workspace_full_pipeline: wgpu::RenderPipeline,
     object_pipeline: wgpu::RenderPipeline,
@@ -1432,6 +1435,8 @@ pub struct Renderer {
     paint_cache_installed: bool,
     brush_cache: Vec<CachedBrushGpu>,
     svg_cache: HashMap<String, CachedSvg>,
+    onion_skin: Option<CachedSvg>,
+    onion_visible: bool,
     // Inline editing and resize previews share unchanged text frames across render calls.
     frame_raster_cache: frame_cache::FrameRasterCache,
     drag_cache: HashMap<String, DragLayerCache>,
@@ -3522,6 +3527,22 @@ impl Renderer {
             ..Default::default()
         });
         let (svg_bind_layout, svg_pipeline) = create_svg_pipeline(&device, &bind_layout, format);
+        let onion_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            surface_format,
+            include_str!("onion_skin.wgsl"),
+            "Onion reference overlay",
+        );
+        let onion_underlay_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            format,
+            include_str!("onion_skin.wgsl"),
+            "Onion reference beneath artwork",
+        );
         let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Object rectangle"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -3644,6 +3665,8 @@ impl Renderer {
             brush_bind_layout,
             brush_sampler,
             svg_pipeline,
+            onion_pipeline,
+            onion_underlay_pipeline,
             workspace_pipeline,
             workspace_full_pipeline,
             object_pipeline,
@@ -3668,6 +3691,8 @@ impl Renderer {
             paint_cache_installed: false,
             brush_cache: Vec::new(),
             svg_cache: HashMap::new(),
+            onion_skin: None,
+            onion_visible: false,
             frame_raster_cache: frame_cache::FrameRasterCache::default(),
             drag_cache: HashMap::new(),
             uniform_layout: bind_layout,
@@ -3771,6 +3796,35 @@ impl Renderer {
 
     pub fn set_selection_overlay_visible(&mut self, visible: bool) {
         self.selection_overlay_visible = visible;
+    }
+    /// Editor-only reference texture; never part of document/save/export state.
+    pub fn set_onion_visible(&mut self, visible: bool) {
+        self.onion_visible = visible;
+    }
+    pub fn install_onion_skin(
+        &mut self,
+        raster: Option<animation_cels::Raster>,
+    ) -> Result<(), String> {
+        self.onion_skin = match raster {
+            Some(raster) => {
+                if raster.width.max(raster.height) > 1024 {
+                    return Err("Onion reference is too large".into());
+                }
+                Some(self.make_cached_svg_shared_pixels(
+                    PreparedSvgLayer {
+                        id: "onion-reference".into(),
+                        source: String::new(),
+                        opacity: 1.,
+                        size: (raster.width, raster.height),
+                        fully_contained: true,
+                        pixels: std::sync::Arc::new(raster.pixels),
+                    },
+                    false,
+                )?)
+            }
+            None => None,
+        };
+        Ok(())
     }
 
     pub fn set_image_frame_guides_visible(&mut self, visible: bool) {
@@ -4654,6 +4708,30 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        // In ordinary RGB painting, references belong above the paper and below
+        // current pixels; nearly identical forked cels must not tint the artwork.
+        let onion_beneath = self.channel == 0 && !grayscale && !root_paint::masked_paper(document);
+        if self.onion_visible && onion_beneath {
+            if let Some(skin) = &self.onion_skin {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Onion beneath current artwork"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.onion_underlay_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_bind_group(1, &skin.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+        }
         if let Some(preview) = self.tile_preview.as_ref().filter(|preview| preview.visible) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Tile paint preview pass"),
@@ -4874,6 +4952,14 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            if self.onion_visible && !onion_beneath {
+                if let Some(skin) = &self.onion_skin {
+                    pass.set_pipeline(&self.onion_pipeline);
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_bind_group(1, &skin.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+            }
             for selection_group in &outline_selections {
                 pass.set_pipeline(&self.selection_pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);

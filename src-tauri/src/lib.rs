@@ -1,3 +1,4 @@
+mod cel_previews;
 mod diagnostic_jobs;
 mod font_viewer;
 mod image_frames;
@@ -62,6 +63,9 @@ pub fn run() {
     let exit_code = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("media", |_context, request, responder| {
             media_browser::serve(request, responder)
+        })
+        .register_asynchronous_uri_scheme_protocol("cel-preview", |_context, request, responder| {
+            cel_previews::serve(request, responder)
         })
         .setup(|app| {
             if let Err(error) = media_browser::initialize(app.handle()) {
@@ -233,6 +237,7 @@ pub fn run() {
             ai::ai_generate,
             ai::ai_cancel,
             timeline::timeline,
+            timeline::timeline_cel_thumbnails,
             timeline::motion_catalog,
             timeline::motion_fonts,
             canvas::set_vector_appearance,

@@ -13690,9 +13690,9 @@ fn animation_history_bytes(animation: &animation::Animation) -> usize {
             name.len()
                 + 128
                 + track
-                    .cels
-                    .values()
-                    .map(|cel| {
+                    .stored_cels()
+                    .into_iter()
+                    .map(|(_, cel)| {
                         cel.source.as_ref().map_or(0, String::len)
                             + cel
                                 .strokes

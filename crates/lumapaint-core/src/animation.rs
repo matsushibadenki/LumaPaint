@@ -2,6 +2,12 @@
 //! are evaluated independently. Preview evaluation never changes the artwork.
 use super::*;
 use std::{collections::BTreeMap, sync::Arc};
+#[path = "animation/exposures.rs"]
+mod exposures;
+pub use exposures::{Exposure, NamedCel};
+#[path = "animation/exposure_batch.rs"]
+mod exposure_batch;
+pub use exposure_batch::ExposureBatchEdit;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -9,6 +15,8 @@ pub struct Animation {
     pub fps: u32,
     pub duration: u32,
     pub looping: bool,
+    #[serde(default)]
+    pub onion: OnionSettings,
     pub tracks: BTreeMap<String, Track>,
 }
 impl Default for Animation {
@@ -17,19 +25,167 @@ impl Default for Animation {
             fps: 24,
             duration: 120,
             looping: true,
+            onion: OnionSettings::default(),
             tracks: BTreeMap::new(),
         }
     }
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnionSpacing {
+    #[default]
+    Cels,
+    Frames,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnionColor {
+    Original,
+    Half,
+    #[default]
+    Tint,
+}
+/// Authored viewing preferences. Reference pixels are never stored in a project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OnionSettings {
+    pub enabled: bool,
+    pub before: u32,
+    pub after: u32,
+    pub step: u32,
+    pub opacity: f32,
+    pub fade: f32,
+    pub previous_color: [u8; 3],
+    pub next_color: [u8; 3],
+    pub spacing: OnionSpacing,
+    pub color: OnionColor,
+    pub fixed_frames: Vec<u32>,
+}
+impl Default for OnionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            before: 2,
+            after: 2,
+            step: 1,
+            opacity: 35.,
+            fade: 10.,
+            previous_color: [65, 145, 255],
+            next_color: [255, 90, 105],
+            spacing: OnionSpacing::Cels,
+            color: OnionColor::Tint,
+            fixed_frames: vec![],
+        }
+    }
+}
+impl OnionSettings {
+    pub fn validate(&self, duration: u32) -> Result<(), String> {
+        if self.before > 4
+            || self.after > 4
+            || !(1..=24).contains(&self.step)
+            || !self.opacity.is_finite()
+            || !(0. ..=100.).contains(&self.opacity)
+            || !self.fade.is_finite()
+            || !(0. ..=100.).contains(&self.fade)
+            || self.fixed_frames.len() > 4
+            || self.fixed_frames.iter().any(|f| *f >= duration)
+            || self.fixed_frames.windows(2).any(|w| w[0] >= w[1])
+        {
+            return Err("Invalid onion skin settings / オニオンスキンの設定範囲が不正です / 洋葱皮设置超出范围".into());
+        }
+        Ok(())
+    }
+    /// Nearest distinct exposures by default; relative frame and fixed references
+    /// share the same held-cel lookup and never wrap across the timeline edges.
+    pub fn references(&self, track: &Track, frame: u32, duration: u32) -> Vec<OnionReference> {
+        if !self.enabled || self.validate(duration).is_err() {
+            return vec![];
+        }
+        let current = track.cels.range(..=frame).next_back().map(|(_, c)| c);
+        let frames: Vec<_> = track.cels.keys().copied().collect();
+        let insertion = frames.partition_point(|f| *f <= frame);
+        let mut targets = vec![];
+        for (before, count) in [(true, self.before), (false, self.after)] {
+            for distance in 1..=count {
+                let offset = distance * self.step;
+                let target = match self.spacing {
+                    OnionSpacing::Frames => {
+                        if before {
+                            frame.checked_sub(offset)
+                        } else {
+                            frame.checked_add(offset).filter(|f| *f < duration)
+                        }
+                    }
+                    OnionSpacing::Cels => {
+                        if before {
+                            insertion
+                                .checked_sub(usize::from(current.is_some()) + offset as usize)
+                                .and_then(|i| frames.get(i).copied())
+                        } else {
+                            frames.get(insertion + offset as usize - 1).copied()
+                        }
+                    }
+                };
+                if let Some(target) = target {
+                    targets.push((target, before, distance));
+                }
+            }
+        }
+        targets.extend(self.fixed_frames.iter().copied().map(|f| (f, f < frame, 1)));
+        let mut result: Vec<OnionReference> = vec![];
+        for (target, previous, distance) in targets {
+            let Some((start, cel)) = track.cels.range(..=target).next_back() else {
+                continue;
+            };
+            if current.is_some_and(|c| Arc::ptr_eq(c, cel))
+                || (cel.source.is_none() && cel.strokes.is_empty())
+            {
+                continue;
+            }
+            let opacity = (self.opacity - self.fade * (distance - 1) as f32).max(0.) / 100.;
+            if let Some(existing) = result.iter_mut().find(|r| Arc::ptr_eq(&r.cel, cel)) {
+                if opacity > existing.opacity {
+                    existing.opacity = opacity;
+                }
+                continue;
+            }
+            if opacity > 0. {
+                result.push(OnionReference {
+                    frame: *start,
+                    cel: cel.clone(),
+                    opacity,
+                    color: if previous {
+                        self.previous_color
+                    } else {
+                        self.next_color
+                    },
+                });
+            }
+        }
+        // Draw nearer skins last. Stable order preserves independently colored sides.
+        result.sort_by(|a, b| a.opacity.total_cmp(&b.opacity));
+        result
+    }
+}
+#[derive(Clone, Debug)]
+pub struct OnionReference {
+    pub frame: u32,
+    pub cel: Arc<Cel>,
+    pub opacity: f32,
+    pub color: [u8; 3],
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(try_from = "exposures::TrackData", into = "exposures::TrackData")]
 pub struct Track {
-    #[serde(with = "cel_frames")]
+    /// Resolved playback cache; only the library and exposure references are saved.
     pub cels: BTreeMap<u32, Arc<Cel>>,
+    pub pixel: bool,
+    pub next_cel_id: u32,
+    pub cel_library: BTreeMap<u32, NamedCel>,
+    pub exposures: BTreeMap<u32, Exposure>,
     pub channels: BTreeMap<Property, Vec<Keyframe>>,
     /// Explicit pivot in document pixels, fixed when the first key is created.
     pub anchor: [f32; 2],
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub motions: Vec<crate::motion::Clip>,
 }
 // Array entries retain numeric frame types through the native envelope's serde
@@ -166,6 +322,7 @@ impl Animation {
         self.validate_inner(width, height, true)
     }
     fn validate_inner(&self, width: u32, height: u32, validate_cels: bool) -> Result<(), String> {
+        self.onion.validate(self.duration)?;
         if !(1..=120).contains(&self.fps)
             || !(1..=18000).contains(&self.duration)
             || self.tracks.len() > 256
@@ -174,6 +331,7 @@ impl Animation {
         }
         let mut bytes = 0usize;
         let mut frames = 0;
+        let mut exposures = 0;
         let mut total_keys = 0;
         let mut total_motions = 0;
         let mut motion_bytes = 0usize;
@@ -188,7 +346,15 @@ impl Animation {
             {
                 return Err("Invalid animation track".into());
             }
-            for (frame, cel) in &track.cels {
+            track.validate_exposures(self.duration)?;
+            if validate_cels {
+                track.validate_playback_cache()?;
+            }
+            exposures += track.exposures.len();
+            if exposures > 2048 {
+                return Err("Exposure budget exceeded".into());
+            }
+            for (frame, cel) in track.stored_cels() {
                 frames += 1;
                 bytes = bytes.saturating_add(cel.source.as_ref().map_or(0, String::len));
                 bytes = bytes.saturating_add(
@@ -197,7 +363,7 @@ impl Animation {
                         .map(|s| s.points.len().saturating_mul(32))
                         .sum::<usize>(),
                 );
-                if *frame >= self.duration || frames > 2048 || bytes > 48 * 1024 * 1024 {
+                if frame >= 2048 || frames > 2048 || bytes > 48 * 1024 * 1024 {
                     return Err("Animation cel budget exceeded".into());
                 }
                 // Reuse the normal document validator for all stored paint data.
@@ -415,7 +581,10 @@ impl Document {
     pub fn animation(&self) -> &Animation {
         &self.animation
     }
-    fn commit_animation(&mut self, next: Animation) -> Result<(), String> {
+    fn commit_animation(&mut self, mut next: Animation) -> Result<(), String> {
+        for track in next.tracks.values_mut() {
+            track.refresh_exposures(next.duration)?;
+        }
         next.validate_inner(self.width, self.height, false)?;
         self.finish();
         let previous = std::mem::replace(&mut self.animation, Arc::new(next));
@@ -427,6 +596,15 @@ impl Document {
         self.undo_order.push(HistoryKind::Vector);
         self.revision += 1;
         Ok(())
+    }
+    pub fn set_animation_onion(&mut self, onion: OnionSettings) -> Result<(), String> {
+        onion.validate(self.animation.duration)?;
+        if self.animation.onion == onion {
+            return Ok(());
+        }
+        let mut next = self.animation.as_ref().clone();
+        next.onion = onion;
+        self.commit_animation(next)
     }
     pub fn set_animation_settings(
         &mut self,
@@ -489,7 +667,8 @@ impl Document {
         if !track.channels.is_empty() {
             return Err("Layer already has vector animation".into());
         }
-        track.cels.insert(frame, Arc::new(cel));
+        let reuse = !blank && track.exposures.contains_key(&frame);
+        track.record_cel(frame, Arc::new(cel), next.duration, reuse)?;
         self.commit_animation(next)
     }
     pub fn blank_animation_cel(&mut self, id: &str, frame: u32) -> Result<(), String> {
@@ -499,11 +678,12 @@ impl Document {
             strokes: vec![],
         });
         let mut next = self.animation.as_ref().clone();
-        next.tracks
-            .entry(id.into())
-            .or_default()
-            .cels
-            .insert(frame, cel.clone());
+        next.tracks.entry(id.into()).or_default().record_cel(
+            frame,
+            cel.clone(),
+            next.duration,
+            false,
+        )?;
         next.validate_inner(self.width, self.height, false)?;
         self.finish();
         let mut before = self.vector_history_state();
@@ -534,7 +714,14 @@ impl Document {
             .next_back()
             .map(|(_, c)| c.clone())
             .ok_or("No cel to duplicate")?;
-        track.cels.insert(frame, cel);
+        track.refresh_exposures(next.duration)?;
+        let cel_id = track
+            .exposure_at(from, next.duration)
+            .ok_or("No cel to duplicate")?
+            .1
+            .cel;
+        let _ = cel;
+        track.assign_cel(frame, cel_id, next.duration)?;
         self.commit_animation(next)
     }
     pub fn set_animation_key(
@@ -597,7 +784,9 @@ impl Document {
                     keys.retain(|k| k.frame != frame);
                 }
             } else {
-                track.cels.remove(&frame);
+                track.refresh_exposures(next.duration)?;
+                track.exposures.remove(&frame);
+                track.rebuild_cels();
             }
         }
         self.commit_animation(next)
@@ -610,8 +799,11 @@ impl Document {
             .animation
             .tracks
             .get(id)
-            .and_then(|t| t.cels.range(..=frame).next_back())
-            .map(|(_, c)| c.clone())
+            .and_then(|t| {
+                t.exposure_at(frame, self.animation.duration)
+                    .and_then(|(_, e)| t.cel_library.get(&e.cel))
+            })
+            .map(|c| c.drawing.clone())
             .ok_or("No cel at this frame")?;
         self.finish();
         let mut before = self.vector_history_state();
@@ -767,6 +959,107 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ink() -> Arc<Cel> {
+        Arc::new(Cel { source:Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"4\" y=\"4\" width=\"8\" height=\"8\"/></svg>".into()), strokes:vec![] })
+    }
+    #[test]
+    fn onion_neighbors_use_distinct_exposures_without_repeating_holds() {
+        let mut track = Track::default();
+        for frame in [0, 3, 6, 9, 12] {
+            track.cels.insert(frame, ink());
+        }
+        let settings = OnionSettings {
+            enabled: true,
+            opacity: 50.,
+            fade: 10.,
+            ..Default::default()
+        };
+        let refs = settings.references(&track, 7, 24);
+        assert_eq!(
+            refs.iter().map(|r| r.frame).collect::<Vec<_>>(),
+            [0, 12, 3, 9]
+        );
+        assert_eq!(
+            refs.iter().map(|r| r.opacity).collect::<Vec<_>>(),
+            [0.4, 0.4, 0.5, 0.5]
+        );
+        assert_eq!(refs[2].color, settings.previous_color);
+        assert_eq!(refs[3].color, settings.next_color);
+        assert!(settings
+            .references(&track, 0, 24)
+            .iter()
+            .all(|r| r.frame > 0));
+        let first = track.cels[&0].clone();
+        track.cels.insert(3, first);
+        assert_eq!(
+            settings
+                .references(&track, 7, 24)
+                .iter()
+                .filter(|r| r.frame <= 3)
+                .count(),
+            1
+        );
+        track.cels.insert(
+            9,
+            Arc::new(Cel {
+                source: None,
+                strokes: vec![],
+            }),
+        );
+        assert!(!settings
+            .references(&track, 7, 24)
+            .iter()
+            .any(|r| r.frame == 9));
+    }
+    #[test]
+    fn onion_relative_frames_fixed_references_and_settings_roundtrip() {
+        let mut track = Track::default();
+        for frame in [0, 5, 10, 20] {
+            track.cels.insert(frame, ink());
+        }
+        let settings = OnionSettings {
+            enabled: true,
+            spacing: OnionSpacing::Frames,
+            before: 4,
+            after: 4,
+            fixed_frames: vec![0, 20],
+            ..Default::default()
+        };
+        let refs = settings.references(&track, 7, 24);
+        assert_eq!(refs.len(), 3);
+        assert!(refs.iter().any(|r| r.frame == 20));
+        assert!(refs.iter().all(|r| r.frame != 5));
+        assert_eq!(
+            refs.iter().find(|r| r.frame == 0).unwrap().opacity,
+            settings.opacity / 100.,
+            "Fixed references keep their full configured opacity"
+        );
+        let mut doc = Document::default();
+        doc.set_animation_onion(settings.clone()).unwrap();
+        let encoded = serde_json::to_value(doc.document_state()).unwrap();
+        let restored =
+            Document::from_document_state(serde_json::from_value(encoded.clone()).unwrap())
+                .unwrap();
+        assert_eq!(restored.animation().onion, settings);
+        doc.undo();
+        assert_eq!(doc.animation().onion, OnionSettings::default());
+        doc.redo();
+        assert_eq!(doc.animation().onion, settings);
+        let mut legacy = encoded;
+        legacy["animation"].as_object_mut().unwrap().remove("onion");
+        assert_eq!(
+            Document::from_document_state(serde_json::from_value(legacy).unwrap())
+                .unwrap()
+                .animation()
+                .onion,
+            OnionSettings::default()
+        );
+        let revision = doc.revision();
+        let mut invalid = settings;
+        invalid.opacity = f32::NAN;
+        assert!(doc.set_animation_onion(invalid).is_err());
+        assert_eq!(doc.revision(), revision);
+    }
     fn key(frame: u32, value: f32, interpolation: Interpolation) -> Keyframe {
         Keyframe {
             frame,

@@ -4547,11 +4547,11 @@ fn request_redraw() -> Result<(), String> {
     }
     let view = CANVAS.with(|slot| slot.borrow().as_ref().map(|canvas| canvas.view.clone()));
     if let Some(view) = view {
-        // An active display link (or pending AppKit layer update) already
-        // owns the next frame. Keep marking inputs above for latency tracking.
-        if !FRAME_REQUESTED.with(|requested| requested.replace(true)) {
-            view.request_frame();
-        }
+        // Keep one pending frame, but always wake the retained display link.
+        // An occluded view can retain the pending flag after its link pauses;
+        // later panel edits must still be able to request presentation.
+        FRAME_REQUESTED.with(|requested| requested.set(true));
+        view.request_frame();
     }
     Ok(())
 }
@@ -4642,6 +4642,7 @@ fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
 }
 
 fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
+    timeline::configure_onion(canvas);
     if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_none()) {
         canvas.renderer.channel = DOCUMENT.with(|d| d.borrow().editing_channel());
     }

@@ -10,6 +10,161 @@ const H: u32 = 768;
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
+    let gpu = Gpu::new();
+    for format in [
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba16Float,
+    ] {
+        let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
+        let pipeline = create_textured_layer_pipeline(
+            &gpu.device,
+            &gpu.uniform_layout,
+            &layout,
+            format,
+            include_str!("onion_skin.wgsl"),
+            "Onion surface test",
+        );
+        let texture = gpu.device.create_texture_with_data(
+            &gpu.queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &[0, 0, 128, 128],
+        );
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(
+                        &gpu.device.create_sampler(&Default::default()),
+                    ),
+                },
+            ],
+        });
+        let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = output.create_view(&Default::default());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &gpu.uniforms, &[]);
+            pass.set_bind_group(1, &bind, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &output,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: W / 2,
+                    y: H / 2,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let pixels = readback.slice(..).get_mapped_range().unwrap();
+        if format == wgpu::TextureFormat::Rgba16Float {
+            let blue = u16::from_le_bytes([pixels[4], pixels[5]]);
+            let alpha = u16::from_le_bytes([pixels[6], pixels[7]]);
+            assert!(blue.abs_diff(0x3804) <= 4, "linear half-blue: {blue:x}");
+            assert!(alpha.abs_diff(0x3804) <= 2, "half-alpha: {alpha:x}");
+            assert_eq!(&pixels[..4], [0, 0, 0, 0]);
+        } else {
+            let blue = if format == wgpu::TextureFormat::Bgra8UnormSrgb {
+                0
+            } else {
+                2
+            };
+            assert!(
+                pixels[blue].abs_diff(188) <= 2,
+                "{format:?}: {:?}",
+                &pixels[..4]
+            );
+            assert!(pixels[3].abs_diff(128) <= 1);
+        }
+        drop(pixels);
+        readback.unmap();
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
     let gpu = Gpu::new();
     let (layout, composite) = create_brush_composite(&gpu.device, wgpu::TextureFormat::Rgba16Float);

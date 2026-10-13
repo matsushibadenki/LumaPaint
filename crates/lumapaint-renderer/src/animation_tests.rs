@@ -22,6 +22,29 @@ fn vector_document() -> (Document, String) {
     (doc, id)
 }
 #[test]
+fn cel_references_are_transparent_bounded_and_do_not_include_paper() {
+    use lumapaint_core::document::animation::Cel;
+    let cel=Cel {source:Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"8\" y=\"8\" width=\"16\" height=\"16\" fill=\"#000\"/></svg>".into()),strokes:vec![]};
+    let raster = crate::thumbnails::cel_pixels(&cel, (64, 64), 96).unwrap();
+    assert_eq!((raster.width, raster.height), (64, 64));
+    assert_eq!(&raster.pixels[..4], [0, 0, 0, 0]);
+    assert_eq!(
+        &raster.pixels[(10 * 64 + 10) * 4..(10 * 64 + 10) * 4 + 4],
+        [0, 0, 0, 255]
+    );
+    let blank = crate::thumbnails::cel_pixels(
+        &Cel {
+            source: None,
+            strokes: vec![],
+        },
+        (4096, 4096),
+        96,
+    )
+    .unwrap();
+    assert_eq!((blank.width, blank.height), (96, 96));
+    assert!(blank.pixels.iter().all(|v| *v == 0));
+}
+#[test]
 fn animation_vector_frames_render_the_expected_positions_and_restore_after_undo() {
     let (mut doc, id) = vector_document();
     let base = document_pixels(&doc).unwrap();
@@ -390,4 +413,34 @@ fn incremental_timeline_matches_full_frames_in_both_directions_and_after_edits()
     let mut full = doc.clone_for_rendering();
     full.evaluate_animation(&doc, 2);
     assert!(document_pixels(&preview).unwrap() == document_pixels(&full).unwrap());
+}
+
+#[test]
+fn exposure_ranges_render_empty_gaps_and_preserve_pixels_after_native_reload() {
+    let mut state = Document::default().document_state();
+    state.width = 64;
+    state.height = 64;
+    state.paint_source=Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" fill=\"#00ff00\"/></svg>".into());
+    let mut doc = Document::from_document_state(state).unwrap();
+    doc.capture_animation_cel("layer-1", 0, false).unwrap();
+    doc.duplicate_animation_cel("layer-1", 0, 10).unwrap();
+    doc.edit_animation_exposure("layer-1", 0, 2, 8).unwrap();
+    let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+    for frame in [0, 2, 7, 8, 9, 10, 119] {
+        let mut preview = doc.clone();
+        preview.evaluate_animation(&doc, frame);
+        let mut reload = restored.clone();
+        reload.evaluate_animation(&restored, frame);
+        let pixels = document_pixels(&preview).unwrap();
+        assert_eq!(pixels, document_pixels(&reload).unwrap());
+        let expected = if [0, 8, 9].contains(&frame) {
+            [255, 255, 255, 255]
+        } else {
+            [0, 255, 0, 255]
+        };
+        assert_eq!(
+            &pixels[(10 * 64 + 10) * 4..(10 * 64 + 10) * 4 + 4],
+            expected
+        );
+    }
 }

@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale } from '../i18n';
 import { Icon } from './Icon';
+import {OnionControls,onionLabels,type OnionSettings} from './OnionControls';
 import type { MotionClip, MotionCatalog } from '../motion-types';
-import { visibleFrames, visibleKeys, overlapsFrames, sampleTimelineKey } from '../timeline-view';
+import {ExposureBatchControls} from './ExposureBatchControls';
+import { ExposureClip } from './ExposureClip';
+import {CelLibraryControls,celLabels,type CelInfo} from './CelLibraryControls';
+import { visibleFrames, visibleKeys, overlapsFrames, sampleTimelineKey,exposureMoveBounds,selectExposureFrames,type ExposureRange } from '../timeline-view';
 
 type Transport = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
 const defaultTransport:Transport=(command,args)=>invoke(command,args);
 type Property = 'x'|'y'|'scaleX'|'scaleY'|'rotation'|'opacity';
 type Interpolation = 'linear'|'hold'|'ease';
 type Key = {frame:number;value:number;interpolation:Interpolation};
-type Layer = {id:string;name:string;pixel:boolean;locked:boolean;cels:number[];channels:Partial<Record<Property,Key[]>>;motions:MotionClip[]};
-type Data = {documentId:number;selectedLayer?:string;fps:number;duration:number;looping:boolean;layers:Layer[]};
+type Layer = {id:string;name:string;pixel:boolean;locked:boolean;cels:number[];celLibrary:CelInfo[];exposures:ExposureRange[];channels:Partial<Record<Property,Key[]>>;motions:MotionClip[]};
+type Data = {documentId:number;revision:number;selectedLayer?:string;fps:number;duration:number;looping:boolean;onion:OnionSettings;layers:Layer[]};
 type State = {frame:number;playing:boolean;preview:boolean;data:Data|null;dataUnchanged?:boolean};
 const properties:Property[]=['x','y','scaleX','scaleY','rotation','opacity'];
 const labels={
@@ -24,7 +28,10 @@ function sample(layer:Layer|undefined,p:Property,frame:number):number {
   return sampleTimelineKey(layer?.channels[p]??[],frame,p==='scaleX'||p==='scaleY'||p==='opacity'?100:0);
 }
 export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale;transport?:Transport}) {
-  const t=labels[locale];
+  const t=labels[locale],ot=onionLabels[locale],ct=celLabels[locale];
+  const [thumbnailSize,setThumbnailSize]=useState(56);
+  const [visibleLayers,setVisibleLayers]=useState<string[]>([]);
+  const [thumbnails,setThumbnails]=useState<Record<string,{token:string;blank:boolean}>>({});
   const [catalog,setCatalog]=useState<MotionCatalog|null>(null);
   const motionNames=useMemo(()=>new Map(catalog?.presets.map(p=>[p.id,p.names[locale]??p.names.en])??[]),[catalog,locale]);
   const tracks=useRef<HTMLDivElement>(null);
@@ -32,9 +39,19 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
   const motionDrag=useRef<{x:number;layer:string;clip:MotionClip}|null>(null);
   useEffect(()=>{let alive=true;void transport<MotionCatalog>('motion_catalog').then(c=>{if(alive)setCatalog(c);}).catch(()=>{});return()=>{alive=false;};},[transport]);
   const [state,setState]=useState<State>({frame:0,playing:false,preview:false,data:null});
+  const [frameInput,setFrameInput]=useState('1');
+  const frameEditing=useRef(false);
+  useEffect(()=>{frameEditing.current=false;setFrameInput(String(state.frame+1));},[state.data?.documentId]);
   const currentDocument=useRef<number|undefined>(undefined);
   currentDocument.current=state.data?.documentId;
   const [layerId,setLayerId]=useState('');
+  const [selection,setSelection]=useState<{layer:string;frames:number[];anchor:number|null}>({layer:'',frames:[],anchor:null});
+  const selectionRef=useRef(selection);
+  const [ripple,setRipple]=useState(false);
+  const [groupPreview,setGroupPreview]=useState<{layer:string;source:number;delta:number}|null>(null);
+  function selectExposures(layer:string,frames:number[],anchor:number|null){const next={layer,frames,anchor};selectionRef.current=next;setSelection(next);}
+  useEffect(()=>{selectExposures('',[],null);setGroupPreview(null);},[state.data?.documentId,state.data?.revision]);
+  useEffect(()=>{if(selectionRef.current.layer!==layerId)selectExposures('',[],null);},[layerId]);
   const [property,setProperty]=useState<Property>('x');
   const [value,setValue]=useState('0');
   const [interpolation,setInterpolation]=useState<Interpolation>('linear');
@@ -69,13 +86,34 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
     void tick();return()=>{canceled=true;clearTimeout(timer);};
   },[state.playing,command]);
   useEffect(()=>{if(state.data){setFps(String(state.data.fps));setDuration(String(state.data.duration));setLayerId(id=>(state.data!.layers.some(l=>l.id===state.data!.selectedLayer)?state.data!.selectedLayer:undefined)??(state.data!.layers.some(l=>l.id===id)?id:state.data!.layers.at(-1)?.id??''));}},[state.data]);
-  function selectLayer(id:string){setLayerId(id);if(id!==layerId)void command({action:'select',layer:id});}
+  function selectLayer(id:string){flushKeyEdit();valueEditing.current=null;setLayerId(id);if(id!==layerId)void command({action:'select',layer:id});}
+  // Keep an in-progress numeric draft stable while asynchronous edit replies arrive.
+  const valueEditing=useRef<string|null>(null);
+  const keyEdit=useRef<{request:Record<string,unknown>;documentId:number;timer:ReturnType<typeof setTimeout>}|null>(null);
+  const flushKeyEdit=useCallback(()=>{
+    const pending=keyEdit.current;if(!pending)return;
+    clearTimeout(pending.timer);keyEdit.current=null;
+    if(currentDocument.current===pending.documentId)void command(pending.request,true);
+  },[command]);
+  useEffect(()=>()=>{if(keyEdit.current)clearTimeout(keyEdit.current.timer);},[]);
   const layer=state.data?.layers.find(l=>l.id===layerId);
-  useEffect(()=>{setValue(String(sample(layer,property,state.frame)));const key=layer?.channels[property]?.find(k=>k.frame===state.frame);if(key)setInterpolation(key.interpolation);},[layer,property,state.frame]);
+  const editContext=`${state.data?.documentId}:${layerId}:${property}:${state.frame}`;
+  useEffect(()=>{if(valueEditing.current===editContext)return;setValue(String(sample(layer,property,state.frame)));const key=layer?.channels[property]?.find(k=>k.frame===state.frame);if(key)setInterpolation(key.interpolation);},[layer,property,state.frame,editContext]);
+  function updateExistingKey(text:string,mode:Interpolation){
+    if(keyEdit.current){clearTimeout(keyEdit.current.timer);keyEdit.current=null;}
+    if(!state.data||!layer||layer.locked||state.playing||!layer.channels[property]?.some(k=>k.frame===state.frame)||!text.trim())return;
+    const numeric=Number(text);
+    const [min,max]=property==='opacity'?[0,100]:property==='scaleX'||property==='scaleY'?[0.1,10000]:property==='rotation'?[-36000,36000]:[-65536,65536];
+    if(!Number.isFinite(numeric)||numeric<min||numeric>max)return;
+    keyEdit.current={documentId:state.data.documentId,request:{action:'key',documentId:state.data?.documentId,layer:layerId,frame:state.frame,property,value:numeric,interpolation:mode},timer:setTimeout(flushKeyEdit,120)};
+  }
   const data=state.data;
+  const celNames=useMemo(()=>new Map(data?.layers.flatMap(l=>(l.celLibrary??[]).map(c=>[`${l.id}:${c.id}`,c.name] as const))??[]),[data]);
+  useEffect(()=>setThumbnails({}),[data?.documentId]);
   useEffect(()=>{drag.current=null;motionDrag.current=null;pendingSeek.current=null;scrub.current=null;movedKey.current=false;},[data?.documentId]);
   const seek=(frame:number)=>{
     if(!Number.isFinite(frame))return;
+    flushKeyEdit();valueEditing.current=null;
     pendingSeek.current=Math.max(0,Math.min((data?.duration??1)-1,Math.round(frame)));
     if(seeking.current)return;
     seeking.current=true;
@@ -88,6 +126,47 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
   },[data?.documentId,data?.duration,zoom]);
   const range=visibleFrames(viewport.left,viewport.width,zoom,data?.duration??120);
   const timelineWidth=Math.max(500,(data?.duration??120)*zoom);
+  useEffect(()=>{
+    const root=tracks.current;if(!root)return;
+    const visible=new Set<string>();
+    const observer=new IntersectionObserver(entries=>{for(const entry of entries){const id=(entry.target as HTMLElement).dataset.layerId!;if(entry.isIntersecting)visible.add(id);else visible.delete(id);}const next=[...visible].sort();setVisibleLayers(old=>old.join('|')===next.join('|')?old:next);},{root});
+    root.querySelectorAll('[data-layer-id]').forEach(node=>observer.observe(node));
+    return()=>observer.disconnect();
+  },[data?.documentId,data?.layers.map(l=>l.id).join('|'),thumbnailSize]);
+  useEffect(()=>{
+    let canceled=false;
+    if(!data||!thumbnailSize){setThumbnails({});return;}
+    const cels=data.layers.filter(l=>l.pixel&&(visibleLayers.includes(l.id)||l.id===layerId)).flatMap(l=>(l.exposures??[]).filter(e=>overlapsFrames(e.start,e.end,range)).map(e=>[l.id,e.start] as [string,number]));
+    void(async()=>{
+      const next:Record<string,{token:string;blank:boolean}>={};
+      try{for(let start=0;start<cels.length&&!canceled;start+=64){
+        const result=await transport<Array<{layer:string;frame:number;token:string;blank:boolean}>>('timeline_cel_thumbnails',{request:{documentId:data.documentId,cels:cels.slice(start,start+64)}});
+        for(const item of result)next[`${item.layer}:${item.frame}`]={token:item.token,blank:item.blank};
+        if(!canceled)setThumbnails({...next});
+      }}catch(e){if(!canceled)setError(String(e));}
+    })();
+    return()=>{canceled=true;};
+  },[data,range.from,range.to,visibleLayers,layerId,thumbnailSize,transport]);
+
+  const selectedStarts=useMemo(()=>new Set(selection.frames),[selection.frames]);
+  const selectedFrames=selection.layer===layerId?selection.frames:[];
+  const moveBounds=useMemo(()=>exposureMoveBounds(layer?.exposures??[],selectedFrames,data?.duration??1,ripple),[layer?.exposures,selectedFrames,data?.duration,ripple]);
+  function editBatch(edit:Record<string,unknown>,frames=selectionRef.current.frames){
+    if(!data||selectionRef.current.layer!==layerId||!frames.length)return;
+    void command({action:'exposureBatch',documentId:data.documentId,revision:data.revision,layer:layerId,frames,edit}).then(()=>{selectExposures('',[],null);setGroupPreview(null);void command({action:'refresh'},true);});
+  }
+  function prepareExposure(id:string,frame:number,mode:string,event:{shiftKey:boolean;metaKey:boolean;ctrlKey:boolean}){
+    if(event.shiftKey||event.metaKey||event.ctrlKey)return false;
+    const old=selectionRef.current;if(mode!=='move'||old.layer!==id||!old.frames.includes(frame))selectExposures(id,[frame],frame);
+    if(id!==layerId)selectLayer(id);return true;
+  }
+  function chooseExposure(id:string,frame:number,event:{shiftKey:boolean;metaKey:boolean;ctrlKey:boolean}){
+    const item=data?.layers.find(l=>l.id===id);if(!item)return;
+    const old=selectionRef.current;
+    const frames=selectExposureFrames(item.exposures??[],old.layer===id?old.frames:[],frame,old.layer===id?old.anchor:null,event.shiftKey,event.metaKey||event.ctrlKey);
+    selectExposures(id,frames,event.shiftKey&&old.layer===id?old.anchor:frame);selectLayer(id);
+    if(!event.shiftKey&&!event.metaKey&&!event.ctrlKey)seek(frame);
+  }
   const disabled=busy||state.playing||!layer||layer.locked;
   const step=Math.max(1,Math.ceil(60/zoom));
   function selectFrame(event:React.PointerEvent<HTMLDivElement>) {
@@ -98,8 +177,10 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
   }
   const keyAt=layer?.channels[property]?.some(k=>k.frame===state.frame);
   const celAt=layer?.cels.includes(state.frame);
-  return <div className="timeline-panel" onKeyDown={e=>e.stopPropagation()}>
+  return <div className="timeline-panel" onKeyDown={e=>{e.stopPropagation();if((e.target as HTMLElement).closest('input,select,textarea'))return;if(!layer?.pixel)return;if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='a'){e.preventDefault();selectExposures(layerId,layer.exposures.map(x=>x.start),layer.exposures[0]?.start??null);}if(e.key==='Escape'){selectExposures('',[],null);setGroupPreview(null);}if((e.key==='Delete'||e.key==='Backspace')&&!disabled&&selectedFrames.length){e.preventDefault();editBatch({kind:'delete',ripple});}}}>
     <div className="timeline-toolbar">
+      <button className="timeline-onion-toggle" aria-label={ot.title} title={ot.info} aria-pressed={data?.onion.enabled??false} disabled={!data||busy} onClick={()=>data&&void command({action:'onion',documentId:data.documentId,settings:{...data.onion,enabled:!data.onion.enabled}})}>◉ {ot.title}</button>
+      <label>{ot.thumbnails}<select className="timeline-thumbnail-size" value={thumbnailSize} onChange={e=>setThumbnailSize(Number(e.target.value))}><option value={0}>{ot.none}</option>{[32,56,72].map(size=><option key={size} value={size}>{size}</option>)}</select></label>
       <div className="timeline-transport">
         <button title={t.first} aria-label={t.first} disabled={!data||busy} onClick={()=>seek(0)}>⏮</button>
         <button title={t.previous} aria-label={t.previous} disabled={!data||busy} onClick={()=>seek(state.frame-1)}>‹</button>
@@ -107,7 +188,7 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
         <button title={t.next} aria-label={t.next} disabled={!data||busy} onClick={()=>seek(state.frame+1)}>›</button>
         <button title={t.last} aria-label={t.last} disabled={!data||busy} onClick={()=>seek((data?.duration??1)-1)}>⏭</button>
       </div>
-      <label>{t.frame}<input aria-label={t.frame} type="number" min={1} max={data?.duration??1} value={state.frame+1} disabled={!data||busy} onChange={e=>{if(e.target.value)seek(Number(e.target.value)-1);}}/></label>
+      <label>{t.frame}<input aria-label={t.frame} type="number" min={1} max={data?.duration??1} value={frameEditing.current?frameInput:String(state.frame+1)} disabled={!data||busy} onFocus={()=>{frameEditing.current=true;setFrameInput(String(state.frame+1));}} onChange={e=>{setFrameInput(e.target.value);if(e.target.value)seek(Number(e.target.value)-1);}} onBlur={()=>{frameEditing.current=false;setFrameInput(String(state.frame+1));}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></label>
       <span className="timeline-time">{(state.frame/(data?.fps??24)).toFixed(2)} s</span>
       <label>fps<input aria-label="fps" type="number" min={1} max={120} value={fps} onChange={e=>setFps(e.target.value)}/></label>
       <label>{t.duration}<input type="number" min={1} max={18000} value={duration} onChange={e=>setDuration(e.target.value)}/></label>
@@ -117,16 +198,18 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
       <button disabled={!state.preview||busy} onClick={()=>void command({action:'stop'})}>{t.stop}</button>
       <span className="timeline-mode" data-preview={state.preview}>{busy?t.busy:state.preview?t.preview:t.drawing}</span>
     </div>
-    {data&&<div className="timeline-edit-toolbar">{layer?.pixel?<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.capture} aria-label={t.capture} disabled={disabled||state.preview} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:false})}><Icon name="animationRecord"/></button><button className="tool-button" title={t.blank} aria-label={t.blank} disabled={disabled} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:true})}><Icon name="document"/></button><button className="tool-button" title={t.duplicate} aria-label={t.duplicate} disabled={disabled||!layer.cels.some(f=>f<=state.frame)||state.frame>=data.duration-1} onClick={()=>void command({action:'duplicate',layer:layerId,from:state.frame,frame:state.frame+1})}><Icon name="animationDuplicate"/></button><button className="tool-button" title={t.edit} aria-label={t.edit} disabled={disabled||!layer.cels.some(f=>f<=state.frame)} onClick={()=>void command({action:'load',layer:layerId,frame:state.frame})}><Icon name="brush"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!celAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property:null})}><Icon name="animationDelete"/></button></div>:<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.key} aria-label={t.key} disabled={disabled||value.trim()===''||!Number.isFinite(Number(value))} onClick={()=>void command({action:'key',layer:layerId,frame:state.frame,property,value:Number(value),interpolation})}><Icon name="animationKey"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!keyAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property})}><Icon name="animationDelete"/></button></div>}</div>}
+    {data&&<div className="timeline-edit-toolbar">{layer?.pixel?<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.capture} aria-label={t.capture} disabled={disabled||state.preview} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:false})}><Icon name="animationRecord"/></button><button className="tool-button" title={t.blank} aria-label={t.blank} disabled={disabled} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:true})}><Icon name="document"/></button><button className="tool-button" title={t.duplicate} aria-label={t.duplicate} disabled={disabled||!layer.exposures.some(e=>e.start<=state.frame&&e.end>state.frame)||state.frame>=data.duration-1} onClick={()=>void command({action:'duplicate',layer:layerId,from:state.frame,frame:state.frame+1})}><Icon name="animationDuplicate"/></button><button className="tool-button" title={t.edit} aria-label={t.edit} disabled={disabled||!layer.exposures.some(e=>e.start<=state.frame&&e.end>state.frame)} onClick={()=>void command({action:'load',layer:layerId,frame:state.frame})}><Icon name="brush"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!celAt} onClick={()=>void command({action:'removeExposure',documentId:data.documentId,layer:layerId,frame:state.frame})}><Icon name="animationDelete"/></button></div>:<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.key} aria-label={t.key} disabled={disabled||value.trim()===''||!Number.isFinite(Number(value))} onClick={()=>void command({action:'key',documentId:state.data?.documentId,layer:layerId,frame:state.frame,property,value:Number(value),interpolation})}><Icon name="animationKey"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!keyAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property})}><Icon name="animationDelete"/></button></div>}</div>}
+    {data&&layer?.pixel&&<ExposureBatchControls locale={locale} frames={selectedFrames} exposures={layer.exposures??[]} ripple={ripple} setRipple={setRipple} disabled={disabled} onSelectAll={()=>selectExposures(layerId,layer.exposures.map(e=>e.start),layer.exposures[0]?.start??null)} onClear={()=>selectExposures('',[],null)} onEdit={editBatch}/>}
     {data?<div className="timeline-body">
       <div className="timeline-tracks" aria-label={t.hint} ref={tracks} onScroll={e=>{const element=e.currentTarget;setViewport(old=>old.left===element.scrollLeft&&old.width===element.clientWidth?old:{left:element.scrollLeft,width:element.clientWidth});}}>
         <div className="timeline-sheet" style={{width:180+timelineWidth}}>
           <div className="timeline-row timeline-ruler"><div className="timeline-track-name">{t.frame}</div><div className="timeline-lane" style={{width:timelineWidth}} onPointerDown={selectFrame} onPointerMove={e=>{if(e.buttons===1)selectFrame(e);}} onPointerUp={e=>{if(scrub.current!==null)seek(scrub.current);scrub.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>
             {Array.from({length:Math.max(0,Math.ceil(range.to/step)-Math.ceil(range.from/step))},(_,i)=>(Math.ceil(range.from/step)+i)*step).map(frame=><span className="timeline-tick" key={frame} style={{left:frame*zoom}}>{frame+1}</span>)}
           </div></div>
-          {data.layers.slice().reverse().map(item=><div key={item.id} className="timeline-layer" data-selected={layerId===item.id}>
-            <div className="timeline-row"><button className="timeline-track-name" onClick={()=>selectLayer(item.id)}><span>{item.pixel?'▣':'◇'} {item.name}{item.locked?' 🔒':''}</span><small>{item.pixel?t.pixel:t.vector}</small></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{selectLayer(item.id);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
-              {item.pixel?item.cels.map((frame,index)=>overlapsFrames(frame,item.cels[index+1]??data.duration,range)?<button key={frame} className="timeline-cel" aria-label={`${item.name} · ${t.frame} ${frame+1}`} title={`${t.frame} ${frame+1}`} data-current={state.frame>=frame&&state.frame<(item.cels[index+1]??data.duration)} style={{left:frame*zoom,width:Math.max(4,((item.cels[index+1]??data.duration)-frame)*zoom-2)}} onClick={e=>{e.stopPropagation();selectLayer(item.id);seek(frame);}}>● <span>{frame+1}</span></button>:null):<span className="timeline-vector-bar"/>}
+          {data.layers.slice().reverse().map(item=><div key={item.id} className="timeline-layer" data-layer-id={item.id} data-selected={layerId===item.id}>
+            <div className="timeline-row" data-pixel={item.pixel} style={item.pixel&&thumbnailSize?{minHeight:thumbnailSize+26}:undefined}><button className="timeline-track-name" onClick={()=>selectLayer(item.id)}><span>{item.pixel?'▣':'◇'} {item.name}{item.locked?' 🔒':''}</span><small>{item.pixel?t.pixel:t.vector}</small></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{selectLayer(item.id);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
+              {item.pixel?(item.exposures??[]).map((exposure,index)=>overlapsFrames(exposure.start,exposure.end,range)?<ExposureClip key={`${data.documentId}:${item.id}:${exposure.start}:${exposure.end}:${exposure.cel}`} exposure={exposure} min={item.exposures[index-1]?.end??0} max={ripple?exposure.end+18000-(item.exposures.at(-1)?.end??data.duration):(item.exposures[index+1]?.start??data.duration)} selected={selection.layer===item.id&&selectedStarts.has(exposure.start)} offset={groupPreview?.layer===item.id&&groupPreview.source!==exposure.start&&(ripple?exposure.start>=(selection.frames[0]??Infinity):selectedStarts.has(exposure.start))?groupPreview.delta:0} moveMin={exposure.start+(selection.layer===item.id&&selectedStarts.has(exposure.start)?moveBounds.min:(item.exposures[index-1]?.end??0)-exposure.start)} moveMax={exposure.end+(selection.layer===item.id&&selectedStarts.has(exposure.start)?moveBounds.max:(ripple?exposure.end+18000-(item.exposures.at(-1)?.end??data.duration):(item.exposures[index+1]?.start??data.duration))-exposure.end)} onPrepare={(mode,event)=>prepareExposure(item.id,exposure.start,mode,event)} onPreview={delta=>setGroupPreview(delta===null?null:{layer:item.id,source:exposure.start,delta})} zoom={zoom} height={thumbnailSize?thumbnailSize+16:25} current={state.frame>=exposure.start&&state.frame<exposure.end} thumbnail={thumbnailSize>0} disabled={busy||state.playing||item.locked} label={`${item.name} · ${t.frame} ${exposure.start+1} · ${celNames.get(`${item.id}:${exposure.cel}`)??exposure.cel} · ${exposure.start+1}–${exposure.end}`} startLabel={`${ct.resizeStart} · ${exposure.start+1}`} endLabel={`${ct.resizeEnd} · ${exposure.end}`} onSelect={event=>chooseExposure(item.id,exposure.start,event)} onCommit={(next,mode)=>{if(mode==='move')editBatch({kind:'shift',delta:next.start-exposure.start,ripple});else if(mode==='end'&&ripple)editBatch({kind:'hold',length:next.end-next.start,ripple:true},[exposure.start]);else void command({action:'editExposure',documentId:data.documentId,layer:item.id,from:exposure.start,start:next.start,end:next.end});}}>
+{thumbnailSize>0&&thumbnails[`${item.id}:${exposure.start}`]&&!thumbnails[`${item.id}:${exposure.start}`].blank?<img className="timeline-cel-thumbnail" src={convertFileSrc(thumbnails[`${item.id}:${exposure.start}`].token,'cel-preview')} alt="" draggable={false} style={{height:thumbnailSize}}/>:<span className="timeline-cel-placeholder" aria-hidden="true">{thumbnailSize>0?'▧':'●'}</span>}<span className="timeline-cel-number"><span className="timeline-cel-name" title={celNames.get(`${item.id}:${exposure.cel}`)}>{celNames.get(`${item.id}:${exposure.cel}`)??exposure.cel}</span><small>{exposure.start+1}</small></span></ExposureClip>:null):<span className="timeline-vector-bar"/>}
             </div></div>
             {!item.pixel&&(item.motions??[]).map(clip=>{const name=motionNames.get(clip.preset)??clip.preset;return <div className="timeline-row timeline-motion-row" key={clip.id}><button className="timeline-track-name" title={name} onClick={()=>{selectLayer(item.id);seek(clip.start);}}>{name}</button><div className="timeline-lane" style={{width:timelineWidth}}>{(overlapsFrames(clip.start,clip.start+clip.duration*clip.repeats,range)||motionDrag.current?.clip.id===clip.id&&motionDrag.current.layer===item.id)&&<button className="timeline-motion-clip" data-enabled={clip.enabled} data-current={state.frame>=clip.start&&state.frame<clip.start+clip.duration*clip.repeats} aria-label={`${name} · ${t.frame} ${clip.start+1}`} title={`${name} · ${clip.start+1}–${clip.start+clip.duration*clip.repeats}`} style={{left:clip.start*zoom,width:Math.max(8,clip.duration*clip.repeats*zoom-2)}} onClick={()=>{if(movedKey.current){movedKey.current=false;return;}selectLayer(item.id);seek(clip.start);}} onPointerDown={e=>{if(busy||state.playing||item.locked)return;motionDrag.current={x:e.clientX,layer:item.id,clip};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerCancel={()=>{motionDrag.current=null;}} onPointerUp={e=>{const drag=motionDrag.current;motionDrag.current=null;if(!drag)return;const start=Math.max(0,Math.min(18000-drag.clip.duration*drag.clip.repeats,drag.clip.start+Math.round((e.clientX-drag.x)/zoom)));if(start!==drag.clip.start){movedKey.current=true;void command({action:'setMotion',documentId:data.documentId,layer:drag.layer,clip:{...drag.clip,start}});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{name}</button>}</div></div>;})}
             {!item.pixel&&layerId===item.id&&properties.map(p=><div className="timeline-row timeline-property-row" key={p}><button className="timeline-track-name" data-selected={property===p} onClick={()=>setProperty(p)}>{t[p]}<span>{sample(item,p,state.frame)}</span></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{setProperty(p);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
@@ -139,12 +222,14 @@ export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale
       <aside className="timeline-inspector">
         <div className="timeline-inspector-title"><strong>{layer?.name??t.hint}</strong><span>{layer?.pixel?t.pixel:t.vector}</span></div>
         {layer?.locked?<p>{t.locked}</p>:layer?.pixel?<>
-          <p>{t.pixelHint}</p>
+          <span className="timeline-info" title={t.pixelHint} aria-label={t.pixelHint}>ⓘ</span>
         </>:layer?<>
-          <label>{t.value}<select value={property} onChange={e=>setProperty(e.target.value as Property)}>{properties.map(p=><option key={p} value={p}>{t[p]}</option>)}</select><input aria-label={t[property]} type="number" step="0.1" value={value} disabled={disabled} onChange={e=>setValue(e.target.value)}/></label>
-          <label>{t.interpolation}<select value={interpolation} onChange={e=>setInterpolation(e.target.value as Interpolation)}>{(['linear','hold','ease'] as const).map(i=><option key={i} value={i}>{t[i]}</option>)}</select></label>
+          <label>{t.value}<select value={property} onChange={e=>{flushKeyEdit();valueEditing.current=null;setProperty(e.target.value as Property);}}>{properties.map(p=><option key={p} value={p}>{t[p]}</option>)}</select><input aria-label={t[property]} type="number" step="0.1" value={value} disabled={disabled} onFocus={()=>{valueEditing.current=editContext;}} onChange={e=>{setValue(e.target.value);updateExistingKey(e.target.value,interpolation);}} onBlur={()=>{valueEditing.current=null;if(keyAt&&!keyEdit.current)setValue(String(sample(layer,property,state.frame)));flushKeyEdit();if(keyAt)void command({action:'refresh'},true);}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/></label>
+          <label>{t.interpolation}<select value={interpolation} disabled={disabled} onChange={e=>{const mode=e.target.value as Interpolation;setInterpolation(mode);updateExistingKey(value,mode);flushKeyEdit();}}>{(['linear','hold','ease'] as const).map(i=><option key={i} value={i}>{t[i]}</option>)}</select></label>
           <p>{t.vectorHint}</p>
         </>:null}
+        {layer?.pixel&&data&&<CelLibraryControls key={`${data.documentId}:${layerId}`} locale={locale} library={layer.celLibrary??[]} exposure={(layer.exposures??[]).find(e=>e.start<=state.frame&&e.end>state.frame)} frame={state.frame} duration={data.duration} disabled={disabled} onCommand={request=>void command({...request,documentId:data.documentId,layer:layerId})}/>}
+        {layer?.pixel&&data&&<OnionControls key={`${data.documentId}:${layerId}`} locale={locale} settings={data.onion} frame={state.frame} disabled={busy} onChange={settings=>void command({action:'onion',documentId:data.documentId,settings})}/>}
       </aside>
     </div>:<p className="timeline-empty">{t.empty}</p>}
     {error&&<div className="timeline-error" role="alert">{error}</div>}

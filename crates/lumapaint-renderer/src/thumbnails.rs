@@ -74,6 +74,33 @@ pub fn document_pixels(document: &Document) -> Result<Vec<u8>, String> {
         .channels
         .remove(0))
 }
+/// Transparent ink only, at a bounded reference resolution. Never includes the
+/// document's paper, other layers, history, or editor overlays.
+pub fn cel_pixels(
+    cel: &lumapaint_core::document::animation::Cel,
+    dimensions: (u32, u32),
+    max_side: u32,
+) -> Result<crate::animation_cels::Raster, String> {
+    let mut state = Document::default().document_state();
+    state.width = dimensions.0;
+    state.height = dimensions.1;
+    state.canvas_color = Some(CanvasColor::Transparent);
+    state.paint_source = cel.source.clone();
+    state.strokes = cel.strokes.clone();
+    let document = Document::from_document_state(state)?;
+    let max_side = max_side.clamp(32, 1024) as f32;
+    let scale = (max_side / dimensions.0.max(dimensions.1) as f32).min(1.);
+    let width = (dimensions.0 as f32 * scale).round().max(1.) as u32;
+    let height = (dimensions.1 as f32 * scale).round().max(1.) as u32;
+    let pixels = render_sized_inner(&document, max_side, true, true)?
+        .channels
+        .remove(0);
+    Ok(crate::animation_cels::Raster {
+        width,
+        height,
+        pixels,
+    })
+}
 fn render_sized_inner(
     document: &Document,
     max_side: f32,

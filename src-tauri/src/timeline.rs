@@ -26,6 +26,64 @@ pub enum Request {
         duration: u32,
         looping: bool,
     },
+    Onion {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        settings: lumapaint_core::document::animation::OnionSettings,
+    },
+    ExposureBatch {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        revision: u64,
+        layer: String,
+        frames: Vec<u32>,
+        edit: lumapaint_core::document::animation::ExposureBatchEdit,
+    },
+    EditExposure {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        from: u32,
+        start: u32,
+        end: u32,
+    },
+    AssignCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        frame: u32,
+        cel: u32,
+    },
+    RenameCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        cel: u32,
+        name: String,
+    },
+    CreateCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+    },
+    DeleteCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        cel: u32,
+    },
+    ForkCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        frame: u32,
+    },
+    RemoveExposure {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        frame: u32,
+    },
     Capture {
         layer: String,
         frame: u32,
@@ -41,6 +99,8 @@ pub enum Request {
         frame: u32,
     },
     Key {
+        #[serde(default, rename = "documentId")]
+        document_id: Option<u64>,
         layer: String,
         frame: u32,
         property: Property,
@@ -92,11 +152,13 @@ pub struct Response {
 #[serde(rename_all = "camelCase")]
 pub struct Data {
     pub document_id: u64,
+    pub revision: u64,
     pub selected_layer: String,
     pub selected_objects: Vec<String>,
     pub fps: u32,
     pub duration: u32,
     pub looping: bool,
+    pub onion: lumapaint_core::document::animation::OnionSettings,
     pub layers: Vec<Layer>,
 }
 #[derive(Serialize)]
@@ -107,6 +169,8 @@ pub struct Layer {
     pub pixel: bool,
     pub locked: bool,
     pub cels: Vec<u32>,
+    pub cel_library: Vec<CelInfo>,
+    pub exposures: Vec<ExposureInfo>,
     pub channels:
         std::collections::BTreeMap<Property, Vec<lumapaint_core::document::animation::Keyframe>>,
     pub motions: Vec<lumapaint_core::motion::Clip>,
@@ -123,14 +187,62 @@ pub fn motion_fonts() -> Vec<lumapaint_renderer::vector::font_viewer::FontFace> 
 pub async fn timeline(window: tauri::WebviewWindow, request: Request) -> Result<Response, String> {
     #[cfg(target_os = "macos")]
     {
-        crate::canvas::on_main(window, move || {
-            crate::canvas::platform::timeline::command(request)
+        let (response, job) = crate::canvas::on_main(window.clone(), move || {
+            let response = crate::canvas::platform::timeline::command(request)?;
+            Ok((response, crate::canvas::platform::timeline::onion_job()))
         })
-        .await
+        .await?;
+        if let Some(job) = job {
+            crate::cel_previews::schedule(window, job);
+        }
+        Ok(response)
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, request);
         Err("Animation preview requires the native canvas / アニメーションのプレビューにはネイティブキャンバスが必要です / 动画预览需要原生画布".into())
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThumbnailRequest {
+    pub document_id: u64,
+    pub cels: Vec<(String, u32)>,
+}
+#[tauri::command]
+pub async fn timeline_cel_thumbnails(
+    window: tauri::WebviewWindow,
+    request: ThumbnailRequest,
+) -> Result<Vec<crate::cel_previews::Thumbnail>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let sources = crate::canvas::on_main(window, move || {
+            crate::canvas::platform::timeline::thumbnail_sources(request)
+        })
+        .await?;
+        crate::diagnostic_jobs::spawn_blocking(move || crate::cel_previews::thumbnails(sources))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, request);
+        Err("Cel previews require the native canvas".into())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CelInfo {
+    pub id: u32,
+    pub name: String,
+    pub uses: usize,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExposureInfo {
+    pub start: u32,
+    pub end: u32,
+    pub cel: u32,
 }
