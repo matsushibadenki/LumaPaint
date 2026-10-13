@@ -37,3 +37,21 @@ assert.deepEqual(exposureMoveBounds(spans,[0,6],12,false),{min:0,max:1});
 assert.deepEqual(exposureMoveBounds(spans,[3,6],12,true),{min:-1,max:17989});
 assert.deepEqual(selectExposureFrames(spans,[0],6,0,true,false),[0,3,6]);
 assert.deepEqual(selectExposureFrames(spans,[0,6],6,0,false,true),[0]);
+
+const {timelineEdgeScrollSpeed}=await import('../src/timeline-view.ts');
+assert.equal(timelineEdgeScrollSpeed(200,0,400),0);
+assert.equal(timelineEdgeScrollSpeed(0,0,400),-720);
+assert.equal(timelineEdgeScrollSpeed(380,0,400),360);
+assert.equal(timelineEdgeScrollSpeed(900,0,400),720);
+assert.equal(timelineEdgeScrollSpeed(-100,0,400),-720);
+assert.equal(timelineEdgeScrollSpeed(0,10,10),0);
+assert.equal(timelineEdgeScrollSpeed(NaN,0,400),0);
+assert.ok(timelineEdgeScrollSpeed(5,0,30)<0);
+assert.deepEqual(dragExposure(exposure,(20+48)/16,'move',0,30),{start:9,end:14,cel:2},'scroll displacement participates in drag timing');
+
+const {selectedExposurePositions}=await import('../src/timeline-view.ts');
+const identities=[{id:'a',start:6,end:9,cel:1},{id:'b',start:9,end:12,cel:1}];
+assert.deepEqual(selectedExposurePositions(identities,['a','b'],'b'),{frames:[6,9],anchor:9});
+assert.deepEqual(selectedExposurePositions([],['a','b'],'b'),{frames:[],anchor:null});
+assert.deepEqual(selectedExposurePositions([{id:'a',start:0,end:3,cel:1},{id:'b',start:3,end:6,cel:1}],['a','b'],'b'),{frames:[0,3],anchor:3},'undo restores matching occurrences and anchor');
+assert.deepEqual(selectedExposurePositions([{id:'new',start:6,end:9,cel:1}],['a'],'a'),{frames:[],anchor:null},'same cel and frame cannot steal old selection');

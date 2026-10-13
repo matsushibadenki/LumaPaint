@@ -207,7 +207,13 @@ pub(crate) fn thumbnail_sources(
                     .animation()
                     .tracks
                     .get(&layer)
-                    .and_then(|t| t.cels.get(&frame))
+                    .and_then(|t| {
+                        if request.library {
+                            t.cel_library.get(&frame).map(|c| &c.drawing)
+                        } else {
+                            t.cels.get(&frame)
+                        }
+                    })
                     .ok_or("Cel is no longer available")?
                     .clone();
                 Ok(crate::cel_previews::ThumbnailSource {
@@ -444,6 +450,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
     if !DOCUMENT_OPEN.with(|d| d.get()) {
         close(&current_label());
         return Ok(Response {
+            exposure_selection: None,
             frame: 0,
             playing: false,
             preview: false,
@@ -496,9 +503,10 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 return Err("Frame is outside the timeline".into());
             }
         }
+        let mut exposure_selection = None;
         if let Request::ExposureBatch{revision,layer,frames,edit,..}=&request {
             if *revision!=identity().1{return Err("The document was updated; refresh the selection / 文書が更新されました。選択し直してください / 文档已更新，请重新选择".into());}
-            DOCUMENT.with(|d|d.borrow().validate_animation_exposure_batch(layer,frames,edit))?;
+            exposure_selection = Some((layer.clone(), DOCUMENT.with(|d|d.borrow().animation_exposure_batch_selection(layer,frames,edit))?));
         }
         if let Request::EditExposure {
             layer,
@@ -512,6 +520,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 d.borrow()
                     .validate_animation_exposure_edit(layer, *from, *start, *end)
             })?;
+            exposure_selection = Some((layer.clone(), vec![*start]));
         }
         if matches!(
             request,
@@ -835,6 +844,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                                     t.exposures
                                         .iter()
                                         .map(|(start, e)| crate::timeline::ExposureInfo {
+                                            id: e.id.clone(),
                                             start: *start,
                                             end: t.exposure_end(*start, a.duration),
                                             cel: e.cel,
@@ -861,6 +871,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             }))
         };
         Ok(Response {
+            exposure_selection,
             frame: runtime.frame,
             playing: runtime.started.is_some(),
             preview: runtime.preview.is_some(),
@@ -908,6 +919,37 @@ mod tests {
         }
     }
     #[test]
+    fn library_previews_include_unassigned_drawings_and_validate_requests() {
+        let _restore = setup();
+        let cel = DOCUMENT.with(|d| d.borrow_mut().create_animation_cel("layer-1").unwrap());
+        let sources = thumbnail_sources(crate::timeline::ThumbnailRequest {
+            document_id: identity().0,
+            cels: vec![("layer-1".into(), cel)],
+            library: true,
+        })
+        .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].frame, cel);
+        DOCUMENT.with(|d| {
+            assert!(std::sync::Arc::ptr_eq(
+                &sources[0].cel,
+                &d.borrow().animation().tracks["layer-1"].cel_library[&cel].drawing
+            ))
+        });
+        assert!(thumbnail_sources(crate::timeline::ThumbnailRequest {
+            document_id: identity().0,
+            cels: vec![("layer-1".into(), u32::MAX)],
+            library: true
+        })
+        .is_err());
+        assert!(thumbnail_sources(crate::timeline::ThumbnailRequest {
+            document_id: identity().0,
+            cels: vec![("layer-1".into(), cel); 65],
+            library: true
+        })
+        .is_err());
+    }
+    #[test]
     fn batch_timing_guards_stale_revisions_and_commits_one_history_edit() {
         use lumapaint_core::document::animation::ExposureBatchEdit;
         let _restore = setup();
@@ -930,6 +972,10 @@ mod tests {
             },
         })
         .unwrap();
+        assert_eq!(
+            result.exposure_selection,
+            Some(("layer-1".into(), vec![5, 8]))
+        );
         assert_eq!(result.frame, 5);
         assert_eq!(result.data.unwrap().duration, 14);
         let updated = identity();
@@ -1108,6 +1154,7 @@ mod tests {
         });
         let before = identity().1;
         let sources = thumbnail_sources(crate::timeline::ThumbnailRequest {
+            library: false,
             document_id: identity().0,
             cels: vec![("layer-1".into(), 6)],
         })
@@ -1153,6 +1200,7 @@ mod tests {
         command(Request::Pause).unwrap();
         assert!(onion_job().is_some());
         assert!(thumbnail_sources(crate::timeline::ThumbnailRequest {
+            library: false,
             document_id: identity().0.wrapping_add(1),
             cels: vec![]
         })

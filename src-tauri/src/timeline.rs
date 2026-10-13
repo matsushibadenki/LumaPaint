@@ -141,6 +141,7 @@ pub enum Request {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
+    pub exposure_selection: Option<(String, Vec<u32>)>,
     pub frame: u32,
     pub playing: bool,
     pub preview: bool,
@@ -209,6 +210,8 @@ pub async fn timeline(window: tauri::WebviewWindow, request: Request) -> Result<
 pub struct ThumbnailRequest {
     pub document_id: u64,
     pub cels: Vec<(String, u32)>,
+    #[serde(default)]
+    pub library: bool,
 }
 #[tauri::command]
 pub async fn timeline_cel_thumbnails(
@@ -229,7 +232,7 @@ pub async fn timeline_cel_thumbnails(
     {
         // The native thumbnail backend is macOS-only; consume the wire fields
         // explicitly so other targets do not report them as unread dead code.
-        let _ = (window, request.document_id, request.cels);
+        let _ = (window, request.document_id, request.cels, request.library);
         Err("Cel previews require the native canvas".into())
     }
 }
@@ -244,6 +247,7 @@ pub struct CelInfo {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExposureInfo {
+    pub id: String,
     pub start: u32,
     pub end: u32,
     pub cel: u32,

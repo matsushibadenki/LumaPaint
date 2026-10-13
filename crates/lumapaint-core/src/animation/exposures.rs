@@ -9,6 +9,8 @@ pub struct NamedCel {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Exposure {
+    #[serde(default)]
+    pub id: String,
     pub cel: u32,
     /// None follows the next exposure or the timeline end (legacy holds).
     pub end: Option<u32>,
@@ -38,6 +40,7 @@ pub(super) struct TrackData {
 impl From<Track> for TrackData {
     fn from(mut t: Track) -> Self {
         t.migrate_cels();
+        t.ensure_exposure_ids();
         Self {
             cels: BTreeMap::new(),
             pixel: t.pixel,
@@ -81,11 +84,47 @@ impl TryFrom<TrackData> for Track {
             return Err("Duplicate or mixed cel/exposure data".into());
         }
         t.migrate_cels();
+        t.ensure_exposure_ids();
+        t.validate_exposure_ids()?;
         t.rebuild_cels();
         Ok(t)
     }
 }
+// A process epoch plus a monotonic sequence is independent of undoable state.
+// IDs are opaque occurrence labels, not security tokens.
+fn new_exposure_id() -> String {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    };
+    static EPOCH: OnceLock<u128> = OnceLock::new();
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let epoch = EPOCH.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    });
+    format!("e-{epoch:x}-{:x}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
 impl Track {
+    fn ensure_exposure_ids(&mut self) {
+        let mut used: std::collections::BTreeSet<String> = self
+            .exposures
+            .values()
+            .filter(|e| !e.id.is_empty())
+            .map(|e| e.id.clone())
+            .collect();
+        for exposure in self.exposures.values_mut().filter(|e| e.id.is_empty()) {
+            loop {
+                let id = new_exposure_id();
+                if used.insert(id.clone()) {
+                    exposure.id = id;
+                    break;
+                }
+            }
+        }
+    }
     fn migrate_cels(&mut self) {
         if self.pixel || !self.cel_library.is_empty() || self.cels.is_empty() {
             return;
@@ -107,6 +146,7 @@ impl Track {
             self.exposures.insert(
                 frame,
                 Exposure {
+                    id: new_exposure_id(),
                     cel: id,
                     end: starts.get(index + 1).copied(),
                 },
@@ -165,6 +205,7 @@ impl Track {
     }
     pub(super) fn refresh_exposures(&mut self, duration: u32) -> Result<(), String> {
         self.migrate_cels();
+        self.ensure_exposure_ids();
         self.validate_exposures(duration)?;
         self.rebuild_cels();
         Ok(())
@@ -202,6 +243,19 @@ impl Track {
         }
         Ok(())
     }
+    fn validate_exposure_ids(&self) -> Result<(), String> {
+        let mut ids = std::collections::BTreeSet::new();
+        for e in self.exposures.values() {
+            if e.id.is_empty()
+                || e.id.len() > 64
+                || !e.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                || !ids.insert(&e.id)
+            {
+                return Err("Invalid or duplicate exposure identity".into());
+            }
+        }
+        Ok(())
+    }
     pub(super) fn validate_exposures(&self, duration: u32) -> Result<(), String> {
         if !self.pixel && self.cels.keys().any(|f| *f >= duration) {
             return Err("Cel frame outside timeline".into());
@@ -218,6 +272,7 @@ impl Track {
                 return Err("Invalid cel name / セル名が不正です / 画格名称无效".into());
             }
         }
+        self.validate_exposure_ids()?;
         for (start, e) in &self.exposures {
             let end = self.exposure_end(*start, duration);
             let next = self
@@ -288,7 +343,14 @@ impl Track {
             if let Some((start, _)) = self.exposure_at(frame, duration) {
                 self.exposures.get_mut(&start).unwrap().end = Some(frame);
             }
-            self.exposures.insert(frame, Exposure { cel, end });
+            self.exposures.insert(
+                frame,
+                Exposure {
+                    id: new_exposure_id(),
+                    cel,
+                    end,
+                },
+            );
         }
         self.refresh_exposures(duration)
     }
@@ -367,6 +429,7 @@ impl Document {
         track.exposures.insert(
             start,
             Exposure {
+                id: exposure.id,
                 cel: exposure.cel,
                 end: Some(end),
             },

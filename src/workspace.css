@@ -989,3 +989,11 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-batch-tools select { max-width:115px; }
 .timeline-batch-tools button { font-size:11px; }
 .timeline-exposure[data-selected="true"] { outline:2px solid var(--color-focus); outline-offset:-2px; }
+
+.timeline-library-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(64px,1fr)); gap:4px; margin:6px 0; }
+.timeline-library-grid button { min-width:0; display:flex; flex-direction:column; align-items:center; padding:4px; }
+.timeline-library-grid button[aria-pressed="true"] { outline:2px solid var(--color-accent); outline-offset:-2px; }
+.timeline-library-grid img,.timeline-library-grid button>span:first-child { width:48px; height:48px; object-fit:contain; background:repeating-conic-gradient(#8882 0% 25%,transparent 0% 50%) 0 0/12px 12px; }
+.timeline-library-grid button>span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.timeline-library-grid small { font-size:10px; opacity:.7; }
+.timeline-library-pages { display:flex; align-items:center; justify-content:center; gap:8px; }
