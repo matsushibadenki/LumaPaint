@@ -227,7 +227,9 @@ pub async fn timeline_cel_thumbnails(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, request);
+        // The native thumbnail backend is macOS-only; consume the wire fields
+        // explicitly so other targets do not report them as unread dead code.
+        let _ = (window, request.document_id, request.cels);
         Err("Cel previews require the native canvas".into())
     }
 }
