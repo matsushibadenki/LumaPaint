@@ -104,7 +104,26 @@ pub struct Keyframe {
     pub value: f32,
     pub interpolation: Interpolation,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvaluationStats {
+    pub evaluated_tracks: usize,
+    pub reused_tracks: usize,
+}
 impl Track {
+    pub fn same_picture(&self, a: u32, b: u32) -> bool {
+        let ca = self.cels.range(..=a).next_back().map(|(_, c)| c);
+        let cb = self.cels.range(..=b).next_back().map(|(_, c)| c);
+        let same_cel = match (ca, cb) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_cel
+            // Active effects stay conservative: text scrambling can use the
+            // absolute frame even when the clip's normalized progress holds.
+            && self.motions.iter().all(|m| !m.enabled || a == b || (a < m.start && b < m.start))
+            && self.channels.keys().all(|p| self.value(*p, a) == self.value(*p, b))
+    }
     pub fn value(&self, property: Property, frame: u32) -> f32 {
         let Some(keys) = self.channels.get(&property).filter(|keys| !keys.is_empty()) else {
             return property.base();
@@ -140,22 +159,9 @@ impl Animation {
         }
     }
     pub fn same_picture(&self, a: u32, b: u32) -> bool {
-        self.tracks.values().all(|track| {
-            let ca = track.cels.range(..=a).next_back().map(|(_, c)| c);
-            let cb = track.cels.range(..=b).next_back().map(|(_, c)| c);
-            let same_cel = match (ca, cb) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            };
-            same_cel
-                && (track.motions.iter().all(|m| !m.enabled) || a == b)
-                && track
-                    .channels
-                    .keys()
-                    .all(|p| track.value(*p, a) == track.value(*p, b))
-        })
+        self.tracks.values().all(|track| track.same_picture(a, b))
     }
+
     pub fn validate(&self, width: u32, height: u32) -> Result<(), String> {
         self.validate_inner(width, height, true)
     }
@@ -646,14 +652,36 @@ impl Document {
         frame: u32,
         outlines: Option<&crate::motion::Outline<'_>>,
     ) {
+        self.evaluate_animation_incremental_with_outlines(source, frame, None, outlines);
+    }
+    /// Reuses layers from a previously evaluated frame of the SAME source revision.
+    /// Pass None after source edits, document/page switches, or preview recreation.
+    /// This hint is runtime-only and never becomes authored or saved animation data.
+    pub fn evaluate_animation_incremental_with_outlines(
+        &mut self,
+        source: &Document,
+        frame: u32,
+        previous_frame: Option<u32>,
+        outlines: Option<&crate::motion::Outline<'_>>,
+    ) -> EvaluationStats {
         let frame = frame.min(source.animation.duration - 1);
+        let previous_frame = previous_frame.map(|f| f.min(source.animation.duration - 1));
+        let mut stats = EvaluationStats::default();
+        let changed = |track: &Track| {
+            previous_frame.is_none_or(|previous| !track.same_picture(previous, frame))
+        };
         let previous_layers: Vec<_> = self
             .svg_layers
             .iter()
-            .filter(|l| source.animation.tracks.contains_key(&l.id))
+            .filter(|l| source.animation.tracks.get(&l.id).is_some_and(changed))
             .cloned()
             .collect();
         for (id, track) in &source.animation.tracks {
+            if !changed(track) {
+                stats.reused_tracks += 1;
+                continue;
+            }
+            stats.evaluated_tracks += 1;
             if let Some((_, cel)) = track.cels.range(..=frame).next_back() {
                 self.apply_cel(id, cel);
             } else if !track.cels.is_empty() {
@@ -729,7 +757,10 @@ impl Document {
                     .layers_changed(std::slice::from_ref(previous), std::slice::from_ref(layer));
             }
         }
-        self.revision = self.revision.saturating_add(1);
+        if previous_frame.is_none() || stats.evaluated_tracks > 0 {
+            self.revision = self.revision.saturating_add(1);
+        }
+        stats
     }
 }
 
@@ -764,6 +795,124 @@ mod tests {
             (47, false)
         );
         assert!(animation.same_picture(0, 20));
+    }
+    #[test]
+    #[ignore = "isolated Release evaluator benchmark; opt in explicitly"]
+    fn benchmark_incremental_timeline_evaluation() {
+        use std::time::Instant;
+        let mut doc = Document::default();
+        let mut ids = vec![];
+        for i in 0..16 {
+            let id = doc.add_vector_layer().unwrap();
+            doc.set_animation_key(&id, Property::X, key(0, 0., Interpolation::Linear))
+                .unwrap();
+            if i == 0 {
+                doc.set_animation_key(&id, Property::X, key(119, 100., Interpolation::Linear))
+                    .unwrap();
+            }
+            ids.push(id);
+        }
+        let object: crate::vector::VectorObject = serde_json::from_value(serde_json::json!({
+            "id":"shape","name":"Shape","path":{"data":"M0 0H12V12H0Z","fillRule":"nonZero"},
+            "transform":[1,0,0,1,0,0],"fill":{"color":[30,60,180,255]},"stroke":null,"strokeWidth":0,"visible":true
+        })).unwrap();
+        let mut state = doc.document_state();
+        for layer in &mut state.svg_layers {
+            if ids.contains(&layer.id) {
+                layer.vector_objects = (0..160)
+                    .map(|i| {
+                        let mut o = object.clone();
+                        o.id = format!("shape-{i}");
+                        o.transform[4] = (i % 16) as f32 * 16.;
+                        o.transform[5] = (i / 16) as f32 * 16.;
+                        o
+                    })
+                    .collect();
+                layer.source = vector_svg(state.width, state.height, &layer.vector_objects);
+            }
+        }
+        let source = Document::from_document_state(state).unwrap();
+        let mut trials = vec![];
+        for trial in 0..6 {
+            let mut final_layers = vec![];
+            for incremental in if trial % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let mut preview = source.clone_for_rendering();
+                let mut previous = None;
+                for frame in 0..8 {
+                    preview.evaluate_animation_incremental_with_outlines(
+                        &source,
+                        frame,
+                        if incremental { previous } else { None },
+                        None,
+                    );
+                    previous = Some(frame);
+                }
+                let mut samples_ms = vec![];
+                let mut evaluated = 0;
+                let mut reused = 0;
+                for frame in 1..=36 {
+                    let start = Instant::now();
+                    let stats = preview.evaluate_animation_incremental_with_outlines(
+                        &source,
+                        frame,
+                        if incremental { previous } else { None },
+                        None,
+                    );
+                    std::hint::black_box(&preview.svg_layers);
+                    samples_ms.push(start.elapsed().as_secs_f64() * 1000.);
+                    evaluated += stats.evaluated_tracks;
+                    reused += stats.reused_tracks;
+                    previous = Some(frame);
+                }
+                assert_eq!(evaluated, if incremental { 36 } else { 576 });
+                assert_eq!(reused, if incremental { 540 } else { 0 });
+                final_layers.push(
+                    preview
+                        .svg_layers
+                        .iter()
+                        .map(|l| (l.id.clone(), l.source.clone(), l.opacity))
+                        .collect::<Vec<_>>(),
+                );
+                trials.push(serde_json::json!({"trial":trial,"incremental":incremental,
+                    "samplesMs":samples_ms,"evaluatedTracks":evaluated,"reusedTracks":reused}));
+            }
+            assert_eq!(final_layers[0], final_layers[1]);
+        }
+        let result = serde_json::json!({"tracks":16,"movingTracks":1,"objects":2560,
+            "framesPerTrial":36,"warmupFrames":8,"trials":trials,
+            "scope":"CPU evaluator only; no GPU, IPC, input latency, or FPS claim"});
+        if let Ok(path) = std::env::var("LUMAPAINT_TIMELINE_BENCH_OUTPUT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        }
+        println!("timeline evaluator: 16 -> 1 evaluated tracks per frame, final layers equal");
+    }
+    #[test]
+    fn unchanged_tracks_preserve_holds_and_conservatively_evaluate_active_motions() {
+        let mut track = Track::default();
+        track.channels.insert(
+            Property::X,
+            vec![
+                key(0, 12., Interpolation::Hold),
+                key(20, 24., Interpolation::Linear),
+            ],
+        );
+        assert!(track.same_picture(0, 19));
+        assert!(!track.same_picture(19, 20));
+        track.motions.push(crate::motion::Clip {
+            id: "later".into(),
+            start: 40,
+            duration: 10,
+            ..Default::default()
+        });
+        assert!(track.same_picture(21, 39));
+        assert!(!track.same_picture(39, 40));
+        assert!(!track.same_picture(60, 61));
+        track.motions[0].enabled = false;
+        assert!(track.same_picture(60, 61));
     }
     #[test]
     fn independent_channels_interpolate_hold_and_ease_without_drift() {

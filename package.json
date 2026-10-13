@@ -14,7 +14,8 @@
     "test:rust": "cargo test --workspace",
     "test:workspace-notifications": "node scripts/test-workspace-notifications.mjs",
     "test:measurements": "node scripts/test-measurements.mjs",
-    "test:color-modes": "node scripts/test-color-modes.mjs"
+    "test:color-modes": "node scripts/test-color-modes.mjs",
+    "test:timeline-view": "node --experimental-strip-types scripts/test-timeline-view.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",

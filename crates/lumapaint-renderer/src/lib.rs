@@ -6493,6 +6493,7 @@ mod detailed_motion_tests {
             Clip {
                 id: "solid".into(),
                 extruded: true,
+                bevel_width: 2.,
                 preset: "tx-layered-depth".into(),
                 duration: 60,
                 mesh_depth: 20.,
@@ -6536,6 +6537,24 @@ mod detailed_motion_tests {
         };
         let first = render(&doc);
         assert!(first.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+        let mut plain = doc.clone();
+        plain
+            .set_motion_clip(
+                &layer,
+                Clip {
+                    id: "solid".into(),
+                    extruded: true,
+                    preset: "tx-layered-depth".into(),
+                    duration: 60,
+                    mesh_depth: 20.,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            first != render(&plain),
+            "actual glyph bevel must change the rendered image"
+        );
         let saved = lumapaint_formats::native::encode_state(&doc.document_state()).unwrap();
         let loaded = lumapaint_formats::native::decode(&saved).unwrap();
         assert_eq!(first, render(&loaded));
@@ -6544,6 +6563,61 @@ mod detailed_motion_tests {
             serde_json::to_value(doc.document_state()).unwrap()
         );
         assert!(doc.svg_layers().all(|l| l.motion_scene.is_none()));
+    }
+    #[test]
+    #[ignore = "writes visual comparison fixtures; requires LUMAPAINT_BEVEL_QA_OUTPUT"]
+    fn bevel_visual_comparison_frames() {
+        let directory =
+            std::path::PathBuf::from(std::env::var("LUMAPAINT_BEVEL_QA_OUTPUT").unwrap());
+        std::fs::create_dir_all(&directory).unwrap();
+        for (preset, content, duration, extruded) in [
+            ("tx-motext-falloff", "立体文字", 82, true),
+            ("tx-layered-depth", "奥行き", 96, false),
+        ] {
+            let (mut doc, layer) = text_document(content, "sans-serif");
+            doc.set_motion_clip(
+                &layer,
+                Clip {
+                    id: "comparison".into(),
+                    preset: preset.into(),
+                    duration,
+                    extruded,
+                    bevel_width: 2.,
+                    mesh_depth: 12.,
+                    copies: 12,
+                    rotation_x: 0.,
+                    rotation_y: 0.,
+                    angle: 150.,
+                    frequency: 2.,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for (index, frame) in [0, duration / 8, duration * 3 / 8, duration - 1]
+                .into_iter()
+                .enumerate()
+            {
+                let mut preview = doc.clone_for_rendering();
+                preview.evaluate_animation_with_outlines(
+                    &doc,
+                    frame,
+                    Some(&text_outlines::outline),
+                );
+                let svg = preview.svg_layers().find(|l| l.id == layer).unwrap();
+                let pixels = rasterize_svg(&svg.source, 512, 384).unwrap();
+                image::save_buffer(
+                    directory.join(format!("{preset}-{index}.png")),
+                    &pixels,
+                    512,
+                    384,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+                std::fs::write(directory.join(format!("{preset}-{index}.svg")), &svg.source)
+                    .unwrap();
+                assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+            }
+        }
     }
     #[test]
     fn mixed_script_fallback_preserves_variable_axes() {

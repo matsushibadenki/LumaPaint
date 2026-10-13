@@ -281,3 +281,113 @@ fn selecting_partial_text_layers_does_not_change_artwork_or_scene_generation() {
         );
     }
 }
+
+#[test]
+fn incremental_timeline_matches_full_frames_in_both_directions_and_after_edits() {
+    let (mut doc, moving) = vector_document();
+    let held = doc.add_vector_layer().unwrap();
+    let mut object = doc
+        .svg_layers()
+        .find(|l| l.id == moving)
+        .unwrap()
+        .vector_objects[0]
+        .clone();
+    object.id = "held-square".into();
+    object.transform[5] = 24.;
+    doc.upsert_vector_object(&held, object).unwrap();
+    for (layer, property, keys) in [
+        (
+            &moving,
+            Property::X,
+            vec![
+                (0, 0., Interpolation::Linear),
+                (30, 24., Interpolation::Ease),
+            ],
+        ),
+        (
+            &held,
+            Property::Y,
+            vec![
+                (0, 0., Interpolation::Hold),
+                (20, -8., Interpolation::Linear),
+            ],
+        ),
+    ] {
+        for (frame, value, interpolation) in keys {
+            doc.set_animation_key(
+                layer,
+                property,
+                Keyframe {
+                    frame,
+                    value,
+                    interpolation,
+                },
+            )
+            .unwrap();
+        }
+    }
+    doc.capture_animation_cel("layer-1", 0, false).unwrap();
+    doc.blank_animation_cel("layer-1", 5).unwrap();
+    doc.set_motion_clip(
+        &held,
+        lumapaint_core::motion::Clip {
+            id: "late".into(),
+            start: 40,
+            duration: 10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let original = serde_json::to_value(doc.document_state()).unwrap();
+    let mut preview = doc.clone_for_rendering();
+    let mut previous = None;
+    for frame in [0, 2, 4, 5, 19, 20, 39, 40, 45, 60, 3, 119, 0] {
+        let held_source = preview
+            .svg_layers()
+            .find(|l| l.id == held)
+            .unwrap()
+            .source
+            .as_ptr();
+        let stats =
+            preview.evaluate_animation_incremental_with_outlines(&doc, frame, previous, None);
+        if previous == Some(0) && frame == 2 {
+            assert_eq!(stats.evaluated_tracks, 1);
+            assert_eq!(stats.reused_tracks, 2);
+            assert_eq!(
+                held_source,
+                preview
+                    .svg_layers()
+                    .find(|l| l.id == held)
+                    .unwrap()
+                    .source
+                    .as_ptr()
+            );
+        }
+        let mut full = doc.clone_for_rendering();
+        full.evaluate_animation(&doc, frame);
+        assert!(
+            document_pixels(&preview).unwrap() == document_pixels(&full).unwrap(),
+            "frame {frame}"
+        );
+        previous = Some(frame);
+    }
+    assert_eq!(
+        original,
+        serde_json::to_value(doc.document_state()).unwrap()
+    );
+    doc.set_animation_key(
+        &moving,
+        Property::X,
+        Keyframe {
+            frame: 0,
+            value: 12.,
+            interpolation: Interpolation::Hold,
+        },
+    )
+    .unwrap();
+    let stats = preview.evaluate_animation_incremental_with_outlines(&doc, 2, None, None);
+    assert_eq!(stats.evaluated_tracks, 3);
+    let mut full = doc.clone_for_rendering();
+    full.evaluate_animation(&doc, 2);
+    assert!(document_pixels(&preview).unwrap() == document_pixels(&full).unwrap());
+}

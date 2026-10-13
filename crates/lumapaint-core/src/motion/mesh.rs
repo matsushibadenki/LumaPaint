@@ -348,7 +348,9 @@ fn surface_inner(
         .filter(|_| {
             clip.extruded && matches!(preset.id.as_str(), "tx-layered-depth" | "tx-motext-falloff")
         })
-        .and_then(|object| super::extrude::cached(object, bounds, clip.mesh_depth));
+        .and_then(|object| {
+            super::extrude::cached_beveled(object, bounds, clip.mesh_depth, clip.bevel_width)
+        });
     let mut triangles = extrusion.as_deref().unwrap_or(&mesh).project(
         rotation,
         translation,

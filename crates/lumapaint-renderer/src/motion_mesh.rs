@@ -570,6 +570,32 @@ mod tests {
         };
         let front = render(&clip);
         assert_eq!(front[(64 * 128 + 64) * 4 + 3], 0, "hole must remain open");
+        clip.bevel_width = 4.;
+        let beveled = render(&clip);
+        assert_eq!(beveled[(64 * 128 + 64) * 4 + 3], 0);
+        assert_ne!(
+            front, beveled,
+            "sloped edges must change native GPU lighting"
+        );
+        clip.rotation_y = 35.;
+        let beveled_turn = render(&clip);
+        clip.bevel_width = 0.;
+        let plain_turn = render(&clip);
+        assert_ne!(plain_turn, beveled_turn);
+        if let Ok(directory) = std::env::var("LUMAPAINT_BEVEL_QA_OUTPUT") {
+            std::fs::create_dir_all(&directory).unwrap();
+            for (name, pixels) in [
+                ("plain", &plain_turn),
+                ("beveled", &beveled_turn),
+                ("front", &beveled),
+            ] {
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("{name}.rgba")),
+                    pixels,
+                )
+                .unwrap();
+            }
+        }
         clip.rotation_y = 70.;
         let solid = render(&clip);
         clip.mesh_depth = 0.;

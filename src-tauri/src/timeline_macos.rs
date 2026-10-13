@@ -13,6 +13,8 @@ struct Runtime {
     preview: Option<Document>,
     editing: Option<(String, u32, u64)>,
     gpu_frame: Option<u32>,
+    metadata_sent: bool,
+    metadata_selection: Option<(String, Vec<String>)>,
     outlines: RefCell<OutlineCache>,
 }
 thread_local! { static RUNTIMES: RefCell<std::collections::HashMap<String, Runtime>> = RefCell::new(std::collections::HashMap::new()); }
@@ -25,6 +27,8 @@ fn identity() -> (u64, u64) {
 fn reset_stale(runtime: &mut Runtime) {
     let (id, revision) = identity();
     if id != runtime.document_id || revision != runtime.revision {
+        runtime.metadata_sent = false;
+        runtime.metadata_selection = None;
         runtime.started = None;
         runtime.preview = None;
         runtime.rendered_frame = None;
@@ -84,6 +88,7 @@ fn evaluate(runtime: &mut Runtime) -> bool {
         {
             return false;
         }
+        let previous_frame = runtime.rendered_frame.filter(|_| runtime.preview.is_some());
         runtime.rendered_frame = Some(runtime.frame);
         let preview = runtime
             .preview
@@ -111,7 +116,12 @@ fn evaluate(runtime: &mut Runtime) -> bool {
             }
             Ok::<_, String>(objects)
         };
-        preview.evaluate_animation_with_outlines(&doc, runtime.frame, Some(&outline));
+        preview.evaluate_animation_incremental_with_outlines(
+            &doc,
+            runtime.frame,
+            previous_frame,
+            Some(&outline),
+        );
         true
     })
 }
@@ -240,12 +250,13 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             playing: false,
             preview: false,
             data: None,
+            data_unchanged: false,
         });
     }
     if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
         return Err("Animation is available for standard documents / 標準ドキュメントでアニメーションを使用できます / 动画适用于标准文档".into());
     }
-    let tick = matches!(request, Request::Tick);
+    let query = matches!(request, Request::Get);
     let transport_changed = matches!(
         request,
         Request::Play
@@ -254,7 +265,10 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             | Request::StopMotion { .. }
             | Request::Seek { .. }
     );
-    if !matches!(request, Request::Tick | Request::Get | Request::Pause) {
+    if !matches!(
+        request,
+        Request::Tick | Request::Get | Request::Refresh | Request::Pause
+    ) {
         ensure_document_open()?;
     }
     let mut changed = false;
@@ -272,6 +286,8 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             editing: None,
             outlines: Default::default(),
             gpu_frame: None,
+            metadata_sent: false,
+            metadata_selection: None,
         });
         if let Request::Seek { frame } = &request {
             if *frame >= DOCUMENT.with(|d| d.borrow().animation().duration) {
@@ -296,7 +312,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         });
         runtime.frame = runtime.frame.min(duration - 1);
         match request {
-            Request::Get => {}
+            Request::Get | Request::Refresh => {}
             Request::Tick => {
                 if let Some((start, first)) = runtime.started {
                     let (frame, playing) = DOCUMENT.with(|d| {
@@ -318,8 +334,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     runtime.frame = 0;
                 }
                 runtime.started = Some((Instant::now(), runtime.frame));
-                evaluate(runtime);
-                redraw_needed = true;
+                redraw_needed = evaluate(runtime);
             }
             Request::Pause => {
                 runtime.started = None;
@@ -336,8 +351,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 }
                 runtime.started = None;
                 runtime.frame = frame;
-                evaluate(runtime);
-                redraw_needed = true;
+                redraw_needed = evaluate(runtime);
             }
             edit => {
                 // Validate the edit completely before invalidating preview state.
@@ -454,14 +468,27 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 redraw_needed = true;
             }
         }
-        let data = if tick {
+        let selection_unchanged = DOCUMENT.with(|d| {
+            let doc = d.borrow();
+            runtime
+                .metadata_selection
+                .as_ref()
+                .is_some_and(|(layer, objects)| {
+                    layer == doc.selected_layer_id() && objects == doc.selected_vector_ids()
+                })
+        });
+        let data_unchanged = !query && !changed && runtime.metadata_sent && selection_unchanged;
+        let data = if data_unchanged {
             None
         } else {
+            runtime.metadata_sent = true;
             Some(DOCUMENT.with(|d| {
                 let doc = d.borrow();
                 let a = doc.animation();
                 let snapshot = doc.snapshot();
                 let selected_layer = snapshot.layer_id;
+                runtime.metadata_selection =
+                    Some((selected_layer.clone(), doc.selected_vector_ids().to_vec()));
                 let layers = snapshot
                     .layers
                     .into_iter()
@@ -497,6 +524,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             playing: runtime.started.is_some(),
             preview: runtime.preview.is_some(),
             data,
+            data_unchanged,
         })
     })?;
     if changed {
@@ -610,6 +638,77 @@ mod tests {
         assert!(RUNTIMES.with(|r| r.borrow().is_empty()));
     }
     #[test]
+    fn transport_returns_metadata_only_when_needed_and_distinguishes_closed_documents() {
+        let _restore = setup();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let layer = doc.add_vector_layer().unwrap();
+            doc.set_animation_key(
+                &layer,
+                lumapaint_core::document::animation::Property::X,
+                Keyframe {
+                    frame: 0,
+                    value: 12.,
+                    interpolation: lumapaint_core::document::animation::Interpolation::Hold,
+                },
+            )
+            .unwrap();
+            doc.set_motion_clip(
+                &layer,
+                lumapaint_core::motion::Clip {
+                    id: "transport".into(),
+                    alternate_text: "large metadata ".repeat(200),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        });
+        let full = command(Request::Get).unwrap();
+        assert!(!full.data_unchanged);
+        let bytes = serde_json::to_vec(&full).unwrap().len();
+        assert!(bytes > 3000);
+        for request in [
+            Request::Seek { frame: 0 },
+            Request::Seek { frame: 1 },
+            Request::Pause,
+            Request::Refresh,
+            Request::Stop,
+        ] {
+            let response = command(request).unwrap();
+            assert!(response.data.is_none());
+            assert!(response.data_unchanged);
+            assert!(serde_json::to_vec(&response).unwrap().len() < 128);
+        }
+        DOCUMENT.with(|d| {
+            d.borrow_mut()
+                .set_animation_settings(12, 120, true)
+                .unwrap()
+        });
+        let changed = command(Request::Seek { frame: 2 }).unwrap();
+        assert!(!changed.data_unchanged);
+        assert_eq!(changed.data.unwrap().fps, 12);
+        assert!(command(Request::Get).unwrap().data.is_some());
+        let target = DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let target = doc
+                .snapshot()
+                .layers
+                .into_iter()
+                .find(|layer| layer.id != doc.selected_layer_id())
+                .unwrap()
+                .id;
+            doc.select_layer(target.clone()).unwrap();
+            target
+        });
+        let selection = command(Request::Refresh).unwrap();
+        assert_eq!(selection.data.unwrap().selected_layer, target);
+        assert!(command(Request::Refresh).unwrap().data_unchanged);
+        DOCUMENT_OPEN.with(|open| open.set(false));
+        let closed = command(Request::Tick).unwrap();
+        assert!(closed.data.is_none());
+        assert!(!closed.data_unchanged);
+    }
+    #[test]
     fn timeline_queries_and_idle_ticks_do_not_commit_live_paint() {
         let _restore = setup();
         DOCUMENT.with(|d| {
@@ -623,6 +722,7 @@ mod tests {
         let revision = DOCUMENT.with(|d| d.borrow().revision());
         assert!(command(Request::Get).unwrap().data.is_some());
         assert!(command(Request::Tick).unwrap().data.is_none());
+        assert!(command(Request::Refresh).unwrap().data.is_none());
         DOCUMENT.with(|d| {
             assert!(d.borrow().has_active_stroke());
             assert_eq!(d.borrow().revision(), revision);

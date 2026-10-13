@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-13",
+  "scope": "bounded intersection splitting for extruded outlines",
+  "checks": {
+    "core": {
+      "passed": 344,
+      "ignored": 1
+    },
+    "realGlyphNativeRoundTrip": "passed",
+    "existingMetalMeshTests": {
+      "passed": 2,
+      "gpu": "Apple M4",
+      "backend": "Metal"
+    },
+    "clippyCoreAllTargets": "passed (-D warnings)",
+    "architecture": "passed",
+    "format": "passed",
+    "whitespace": "passed"
+  },
+  "geometry": {
+    "selfCrossCapArea": 5000,
+    "nonZeroOverlap": {
+      "area": 15000,
+      "perimeter": 500
+    },
+    "evenOddOverlap": {
+      "area": 10000,
+      "perimeter": 600
+    }
+  },
+  "limits": {
+    "inputEdges": 2048,
+    "cutPositions": 16384,
+    "crossingHeights": 8192,
+    "splitBoundaries": 8192,
+    "vertices": 32768
+  },
+  "limitations": [
+    "unresolved numeric topology and budget excess retain stack fallback",
+    "bevel not implemented",
+    "no claim of full demo visual parity; no new native UI smoke or full 782 raster rerun in this stage"
+  ],
+  "source": {
+    "path": "crates/lumapaint-core/src/motion/extrude.rs",
+    "sha256": "d8dfacf531bf0acca1a199985c5d9216519c764d97113ed62d268d9b0c56a93e"
+  }
+}

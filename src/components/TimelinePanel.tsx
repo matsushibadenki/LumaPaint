@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { Locale } from '../i18n';
 import { Icon } from './Icon';
 import type { MotionClip, MotionCatalog } from '../motion-types';
+import { visibleFrames, visibleKeys, overlapsFrames, sampleTimelineKey } from '../timeline-view';
 
+type Transport = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
+const defaultTransport:Transport=(command,args)=>invoke(command,args);
 type Property = 'x'|'y'|'scaleX'|'scaleY'|'rotation'|'opacity';
 type Interpolation = 'linear'|'hold'|'ease';
 type Key = {frame:number;value:number;interpolation:Interpolation};
 type Layer = {id:string;name:string;pixel:boolean;locked:boolean;cels:number[];channels:Partial<Record<Property,Key[]>>;motions:MotionClip[]};
 type Data = {documentId:number;selectedLayer?:string;fps:number;duration:number;looping:boolean;layers:Layer[]};
-type State = {frame:number;playing:boolean;preview:boolean;data:Data|null};
+type State = {frame:number;playing:boolean;preview:boolean;data:Data|null;dataUnchanged?:boolean};
 const properties:Property[]=['x','y','scaleX','scaleY','rotation','opacity'];
 const labels={
   ja:{play:'再生',pause:'一時停止',stop:'作画に戻る',first:'最初のフレーム',previous:'前のフレーム',next:'次のフレーム',last:'最後のフレーム',frame:'フレーム',duration:'長さ',loop:'ループ',zoom:'目盛り幅',pixel:'コマ撮り',vector:'キーフレーム',capture:'作画を記録',blank:'空白コマ',duplicate:'次に複製',edit:'コマを編集',remove:'削除',key:'キーを追加 / 更新',interpolation:'補間',linear:'リニア',hold:'ホールド',ease:'イーズイン・アウト',x:'位置 X',y:'位置 Y',scaleX:'横倍率',scaleY:'縦倍率',rotation:'回転',opacity:'不透明度',preview:'プレビュー中',drawing:'作画中',empty:'ドキュメントを開いてアニメーションを作成します。',pixelHint:'作画を記録し、別のフレームでコマを追加します。記録したコマは次のコマまで表示されます。「コマを編集」で読み込んだ後、修正して再度記録してください。',vectorHint:'プロパティごとにキーを設定します。位置は元の作画からの移動量、回転・倍率の中心はキャンバス中央です。キーをドラッグして時刻を変更できます。',locked:'レイヤーはロックされています。',value:'値',apply:'設定',hint:'コマ・キーを選択して編集',busy:'更新中…'},
@@ -18,21 +21,19 @@ const labels={
   'zh-CN':{play:'播放',pause:'暂停',stop:'返回绘画',first:'第一帧',previous:'上一帧',next:'下一帧',last:'最后一帧',frame:'帧',duration:'时长',loop:'循环',zoom:'帧宽度',pixel:'逐帧动画',vector:'关键帧',capture:'记录绘画',blank:'空白帧',duplicate:'复制到下一帧',edit:'编辑帧',remove:'删除',key:'添加 / 更新关键帧',interpolation:'插值',linear:'线性',hold:'保持',ease:'缓入缓出',x:'位置 X',y:'位置 Y',scaleX:'水平缩放',scaleY:'垂直缩放',rotation:'旋转',opacity:'不透明度',preview:'预览中',drawing:'绘画中',empty:'打开文档以创建动画。',pixelHint:'记录绘画，然后在其他帧添加内容。每帧保持至下一帧。使用“编辑帧”载入已记录的绘画，修改后再次记录。',vectorHint:'分别设置各属性的关键帧。位置是相对原图的偏移；缩放和旋转以画布中心为基准。拖动关键帧可更改时间。',locked:'图层已锁定。',value:'数值',apply:'设置',hint:'选择帧或关键帧以编辑',busy:'正在更新…'},
 };
 function sample(layer:Layer|undefined,p:Property,frame:number):number {
-  const keys=layer?.channels[p]??[];
-  if(!keys.length)return p==='scaleX'||p==='scaleY'||p==='opacity'?100:0;
-  const right=keys.findIndex(k=>k.frame>frame);
-  if(right===0)return keys[0].value;
-  if(right<0)return keys[keys.length-1].value;
-  const a=keys[right-1],b=keys[right];let t=(frame-a.frame)/(b.frame-a.frame);
-  t=a.interpolation==='hold'?0:a.interpolation==='ease'?t*t*(3-2*t):t;
-  return Math.round((a.value+(b.value-a.value)*t)*100)/100;
+  return sampleTimelineKey(layer?.channels[p]??[],frame,p==='scaleX'||p==='scaleY'||p==='opacity'?100:0);
 }
-export function TimelinePanel({locale}:{locale:Locale}) {
+export function TimelinePanel({locale,transport=defaultTransport}:{locale:Locale;transport?:Transport}) {
   const t=labels[locale];
   const [catalog,setCatalog]=useState<MotionCatalog|null>(null);
+  const motionNames=useMemo(()=>new Map(catalog?.presets.map(p=>[p.id,p.names[locale]??p.names.en])??[]),[catalog,locale]);
+  const tracks=useRef<HTMLDivElement>(null);
+  const [viewport,setViewport]=useState({left:0,width:500});
   const motionDrag=useRef<{x:number;layer:string;clip:MotionClip}|null>(null);
-  useEffect(()=>{let alive=true;void invoke<MotionCatalog>('motion_catalog').then(c=>{if(alive)setCatalog(c);}).catch(()=>{});return()=>{alive=false;};},[]);
+  useEffect(()=>{let alive=true;void transport<MotionCatalog>('motion_catalog').then(c=>{if(alive)setCatalog(c);}).catch(()=>{});return()=>{alive=false;};},[transport]);
   const [state,setState]=useState<State>({frame:0,playing:false,preview:false,data:null});
+  const currentDocument=useRef<number|undefined>(undefined);
+  currentDocument.current=state.data?.documentId;
   const [layerId,setLayerId]=useState('');
   const [property,setProperty]=useState<Property>('x');
   const [value,setValue]=useState('0');
@@ -47,20 +48,20 @@ export function TimelinePanel({locale}:{locale:Locale}) {
       if(!alive.current)return;
       if(!quiet){setBusy(true);setError('');}
       try {
-        const result=await invoke<State>('timeline',{request});
-        if(alive.current)setState(old=>request.action==='tick'&&old.frame===result.frame&&old.playing===result.playing&&old.preview===result.preview?old:({...result,data:request.action==='tick'?(result.data??old.data):result.data}));
-      }catch(e){if(alive.current){setError(String(e));if(request.action==='get')setState({frame:0,playing:false,preview:false,data:null});}}
+        const result=await transport<State>('timeline',{request});
+        if(alive.current)setState(old=>result.data===null&&(result.dataUnchanged??request.action==='tick')&&old.frame===result.frame&&old.playing===result.playing&&old.preview===result.preview?old:({...result,data:(result.dataUnchanged??request.action==='tick')?(result.data??old.data):result.data}));
+      }catch(e){if(alive.current){setError(String(e));if(request.action==='get'||request.action==='refresh')setState({frame:0,playing:false,preview:false,data:null});}}
       finally{if(!quiet&&alive.current)setBusy(false);}
     };
     const next=serial.current.then(run,run);serial.current=next;return next;
-  },[]);
+  },[transport]);
   useEffect(()=>{
     alive.current=true;void command({action:'get'});
     const events=['documents-changed','timeline-changed'];
     let refresh:ReturnType<typeof setTimeout>;
-    const listeners=events.map(event=>getCurrentWebviewWindow().listen(event,()=>{clearTimeout(refresh);refresh=setTimeout(()=>void command({action:'get'},true),30);}).catch(()=>()=>{}));
-    return()=>{alive.current=false;clearTimeout(refresh);listeners.forEach(p=>void p.then(unlisten=>unlisten()).catch(()=>{}));void serial.current.then(()=>invoke('timeline',{request:{action:'stop'}})).catch(()=>{});};
-  },[command]);
+    const listeners=transport===defaultTransport?events.map(event=>getCurrentWebviewWindow().listen(event,()=>{clearTimeout(refresh);refresh=setTimeout(()=>void command({action:'refresh'},true),30);}).catch(()=>()=>{})):[];
+    return()=>{const documentId=currentDocument.current;alive.current=false;clearTimeout(refresh);listeners.forEach(p=>void p.then(unlisten=>unlisten()).catch(()=>{}));if(documentId!==undefined)void serial.current.then(()=>transport('timeline',{request:{action:'stopMotion',documentId}})).catch(()=>{});};
+  },[command,transport]);
   useEffect(()=>{
     if(!state.playing)return;
     let canceled=false,timer:ReturnType<typeof setTimeout>;
@@ -72,6 +73,7 @@ export function TimelinePanel({locale}:{locale:Locale}) {
   const layer=state.data?.layers.find(l=>l.id===layerId);
   useEffect(()=>{setValue(String(sample(layer,property,state.frame)));const key=layer?.channels[property]?.find(k=>k.frame===state.frame);if(key)setInterpolation(key.interpolation);},[layer,property,state.frame]);
   const data=state.data;
+  useEffect(()=>{drag.current=null;motionDrag.current=null;pendingSeek.current=null;scrub.current=null;movedKey.current=false;},[data?.documentId]);
   const seek=(frame:number)=>{
     if(!Number.isFinite(frame))return;
     pendingSeek.current=Math.max(0,Math.min((data?.duration??1)-1,Math.round(frame)));
@@ -79,6 +81,12 @@ export function TimelinePanel({locale}:{locale:Locale}) {
     seeking.current=true;
     void (async()=>{try{while(pendingSeek.current!==null&&alive.current){const next=pendingSeek.current;pendingSeek.current=null;await command({action:'seek',frame:next},true);}}finally{seeking.current=false;}})();
   };
+  useEffect(()=>{
+    const element=tracks.current;if(!element)return;
+    const measure=()=>setViewport(old=>old.left===element.scrollLeft&&old.width===element.clientWidth?old:{left:element.scrollLeft,width:element.clientWidth});
+    measure();const observer=new ResizeObserver(measure);observer.observe(element);return()=>observer.disconnect();
+  },[data?.documentId,data?.duration,zoom]);
+  const range=visibleFrames(viewport.left,viewport.width,zoom,data?.duration??120);
   const timelineWidth=Math.max(500,(data?.duration??120)*zoom);
   const disabled=busy||state.playing||!layer||layer.locked;
   const step=Math.max(1,Math.ceil(60/zoom));
@@ -111,18 +119,18 @@ export function TimelinePanel({locale}:{locale:Locale}) {
     </div>
     {data&&<div className="timeline-edit-toolbar">{layer?.pixel?<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.capture} aria-label={t.capture} disabled={disabled||state.preview} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:false})}><Icon name="animationRecord"/></button><button className="tool-button" title={t.blank} aria-label={t.blank} disabled={disabled} onClick={()=>void command({action:'capture',layer:layerId,frame:state.frame,blank:true})}><Icon name="document"/></button><button className="tool-button" title={t.duplicate} aria-label={t.duplicate} disabled={disabled||!layer.cels.some(f=>f<=state.frame)||state.frame>=data.duration-1} onClick={()=>void command({action:'duplicate',layer:layerId,from:state.frame,frame:state.frame+1})}><Icon name="animationDuplicate"/></button><button className="tool-button" title={t.edit} aria-label={t.edit} disabled={disabled||!layer.cels.some(f=>f<=state.frame)} onClick={()=>void command({action:'load',layer:layerId,frame:state.frame})}><Icon name="brush"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!celAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property:null})}><Icon name="animationDelete"/></button></div>:<div className="timeline-edit-tools" role="toolbar" aria-label={layer?.pixel?t.pixel:t.vector}><button className="tool-button" title={t.key} aria-label={t.key} disabled={disabled||value.trim()===''||!Number.isFinite(Number(value))} onClick={()=>void command({action:'key',layer:layerId,frame:state.frame,property,value:Number(value),interpolation})}><Icon name="animationKey"/></button><button className="tool-button" title={t.remove} aria-label={t.remove} disabled={disabled||!keyAt} onClick={()=>void command({action:'remove',layer:layerId,frame:state.frame,property})}><Icon name="animationDelete"/></button></div>}</div>}
     {data?<div className="timeline-body">
-      <div className="timeline-tracks" aria-label={t.hint}>
+      <div className="timeline-tracks" aria-label={t.hint} ref={tracks} onScroll={e=>{const element=e.currentTarget;setViewport(old=>old.left===element.scrollLeft&&old.width===element.clientWidth?old:{left:element.scrollLeft,width:element.clientWidth});}}>
         <div className="timeline-sheet" style={{width:180+timelineWidth}}>
           <div className="timeline-row timeline-ruler"><div className="timeline-track-name">{t.frame}</div><div className="timeline-lane" style={{width:timelineWidth}} onPointerDown={selectFrame} onPointerMove={e=>{if(e.buttons===1)selectFrame(e);}} onPointerUp={e=>{if(scrub.current!==null)seek(scrub.current);scrub.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>
-            {Array.from({length:Math.ceil(data.duration/step)},(_,i)=>i*step).map(frame=><span className="timeline-tick" key={frame} style={{left:frame*zoom}}>{frame+1}</span>)}
+            {Array.from({length:Math.max(0,Math.ceil(range.to/step)-Math.ceil(range.from/step))},(_,i)=>(Math.ceil(range.from/step)+i)*step).map(frame=><span className="timeline-tick" key={frame} style={{left:frame*zoom}}>{frame+1}</span>)}
           </div></div>
           {data.layers.slice().reverse().map(item=><div key={item.id} className="timeline-layer" data-selected={layerId===item.id}>
             <div className="timeline-row"><button className="timeline-track-name" onClick={()=>selectLayer(item.id)}><span>{item.pixel?'▣':'◇'} {item.name}{item.locked?' 🔒':''}</span><small>{item.pixel?t.pixel:t.vector}</small></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{selectLayer(item.id);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
-              {item.pixel?item.cels.map((frame,index)=><button key={frame} className="timeline-cel" aria-label={`${item.name} · ${t.frame} ${frame+1}`} title={`${t.frame} ${frame+1}`} data-current={state.frame>=frame&&state.frame<(item.cels[index+1]??data.duration)} style={{left:frame*zoom,width:Math.max(4,((item.cels[index+1]??data.duration)-frame)*zoom-2)}} onClick={e=>{e.stopPropagation();selectLayer(item.id);seek(frame);}}>● <span>{frame+1}</span></button>):<span className="timeline-vector-bar"/>}
+              {item.pixel?item.cels.map((frame,index)=>overlapsFrames(frame,item.cels[index+1]??data.duration,range)?<button key={frame} className="timeline-cel" aria-label={`${item.name} · ${t.frame} ${frame+1}`} title={`${t.frame} ${frame+1}`} data-current={state.frame>=frame&&state.frame<(item.cels[index+1]??data.duration)} style={{left:frame*zoom,width:Math.max(4,((item.cels[index+1]??data.duration)-frame)*zoom-2)}} onClick={e=>{e.stopPropagation();selectLayer(item.id);seek(frame);}}>● <span>{frame+1}</span></button>:null):<span className="timeline-vector-bar"/>}
             </div></div>
-            {!item.pixel&&(item.motions??[]).map(clip=>{const name=catalog?.presets.find(p=>p.id===clip.preset)?.names[locale]??clip.preset;return <div className="timeline-row timeline-motion-row" key={clip.id}><button className="timeline-track-name" title={name} onClick={()=>{selectLayer(item.id);seek(clip.start);}}>{name}</button><div className="timeline-lane" style={{width:timelineWidth}}><button className="timeline-motion-clip" data-enabled={clip.enabled} data-current={state.frame>=clip.start&&state.frame<clip.start+clip.duration*clip.repeats} aria-label={`${name} · ${t.frame} ${clip.start+1}`} title={`${name} · ${clip.start+1}–${clip.start+clip.duration*clip.repeats}`} style={{left:clip.start*zoom,width:Math.max(8,clip.duration*clip.repeats*zoom-2)}} onClick={()=>{if(movedKey.current){movedKey.current=false;return;}selectLayer(item.id);seek(clip.start);}} onPointerDown={e=>{if(busy||state.playing||item.locked)return;motionDrag.current={x:e.clientX,layer:item.id,clip};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerCancel={()=>{motionDrag.current=null;}} onPointerUp={e=>{const drag=motionDrag.current;motionDrag.current=null;if(!drag)return;const start=Math.max(0,Math.min(18000-drag.clip.duration*drag.clip.repeats,drag.clip.start+Math.round((e.clientX-drag.x)/zoom)));if(start!==drag.clip.start){movedKey.current=true;void command({action:'setMotion',documentId:data.documentId,layer:drag.layer,clip:{...drag.clip,start}});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{name}</button></div></div>;})}
+            {!item.pixel&&(item.motions??[]).map(clip=>{const name=motionNames.get(clip.preset)??clip.preset;return <div className="timeline-row timeline-motion-row" key={clip.id}><button className="timeline-track-name" title={name} onClick={()=>{selectLayer(item.id);seek(clip.start);}}>{name}</button><div className="timeline-lane" style={{width:timelineWidth}}>{(overlapsFrames(clip.start,clip.start+clip.duration*clip.repeats,range)||motionDrag.current?.clip.id===clip.id&&motionDrag.current.layer===item.id)&&<button className="timeline-motion-clip" data-enabled={clip.enabled} data-current={state.frame>=clip.start&&state.frame<clip.start+clip.duration*clip.repeats} aria-label={`${name} · ${t.frame} ${clip.start+1}`} title={`${name} · ${clip.start+1}–${clip.start+clip.duration*clip.repeats}`} style={{left:clip.start*zoom,width:Math.max(8,clip.duration*clip.repeats*zoom-2)}} onClick={()=>{if(movedKey.current){movedKey.current=false;return;}selectLayer(item.id);seek(clip.start);}} onPointerDown={e=>{if(busy||state.playing||item.locked)return;motionDrag.current={x:e.clientX,layer:item.id,clip};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerCancel={()=>{motionDrag.current=null;}} onPointerUp={e=>{const drag=motionDrag.current;motionDrag.current=null;if(!drag)return;const start=Math.max(0,Math.min(18000-drag.clip.duration*drag.clip.repeats,drag.clip.start+Math.round((e.clientX-drag.x)/zoom)));if(start!==drag.clip.start){movedKey.current=true;void command({action:'setMotion',documentId:data.documentId,layer:drag.layer,clip:{...drag.clip,start}});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{name}</button>}</div></div>;})}
             {!item.pixel&&layerId===item.id&&properties.map(p=><div className="timeline-row timeline-property-row" key={p}><button className="timeline-track-name" data-selected={property===p} onClick={()=>setProperty(p)}>{t[p]}<span>{sample(item,p,state.frame)}</span></button><div className="timeline-lane" style={{width:timelineWidth}} onClick={e=>{setProperty(p);seek(Math.floor((e.clientX-e.currentTarget.getBoundingClientRect().left)/zoom));}}>
-              {(item.channels[p]??[]).map(key=><button key={key.frame} className="timeline-key" data-current={key.frame===state.frame&&property===p} title={`${t[p]} · ${key.frame+1} · ${key.value}`} aria-label={`${t[p]} · ${t.frame} ${key.frame+1}`} style={{left:key.frame*zoom}} onClick={e=>{e.stopPropagation();if(movedKey.current){movedKey.current=false;return;}setProperty(p);seek(key.frame);}} onPointerDown={e=>{if(disabled)return;e.stopPropagation();drag.current={x:e.clientX,frame:key.frame,layer:item.id,property:p,key};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerUp={e=>{const d=drag.current;drag.current=null;if(!d||!d.property||!d.key)return;const frame=Math.max(0,Math.min(data.duration-1,d.frame+Math.round((e.clientX-d.x)/zoom)));if(frame!==d.frame){movedKey.current=true;void command({action:'moveKey',layer:d.layer,from:d.frame,frame,property:d.property});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{key.interpolation==='hold'?'■':'◆'}</button>)}
+              {visibleKeys(item.channels[p]??[],range,drag.current?.layer===item.id&&drag.current.property===p?drag.current.key:undefined).map(key=><button key={key.frame} className="timeline-key" data-current={key.frame===state.frame&&property===p} title={`${t[p]} · ${key.frame+1} · ${key.value}`} aria-label={`${t[p]} · ${t.frame} ${key.frame+1}`} style={{left:key.frame*zoom}} onClick={e=>{e.stopPropagation();if(movedKey.current){movedKey.current=false;return;}setProperty(p);seek(key.frame);}} onPointerDown={e=>{if(disabled)return;e.stopPropagation();drag.current={x:e.clientX,frame:key.frame,layer:item.id,property:p,key};e.currentTarget.setPointerCapture(e.pointerId);}} onPointerUp={e=>{const d=drag.current;drag.current=null;if(!d||!d.property||!d.key)return;const frame=Math.max(0,Math.min(data.duration-1,d.frame+Math.round((e.clientX-d.x)/zoom)));if(frame!==d.frame){movedKey.current=true;void command({action:'moveKey',layer:d.layer,from:d.frame,frame,property:d.property});}if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}>{key.interpolation==='hold'?'■':'◆'}</button>)}
             </div></div>)}
           </div>)}
           <div className="timeline-playhead" style={{left:180+state.frame*zoom}} aria-hidden="true"/>

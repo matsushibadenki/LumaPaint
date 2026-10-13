@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-13",
+  "sourceSha256": {
+    "crates/lumapaint-core/src/animation.rs": "daf72077aafcb998feb69c3842d8585e96b35d8c3c2e2dd7749e528061c8348c",
+    "crates/lumapaint-renderer/src/animation_tests.rs": "e35a6299833de346878692d0eb286cfe2130bd7d7494267178a078b364744662",
+    "src-tauri/src/timeline.rs": "69a3b16d7697e3a81340252c9553d0b81e96971b44f549391bd9e4c037269a9a",
+    "src-tauri/src/timeline_macos.rs": "dae2cd387f3c7eb3f395c9e8266ac0b6733b509fc84918d2d687a45023e3e426",
+    "src/components/TimelinePanel.tsx": "6101bf7fe49d6651f555442896e7e101050de61e92769ac5449fe4c74741aa6b",
+    "src/components/MotionPanel.tsx": "0afbc90a626d324f12d7af259f3db754b830a4deeedfcf954d662c2b9e32a1c0",
+    "src/timeline-view.ts": "6c129244292d80e3419286a4465396201870cb1943433f36155bbd78e72ab681",
+    "src/motion-types.ts": "572d20655f3adb0341d8b4c9347754b7bd7e3c644d789700332ee91fed446792",
+    "scripts/test-timeline-view.mjs": "cc2af1c6d8292d34d4692362f4fcbcb538f36593794d161a4ad705599c1f22ec",
+    "package.json": "c012ea9d126652be0f40dc45d1cb55c73ddacf34912ceafa7829c4a912775bc0"
+  },
+  "references": {
+    "effectcraft": "470ea7a3af82ee1dd1d2f86c777fe6891bd0c37b",
+    "filmcraft": "71438c627b5cbcfb550526c3971f4d0037733c5c",
+    "externalCodeCopied": false
+  },
+  "checks": {
+    "core": {
+      "passed": 346,
+      "ignored": 2
+    },
+    "rendererAnimation": {
+      "passed": 7,
+      "pixelEqualityAgainstFullEvaluation": true
+    },
+    "nativeTimeline": {
+      "passed": 6,
+      "unchangedResponseByteLimit": 128,
+      "fullFixtureBytesLowerBound": 3000,
+      "queryDoesNotCommitPaint": true,
+      "revisionAndSelectionUpdates": true,
+      "closedDocumentClearsMetadata": true
+    },
+    "releaseEvaluator": {
+      "passed": 1,
+      "rawData": "timeline-evaluation-release-2026-10-13.json",
+      "scope": "CPU evaluator only"
+    },
+    "timelineViewHelpers": "passed",
+    "frontendBuild": "passed; existing bundle-size warning",
+    "format": "passed",
+    "architecture": "passed",
+    "diffWhitespace": "passed",
+    "clippy": "passed; core+renderer+app all-targets -D warnings, with final app test change checked again"
+  },
+  "browser": {
+    "runtime": "CUA In-app Browser",
+    "viewport": [
+      1280,
+      720
+    ],
+    "fixtureDuration": 18000,
+    "fixtureKeys": 4096,
+    "widePanelSetting": 1000,
+    "initialDomKeys": 48,
+    "initialDomTicks": 12,
+    "scrollDomKeys": 60,
+    "scrollDomTicks": 15,
+    "rowCountMaintained": 10,
+    "draggedKeyUiFrames": [
+      4096,
+      4098
+    ],
+    "metadataRetainedFor": [
+      "seek",
+      "play",
+      "tick",
+      "pause"
+    ],
+    "metadataClearedForClosedDocument": true,
+    "narrowPanelSetting": 375,
+    "narrowDomKeys": 26,
+    "narrowDomTicks": 7,
+    "languages": [
+      "ja",
+      "en",
+      "zh-CN"
+    ],
+    "motionPanelSetting": 320,
+    "motionParametersRetainedAfterLightSeek": true,
+    "consoleWarningsAndErrors": 0,
+    "nativeIpc": false,
+    "screenshotsDirectory": "/tmp/lumapaint-timeline-qa"
+  },
+  "testCorrections": [
+    "Initial Release fixture exceeded the 17-layer limit before sampling; replaced with 16 animated tracks plus default paint layer.",
+    "Selection-refresh assertion initially selected the already selected layer; corrected to explicitly choose a different existing layer."
+  ],
+  "notMeasured": [
+    "full native playback FPS",
+    "GPU work",
+    "physical input-to-display latency",
+    "EffectCraft/FilmCraft runtime comparison",
+    "Windows/Linux hardware"
+  ]
+}

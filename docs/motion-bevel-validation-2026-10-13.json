@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-13",
+  "environment": {
+    "platform": "macOS",
+    "gpu": "Apple M4",
+    "backend": "Metal",
+    "browser": "Codex In-app Browser",
+    "viewport": [
+      1280,
+      720
+    ],
+    "panelWidth": 240
+  },
+  "sourceSha256": {
+    "crates/lumapaint-core/src/motion.rs": "5872a92cd74f727b38f2c23b6ad79421667b1016ba5fa66088b3b2455318b3df",
+    "crates/lumapaint-core/src/motion/extrude.rs": "63d9a3f1f24fa9d5f8b72761eeb947e3db37481060323a4d263b9e984d4049bf",
+    "crates/lumapaint-core/src/motion/mesh.rs": "0077dd849ffb431b985daeca6871903d0ccf16e24cd573268c7cead91f822446",
+    "crates/lumapaint-renderer/src/lib.rs": "56073c286c57ae40632fe0debb0497c1cd61f3ea67f5d87f7e4bdc593a084877",
+    "crates/lumapaint-renderer/src/motion_mesh.rs": "ecaddd1efcb140bc154cb40e7c36109772927d9f22d446e781c7670265026513",
+    "src/components/MotionPanel.tsx": "ad120913f85c5a524532e07fc509b4fadf3eeccc5951caeef8f730dea7614f82",
+    "src/motion-i18n.ts": "a74f7b8b3443b7e1abc3c8bb33f9ddeafdaaa47979efafebf4fbeb9dd1cae54a",
+    "src/motion-types.ts": "5536a8a5cdf38e5eee926d6bf80fa9117940530ae6bad95c5aebc9c6e518b1e9"
+  },
+  "checks": {
+    "core": {
+      "passed": 345,
+      "ignored": 1
+    },
+    "rendererDetailed": {
+      "passed": 5,
+      "includesExplicitVisualFixture": true
+    },
+    "metalGpu": {
+      "passed": 2,
+      "holeRetained": true,
+      "bevelPixelDifference": true,
+      "validationErrors": 0
+    },
+    "clippy": "passed, core+renderer all-targets/skia -D warnings",
+    "tauriCheck": "passed",
+    "uiBuild": "passed, existing large bundle warning",
+    "format": "passed",
+    "architecture": "passed",
+    "diffWhitespace": "passed",
+    "panel": {
+      "jaSavedWidth": 3.5,
+      "enSavedWidth": 2.5,
+      "zhCNSavedWidth": 1.5,
+      "extrusionOffHidesBevel": true,
+      "consoleWarningsAndErrors": 0,
+      "transport": "fixture; real React panel; not native IPC"
+    },
+    "rendererLibrary": {
+      "passed": 275,
+      "ignored": 61,
+      "includesAll782TypesAtFourTimes": true
+    }
+  },
+  "reference": {
+    "urls": [
+      "https://motion-reference.takayustudio.jp/#motion=tx-motext-falloff",
+      "https://motion-reference.takayustudio.jp/#motion=tx-layered-depth"
+    ],
+    "observedDetailedTimelineMs": [
+      3400,
+      4000
+    ],
+    "capturedProgress": [
+      0,
+      0.125,
+      0.375,
+      0.999
+    ],
+    "fixtureFrames": {
+      "motext": [
+        0,
+        10,
+        30,
+        81
+      ],
+      "layered": [
+        0,
+        12,
+        36,
+        95
+      ]
+    },
+    "pixelMatch": false,
+    "knownDifferences": [
+      "per-glyph falloff/spring delay",
+      "layer tilt path",
+      "layer colors and opacity",
+      "font family and weight",
+      "layout/background/material"
+    ],
+    "captureCorrection": "Initial hash-only navigation retained the previous dialog and clipped captures had wrong offsets; those captures were replaced after checking the visible dialog title and recording each canvas rect."
+  },
+  "artifactsDirectory": "/tmp/lumapaint-bevel-qa",
+  "notRun": [
+    "native Tauri UI interaction this stage",
+    "Release playback cost comparison",
+    "Windows/Linux hardware tests"
+  ],
+  "earlyFailure": "Whole-word adaptive width reduced every glyph because of one sharp/narrow contour. Fixed by grouping overlapping contour bounds, including counters, and beveling disjoint groups independently. Actual glyph bevel pixel difference now passes."
+}

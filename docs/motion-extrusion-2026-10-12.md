@@ -31,3 +31,7 @@ macOS／Apple M4／Metalで実施した。
 - core／rendererの全ターゲットClippy（Skia構成、-D warnings）、境界検査、TypeScript本番ビルドに成功。ホストを含む全ターゲットClippyも先行確認した。メインJSの既存の500 kB超警告は残る。
 
 ソースのハッシュは [検証記録](motion-extrusion-validation-2026-10-12.json) にまとめる。初期の立体・可変軸・筆順の記録は [motion-detail-2026-10-12.md](motion-detail-2026-10-12.md) に保持する。
+
+## その後の交差対応
+
+[2026-10-13の交点分割と重なり対応](motion-intersections-2026-10-13.md)を追加した。上記の自己交差に関する制約と検証件数は先行段階の記録として保持する。

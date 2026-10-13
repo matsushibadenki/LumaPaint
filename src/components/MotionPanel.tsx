@@ -30,9 +30,9 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
       if(!quiet){setBusy(true);setError('');}
       try{
         const next=await transport<MotionState>('timeline',{request:command});
-        if(alive.current)setState(old=>({...next,data:command.action==='tick'?(next.data??old.data):next.data}));
+        if(alive.current)setState(old=>next.data===null&&(next.dataUnchanged??command.action==='tick')&&old.frame===next.frame&&old.playing===next.playing&&old.preview===next.preview?old:({...next,data:(next.dataUnchanged??command.action==='tick')?(next.data??old.data):next.data}));
         return true;
-      }catch(cause){if(alive.current)setError(String(cause));return false;}
+      }catch(cause){if(alive.current){setError(String(cause));if(command.action==='get'||command.action==='refresh')setState({frame:0,playing:false,preview:false,data:null});}return false;}
       finally{if(alive.current&&!quiet)setBusy(false);}
     };
     const next=serial.current.then(run,run);serial.current=next;return next;
@@ -43,8 +43,8 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
     void load.then(value=>{if(alive.current)setCatalog(value);}).catch(cause=>{catalogPromise=undefined;if(alive.current)setError(String(cause));});
     void request({action:'get'});
     let canceled=false,timeout:ReturnType<typeof setTimeout>|undefined;
-    const unsubscribe=transport===defaultTransport?getCurrentWebviewWindow().listen('documents-changed',()=>{clearTimeout(timeout);timeout=setTimeout(()=>{if(!canceled)void request({action:'get'},true);},40);}).catch(()=>()=>{}):Promise.resolve(()=>{});
-    const timelineUnsubscribe=transport===defaultTransport?getCurrentWebviewWindow().listen('timeline-changed',()=>{if(!canceled)void request({action:'get'},true);}).catch(()=>()=>{}):Promise.resolve(()=>{});
+    const unsubscribe=transport===defaultTransport?getCurrentWebviewWindow().listen('documents-changed',()=>{clearTimeout(timeout);timeout=setTimeout(()=>{if(!canceled)void request({action:'refresh'},true);},40);}).catch(()=>()=>{}):Promise.resolve(()=>{});
+    const timelineUnsubscribe=transport===defaultTransport?getCurrentWebviewWindow().listen('timeline-changed',()=>{if(!canceled)void request({action:'refresh'},true);}).catch(()=>()=>{}):Promise.resolve(()=>{});
     return()=>{const documentId=currentDocument.current;alive.current=false;canceled=true;clearTimeout(timeout);cancelAnimationFrame(frame.current);void unsubscribe.then(stop=>stop());void timelineUnsubscribe.then(stop=>stop());if(documentId!==undefined)void serial.current.then(()=>transport('timeline',{request:{action:'stopMotion',documentId}})).catch(()=>{});};
   },[request,transport]);
   useEffect(()=>{
@@ -145,12 +145,13 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
         <label className="motion-field"><span>{t.target}</span><select aria-label={t.target} value={draft.objects.length?'selected':'layer'} disabled={disabled} onChange={event=>edit({objects:event.target.value==='selected'?(state.data?.selectedObjects??[]):[]})}><option value="layer">{t.wholeLayer}</option><option value="selected" disabled={!state.data?.selectedObjects.length}>{t.selected} · {state.data?.selectedObjects.length??0}</option></select></label>
         <label className="motion-field"><span>{t.order}</span><select aria-label={t.order} value={draft.order} disabled={disabled} onChange={event=>edit({order:event.target.value})}>{['forward','reverse','center','edges','random','grid','alternating','spiral'].map(order=><option key={order} value={order}>{order==='reverse'?t.reverseOrder:curveLabel(order)}</option>)}</select></label>
         <div className="motion-checks"><label><input type="checkbox" checked={draft.reverse} disabled={disabled} onChange={event=>edit({reverse:event.target.checked})}/>{t.reverse}</label><label><input type="checkbox" checked={draft.yoyo} disabled={disabled} onChange={event=>edit({yoyo:event.target.checked})}/>{t.yoyo}</label></div>
-        {has('cube','meshPlane','depthStack','coverflow')&&<details open><summary>3D</summary><div className="motion-parameter-grid">
+        {has('cube','meshPlane','depthStack','coverflow')&&<details open><summary>3D {draft.extruded&&<span className="motion-info" title={t.bevelInfo}>ⓘ</span>}</summary><div className="motion-parameter-grid">
           {number(t.meshDepth,draft.meshDepth??80,value=>edit({meshDepth:value}),0,4096,1,'px')}
           {number(t.cameraDistance,draft.cameraDistance??600,value=>edit({cameraDistance:value}),64,8192,1,'px')}
           {number(t.rotationX,draft.rotationX??-20,value=>edit({rotationX:value}),-36000,36000,1,'°')}
           {number(t.rotationY,draft.rotationY??25,value=>edit({rotationY:value}),-36000,36000,1,'°')}
           {number(t.rotationZ,draft.rotationZ??0,value=>edit({rotationZ:value}),-36000,36000,1,'°')}
+          {draft.extruded&&number(t.bevelWidth,draft.bevelWidth??0,value=>edit({bevelWidth:value}),0,128,.1,'px')}
           {!draft.extruded&&number(t.copies,draft.copies??4,value=>edit({copies:value}),1,24)}
         </div>{['tx-layered-depth','tx-motext-falloff'].includes(preset.id)&&<label className="motion-checks"><input type="checkbox" checked={draft.extruded??false} disabled={disabled} onChange={event=>edit({extruded:event.target.checked})}/>{t.extruded}</label>}</details>}
         {has('fontAxes')&&<details open><summary>{t.fontAxes} <span className="motion-info" title={t.fontInfo}>ⓘ</span></summary>

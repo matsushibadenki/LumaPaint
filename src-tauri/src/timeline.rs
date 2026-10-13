@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Request {
     Get,
+    Refresh,
     Select {
         layer: String,
     },
@@ -84,6 +85,8 @@ pub struct Response {
     pub playing: bool,
     pub preview: bool,
     pub data: Option<Data>,
+    /// True means retain the last metadata; false + null means no document.
+    pub data_unchanged: bool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
