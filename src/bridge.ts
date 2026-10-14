@@ -65,6 +65,7 @@ export interface DocumentSnapshot {
   bitDepth: BitDepth;
   strokeCount: number; layers: LayerSnapshot[]; canUndo: boolean; canRedo: boolean; revision: number; dirty: boolean; fileName: string | null;
   selectedVectorObjects: string[];
+  alignment?: AlignmentSettings;
   textObjects: TextObjectSnapshot[];
 }
 export interface WidthStop { position: number; width: number; slope: number }
@@ -183,6 +184,7 @@ export interface RuntimeInfo {
 
 export type DisplayChannel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export interface CanvasRequest {
+  menuOpen?: boolean;
   overlays?: [number,number,number,number][];
   overlay?: [number, number, number, number] | null;
   channel?: DisplayChannel;
@@ -656,3 +658,9 @@ export type VectorSelectionRequest={action:string;criterion?:string;name?:string
 export const vectorSelectionAction=(request:VectorSelectionRequest)=>invoke<DocumentSnapshot>('vector_selection_action',{request});
 
 export function createScreentoneLayer(tone: Screentone): Promise<DocumentSnapshot> { return textCommand("create_screentone_layer", {tone}); }
+
+export type AlignmentTarget='selection'|'keyObject'|'artboard';
+export type AlignAction='left'|'horizontalCenter'|'right'|'center'|'top'|'verticalCenter'|'bottom'|'distributeTop'|'distributeVerticalCenter'|'distributeBottom'|'distributeLeft'|'distributeHorizontalCenter'|'distributeRight'|'spaceVertical'|'spaceHorizontal';
+export type AlignmentSettings={target:AlignmentTarget;keyObject:string|null;spacing:number};
+export type AlignmentRequest={action?:AlignAction;target?:AlignmentTarget;keyObject?:string;spacing?:number};
+export function editAlignment(request:AlignmentRequest):Promise<DocumentSnapshot>{const result=canvasQueue.then(()=>invoke<DocumentSnapshot>('edit_alignment',{request}));canvasQueue=result.then(()=>undefined,()=>undefined);return result;}

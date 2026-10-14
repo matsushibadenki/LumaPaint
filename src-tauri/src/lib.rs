@@ -214,6 +214,7 @@ pub fn run() {
             canvas::move_document_to_window,
             canvas::open_document_view,
             canvas::pathfinder_vectors,
+            canvas::edit_alignment,
             canvas::make_compound_shape,
             canvas::edit_compound_shape,
             canvas::group_selected_vectors,

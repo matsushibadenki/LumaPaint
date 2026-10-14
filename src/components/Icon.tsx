@@ -1,5 +1,5 @@
 type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-type PanelIconName = 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+type PanelIconName = 'align' | 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   animationRecord: 'M4 4h16v16H4z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
   animationDuplicate: 'M3 3h12v12H3z M9 15v6h12V9h-6 M12 12h6 M15 9v6',
@@ -23,6 +23,7 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   imageFrameRectangle:'M3 4h18v16H3zM3 4l18 16M21 4L3 20',
   imageFrameEllipse:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M6 6l12 12M18 6L6 18',
   eyedropper: 'M14 3l7 7 M16 2l6 6-4 4-6-6z M13 7L4 16l-1 5 5-1 9-9 M6 14l4 4',
+  align: 'M3 2v20 M3 5h14v5H3z M3 14h9v5H3z',
   pathfinder: 'M3 3h12v6h6v12H9v-6H3z M9 9h6v6H9z',
   stroke: 'M3 5h18 M3 11h18 M3 17h18 M3 19h18 M3 21h18',
   eraser: 'M3 14l10-11 8 8-10 10H7z M8 9l8 8 M11 21h10',

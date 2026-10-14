@@ -55,3 +55,22 @@ assert.deepEqual(selectedExposurePositions(identities,['a','b'],'b'),{frames:[6,
 assert.deepEqual(selectedExposurePositions([],['a','b'],'b'),{frames:[],anchor:null});
 assert.deepEqual(selectedExposurePositions([{id:'a',start:0,end:3,cel:1},{id:'b',start:3,end:6,cel:1}],['a','b'],'b'),{frames:[0,3],anchor:3},'undo restores matching occurrences and anchor');
 assert.deepEqual(selectedExposurePositions([{id:'new',start:6,end:9,cel:1}],['a'],'a'),{frames:[],anchor:null},'same cel and frame cannot steal old selection');
+
+const {exposureDragGesture}=await import('../src/timeline-view.ts');
+assert.equal(exposureDragGesture(0,0),false);
+assert.equal(exposureDragGesture(2,0),false);
+assert.equal(exposureDragGesture(0,40),true,'bounded move with edge scrolling must suppress click selection');
+assert.equal(exposureDragGesture(-10,0),true,'bounded pointer move remains a drag');
+
+assert.equal(exposureDragGesture(2,0,true),true,'a one-frame edit at narrow zoom still suppresses click');
+
+const {exposureReorderTarget}=await import('../src/timeline-view.ts');
+assert.deepEqual(exposureReorderTarget(spans,[0,6],3.9),{before:3,frame:3},'selected exposures are excluded from insertion targets');
+assert.deepEqual(exposureReorderTarget(spans,[0,6],4),{before:9,frame:9},'crossing the target midpoint chooses the following slot');
+assert.deepEqual(exposureReorderTarget(spans,[3],-20),{before:0,frame:0},'left edge inserts before the first remaining exposure');
+assert.deepEqual(exposureReorderTarget(spans,[3],100),{before:null,frame:11},'right edge appends after the last exposure');
+assert.equal(exposureReorderTarget(spans,[0,3,6,9],5),null,'there is no insertion target when all exposures are selected');
+assert.equal(exposureReorderTarget(spans,[],5),null);
+assert.equal(exposureReorderTarget(spans,[3],NaN),null);
+
+console.log('Exposure insertion boundary checks passed');

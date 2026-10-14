@@ -1,3 +1,5 @@
+import {AlignPanel} from './AlignPanel';
+import {alignmentLabels} from '../alignment-i18n';
 import { BrushSettings } from './BrushSettings';
 import { layerMaskDialogLabels } from './LayerMaskDialog';
 import { ScreentonePanel } from './ScreentonePanel';
@@ -34,7 +36,7 @@ import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
 const MotionPanel = lazy(() => import('./MotionPanel').then(module => ({default:module.MotionPanel})));
-const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'pathfinder', 'pages', 'links', 'screentone', 'effects', 'motion', 'text', 'layers', 'document'] as const;
+const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'align', 'pathfinder', 'pages', 'links', 'screentone', 'effects', 'motion', 'text', 'layers', 'document'] as const;
 type PanelId = (typeof panelIds)[number];
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
@@ -62,13 +64,13 @@ function initialPanelOrder(): PanelId[] {
     const parsed: unknown = JSON.parse(stored);
     if (Array.isArray(parsed) && parsed.every(isPanelId)) {
       const stored = [...new Set<PanelId>(parsed)];
-      return ['color', ...[...stored, ...panelIds.filter(panel => !stored.includes(panel))].filter(panel => panel !== 'color' && panel !== 'document'), 'document'];
+      const combined=[...stored,...panelIds.filter(panel=>!stored.includes(panel))];if(!stored.includes('align')){combined.splice(combined.indexOf('align'),1);combined.splice(Math.max(0,combined.indexOf('pathfinder')),0,'align');}return ['color',...combined.filter(panel=>panel!=='color'&&panel!=='document'),'document'];
     }
   } catch { /* Use the default order when an old preference cannot be read. */ }
   return [...panelIds];
 }
 
-const panelIcons = { motion: 'timeline', screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
+const panelIcons = { align:'align', motion: 'timeline', screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
 export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerMask, onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   documentAvailable: boolean;
@@ -141,7 +143,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
       setLayerPanelMode(mode);
     } catch (cause) { setPathTabError(String(cause)); }
   };
-  const labels: Record<PanelId, string> = { motion: ({ja:'モーション',en:'Motion','zh-CN':'动效'})[locale], screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
+  const labels: Record<PanelId, string> = { align:alignmentLabels[locale].title, motion: ({ja:'モーション',en:'Motion','zh-CN':'动效'})[locale], screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
   useEffect(() => {
@@ -186,7 +188,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
 
   return <aside className={`inspector${draggedPanel?' panel-drag-active':''}`} aria-label={t.properties}>
     <div className="dock-resizer" role="separator" aria-orientation="vertical" aria-label={locale==='ja'?'パネルの幅':locale==='en'?'Panel width':'面板宽度'} aria-valuemin={260} aria-valuemax={600} aria-valuenow={dockWidth} tabIndex={0} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeDock.current={x:e.clientX,width:dockWidth};}} onPointerMove={e=>{if(resizeDock.current)setDockWidth(Math.max(260,Math.min(600,window.innerWidth*.6,resizeDock.current.width+resizeDock.current.x-e.clientX)));}} onPointerUp={()=>{resizeDock.current=null;}} onPointerCancel={()=>{resizeDock.current=null;}} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setDockWidth(w=>Math.max(260,Math.min(600,w+(e.key==='ArrowLeft'?16:-16))));}}}/>
-    <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}><strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong><button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
+    <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}>{!floating[activePanel]&&(activePanel==='align'||activePanel==='pathfinder')?<div className="align-family-tabs">{(['align','pathfinder'] as const).map(panel=><button key={panel} type="button" aria-pressed={activePanel===panel} onClick={()=>setActivePanel(panel)}>{labels[panel]}</button>)}</div>:<strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong>}<button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
     {panelView('motion', <section id="inspector-panel-motion" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-motion"><Suspense fallback={<div className="motion-empty">…</div>}><MotionPanel key={thumbnailDocumentKey} locale={locale} /></Suspense></section>)}
     {panelView('screentone', <section id="inspector-panel-screentone" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-screentone"><ScreentonePanel key={thumbnailDocumentKey} locale={locale} layer={selectedLayer} resolution={document.resolution} enabled={enabled || rasterEnabled} canCreate={enabled} onUpdate={onTransformUpdate} /></section>)}
     {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
@@ -211,6 +213,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
     {panelView('pages',<section className="inspector-panel" role="tabpanel" id="inspector-panel-pages" aria-labelledby="inspector-tab-pages"><PagesPanel key={thumbnailDocumentKey} locale={locale} document={document} enabled={enabled} onUpdate={onTransformUpdate}/></section>)}
     {panelView('links',<section className="inspector-panel" role="tabpanel" id="inspector-panel-links" aria-labelledby="inspector-tab-links"><LinksPanel key={thumbnailDocumentKey} locale={locale} document={document} enabled={enabled} onUpdate={onTransformUpdate}/></section>)}
     {panelView('gradient',<section className="inspector-panel" role="tabpanel" id="inspector-panel-gradient" aria-labelledby="inspector-tab-gradient"><GradientPanel toolActive={gradientTool} onOpenSwatches={openSwatches} onRegister={gradient=>{setSwatchDraft({name:swatchLabels[locale].newGradient,paint:{kind:'gradient',gradient}});setActivePanel('swatches');}} locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
+    {panelView('align',<section className="inspector-panel" role="tabpanel" id="inspector-panel-align" aria-labelledby="inspector-tab-align"><AlignPanel locale={locale} document={document} enabled={enabled&&!textEditing} onUpdate={onTransformUpdate}/></section>)}
     {panelView('pathfinder',<section className="inspector-panel" role="tabpanel" id="inspector-panel-pathfinder" aria-labelledby="inspector-tab-pathfinder"><PathfinderPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
     {panelView('transform',<section className="inspector-panel" role="tabpanel" id="inspector-panel-transform" aria-labelledby="inspector-tab-transform"><TransformPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
     {panelView('stroke',<section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} onStyle={onStrokeStyle} /></section>)}

@@ -435,6 +435,7 @@ fn synchronized_zoom(
 }
 
 struct FrameState {
+    menu_open: std::cell::Cell<bool>,
     label: String,
     display_link: RefCell<Option<Retained<AnyObject>>>,
 }
@@ -486,6 +487,8 @@ impl PaintView {
 
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            // A WebView menu consumes the first outside click without editing art.
+            if self.ivars().menu_open.get() { return std::ptr::null_mut(); }
             let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return std::ptr::null_mut(); };
             let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
             if CANVAS_OVERLAY.with(|value| value.borrow().iter().any(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3])) {
@@ -745,6 +748,7 @@ impl PaintView {
         let view = Self::alloc(mtm).set_ivars(FrameState {
             label: current_label(),
             display_link: RefCell::new(None),
+            menu_open: std::cell::Cell::new(false),
         });
         // SAFETY: initializing the allocated NSView subclass once on the main thread.
         let view: Retained<Self> = unsafe { msg_send![super(view), initWithFrame: frame] };
@@ -2815,6 +2819,23 @@ fn vector_select_pointer(
         }
         let previous = document.selected_vector_ids().to_vec();
         let hit = document.vector_at(point, object_selection_tolerance());
+        if document.alignment_settings().target
+            == lumapaint_core::document::AlignmentTarget::KeyObject
+            && previous.len() > 1
+            && !modifiers.intersects(
+                NSEventModifierFlags::Shift
+                    | NSEventModifierFlags::Option
+                    | NSEventModifierFlags::Command,
+            )
+        {
+            if let Some(id) = hit.as_ref().filter(|id| previous.contains(id)) {
+                document.edit_alignment(lumapaint_core::document::AlignmentRequest {
+                    key_object: Some(id.clone()),
+                    ..Default::default()
+                })?;
+            }
+        }
+
         if hit.is_none() {
             VECTOR_MARQUEE.with(|draft| {
                 *draft.borrow_mut() = Some((
@@ -4275,6 +4296,17 @@ pub fn combine_selected_vectors(operation: PathOperation) -> Result<DocumentSnap
         PathOperation::Intersection => Op::Intersect,
         PathOperation::Xor => Op::Exclude,
     })
+}
+pub fn edit_alignment(
+    request: lumapaint_core::document::AlignmentRequest,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    let changed = DOCUMENT.with(|d| d.borrow_mut().edit_alignment(request))?;
+    if changed {
+        redraw()?;
+    }
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
 pub fn pathfinder_vectors(
     operation: lumapaint_core::vector::PathfinderOperation,
@@ -6105,6 +6137,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         }
         let canvas = slot.as_mut().ok_or("Canvas initialization failed")?;
         canvas.view.setFrame(frame);
+        canvas.view.ivars().menu_open.set(request.menu_open);
         let mut overlays = request.overlays.clone();
         overlays.extend(request.overlay);
         update_canvas_mask(&canvas.view, overlays);
@@ -8297,6 +8330,7 @@ mod tests {
         };
         let request = CanvasRequest {
             pasteboard_color: None,
+            menu_open: false,
             overlays: Vec::new(),
             overlay: None,
             channel: 0,
@@ -8330,6 +8364,7 @@ mod tests {
         };
         let mut request = CanvasRequest {
             pasteboard_color: None,
+            menu_open: false,
             overlays: Vec::new(),
             overlay: None,
             channel: 0,

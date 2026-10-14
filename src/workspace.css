@@ -997,3 +997,52 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-library-grid button>span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .timeline-library-grid small { font-size:10px; opacity:.7; }
 .timeline-library-pages { display:flex; align-items:center; justify-content:center; gap:8px; }
+
+.timeline-fold-tools { display:flex; gap:4px; padding:4px 8px; border-bottom:1px solid var(--color-rule); }
+.timeline-layer-name { flex-direction:row; align-items:center; gap:4px; padding:4px 6px; }
+.timeline-layer-name button { border:0; background:transparent; color:inherit; padding:2px; }
+.timeline-layer-fold { flex:none; width:20px; min-height:24px; }
+.timeline-layer-select { flex:1; min-width:0; text-align:left; display:flex; flex-direction:column; gap:3px; }
+.timeline-layer-select>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+.timeline-layer-count { flex:none; font-variant-numeric:tabular-nums; }
+.timeline-layer[data-folded="true"]>.timeline-row { min-height:30px; }
+.timeline-layer[data-folded="true"] .timeline-cel-number { display:none; }
+.timeline-layer[data-folded="true"] .timeline-cel-placeholder { font-size:9px; }
+.timeline-inspector-title button { flex:none; padding:2px 6px; }
+
+.timeline-inspector-details { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.timeline-inspector-details[hidden] { display:none; }
+
+.timeline-layer-name button { min-height:24px; }
+.timeline-layer-name .timeline-layer-fold { font-size:14px; }
+.timeline-layer[data-folded="true"] .timeline-layer-name { padding:2px 6px; }
+.timeline-body[data-inspector-folded="true"] { grid-template-columns:minmax(0,1fr) 180px; }
+@container timeline (max-width:700px) {
+ .timeline-body[data-inspector-folded="true"] { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(64px,1fr) auto; }
+}
+
+.align-panel { display:flex; flex-direction:column; gap:6px; padding:8px; }
+.align-caption { font-size:11px; color:var(--color-muted); display:flex; justify-content:space-between; align-items:center; margin-top:3px; }
+.align-buttons { display:flex; justify-content:space-between; gap:2px; }
+.align-panel button { padding:3px; min-width:26px; height:30px; border:0; background:transparent; }
+.align-panel button[aria-pressed="true"] { background:var(--color-bar); color:var(--color-focus); outline:1px solid var(--color-rule); }
+.align-bottom { display:flex; justify-content:space-between; gap:6px; border-top:1px solid var(--color-rule); padding-top:5px; }
+.align-bottom>div { min-width:0; }
+.align-spacing { display:flex; align-items:center; gap:2px; font-size:10px; }
+.align-spacing input { min-width:0; width:46px; }
+.align-panel select { width:100%; min-width:0; }
+.align-error { font-size:11px; color:var(--color-error); overflow-wrap:anywhere; }
+
+.align-family-tabs { display:flex; min-width:0; gap:2px; }
+.align-family-tabs button { padding:3px 6px; border:0; font-size:11px; background:transparent; }
+.align-family-tabs button[aria-pressed="true"] { color:var(--color-focus); box-shadow:inset 0 -1px var(--color-focus); }
+
+.menu-feature-icon { width:1em; height:1em; flex:0 0 1em; object-fit:contain; border-radius:.22em; }
+.workspace-dropdown > button, .menu-nested > button, .workspace-submenu > button { align-items:center; }
+.workspace-dropdown button[aria-disabled='true'] .menu-feature-icon { opacity:.45; }
+.document-dock-tabs button { display:inline-flex; align-items:center; gap:5px; }
+
+.timeline-exposure-insertion { position:absolute; top:0; bottom:0; width:2px; background:var(--color-focus); z-index:6; pointer-events:none; }
+.timeline-exposure-insertion::before { content:''; position:absolute; top:0; left:-4px; border-left:5px solid transparent; border-right:5px solid transparent; border-top:6px solid var(--color-focus); }
+.timeline-exposure[data-reordering='true'] .timeline-exposure-face { cursor:grab; }
+.timeline-batch-tools button[aria-pressed='true'] { color:var(--color-focus); background:var(--color-selected); }

@@ -99,7 +99,8 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
         const result = await syncCanvas({
           x: rect.x, y: rect.y, width: rect.width, height: rect.height,
           ...requestSettings(), visible: settings.current.visible && !document.hidden,
-          overlays: Array.from(document.querySelectorAll('[data-floating-panel]')).slice(0,10).map(node=>{const r=node.getBoundingClientRect();return [r.left-rect.x,r.top-rect.y,r.right-rect.x,r.bottom-rect.y] as [number,number,number,number];}),
+          menuOpen: document.querySelector('#workspace-dropdown') !== null,
+          overlays: Array.from(document.querySelectorAll('[data-floating-panel]')).slice(0,10).map(node=>{const r=node.getBoundingClientRect();return [Math.floor(r.left-rect.x),Math.floor(r.top-rect.y),Math.ceil(r.right-rect.x),Math.ceil(r.bottom-rect.y)] as [number,number,number,number];}),
           overlay: overlay ? [overlay.left - rect.x, overlay.top - rect.y, overlay.right - rect.x, overlay.bottom - rect.y] : null,
         });
         if (!active || failed) return;

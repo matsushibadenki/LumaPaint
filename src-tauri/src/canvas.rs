@@ -11,6 +11,9 @@ pub(crate) mod platform;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanvasRequest {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[serde(default)]
+    pub menu_open: bool,
     #[serde(default)]
     pub overlays: Vec<[f64; 4]>,
     #[serde(default)]
@@ -853,6 +856,22 @@ pub async fn combine_selected_vectors(
 }
 
 #[tauri::command]
+pub async fn edit_alignment(
+    window: tauri::WebviewWindow,
+    request: lumapaint_core::document::AlignmentRequest,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::edit_alignment(request)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, request);
+        Err("Alignment requires the native canvas / 整列にはネイティブキャンバスが必要です / 对齐需要原生画布".into())
+    }
+}
+
+#[tauri::command]
 pub async fn pathfinder_vectors(
     window: tauri::WebviewWindow,
     operation: lumapaint_core::vector::PathfinderOperation,
@@ -1154,6 +1173,7 @@ mod tests {
     fn rejects_non_finite_and_unbounded_native_frames() {
         let mut request = CanvasRequest {
             pasteboard_color: None,
+            menu_open: false,
             overlays: Vec::new(),
             overlay: None,
             channel: 0,

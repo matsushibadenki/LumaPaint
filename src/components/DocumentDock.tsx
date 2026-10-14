@@ -1,3 +1,4 @@
+import {featureIcons} from '../feature-types';
 import { useEffect, useId, useRef, useState, type ReactNode, type KeyboardEvent, type PointerEvent } from 'react';
 import { TimelinePanel } from './TimelinePanel';
 import { AiGenerationPanel } from './AiGenerationPanel';
@@ -12,7 +13,7 @@ type Tab = 'timeline' | 'generation';
 const tabs: Tab[] = ['timeline', 'generation'];
 
 /** Only view layout lives here; document and rendering state remain in Rust. */
-export function DocumentDock({ locale, children }: { locale: Locale; children: ReactNode }) {
+export function DocumentDock({ locale, children, timelineRequest = 0 }: { locale: Locale; children: ReactNode; timelineRequest?: number }) {
   const t = labels[locale];
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -23,6 +24,9 @@ export function DocumentDock({ locale, children }: { locale: Locale; children: R
   function prepareTab(tab: Tab) {
     if ((tab === 'generation' || tab === 'timeline') && !panelOpened.current) { panelOpened.current = true; setHeight(value => Math.max(value, 420)); }
   }
+  useEffect(() => {
+    if (timelineRequest > 0) { prepareTab('timeline'); setActive('timeline'); }
+  }, [timelineRequest]);
   const [available, setAvailable] = useState(0);
   const [availableWidth, setAvailableWidth] = useState(0);
   const drag = useRef<{ pointer: number; y: number; height: number } | null>(null);
@@ -98,7 +102,7 @@ export function DocumentDock({ locale, children }: { locale: Locale; children: R
         {tabs.map(tab => <button key={tab} ref={element => { buttons.current[tab] = element; }} id={`${id}-${tab}`} type="button" role="tab"
           aria-selected={active === tab} aria-expanded={active === tab} aria-controls={active === tab ? `${id}-panel` : undefined}
           tabIndex={active === null || active === tab ? 0 : -1} onKeyDown={event => tabKey(event, tab)}
-          onClick={() => { prepareTab(tab); setActive(previous => previous === tab ? null : tab); }}>{t[tab]}</button>)}
+          onClick={() => { prepareTab(tab); setActive(previous => previous === tab ? null : tab); }}>{tab==='timeline'&&<img className="menu-feature-icon" src={featureIcons.animation} alt="" aria-hidden="true" />}{t[tab]}</button>)}
       </div>
       {active && <button className="document-dock-close" type="button" aria-label={t.close} title={t.close}
         onClick={() => { buttons.current[active]?.focus(); setActive(null); }}>×</button>}

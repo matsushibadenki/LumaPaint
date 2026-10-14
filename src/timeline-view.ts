@@ -71,3 +71,16 @@ export function selectedExposurePositions(exposures:readonly ExposureRange[],ids
  const frames=exposures.filter(e=>e.id!==undefined&&selected.has(e.id)).map(e=>{if(e.id===anchor)anchorFrame=e.start;return e.start;}).sort((a,b)=>a-b);
  return {frames,anchor:anchorFrame??frames[0]??null};
 }
+
+export function exposureDragGesture(pointerPixels:number,scrollPixels:number,timingChanged=false):boolean {
+ return timingChanged||Math.abs(pointerPixels)>3||Math.abs(scrollPixels)>3;
+}
+
+// Resolve a displayed insertion boundary; Rust owns the reordered timing plan.
+export function exposureReorderTarget(exposures:readonly ExposureRange[],frames:readonly number[],frame:number):{before:number|null;frame:number}|null {
+ if(!Number.isFinite(frame)||!frames.length)return null;
+ const selected=new Set(frames);const fixed=exposures.filter(e=>!selected.has(e.start));
+ if(!fixed.length)return null;
+ const target=fixed.find(e=>frame<(e.start+e.end)/2);
+ return target?{before:target.start,frame:target.start}:{before:null,frame:exposures.at(-1)!.end};
+}

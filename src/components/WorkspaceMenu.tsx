@@ -1,3 +1,6 @@
+import {featureIcons, featureLabels, commandFeature, type FeatureType} from '../feature-types';
+import {alignmentLabels,alignActions} from '../alignment-i18n';
+import type {AlignmentRequest} from '../bridge';
 import {useShortcutCommands,useShortcuts,binding,accelerator,keyFromAccelerator,displayKey,type Command} from '../shortcuts';
 import {shortcutLabels} from '../shortcut-i18n';
 import {vectorSelectionLabels,sameCriteria,objectCriteria} from '../vector-selection-i18n';
@@ -10,23 +13,19 @@ import type { ArrangeAction, TransformAction } from '../bridge';
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { isTauri } from '@tauri-apps/api/core';
-import { createNativeMenu, type NativeMenu } from '../native-menu';
-import type { CheckMenuItemOptions, MenuItemOptions, PredefinedMenuItemOptions, SubmenuOptions } from '@tauri-apps/api/menu';
-import { LogicalPosition } from '@tauri-apps/api/dpi';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Locale } from '../i18n';
 import { messages } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { menuMessages } from '../menu-i18n';
 import type { BitDepth, ColorMode, DocumentEditAction, DocumentSnapshot, PathEditAction } from '../bridge';
 
-type EntryItem = { id?: string; label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
+type EntryItem = { feature?: FeatureType; id?: string; label: string; action?: () => void; enabled?: boolean; checked?: boolean; shortcut?: string; planned?: boolean; children?: Entry[] };
 type Entry = EntryItem | null;
-type NativeEntry = MenuItemOptions | CheckMenuItemOptions | SubmenuOptions | PredefinedMenuItemOptions;
-// New modes are registered here; both native and browser submenus derive from this list.
+// Commands and their capability badges share one menu model on every platform.
 
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onTimeline:()=>void;
   onShortcuts:()=>void;
   onVectorSelection:(request:VectorSelectionRequest)=>void;
   onSavedSelections:(mode:'save'|'edit')=>void;
@@ -39,6 +38,7 @@ type Props = {
   onPlace:()=>void;
   onImportSvg: () => void;
   onImportImage: () => void;
+  onAlignment:(request:AlignmentRequest)=>void;
   onArrange: (action: ArrangeAction) => void;
   onTransform: (action: TransformAction) => void;
   onOutlineText: () => void;
@@ -53,7 +53,7 @@ type Props = {
 };
 
 export function WorkspaceMenu(props: Props) {
-  const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset, onError } = props;
+  const { locale, document: doc, canFile, hasDocument, canEdit, zoom, panels, onFile, onNew, onCloseDocument, onImportSvg, onGroup, onPathEdit, onEdit, onZoom, onColorMode, onBitDepth, onColorSettings, onPanels, onReset } = props;
   const canHistory = props.canHistory ?? canEdit;
   const guides={ja:['ガイド','ガイドを隠す','ガイドを表示','ガイドのロックを解除','ガイドをロック','ガイドを作成','ガイドを解除','ガイドを消去'],en:['Guides','Hide Guides','Show Guides','Unlock Guides','Lock Guides','Make Guides','Release Guides','Clear Guides'],'zh-CN':['参考线','隐藏参考线','显示参考线','解锁参考线','锁定参考线','建立参考线','释放参考线','清除参考线']}[locale];
   const clip = { ja: ['クリッピングパス', '作成', '削除', 'マスクを編集'], en: ['Clipping Path', 'Make', 'Release', 'Edit Mask'], 'zh-CN': ['剪切路径', '建立', '释放', '编辑蒙版'] }[locale];
@@ -122,6 +122,7 @@ export function WorkspaceMenu(props: Props) {
       { id: 'menu.hideOtherLayers', label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
     ]}, { id: 'menu.showAllObjects', label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
     {id:'command.create-trim-marks',label: {ja:'トリムマークを作成',en:'Create Trim Marks','zh-CN':'创建裁切标记'}[locale],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.length===1&&selectedObjects[0].object.kind==='rectangle'&&!selectedObjects[0].object.locked,action:()=>onEdit('createTrimMarks')}, null,
+    {id:'menu.align',label:alignmentLabels[locale].title,children:[...alignActions.map((action,i)=>({id:`align.${action}`,label:alignmentLabels[locale].actions[i],enabled:canArrange&&selectedObjects.every(({object})=>object.visible&&!object.locked)&&!doc.activeSavedPath&&(doc.alignment?.target!=='keyObject'||!!doc.alignment?.keyObject),action:()=>props.onAlignment({action})})),null,...(['selection','keyObject','artboard'] as const).map(target=>({id:`align.target.${target}`,label:alignmentLabels[locale][target],checked:(doc.alignment?.target??'selection')===target,enabled:canEdit&&(target!=='keyObject'||selectedEntities.size>=2),action:()=>props.onAlignment({target})}))]},
     { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({
       id:`arrange.${action}`,shortcut:({front:'CmdOrCtrl+Shift+]',forward:'CmdOrCtrl+]',backward:'CmdOrCtrl+[',back:'CmdOrCtrl+Shift+[',moveToLayer:''})[action], label: arrangeLabels[index + 1], enabled: action === 'moveToLayer' ? canMoveToLayer : canArrange, action: () => props.onArrange(action),
     })) }, { label: transformLabels[locale].title, enabled: canEdit && selectedObjects.length > 0, children: (['move','rotate','reflect','scale','shear','individual','reset'] as const).map(action => ({id:`transform.${action}`,label:transformLabels[locale][action],action:()=>props.onTransform(action)})) }, { id: 'menu.path', label: t.path, enabled: canEdit, children: [
@@ -182,11 +183,19 @@ export function WorkspaceMenu(props: Props) {
         {id:'command.snap-to-guides',label: {ja:'ガイドにスナップ',en:'Snap to Guides','zh-CN':'对齐参考线'}[locale],checked:doc.guides.snap,action:()=>props.onGuides('snap')},
       ]}],
     [future(t.managePlugins), future(t.browsePlugins)],
-    [{id:'command.new-window',label: {ja:'新規ウインドウ',en:'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, { id: 'menu.panels', label: w.panels, checked: panels, action: onPanels }, { id: 'menu.resetWorkspace', label: t.resetWorkspace, action: onReset }],
+    [{id:'command.new-window',label: {ja:'新規ウインドウ',en:'New Window', 'zh-CN': '新建窗口' }[locale], shortcut: 'CmdOrCtrl+Shift+N', enabled: isTauri(), action: props.onNewWindow }, null, {id:'window.timeline',feature:'animation',label:{ja:'タイムライン',en:'Timeline','zh-CN':'时间轴'}[locale],enabled:hasDocument,action:props.onTimeline}, { id: 'menu.panels', label: w.panels, checked: panels, action: onPanels }, { id: 'menu.resetWorkspace', label: t.resetWorkspace, action: onReset }],
     [{ label: 'LumaPaint 0.1.0' }, null, { id: 'menu.guide', label: t.guide }, { id: 'menu.drawHint', label: t.drawHint }, { id: 'menu.saveHint', label: t.saveHint }, { id: 'menu.recoveryHint', label: t.recoveryHint }],
   ];
   menus.splice(6,0,vectorMenus);
   menus[1].push(null,{id:'shortcuts.edit',label:shortcutLabels[locale].title+'…',shortcut:'CmdOrCtrl+Alt+Shift+K',action:props.onShortcuts});
+  const categoryFeatures: (FeatureType | undefined)[] = ['combined','combined','combined','vector','combined','vector','vector','pixel','pixel','combined',undefined,undefined,undefined];
+  const annotate = (entries: Entry[], fallback?: FeatureType) => entries.forEach(entry => {
+    if (!entry) return;
+    entry.feature = entry.feature ?? commandFeature(entry.id, fallback);
+    if (entry.children) annotate(entry.children, entry.feature);
+  });
+  menus.forEach((entries, index) => annotate(entries, categoryFeatures[index]));
+  const featureBadge = (entry: EntryItem) => entry.feature && <img className="menu-feature-icon" src={featureIcons[entry.feature]} alt="" title={featureLabels[locale][entry.feature]} aria-hidden="true" />;
   const shortcutState=useShortcuts();
   const commands:Command[]=[];
   const collect=(entries:Entry[],category:string,path:string,parentEnabled=true)=>entries.forEach((entry,index)=>{
@@ -207,67 +216,30 @@ export function WorkspaceMenu(props: Props) {
   const bar = useRef<HTMLDivElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const triggers = useRef<(HTMLButtonElement | null)[]>([]);
-  const nativeBusy = useRef(false);
-  const nativeMenu = useRef<NativeMenu | null>(null);
-  useEffect(() => () => {
-    const menu = nativeMenu.current;
-    nativeMenu.current = null;
-    void menu?.close().catch(() => {});
-  }, []);
   const lastItem = useRef(false);
-  const native = isTauri();
   const close = (focus = true) => {
     if (focus && open !== null) triggers.current[open]?.focus();
     setOpen(null); setSubmenuOpen(null);
   };
-  const nativeEntry = (entry: Entry): NativeEntry => {
-    if (entry === null) return { item: 'Separator' } as PredefinedMenuItemOptions;
-    if (entry.children) return { text: entry.label, enabled: entry.enabled !== false, items: entry.children.map(nativeEntry) } as SubmenuOptions;
-    const base = {
-      text: entry.label + (entry.planned ? ` (${t.unavailable})` : ''), enabled: !!entry.action && entry.enabled !== false,
-      ...(entry.shortcut ? { accelerator: entry.shortcut } : {}), action: () => entry.action?.(),
-    };
-    return entry.checked === undefined ? base as MenuItemOptions : { ...base, checked: entry.checked } as CheckMenuItemOptions;
+  // SVG badges need consistent size and semantics on every desktop platform.
+  // The popup is a WebView overlay; Rust still owns all document operations.
+  const show = (index: number, last = false) => {
+    setFocused(index); lastItem.current = last; setOpen(index);
   };
-  const show = async (index: number, last = false) => {
-    if (nativeBusy.current) return;
-    setFocused(index); lastItem.current = last;
-    if (!native) { setOpen(index); return; }
-    nativeBusy.current = true; setOpen(index);
-    let menu: NativeMenu | undefined;
-    try {
-      const previous = nativeMenu.current;
-      nativeMenu.current = null;
-      await previous?.close();
-      menu = await createNativeMenu({ items: menus[index].map(nativeEntry) });
-      nativeMenu.current = menu;
-      const rect = triggers.current[index]!.getBoundingClientRect();
-      const window = getCurrentWindow();
-      const [size, scale] = await Promise.all([window.innerSize(), window.scaleFactor()]);
-      // AppKit's content view can include the title-bar safe area excluded from the DOM.
-      const topInset = Math.max(0, size.height / scale - globalThis.innerHeight);
-      await menu.popup(new LogicalPosition(rect.left, rect.bottom + topInset), window);
-    } catch (cause) {
-      if (nativeMenu.current === menu) nativeMenu.current = null;
-      await menu?.close().catch(() => {});
-      onError(String(cause));
-    }
-    finally {
-      nativeBusy.current = false; setOpen(null);
-      // popup() resolves when shown. Keep the menu alive for its later action event;
-      // release it when replaced or when this component unmounts.
-    }
-  };
+  useEffect(() => {
+    window.dispatchEvent(new Event('panel-layout-change'));
+    return () => { window.dispatchEvent(new Event('panel-layout-change')); };
+  }, [open, submenuOpen, position]);
   useLayoutEffect(() => {
-    if (open === null || native) return;
+    if (open === null) return;
     const rect = triggers.current[open]!.getBoundingClientRect();
     const panel = popup.current!;
     setPosition({ left: Math.max(8, Math.min(rect.left, innerWidth - panel.offsetWidth - 8)), top: Math.min(rect.bottom + 2, Math.max(8, innerHeight - panel.offsetHeight - 8)) });
     const items = panel.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]');
     (lastItem.current ? items[items.length - 1] : items[0])?.focus();
-  }, [open, native]);
+  }, [open]);
   useLayoutEffect(()=>{
-    if(native||submenuOpen===null)return;
+    if(submenuOpen===null)return;
     const panel=popup.current?.querySelector<HTMLElement>('.workspace-submenu');
     if(!panel)return;
     panel.style.maxHeight=`${innerHeight-16}px`;panel.style.overflowY='auto';
@@ -276,9 +248,9 @@ export function WorkspaceMenu(props: Props) {
     panel.style.position='fixed';
     panel.style.top=`${top}px`;
     panel.style.left=`${Math.max(8,parent.right+panel.offsetWidth>innerWidth-8?parent.left-panel.offsetWidth+2:parent.right-2)}px`;
-  },[submenuOpen,open,native]);
+  },[submenuOpen,open]);
   useEffect(() => {
-    if (open === null || native) return;
+    if (open === null) return;
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!bar.current?.contains(target) && !popup.current?.contains(target)) setOpen(null);
@@ -287,7 +259,7 @@ export function WorkspaceMenu(props: Props) {
     document.addEventListener('pointerdown', dismiss);
     window.addEventListener('resize', resize);
     return () => { document.removeEventListener('pointerdown', dismiss); window.removeEventListener('resize', resize); };
-  }, [open, native]);
+  }, [open]);
   const move = (index: number, direction: number, expand: boolean) => {
     const next = (index + direction + menus.length) % menus.length;
     setFocused(next); triggers.current[next]?.focus();
@@ -312,22 +284,22 @@ export function WorkspaceMenu(props: Props) {
   };
   return <>
     <div ref={bar} role="menubar" aria-label={t.bar} className="workspace-menubar">
-      {names.map((name, index) => <button key={index} ref={node => { triggers.current[index] = node; }} id={`menu-trigger-${index}`} role="menuitem" aria-haspopup="menu" aria-expanded={open === index} aria-controls={!native && open === index ? 'workspace-dropdown' : undefined} tabIndex={focused === index ? 0 : -1}
-        onFocus={() => setFocused(index)} onKeyDown={event => triggerKey(event, index)} onClick={() => open === index ? close() : void show(index)} onPointerEnter={() => { if (!native && open !== null && open !== index) void show(index); }}>{name}</button>)}
+      {names.map((name, index) => <button key={index} ref={node => { triggers.current[index] = node; }} id={`menu-trigger-${index}`} role="menuitem" aria-haspopup="menu" aria-expanded={open === index} aria-controls={open === index ? 'workspace-dropdown' : undefined} tabIndex={focused === index ? 0 : -1}
+        onFocus={() => setFocused(index)} onKeyDown={event => triggerKey(event, index)} onClick={() => open === index ? close() : void show(index)} onPointerEnter={() => { if (open !== null && open !== index) void show(index); }}>{name}</button>)}
     </div>
-    {!native && open !== null && createPortal(<div ref={popup} id="workspace-dropdown" role="menu" aria-labelledby={`menu-trigger-${open}`} className="workspace-dropdown" style={{...position,maxHeight:'calc(100vh - 16px)',overflowY:'auto'}} onScroll={()=>setSubmenuOpen(null)} onKeyDown={popupKey}>
+    {open !== null && createPortal(<div ref={popup} id="workspace-dropdown" data-floating-panel="menu" role="menu" aria-labelledby={`menu-trigger-${open}`} className="workspace-dropdown" style={{...position,maxHeight:'calc(100vh - 16px)',overflowY:'auto'}} onScroll={()=>setSubmenuOpen(null)} onKeyDown={popupKey}>
       {menus[open].map((entry, index) => entry === null ? <div role="separator" key={index} /> : entry.children ? <div className="menu-nested" key={index} onPointerLeave={() => setSubmenuOpen(null)}>
-        <button role="menuitem" aria-haspopup="menu" aria-expanded={submenuOpen === index} tabIndex={-1} onPointerEnter={() => setSubmenuOpen(index)} onClick={() => setSubmenuOpen(index)} onKeyDown={event => {
+        <button role="menuitem" title={entry.feature ? featureLabels[locale][entry.feature] : undefined} aria-haspopup="menu" aria-expanded={submenuOpen === index} tabIndex={-1} onPointerEnter={() => setSubmenuOpen(index)} onClick={() => setSubmenuOpen(index)} onKeyDown={event => {
           if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); setSubmenuOpen(index); }
-        }}><span className="menu-check" /><span>{entry.label}</span><span className="menu-chevron" aria-hidden="true">›</span></button>
-        {submenuOpen === index && <div className="workspace-submenu" role="menu" aria-label={entry.label} onKeyDown={event => {
+        }}><span className="menu-check" />{featureBadge(entry)}<span>{entry.label}</span><span className="menu-chevron" aria-hidden="true">›</span></button>
+        {submenuOpen === index && <div className="workspace-submenu" data-floating-panel="submenu" role="menu" aria-label={entry.label} onKeyDown={event => {
           if (event.key === 'ArrowLeft') { event.preventDefault(); event.stopPropagation(); setSubmenuOpen(null); }
-        }}>{entry.children.map((child, childIndex) => child === null ? <div role="separator" key={childIndex} /> : <button key={childIndex} role={child.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={child.checked} aria-disabled={!child.action || child.enabled === false} tabIndex={-1} onClick={() => {
+        }}>{entry.children.map((child, childIndex) => child === null ? <div role="separator" key={childIndex} /> : <button key={childIndex} title={child.feature ? featureLabels[locale][child.feature] : undefined} role={child.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={child.checked} aria-disabled={!child.action || child.enabled === false} tabIndex={-1} onClick={() => {
           if (!child.action || child.enabled === false) return; close(); child.action();
-        }}><span className="menu-check" aria-hidden="true">{child.checked ? '✓' : ''}</span><span>{child.label}</span></button>)}</div>}
-      </div> : <button key={index} role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={entry.checked} aria-disabled={!entry.action || entry.enabled === false} tabIndex={-1}
+        }}><span className="menu-check" aria-hidden="true">{child.checked ? '✓' : ''}</span>{featureBadge(child)}<span>{child.label}</span></button>)}</div>}
+      </div> : <button key={index} title={entry.feature ? featureLabels[locale][entry.feature] : undefined} role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={entry.checked} aria-disabled={!entry.action || entry.enabled === false} tabIndex={-1}
           onClick={() => { if (!entry.action || entry.enabled === false) return; close(); entry.action(); }}>
-          <span className="menu-check" aria-hidden="true">{entry.checked ? '✓' : ''}</span><span>{entry.label}</span>
+          <span className="menu-check" aria-hidden="true">{entry.checked ? '✓' : ''}</span>{featureBadge(entry)}<span>{entry.label}</span>
           {entry.planned ? <small>{t.unavailable}</small> : entry.shortcut && <kbd>{displayKey(keyFromAccelerator(entry.shortcut))}</kbd>}
         </button>)}
     </div>, document.body)}

@@ -1,3 +1,6 @@
+#[path = "document_alignment.rs"]
+mod alignment;
+pub use alignment::{AlignAction, AlignmentRequest, AlignmentSettings, AlignmentTarget};
 #[path = "animation.rs"]
 pub mod animation;
 #[path = "document_channels.rs"]
@@ -524,6 +527,7 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub alignment: AlignmentSettings,
     pub saved_vector_selections: Vec<SavedVectorSelectionSummary>,
     pub can_reselect_vectors: bool,
     pub compound_shapes: Vec<CompoundShapeSnapshot>,
@@ -727,6 +731,7 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    alignment: AlignmentSettings,
     paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
     saved_vector_selections: std::sync::Arc<Vec<SavedVectorSelection>>,
@@ -793,6 +798,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            alignment: Default::default(),
             paint_bucket_settings: Default::default(),
             animation: Default::default(),
             saved_vector_selections: std::sync::Arc::new(Vec::new()),
@@ -1148,6 +1154,7 @@ impl Document {
             default_styles_elided,
         );
         DocumentSnapshot {
+            alignment: self.alignment_settings(),
             saved_vector_selections: self
                 .saved_vector_selections
                 .iter()
@@ -6428,6 +6435,20 @@ impl Document {
         dy: f32,
         record_history: bool,
     ) -> Result<bool, String> {
+        self.move_vectors_with_offsets(dx, dy, record_history, None)
+    }
+    fn move_vectors_with_offsets(
+        &mut self,
+        dx: f32,
+        dy: f32,
+        record_history: bool,
+        offsets: Option<&std::collections::BTreeMap<String, [f32; 2]>>,
+    ) -> Result<bool, String> {
+        if let Some(offsets) = offsets {
+            if self.selected_vectors_have_mask() {
+                return self.alignment_mask_translation(offsets);
+            }
+        }
         if self.selected_vectors_have_mask() {
             if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000. || dy.abs() >= 100_000. {
                 return Err("Invalid vector translation".into());
@@ -6446,7 +6467,7 @@ impl Document {
         if !dx.is_finite() || !dy.is_finite() || dx.abs() >= 100_000.0 || dy.abs() >= 100_000.0 {
             return Err("Invalid vector translation".into());
         }
-        if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+        if offsets.is_none() && dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
             return Ok(false);
         }
         let started = std::time::Instant::now();
@@ -6464,6 +6485,7 @@ impl Document {
                 }));
         let previous = use_complete_history.then(|| self.vector_history_state());
         let mut edits = Vec::new();
+        let offset_ids = offsets.map(|m| m.keys().cloned().collect::<Vec<_>>());
         for (layer_index, layer) in self.svg_layers.iter().enumerate() {
             if !layer.vector_layer || layer.locked {
                 continue;
@@ -6472,12 +6494,16 @@ impl Document {
                 layer,
                 &self.scene_journal,
                 self.revision,
-                &self.selected_vector_objects,
+                offset_ids.as_ref().unwrap_or(&self.selected_vector_objects),
             );
             metrics.scanned_objects += scanned;
             for position in positions {
                 let object = &layer.vector_objects[position];
                 object.validate()?;
+                let [dx, dy] = offsets.map_or([dx, dy], |m| m[&object.id]);
+                if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+                    continue;
+                }
                 let mut transform = object.transform;
                 transform[4] += dx;
                 transform[5] += dy;
@@ -8336,6 +8362,42 @@ mod tests {
         }
     }
     #[test]
+    fn translation_matrix_fast_path_preserves_canonical_bytes() {
+        let special = [
+            0.,
+            -0.,
+            1.,
+            -1.,
+            f32::MAX,
+            f32::MIN,
+            f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+        ];
+        let mut bits = 1u32;
+        for value in special.into_iter().chain((0..10_000).filter_map(|_| {
+            bits = bits.wrapping_mul(1664525).wrapping_add(1013904223);
+            let value = f32::from_bits(bits);
+            value.is_finite().then_some(value)
+        })) {
+            for [a, b, c, d] in [
+                [1., 0., 0., 1.],
+                [1., -0., 0., 1.],
+                [1., 0., -0., 1.],
+                [2., 0., 0., 1.],
+                [1., 0.5, -0.5, 1.],
+                [0., 1., -1., 0.],
+            ] {
+                let e = value;
+                let f = -value;
+                assert_eq!(
+                    slot_matrix([a, b, c, d, e, f]),
+                    format!("{a} {b} {c} {d} {e:18.9e} {f:18.9e}")
+                );
+            }
+        }
+    }
+    #[test]
     fn padded_translation_values_round_trip_f32_and_keep_slot_length() {
         let baseline = slot_matrix([1., 0., 0., 1., 0., 0.]).len();
         let mut bits = 1u32;
@@ -9680,7 +9742,13 @@ impl TransformSlotCache {
 /// two translation components keeps ordinary moves the same byte length even
 /// across zero, signs, decimal points and exponent changes.
 fn slot_matrix([a, b, c, d, e, f]: [f32; 6]) -> String {
-    format!("{a} {b} {c} {d} {e:18.9e} {f:18.9e}")
+    // Translation-only matrices need no formatting of their fixed linear part.
+    // Compare zero bits to preserve the canonical spelling of negative zero.
+    if a == 1.0 && b.to_bits() == 0 && c.to_bits() == 0 && d == 1.0 {
+        format!("1 0 0 1 {e:18.9e} {f:18.9e}")
+    } else {
+        format!("{a} {b} {c} {d} {e:18.9e} {f:18.9e}")
+    }
 }
 fn apply_transform_patches(source: &mut String, patches: Vec<TransformPatch>) -> (usize, usize) {
     let mut patched = 0;

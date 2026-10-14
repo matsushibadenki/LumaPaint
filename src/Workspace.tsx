@@ -1,3 +1,4 @@
+import {editAlignment} from './bridge';
 import { useFileDrop, type FileDrop } from './file-drop';
 import { dropFiles } from './bridge';
 import { BrushSettings } from './components/BrushSettings';
@@ -67,6 +68,7 @@ const mediaBrowserTitle = { ja: '画像・動画ブラウザー', en: 'Media bro
 const MediaBrowser = lazy(() => import('./components/MediaBrowser').then(module => ({ default: module.MediaBrowser })));
 
 export function Workspace() {
+  const [timelineRequest,setTimelineRequest]=useState(0);
   const [mediaBrowserOpen,setMediaBrowserOpen]=useState(false);
   const closeMediaBrowser=useCallback(()=>setMediaBrowserOpen(false),[]);
   const [toneStudioOpen,setToneStudioOpen]=useState(false);
@@ -575,7 +577,7 @@ export function Workspace() {
       if (mediaBrowserOpen || toneStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
       const target = event.target as HTMLElement;
-      if (directControlOpen || target.closest('dialog[open]')) return;
+      if (event.defaultPrevented || directControlOpen || target.closest('dialog[open], [role=menu]')) return;
       if (target.closest('input, textarea, select, [contenteditable=true]')) return;
       if (documentAvailable && !settingsOpen && !colorSettingsOpen && !shortcutsOpen) {
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -617,11 +619,12 @@ export function Workspace() {
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
+      <WorkspaceMenu onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
         onOutlineText={() => { void outlineText().then(updateDocument).catch(cause => setError(String(cause))); }}
+        onAlignment={request=>{void editAlignment(request).then(updateDocument).catch(cause=>setError(String(cause)));}}
         onArrange={action => { void arrangeSelectedVectors(action).then(updateDocument).catch(cause => setError(String(cause))); }}
         onCompound={release => { void compoundPath(release).then(updateDocument).catch(cause => setError(String(cause))); }}
         onClipping={action => { void clippingPath(action).then(snapshot => { updateDocument(snapshot); if (action === 'edit') setTool('vectorDirectSelect'); }).catch(cause => setError(String(cause))); }}
@@ -717,7 +720,7 @@ export function Workspace() {
           filePending.current=true;setFileBusy(true);
           try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
         }}/>}
-        <DocumentDock locale={locale}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale} timelineRequest={timelineRequest}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
