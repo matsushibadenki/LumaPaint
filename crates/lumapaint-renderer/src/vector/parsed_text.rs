@@ -497,7 +497,7 @@ mod tests {
         let language_sources=["English", "日本語", "简体中文"].into_iter().map(|content|format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><text x='4' y='32' font-family='Roboto Flex, Noto Sans JP' font-size='22'>{content}</text></svg>"));
         for source in language_sources.chain([nested,format!("<s:svg xmlns:s='http://www.w3.org/2000/svg' width='200' height='64'>{}</s:svg>",text.replace("<text","<s:text").replace("</text>","</s:text>")),format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><defs><g id='t'>{text}</g></defs><use href='#t'/></svg>"),format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><image width='200' height='64' href='data:image/svg+xml;base64,{encoded}'/></svg>")]) {
             let a=usvg::Tree::from_str(&source,&eager).unwrap();let b=usvg::Tree::from_str(&source,&lazy).unwrap();
-            let expected=render(&a);assert!(expected.chunks_exact(4).any(|p|p[3]>0));assert_eq!(expected,render(&b));
+            let expected=render(&a);assert!(expected.as_chunks::<4>().0.iter().any(|p|p[3]>0));assert_eq!(expected,render(&b));
         }
         assert!(calls.load(Ordering::Relaxed) > 1);
     }

@@ -893,6 +893,8 @@ fn rasterize_tree_region(
     object: bool,
     cpu_owned: bool,
 ) -> Result<SvgRegionRaster, String> {
+    #[cfg(not(feature = "skia"))]
+    let _ = cpu_owned;
     let _timer = crate::performance::time("svg_raster_including_readback");
     let [width, height] = size;
     let [scale, x, y] = transform;
