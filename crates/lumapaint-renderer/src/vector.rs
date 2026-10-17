@@ -18,8 +18,16 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
+            let started = std::time::Instant::now();
             let mut fonts = usvg::fontdb::Database::new();
             lumapaint_fonts::load_system_fonts(&mut fonts);
+            if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+                eprintln!(
+                    "lumapaint-onion-stage stage=system_font_scan elapsed_us={}",
+                    started.elapsed().as_micros()
+                );
+            }
+            let bundled_started = std::time::Instant::now();
             for (bytes, family) in [
                 (
                     include_bytes!("../assets/fonts/RobotoFlex.ttf").as_slice(),
@@ -48,6 +56,12 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
                 }
             }
             configure_generic_font_families(&mut fonts);
+            if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+                eprintln!(
+                    "lumapaint-onion-stage stage=bundled_fonts elapsed_us={}",
+                    bundled_started.elapsed().as_micros()
+                );
+            }
             Arc::new(fonts)
         })
         .clone()
@@ -643,14 +657,7 @@ pub fn pixel_source_bounds(source: &str) -> Result<[f32; 4], String> {
     if source.len() > 4 * 1024 * 1024 {
         return Err("Invalid image source size".into());
     }
-    let options = usvg::Options {
-        fontdb: system_fonts(),
-        image_href_resolver: usvg::ImageHrefResolver {
-            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
-            resolve_string: Box::new(|_, _| None),
-        },
-        ..Default::default()
-    };
+    let options = parsed_text::svg_options();
     let tree = usvg::Tree::from_str(source, &options).map_err(|e| e.to_string())?;
     let bounds = tree.root().abs_layer_bounding_box();
     Ok([bounds.x(), bounds.y(), bounds.width(), bounds.height()])
@@ -661,6 +668,39 @@ pub(crate) struct SvgRegionRaster {
     pub origin: (usize, usize),
     pub width: usize,
     pub rectangle: [f32; 4],
+}
+
+/// CPU-owned reference rasters do not need a new Metal context followed by
+/// synchronous GPU readback. Keep ordinary canvas rendering on its GPU path.
+pub(crate) fn rasterize_svg_reference(
+    source: &str,
+    width: u32,
+    height: u32,
+) -> Result<SvgRaster, String> {
+    if std::env::var("LUMAPAINT_ONION_GPU_BASELINE").as_deref() == Ok("1") {
+        return rasterize_svg(source, width, height);
+    }
+    if source.len() > 4 * 1024 * 1024 || width == 0 || height == 0 || width > 1024 || height > 1024
+    {
+        return Err("Invalid reference raster dimensions".into());
+    }
+    let tree = parsed_text::parse(source)?;
+    let size = tree.size();
+    let scale = (width as f32 / size.width()).min(height as f32 / size.height());
+    let x = (width as f32 - size.width() * scale) * 0.5;
+    let y = (height as f32 - size.height() * scale) * 0.5;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(width, height).ok_or("Reference raster allocation failed")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_row(scale, 0., 0., scale, x, y),
+        &mut pixmap.as_mut(),
+    );
+    Ok(SvgRaster {
+        pixels: pixmap.take(),
+        backend: SvgBackend::Resvg,
+        fully_contained: false,
+    })
 }
 
 pub fn rasterize_svg(source: &str, width: u32, height: u32) -> Result<SvgRaster, String> {
@@ -780,7 +820,14 @@ pub(crate) fn rasterize_svg_object(
         (document.0 as f32 / tree.size().width()).min(document.1 as f32 / tree.size().height());
     let x = (document.0 as f32 - tree.size().width() * scale) * 0.5;
     let y = (document.1 as f32 - tree.size().height() * scale) * 0.5;
-    let region = rasterize_tree_region(&tree, [document.0, document.1], [scale, x, y], true, true)?;
+    let region = rasterize_tree_region(
+        &tree,
+        [document.0, document.1],
+        [scale, x, y],
+        true,
+        true,
+        false,
+    )?;
     if region.raster.pixels.is_empty() {
         return Err("Empty object cache".into());
     }
@@ -798,7 +845,13 @@ fn rasterize_svg_region(
     {
         return Err("Invalid SVG source size or raster dimensions".into());
     }
-    let tree = parsed_text::parse(source)?;
+    let tree = if workspace.is_some()
+        && std::env::var("LUMAPAINT_WORKSPACE_GPU_BASELINE").as_deref() != Ok("1")
+    {
+        parsed_text::parse_workspace(source)?
+    } else {
+        parsed_text::parse(source)?
+    };
     let size = tree.size();
     let (scale, x, y) = if let Some((document, rect)) = workspace {
         let doc_scale = (document[0] as f32 / size.width()).min(document[1] as f32 / size.height());
@@ -817,7 +870,19 @@ fn rasterize_svg_region(
         )
     };
 
-    rasterize_tree_region(&tree, [width, height], [scale, x, y], crop, false)
+    // Workspace images are CPU-owned before composition/upload. Avoid a
+    // synchronous Metal readback on every viewport change; keep normal
+    // document/object rendering on its existing quality-selected backend.
+    let cpu_owned = workspace.is_some()
+        && std::env::var("LUMAPAINT_WORKSPACE_GPU_BASELINE").as_deref() != Ok("1");
+    rasterize_tree_region(
+        &tree,
+        [width, height],
+        [scale, x, y],
+        crop,
+        false,
+        cpu_owned,
+    )
 }
 
 fn rasterize_tree_region(
@@ -826,6 +891,7 @@ fn rasterize_tree_region(
     transform: [f32; 3],
     crop: bool,
     object: bool,
+    cpu_owned: bool,
 ) -> Result<SvgRegionRaster, String> {
     let _timer = crate::performance::time("svg_raster_including_readback");
     let [width, height] = size;
@@ -900,12 +966,19 @@ fn rasterize_tree_region(
     let y = y - top as f32;
 
     #[cfg(feature = "skia")]
-    if supports_skia(tree.root()) {
+    if !cpu_owned && supports_skia(tree.root()) {
         // Normalize with the same parser as the compatibility renderer. No raw resource URLs
         // or unsupported SVG constructs cross into the Skia parser.
+        let started = std::time::Instant::now();
         let normalized = tree.to_string(&usvg::WriteOptions::default());
         let dom = skia_safe::svg::Dom::from_str(&normalized, skia_safe::FontMgr::empty())
             .map_err(|error| format!("Skia SVG: {error}"))?;
+        if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+            eprintln!(
+                "lumapaint-onion-stage stage=skia_dom elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
         // N32 is platform-specific (often BGRA); explicitly convert to the compositor's RGBA.
         let info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),

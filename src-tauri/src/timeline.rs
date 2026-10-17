@@ -39,6 +39,12 @@ pub enum Request {
         frames: Vec<u32>,
         edit: lumapaint_core::document::animation::ExposureBatchEdit,
     },
+    ExposureGroup {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        revision: u64,
+        edits: Vec<lumapaint_core::document::animation::ExposureTrackEdit>,
+    },
     EditExposure {
         #[serde(rename = "documentId")]
         document_id: u64,
@@ -94,6 +100,12 @@ pub enum Request {
         from: u32,
         frame: u32,
     },
+    LoadCel {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        layer: String,
+        cel: u32,
+    },
     Load {
         layer: String,
         frame: u32,
@@ -142,6 +154,8 @@ pub enum Request {
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub exposure_selection: Option<(String, Vec<u32>)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_group_selection: Option<Vec<(String, Vec<u32>)>>,
     pub frame: u32,
     pub playing: bool,
     pub preview: bool,

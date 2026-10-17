@@ -1,7 +1,7 @@
 //! Small, Rust-owned panel previews. Full document rasters never cross IPC.
 use crate::{
     sampled_raster_dabs,
-    vector::{clipboard_png, rasterize_svg},
+    vector::{clipboard_png, rasterize_svg, rasterize_svg_reference},
 };
 use lumapaint_core::{
     document::{CanvasColor, Document},
@@ -92,7 +92,7 @@ pub fn cel_pixels(
     let scale = (max_side / dimensions.0.max(dimensions.1) as f32).min(1.);
     let width = (dimensions.0 as f32 * scale).round().max(1.) as u32;
     let height = (dimensions.1 as f32 * scale).round().max(1.) as u32;
-    let pixels = render_sized_inner(&document, max_side, true, true)?
+    let pixels = render_sized_ink(&document, max_side, true, true, true, true)?
         .channels
         .remove(0);
     Ok(crate::animation_cels::Raster {
@@ -101,12 +101,43 @@ pub fn cel_pixels(
         pixels,
     })
 }
+/// Bounded, transparent scene reference; excludes paper and editor overlays.
+pub fn scene_pixels(
+    document: &Document,
+    max_side: u32,
+) -> Result<crate::animation_cels::Raster, String> {
+    let (w, h) = document.dimensions();
+    let max_side = max_side.clamp(32, 1024) as f32;
+    let scale = (max_side / w.max(h) as f32).min(1.);
+    Ok(crate::animation_cels::Raster {
+        width: (w as f32 * scale).round().max(1.) as u32,
+        height: (h as f32 * scale).round().max(1.) as u32,
+        pixels: render_sized_ink(document, max_side, true, true, true, true)?
+            .channels
+            .remove(0),
+    })
+}
 fn render_sized_inner(
     document: &Document,
     max_side: f32,
     page_only: bool,
     raw: bool,
 ) -> Result<Thumbnails, String> {
+    render_sized_ink(document, max_side, page_only, raw, false, false)
+}
+fn render_sized_ink(
+    document: &Document,
+    max_side: f32,
+    page_only: bool,
+    raw: bool,
+    ink_only: bool,
+    reference: bool,
+) -> Result<Thumbnails, String> {
+    let rasterize = if reference {
+        rasterize_svg_reference
+    } else {
+        rasterize_svg
+    };
     let snapshot = document.snapshot();
     let scale = (max_side / snapshot.width.max(snapshot.height) as f32).min(1.);
     let width = (snapshot.width as f32 * scale).round().max(1.) as u32;
@@ -114,7 +145,7 @@ fn render_sized_inner(
     let mut tiles = TiledRasterDocument::new(width, height)?;
     tiles.add_layer("thumb".into(), "Thumbnail".into())?;
     if let Some(source) = document.paint_source() {
-        let mut pixels = rasterize_svg(source, width, height)?.pixels;
+        let mut pixels = rasterize(source, width, height)?.pixels;
         for p in pixels.as_chunks_mut::<4>().0.iter_mut() {
             if p[3] > 0 {
                 for c in 0..3 {
@@ -175,7 +206,7 @@ fn render_sized_inner(
                 ],
                 &effects,
                 mask.as_ref(),
-                snapshot.canvas_color == CanvasColor::White,
+                snapshot.canvas_color == CanvasColor::White && !ink_only,
             );
             let index = ((y * width + x) * 4) as usize;
             paint[index..index + 4].copy_from_slice(&pixel);
@@ -195,7 +226,7 @@ fn render_sized_inner(
         .svg_layers()
         .filter(|layer| snapshot.layers.iter().any(|l| l.id == layer.id))
     {
-        let mut pixels = rasterize_svg(&layer.source, width, height)?.pixels;
+        let mut pixels = rasterize(&layer.source, width, height)?.pixels;
         crate::screentone::apply(
             &mut pixels,
             &document.layer_effects(&layer.id),
@@ -210,7 +241,7 @@ fn render_sized_inner(
         }
     }
     if let Some(source) = document.clipping_mask_svg() {
-        let mask = rasterize_svg(&source, width, height)?.pixels;
+        let mask = rasterize(&source, width, height)?.pixels;
         for (p, m) in composite
             .as_chunks_mut::<4>()
             .0
@@ -341,6 +372,65 @@ mod tests {
         let image = resvg::tiny_skia::Pixmap::decode_png(png).unwrap();
         let offset = ((y * image.width() + x) * 4) as usize;
         image.data()[offset..offset + 4].try_into().unwrap()
+    }
+    #[test]
+    fn scene_reference_composes_layers_without_paper_or_document_mutation() {
+        let mut state = Document::default().document_state();
+        state.width = 32;
+        state.height = 32;
+        let mut doc = Document::from_document_state(state).unwrap();
+        doc.begin(
+            Point { x: 8., y: 8. },
+            Brush {
+                size: 8.,
+                hardness: 1.,
+                color: [255, 0, 0],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        doc.finish();
+        doc.import_svg("Blue".into(),r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="20" y="20" width="8" height="8" fill="blue"/></svg>"#.into()).unwrap();
+        let before = doc.encode().unwrap();
+        let raster = scene_pixels(&doc, 32).unwrap();
+        let sample = |x: usize, y: usize| &raster.pixels[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
+        assert_eq!(sample(0, 0), [0, 0, 0, 0]);
+        assert_eq!(sample(8, 8), [255, 0, 0, 255]);
+        assert_eq!(sample(24, 24), [0, 0, 255, 255]);
+        assert_eq!(doc.encode().unwrap(), before);
+        assert_eq!(
+            document_pixels(&doc).unwrap()[3],
+            255,
+            "Exports retain the authored paper"
+        );
+        let id = doc.svg_layers().last().unwrap().id.clone();
+        use lumapaint_core::document::animation::{Interpolation, Keyframe, Property};
+        for (frame, value) in [(0, 0.), (20, -16.)] {
+            doc.set_animation_key(
+                &id,
+                Property::X,
+                Keyframe {
+                    frame,
+                    value,
+                    interpolation: Interpolation::Linear,
+                },
+            )
+            .unwrap();
+        }
+        let before = doc.encode().unwrap();
+        let mut preview = doc.clone_for_rendering();
+        preview.evaluate_animation(&doc, 10);
+        let animated = scene_pixels(&preview, 32).unwrap();
+        assert_eq!(
+            &animated.pixels[(24 * 32 + 16) * 4..(24 * 32 + 16) * 4 + 4],
+            &[0, 0, 255, 255]
+        );
+        assert_eq!(animated.pixels[(24 * 32 + 24) * 4 + 3], 0);
+        assert_eq!(doc.encode().unwrap(), before);
+        let id = doc.svg_layers().last().unwrap().id.clone();
+        doc.toggle_layer(&id).unwrap();
+        let hidden = scene_pixels(&doc, 32).unwrap();
+        assert_eq!(hidden.pixels[(24 * 32 + 24) * 4 + 3], 0);
     }
     #[test]
     fn thumbnails_render_pixels_layers_and_channels_and_track_visibility() {

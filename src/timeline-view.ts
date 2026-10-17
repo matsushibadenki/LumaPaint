@@ -84,3 +84,18 @@ export function exposureReorderTarget(exposures:readonly ExposureRange[],frames:
  const target=fixed.find(e=>frame<(e.start+e.end)/2);
  return target?{before:target.start,frame:target.start}:{before:null,frame:exposures.at(-1)!.end};
 }
+
+export type ExposureTrack={id:string;pixel:boolean;locked:boolean;exposures:readonly ExposureRange[]};
+export type ExposureSelection={tracks:Record<string,number[]>;anchor:{layer:string;frame:number}|null};
+export function selectExposureTracks(tracks:readonly ExposureTrack[],selection:ExposureSelection,layer:string,frame:number,range:boolean,toggle:boolean):ExposureSelection {
+ const target=tracks.find(t=>t.id===layer);if(!target?.pixel||target.locked||!target.exposures.some(e=>e.start===frame))return selection;
+ const anchor=selection.anchor;
+ if(range&&anchor){const a=tracks.findIndex(t=>t.id===anchor.layer),b=tracks.findIndex(t=>t.id===layer);if(a>=0&&b>=0){const first=Math.min(anchor.frame,frame),last=Math.max(anchor.frame,frame);const next:Record<string,number[]>=Object.create(null);for(const track of tracks.slice(Math.min(a,b),Math.max(a,b)+1)){if(!track.pixel||track.locked)continue;const frames=track.exposures.filter(e=>e.start<=last&&e.end>first).map(e=>e.start);if(frames.length)next[track.id]=frames;}return {tracks:Object.fromEntries(Object.entries(next)),anchor};}}
+ if(toggle){const selected=Object.hasOwn(selection.tracks,layer)?selection.tracks[layer]:[];const frames=selectExposureFrames(target.exposures,selected,frame,null,false,true);const next:Record<string,number[]>=Object.assign(Object.create(null),selection.tracks);if(frames.length)next[layer]=frames;else delete next[layer];return {tracks:Object.fromEntries(Object.entries(next)),anchor:{layer,frame}};}
+ return {tracks:{[layer]:[frame]},anchor:{layer,frame}};
+}
+export function exposureGroupMoveBounds(tracks:readonly ExposureTrack[],selection:Record<string,readonly number[]>,duration:number,ripple:boolean):{min:number;max:number}{
+ let min=-18000,max=18000,found=false;
+ for(const track of tracks){const frames=Object.hasOwn(selection,track.id)?selection[track.id]:undefined;if(!frames?.length)continue;if(!track.pixel||track.locked)return {min:0,max:0};const bounds=exposureMoveBounds(track.exposures,frames,duration,ripple);min=Math.max(min,bounds.min);max=Math.min(max,bounds.max);found=true;}
+ return found?{min,max}:{min:0,max:0};
+}

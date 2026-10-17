@@ -59,12 +59,26 @@ pub fn adobe_font_paths() -> &'static [PathBuf] {
 
 /// Preserve system fonts and add readable cache files without installing or changing them.
 pub fn load_system_fonts(db: &mut fontdb::Database) {
+    let started = std::time::Instant::now();
     db.load_system_fonts();
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!(
+            "lumapaint-onion-stage stage=system_font_files elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
+    let started = std::time::Instant::now();
     let mut names: std::collections::HashSet<String> =
         db.faces().map(|f| f.post_script_name.clone()).collect();
     let mut additional = fontdb::Database::new();
     for path in adobe_font_paths() {
         let _ = additional.load_font_file(path);
+    }
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!(
+            "lumapaint-onion-stage stage=adobe_font_files elapsed_us={}",
+            started.elapsed().as_micros()
+        );
     }
     for face in additional.faces() {
         if names.insert(face.post_script_name.clone()) {

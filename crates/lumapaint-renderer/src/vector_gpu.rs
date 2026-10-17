@@ -227,16 +227,32 @@ pub(super) fn rasterize_shared(
 }
 
 fn context() -> Option<gpu::DirectContext> {
+    let started = Instant::now();
     let device = metal::Device::all()
         .into_iter()
         .find(|device| !device.is_low_power())
-        .or_else(metal::Device::system_default)?;
+        .or_else(metal::Device::system_default);
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!(
+            "lumapaint-onion-stage stage=metal_device elapsed_us={} available={}",
+            started.elapsed().as_micros(),
+            device.is_some()
+        );
+    }
+    let device = device?;
+    let started = Instant::now();
     let queue = device.new_command_queue();
     // BackendContext retains both handles; Ganesh takes its own references.
     let backend =
         unsafe { gpu::mtl::BackendContext::new(device.as_ptr().cast(), queue.as_ptr().cast()) };
     let mut context = gpu::direct_contexts::make_metal(&backend, None)?;
     context.set_resource_cache_limit(64 * 1024 * 1024);
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!(
+            "lumapaint-onion-stage stage=ganesh_context elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
     Some(context)
 }
 
@@ -253,6 +269,7 @@ pub(super) fn rasterize(info: &ImageInfo, draw: impl FnOnce(&mut Surface)) -> Op
             *state = State::Unavailable;
             return None;
         }
+        let started = Instant::now();
         let mut surface = gpu::surfaces::render_target(
             context,
             gpu::Budgeted::Yes,
@@ -263,12 +280,32 @@ pub(super) fn rasterize(info: &ImageInfo, draw: impl FnOnce(&mut Surface)) -> Op
             false,
             false,
         )?;
+        if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+            eprintln!(
+                "lumapaint-onion-stage stage=metal_surface elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
+        let started = Instant::now();
         draw(&mut surface);
         context.flush_and_submit();
+        if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+            eprintln!(
+                "lumapaint-onion-stage stage=metal_draw_submit elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
+        let started = Instant::now();
         // This stays inside Rust. The existing wgpu upload contract consumes RGBA.
         // A failed readback/allocation must never discard the CPU-renderable edit.
         let mut pixels = vec![0; info.width() as usize * info.height() as usize * 4];
         if surface.read_pixels(info, &mut pixels, info.width() as usize * 4, (0, 0)) {
+            if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+                eprintln!(
+                    "lumapaint-onion-stage stage=metal_readback elapsed_us={}",
+                    started.elapsed().as_micros()
+                );
+            }
             Some(pixels)
         } else {
             *state = State::Unavailable;
@@ -283,6 +320,35 @@ pub(super) fn rasterize(info: &ImageInfo, draw: impl FnOnce(&mut Surface)) -> Op
 mod tests {
     use super::*;
     use wgpu::util::DeviceExt;
+    #[test]
+    fn cpu_owned_scene_references_do_not_initialize_metal() {
+        std::thread::spawn(|| {
+            assert!(CONTEXT.with(|s|matches!(*s.borrow(),State::Uninitialized)));
+            let mut state=lumapaint_core::document::Document::default().document_state();state.width=32;state.height=32;
+            let mut document=lumapaint_core::document::Document::from_document_state(state).unwrap();
+            document.import_svg("Reference".into(),r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="16" height="16" fill="red" opacity="0.5"/></svg>"#.into()).unwrap();
+            let image=crate::thumbnails::scene_pixels(&document,32).unwrap();
+            assert_eq!(&image.pixels[(8*32+8)*4..(8*32+8)*4+4],&[128,0,0,128]);
+            assert_eq!(image.pixels[(24*32+24)*4+3],0);
+            assert!(CONTEXT.with(|s|matches!(*s.borrow(),State::Uninitialized)),"CPU reference generation must not enumerate Metal devices or allocate a context");
+        }).join().unwrap();
+    }
+    #[test]
+    fn cpu_owned_workspace_preserves_exterior_mask_and_alpha_without_metal() {
+        std::thread::spawn(|| {
+            assert!(CONTEXT.with(|s| matches!(*s.borrow(), State::Uninitialized)));
+            let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><defs><mask id="m"><rect x="-8" y="-8" width="32" height="32" fill="white"/></mask></defs><g mask="url(#m)"><rect x="-8" y="-8" width="32" height="32" fill="red" opacity="0.5"/></g></svg>"#;
+            let pixels = crate::vector::rasterize_svg_workspace(source, [32,32], [48,48], [-8.,-8.,48.,48.]).unwrap();
+            assert_eq!(&pixels[(4*48+4)*4..(4*48+4)*4+4], &[128,0,0,128]);
+            assert_eq!(&pixels[(40*48+40)*4..(40*48+40)*4+4], &[0,0,0,0]);
+            let expected = crate::vector::with_compatibility_renderer(|| {
+                crate::vector::rasterize_svg_region(source,48,48,false,Some(([32,32],[-8.,-8.,48.,48.]))).unwrap().raster.pixels
+            });
+            assert_eq!(pixels, expected);
+            assert!(CONTEXT.with(|s| matches!(*s.borrow(), State::Uninitialized)));
+        }).join().unwrap();
+    }
+
     #[test]
     fn unavailable_gpu_returns_control_to_cpu() {
         CONTEXT.with(|state| *state.borrow_mut() = State::Unavailable);

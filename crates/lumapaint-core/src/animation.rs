@@ -7,7 +7,7 @@ mod exposures;
 pub use exposures::{Exposure, NamedCel};
 #[path = "animation/exposure_batch.rs"]
 mod exposure_batch;
-pub use exposure_batch::ExposureBatchEdit;
+pub use exposure_batch::{ExposureBatchEdit, ExposureTrackEdit};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,10 +45,19 @@ pub enum OnionColor {
     #[default]
     Tint,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnionScope {
+    #[default]
+    Layer,
+    Scene,
+}
 /// Authored viewing preferences. Reference pixels are never stored in a project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OnionSettings {
+    #[serde(default)]
+    pub scope: OnionScope,
     pub enabled: bool,
     pub before: u32,
     pub after: u32,
@@ -64,6 +73,7 @@ pub struct OnionSettings {
 impl Default for OnionSettings {
     fn default() -> Self {
         Self {
+            scope: OnionScope::Layer,
             enabled: false,
             before: 2,
             after: 2,
@@ -79,6 +89,78 @@ impl Default for OnionSettings {
     }
 }
 impl OnionSettings {
+    /// Scene boundaries are the union of pixel exposure starts and blank ends.
+    /// Continuously animated vector scenes use frame spacing, since each frame
+    /// can have a different picture. No duration-sized frame table is allocated.
+    pub fn scene_references(&self, animation: &Animation, frame: u32) -> Vec<SceneReference> {
+        if !self.enabled || self.validate(animation.duration).is_err() {
+            return vec![];
+        }
+        let continuous = animation
+            .tracks
+            .values()
+            .any(|t| !t.channels.is_empty() || !t.motions.is_empty());
+        let boundaries: std::collections::BTreeSet<_> = std::iter::once(0)
+            .chain(
+                animation
+                    .tracks
+                    .values()
+                    .flat_map(|t| t.cels.keys().copied()),
+            )
+            .collect();
+        let frames: Vec<_> = boundaries.into_iter().collect();
+        let insertion = frames.partition_point(|f| *f <= frame);
+        let mut targets = vec![];
+        for (before, count) in [(true, self.before), (false, self.after)] {
+            for distance in 1..=count {
+                let offset = distance * self.step;
+                let target = if self.spacing == OnionSpacing::Frames || continuous {
+                    if before {
+                        frame.checked_sub(offset)
+                    } else {
+                        frame
+                            .checked_add(offset)
+                            .filter(|f| *f < animation.duration)
+                    }
+                } else if before {
+                    insertion
+                        .checked_sub(1 + offset as usize)
+                        .and_then(|i| frames.get(i).copied())
+                } else {
+                    frames.get(insertion + offset as usize - 1).copied()
+                };
+                if let Some(target) = target {
+                    targets.push((target, before, distance));
+                }
+            }
+        }
+        targets.extend(
+            self.fixed_frames
+                .iter()
+                .copied()
+                .filter(|f| *f != frame)
+                .map(|f| (f, f < frame, 1)),
+        );
+        let mut result: Vec<SceneReference> = vec![];
+        for (target, previous, distance) in targets {
+            let opacity = (self.opacity - self.fade * (distance - 1) as f32).max(0.) / 100.;
+            if let Some(existing) = result.iter_mut().find(|r| r.frame == target) {
+                existing.opacity = existing.opacity.max(opacity);
+            } else if opacity > 0. {
+                result.push(SceneReference {
+                    frame: target,
+                    opacity,
+                    color: if previous {
+                        self.previous_color
+                    } else {
+                        self.next_color
+                    },
+                });
+            }
+        }
+        result.sort_by(|a, b| a.opacity.total_cmp(&b.opacity));
+        result
+    }
     pub fn validate(&self, duration: u32) -> Result<(), String> {
         if self.before > 4
             || self.after > 4
@@ -166,6 +248,12 @@ impl OnionSettings {
         result.sort_by(|a, b| a.opacity.total_cmp(&b.opacity));
         result
     }
+}
+#[derive(Clone, Debug)]
+pub struct SceneReference {
+    pub frame: u32,
+    pub opacity: f32,
+    pub color: [u8; 3],
 }
 #[derive(Clone, Debug)]
 pub struct OnionReference {
@@ -805,12 +893,72 @@ impl Document {
             })
             .map(|c| c.drawing.clone())
             .ok_or("No cel at this frame")?;
+        self.load_cel_drawing(id, &cel)
+    }
+    /// Load a drawing by identity without adding or changing any exposure.
+    pub fn load_animation_library_cel(&mut self, id: &str, cel: u32) -> Result<(), String> {
+        self.animation_layer(id, true)?;
+        let drawing = self
+            .animation
+            .tracks
+            .get(id)
+            .and_then(|t| t.cel_library.get(&cel))
+            .map(|c| c.drawing.clone())
+            .ok_or("Cel is no longer available")?;
+        self.load_cel_drawing(id, &drawing)
+    }
+    /// Native previews retain drawing data in Rust, including unfinished edits.
+    pub fn animation_drawing(&self, id: &str) -> Result<Arc<Cel>, String> {
+        self.animation_layer(id, true)?;
+        Ok(Arc::new(if id == "layer-1" {
+            Cel {
+                source: self.paint_source.clone(),
+                strokes: self.strokes.clone(),
+            }
+        } else {
+            Cel {
+                source: self
+                    .svg_layers
+                    .iter()
+                    .find(|l| l.id == id)
+                    .map(|l| l.source.clone()),
+                strokes: vec![],
+            }
+        }))
+    }
+    pub fn record_animation_library_cel(&mut self, id: &str, cel: u32) -> Result<(), String> {
+        if self.has_active_stroke() {
+            return Err("Finish the stroke before recording a cel".into());
+        }
+        let drawing = self.animation_drawing(id)?;
+        let mut next = self.animation.as_ref().clone();
+        next.tracks
+            .get_mut(id)
+            .and_then(|t| t.cel_library.get_mut(&cel))
+            .ok_or("Cel is no longer available")?
+            .drawing = drawing;
+        self.commit_animation(next)
+    }
+    /// Reapply a library history change after Undo/Redo without adding history.
+    pub fn restore_animation_library_drawing(&mut self, id: &str, cel: u32) -> Result<(), String> {
+        self.animation_layer(id, true)?;
+        let drawing = self
+            .animation
+            .tracks
+            .get(id)
+            .and_then(|t| t.cel_library.get(&cel))
+            .map(|c| c.drawing.clone())
+            .ok_or("Cel is no longer available")?;
+        self.apply_cel(id, &drawing);
+        Ok(())
+    }
+    fn load_cel_drawing(&mut self, id: &str, cel: &Cel) -> Result<(), String> {
         self.finish();
         let mut before = self.vector_history_state();
         if id == "layer-1" {
             before.strokes = Some(self.strokes.clone());
         }
-        self.apply_cel(id, &cel);
+        self.apply_cel(id, cel);
         self.selected_layer = Some(id.to_string());
         self.layer_groups.selected = vec![id.to_string()];
         self.selected_vector_objects.clear();
@@ -961,6 +1109,53 @@ mod tests {
     use super::*;
     fn ink() -> Arc<Cel> {
         Arc::new(Cel { source:Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"4\" y=\"4\" width=\"8\" height=\"8\"/></svg>".into()), strokes:vec![] })
+    }
+    #[test]
+    fn scene_references_merge_tracks_keep_fixed_frames_and_bound_continuous_animation() {
+        let mut animation = Animation {
+            duration: 24,
+            ..Default::default()
+        };
+        for (id, frames) in [("a", vec![0, 6, 12]), ("b", vec![2, 8, 14])] {
+            let mut track = Track::default();
+            for frame in frames {
+                track.cels.insert(frame, ink());
+            }
+            animation.tracks.insert(id.into(), track);
+        }
+        let settings = OnionSettings {
+            enabled: true,
+            scope: OnionScope::Scene,
+            fixed_frames: vec![7, 9],
+            ..Default::default()
+        };
+        let refs = settings.scene_references(&animation, 9);
+        let mut frames: Vec<_> = refs.iter().map(|r| r.frame).collect();
+        frames.sort();
+        assert_eq!(frames, [2, 6, 7, 12, 14]);
+        assert_eq!(
+            refs.iter().find(|r| r.frame == 7).unwrap().color,
+            settings.previous_color
+        );
+        animation
+            .tracks
+            .get_mut("a")
+            .unwrap()
+            .channels
+            .insert(Property::X, vec![]);
+        let mut frames: Vec<_> = settings
+            .scene_references(&animation, 0)
+            .iter()
+            .map(|r| r.frame)
+            .collect();
+        frames.sort();
+        assert_eq!(frames, [1, 2, 7, 9]);
+        let mut json = serde_json::to_value(&settings).unwrap();
+        json.as_object_mut().unwrap().remove("scope");
+        assert_eq!(
+            serde_json::from_value::<OnionSettings>(json).unwrap().scope,
+            OnionScope::Layer
+        );
     }
     #[test]
     fn onion_neighbors_use_distinct_exposures_without_repeating_holds() {
@@ -1230,6 +1425,64 @@ mod tests {
             assert_eq!(track.value(Property::X, 5), expected);
             assert_eq!(track.value(Property::Opacity, 5), 100.);
         }
+    }
+    #[test]
+    fn library_cel_drawing_stays_independent_from_exposure_timing() {
+        let mut d = Document::default();
+        let cel = d.create_animation_cel("layer-1").unwrap();
+        d.load_animation_library_cel("layer-1", cel).unwrap();
+        d.begin(Point { x: 20., y: 20. }, Brush::default()).unwrap();
+        d.finish();
+        d.record_animation_library_cel("layer-1", cel).unwrap();
+        assert!(d.animation().tracks["layer-1"].exposures.is_empty());
+        assert_eq!(
+            d.animation().tracks["layer-1"].cel_library[&cel]
+                .drawing
+                .strokes
+                .len(),
+            1
+        );
+        d.undo();
+        assert!(d.animation().tracks["layer-1"].cel_library[&cel]
+            .drawing
+            .strokes
+            .is_empty());
+        d.redo();
+        d.assign_animation_cel("layer-1", 0, cel).unwrap();
+        d.assign_animation_cel("layer-1", 5, cel).unwrap();
+        let before: Vec<_> = d.animation().tracks["layer-1"]
+            .exposures
+            .iter()
+            .map(|(f, e)| (*f, e.id.clone(), e.end))
+            .collect();
+        d.begin(Point { x: 40., y: 40. }, Brush::default()).unwrap();
+        d.finish();
+        d.record_animation_library_cel("layer-1", cel).unwrap();
+        let track = &d.animation().tracks["layer-1"];
+        assert_eq!(track.cels[&0].strokes.len(), 2);
+        assert!(Arc::ptr_eq(&track.cels[&0], &track.cels[&5]));
+        assert_eq!(
+            before,
+            track
+                .exposures
+                .iter()
+                .map(|(f, e)| (*f, e.id.clone(), e.end))
+                .collect::<Vec<_>>()
+        );
+        let restored = Document::from_document_state(d.document_state()).unwrap();
+        assert_eq!(
+            restored.animation().tracks["layer-1"].cel_library[&cel]
+                .drawing
+                .strokes
+                .len(),
+            2
+        );
+        let revision = d.revision();
+        assert!(d.load_animation_library_cel("layer-1", cel + 100).is_err());
+        assert!(d
+            .record_animation_library_cel("layer-1", cel + 100)
+            .is_err());
+        assert_eq!(d.revision(), revision);
     }
     #[test]
     fn cels_hold_blank_duplicate_and_load_are_undoable_and_persisted() {

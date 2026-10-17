@@ -74,3 +74,30 @@ assert.equal(exposureReorderTarget(spans,[],5),null);
 assert.equal(exposureReorderTarget(spans,[3],NaN),null);
 
 console.log('Exposure insertion boundary checks passed');
+
+const {selectExposureTracks,exposureGroupMoveBounds}=await import('../src/timeline-view.ts');
+const crossTracks=[
+ {id:'top',pixel:true,locked:false,exposures:[{id:'t1',start:0,end:2,cel:1},{id:'t2',start:4,end:6,cel:2},{id:'t3',start:8,end:10,cel:3}]},
+ {id:'vector',pixel:false,locked:false,exposures:[]},
+ {id:'locked',pixel:true,locked:true,exposures:[{start:0,end:12,cel:1}]},
+ {id:'bottom',pixel:true,locked:false,exposures:[{id:'b1',start:1,end:3,cel:1},{id:'b2',start:5,end:7,cel:2},{id:'b3',start:9,end:11,cel:3}]},
+];
+let cross=selectExposureTracks(crossTracks,{tracks:{},anchor:null},'top',0,false,false);
+cross=selectExposureTracks(crossTracks,cross,'bottom',1,false,true);
+assert.deepEqual(cross.tracks,{top:[0],bottom:[1]},'modifier selection preserves occurrences in other tracks');
+assert.deepEqual(exposureGroupMoveBounds(crossTracks,cross.tracks,12,false),{min:0,max:2},'all selected tracks share the strictest collision bounds');
+assert.deepEqual(exposureGroupMoveBounds(crossTracks,cross.tracks,12,true),{min:0,max:17989},'ripple bounds include subsequent exposures in every participating track');
+const rectangle=selectExposureTracks(crossTracks,cross,'top',4,true,false);
+assert.deepEqual(rectangle.tracks,{top:[0,4],bottom:[1]},'range crosses tracks and includes held intervals but skips locked/vector tracks');
+assert.deepEqual(selectExposureTracks(crossTracks,cross,'bottom',1,false,true).tracks,{top:[0]},'toggling the last occurrence removes only its own track');
+assert.deepEqual(selectExposureTracks(crossTracks,cross,'top',4,false,false).tracks,{top:[4]},'plain click replaces the complete group');
+assert.equal(selectExposureTracks(crossTracks,cross,'locked',0,false,false),cross);
+assert.equal(selectExposureTracks(crossTracks,cross,'top',3,false,false),cross);
+assert.deepEqual(exposureGroupMoveBounds(crossTracks,{locked:[0],top:[0]},12,false),{min:0,max:0});
+const tight=crossTracks.map(t=>t.id==='bottom'?{...t,exposures:[{start:1,end:4,cel:1},{start:5,end:7,cel:2}]}:t);
+assert.deepEqual(exposureGroupMoveBounds(tight,cross.tracks,12,false),{min:0,max:1},'a tighter second track constrains the source-track drag');
+console.log('Cross-track selection, held-range and shared-drag bounds passed');
+const unusual=[{...crossTracks[0],id:'__proto__'},{...crossTracks[3],id:'toString'}];
+const unusualSelected=selectExposureTracks(unusual,{tracks:{},anchor:null},'__proto__',0,false,true);
+assert.deepEqual(Object.keys(unusualSelected.tracks),['__proto__'],'opaque track IDs remain ordinary selection keys');
+assert.deepEqual(exposureGroupMoveBounds(unusual,unusualSelected.tracks,12,false),{min:0,max:2},'unselected prototype-named tracks are not treated as selected');

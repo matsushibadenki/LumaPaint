@@ -960,7 +960,7 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-onion-settings { display:flex; flex-direction:column; gap:10px; padding:10px; margin:0; border:1px solid var(--color-rule); min-width:0; }
 .timeline-onion-settings legend { padding:0 4px; }
 .timeline-onion-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-.timeline-onion-grid label { justify-content:space-between; font-size:10px; }
+.timeline-onion-grid label { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px; font-size:10px; }
 .timeline-onion-settings label input[type="number"] { width:48px; }
 .timeline-onion-settings label input[type="color"] { width:34px; height:25px; padding:2px; }
 .timeline-fixed-references { display:flex; gap:5px; flex-wrap:wrap; }

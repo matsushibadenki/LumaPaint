@@ -9,6 +9,15 @@ pub enum ExposureBatchEdit {
     Delete { ripple: bool },
     Reorder { before: Option<u32> },
 }
+/// One track in a document-wide atomic edit. No drawing payloads cross the UI boundary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExposureTrackEdit {
+    pub layer: String,
+    pub frames: Vec<u32>,
+    pub edit: ExposureBatchEdit,
+}
+type GroupPlan = (Vec<(String, Plan)>, u32);
 type Plan = (BTreeMap<u32, Exposure>, u32, Vec<u32>);
 fn invalid() -> String {
     "Invalid selection, collision or timing limit / 選択・区間の重複・時間の上限を確認してください / 请检查选择、区间重叠和时间限制".into()
@@ -156,6 +165,74 @@ impl Track {
     }
 }
 impl Document {
+    fn exposure_group_plan(&self, edits: &[ExposureTrackEdit]) -> Result<GroupPlan, String> {
+        if edits.is_empty()
+            || edits.len() > 256
+            || edits.iter().map(|e| e.frames.len()).sum::<usize>() > 2048
+        {
+            return Err(invalid());
+        }
+        let mut layers = BTreeSet::new();
+        let mut duration = self.animation.duration;
+        let mut plans = Vec::with_capacity(edits.len());
+        for edit in edits {
+            if !layers.insert(&edit.layer) {
+                return Err(invalid());
+            }
+            self.animation_layer(&edit.layer, true)?;
+            let plan = self
+                .animation
+                .tracks
+                .get(&edit.layer)
+                .ok_or_else(invalid)?
+                .exposure_batch_plan(&edit.frames, &edit.edit, self.animation.duration)?;
+            duration = duration.max(plan.1);
+            plans.push((edit.layer.clone(), plan));
+        }
+        Ok((plans, duration))
+    }
+    pub fn animation_exposure_group_selection(
+        &self,
+        edits: &[ExposureTrackEdit],
+    ) -> Result<Vec<(String, Vec<u32>)>, String> {
+        Ok(self
+            .exposure_group_plan(edits)?
+            .0
+            .into_iter()
+            .map(|(layer, (_, _, frames))| (layer, frames))
+            .collect())
+    }
+    pub fn edit_animation_exposure_group(
+        &mut self,
+        edits: &[ExposureTrackEdit],
+    ) -> Result<(), String> {
+        // Every plan must succeed against the SAME source before touching state or history.
+        let (plans, duration) = self.exposure_group_plan(edits)?;
+        let unchanged = duration == self.animation.duration
+            && plans.iter().all(|(layer, (plan, _, _))| {
+                let track = &self.animation.tracks[layer];
+                plan.len() == track.exposures.len()
+                    && plan.iter().all(|(frame, exposure)| {
+                        track.exposures.get(frame).is_some_and(|old| {
+                            old.id == exposure.id
+                                && old.cel == exposure.cel
+                                && track.exposure_end(*frame, duration)
+                                    == exposure
+                                        .end
+                                        .unwrap_or_else(|| track.exposure_end(*frame, duration))
+                        })
+                    })
+            });
+        if unchanged {
+            return Ok(());
+        }
+        let mut next = self.animation.as_ref().clone();
+        next.duration = duration;
+        for (layer, (plan, _, _)) in plans {
+            next.tracks.get_mut(&layer).unwrap().exposures = plan;
+        }
+        self.commit_animation(next)
+    }
     /// Maps selected occurrences through the exact validated timing plan.
     /// Drawing IDs alone cannot identify repeated placements of the same cel.
     pub fn animation_exposure_batch_selection(
@@ -201,7 +278,8 @@ impl Document {
             && plan.len() == track.exposures.len()
             && plan.iter().all(|(f, e)| {
                 track.exposures.get(f).is_some_and(|old| {
-                    old.cel == e.cel
+                    old.id == e.id
+                        && old.cel == e.cel
                         && track.exposure_end(*f, duration)
                             == e.end.unwrap_or_else(|| track.exposure_end(*f, duration))
                 })
@@ -225,6 +303,190 @@ mod tests {
             d.capture_animation_cel("layer-1", frame, true).unwrap();
         }
         d
+    }
+    fn group_doc() -> (Document, String) {
+        let mut d = Document::default();
+        d.set_animation_settings(24, 12, true).unwrap();
+        let layer = d.add_paint_layer().unwrap();
+        for (id, starts) in [("layer-1", [0, 4, 8]), (layer.as_str(), [1, 5, 9])] {
+            for frame in starts {
+                d.capture_animation_cel(id, frame, true).unwrap();
+                d.edit_animation_exposure(id, frame, frame, frame + 2)
+                    .unwrap();
+            }
+        }
+        (d, layer)
+    }
+    fn jobs(layer: &str, frames: [u32; 2], edit: ExposureBatchEdit) -> Vec<ExposureTrackEdit> {
+        vec![
+            ExposureTrackEdit {
+                layer: "layer-1".into(),
+                frames: vec![frames[0]],
+                edit: edit.clone(),
+            },
+            ExposureTrackEdit {
+                layer: layer.into(),
+                frames: vec![frames[1]],
+                edit,
+            },
+        ]
+    }
+    #[test]
+    fn group_timing_is_atomic_and_preserves_artwork_ids_and_one_history_entry() {
+        let (mut d, layer) = group_doc();
+        let original = serde_json::to_string(&d.document_state()).unwrap();
+        let drawing = d.animation().tracks[&layer].cel_library[&1].drawing.clone();
+        let edits = jobs(
+            &layer,
+            [0, 1],
+            ExposureBatchEdit::Shift {
+                delta: 1,
+                ripple: false,
+            },
+        );
+        assert_eq!(
+            d.animation_exposure_group_selection(&edits).unwrap(),
+            vec![("layer-1".into(), vec![1]), (layer.clone(), vec![2])]
+        );
+        let revision = d.revision();
+        d.edit_animation_exposure_group(&edits).unwrap();
+        assert_eq!(d.revision(), revision + 1);
+        assert!(Arc::ptr_eq(
+            &drawing,
+            &d.animation().tracks[&layer].cel_library[&1].drawing
+        ));
+        let changed = serde_json::to_string(&d.document_state()).unwrap();
+        let restored = Document::from_document_state(d.document_state()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&restored.document_state()).unwrap(),
+            changed
+        );
+        d.undo();
+        assert_eq!(
+            serde_json::to_string(&d.document_state()).unwrap(),
+            original
+        );
+        d.redo();
+        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), changed);
+    }
+    #[test]
+    fn group_rejection_leaves_every_track_revision_and_history_untouched() {
+        let (mut d, layer) = group_doc();
+        let saved = serde_json::to_string(&d.document_state()).unwrap();
+        let revision = d.revision();
+        let mut edits = jobs(
+            &layer,
+            [0, 1],
+            ExposureBatchEdit::Shift {
+                delta: 1,
+                ripple: false,
+            },
+        );
+        edits[1].edit = ExposureBatchEdit::Shift {
+            delta: 3,
+            ripple: false,
+        };
+        assert!(d.edit_animation_exposure_group(&edits).is_err());
+        assert_eq!(d.revision(), revision);
+        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+        edits[1] = edits[0].clone();
+        assert!(d.edit_animation_exposure_group(&edits).is_err());
+        d.svg_layers
+            .iter_mut()
+            .find(|l| l.id == layer)
+            .unwrap()
+            .locked = true;
+        let locked = serde_json::to_string(&d.document_state()).unwrap();
+        assert!(d
+            .edit_animation_exposure_group(&jobs(
+                &layer,
+                [0, 1],
+                ExposureBatchEdit::Delete { ripple: true }
+            ))
+            .is_err());
+        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), locked);
+        assert_eq!(d.revision(), revision);
+        assert!(d.edit_animation_exposure_group(&[]).is_err());
+    }
+    #[test]
+    fn group_ripple_hold_delete_and_reorder_use_original_duration_per_track() {
+        let (mut d, layer) = group_doc();
+        let ids: Vec<_> = d.animation().tracks["layer-1"]
+            .exposures
+            .values()
+            .map(|e| e.id.clone())
+            .collect();
+        let edits = jobs(
+            &layer,
+            [0, 1],
+            ExposureBatchEdit::Hold {
+                length: 6,
+                ripple: true,
+            },
+        );
+        d.edit_animation_exposure_group(&edits).unwrap();
+        assert_eq!(d.animation().duration, 15);
+        assert_eq!(
+            d.animation().tracks["layer-1"]
+                .exposures
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [0, 8, 12]
+        );
+        assert_eq!(
+            d.animation().tracks[&layer]
+                .exposures
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [1, 9, 13]
+        );
+        d.undo();
+        let mut edits = jobs(&layer, [0, 1], ExposureBatchEdit::Reorder { before: None });
+        edits[0].edit = ExposureBatchEdit::Reorder { before: Some(8) };
+        edits[1].edit = ExposureBatchEdit::Reorder { before: Some(9) };
+        d.edit_animation_exposure_group(&edits).unwrap();
+        assert_eq!(d.animation().tracks["layer-1"].exposures[&4].id, ids[0]);
+        d.undo();
+        let edits = jobs(&layer, [0, 1], ExposureBatchEdit::Delete { ripple: true });
+        d.edit_animation_exposure_group(&edits).unwrap();
+        assert_eq!(
+            d.animation().tracks["layer-1"]
+                .exposures
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [2, 6]
+        );
+        assert_eq!(
+            d.animation().tracks[&layer]
+                .exposures
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [3, 7]
+        );
+        assert_eq!(d.animation().tracks[&layer].cel_library.len(), 3);
+    }
+    #[test]
+    fn reordering_identical_shared_cels_still_moves_occurrence_identities() {
+        let (mut d, layer) = group_doc();
+        for id in ["layer-1", layer.as_str()] {
+            let starts: Vec<_> = d.animation().tracks[id].exposures.keys().copied().collect();
+            let cel = d.animation().tracks[id].exposures[&starts[0]].cel;
+            for f in starts {
+                d.assign_animation_cel(id, f, cel).unwrap();
+            }
+        }
+        let original = d.animation().tracks["layer-1"].exposures[&0].id.clone();
+        d.edit_animation_exposure_group(&jobs(
+            &layer,
+            [0, 1],
+            ExposureBatchEdit::Reorder { before: None },
+        ))
+        .unwrap();
+        assert_eq!(d.animation().tracks["layer-1"].exposures[&8].id, original);
     }
     #[test]
     fn persistent_occurrence_ids_survive_timing_history_and_legacy_migration() {

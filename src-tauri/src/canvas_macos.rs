@@ -816,6 +816,7 @@ impl PaintView {
         if let Err(error) = request_redraw() {
             emit_error(error);
         }
+        timeline::schedule_onion();
         self.refresh_cursor();
         if let Some(app) = APP.get() {
             let _ = app.emit_to(
@@ -3675,6 +3676,11 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
         });
     }
     ensure_document_open()?;
+    let library_before = if matches!(action, DocumentAction::Undo | DocumentAction::Redo) {
+        timeline::editing_library_drawing()
+    } else {
+        None
+    };
     DOCUMENT.with(|doc| {
         let mut doc = doc.borrow_mut();
         match action {
@@ -3805,6 +3811,10 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
         }
         Ok::<(), String>(())
     })?;
+    timeline::restore_library_history(library_before);
+    if matches!(action, DocumentAction::Undo | DocumentAction::Redo) {
+        timeline::refresh_history_preview();
+    }
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
@@ -4100,6 +4110,9 @@ pub fn set_layer_settings(settings: LayerSettings) -> Result<DocumentSnapshot, S
     }
 
     ensure_document_open()?;
+    if settings.locked {
+        timeline::finish_editing_layer(&settings.id)?;
+    }
     DOCUMENT.with(|doc| doc.borrow_mut().set_layer_settings(settings))?;
     redraw()?;
     emit_document();
@@ -4108,6 +4121,7 @@ pub fn set_layer_settings(settings: LayerSettings) -> Result<DocumentSnapshot, S
 
 pub fn delete_layer(id: String) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
+    timeline::finish_editing_layer(&id)?;
     DOCUMENT.with(|doc| doc.borrow_mut().delete_layer(&id))?;
     redraw()?;
     emit_document();
@@ -5643,6 +5657,9 @@ fn next_document_id() -> u64 {
 }
 
 fn park_active_document() {
+    if let Err(error) = timeline::flush_editing() {
+        emit_error(error);
+    }
     raster_import::cancel();
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return;
@@ -6171,6 +6188,9 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         })
     });
     text_editor::layout()?;
+    if result.is_ok() {
+        timeline::schedule_onion();
+    }
     result
 }
 
@@ -8833,6 +8853,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             }
         }
         FileAction::Save | FileAction::SaveAs => {
+            timeline::flush_editing()?;
             if !DOCUMENT_OPEN.with(|open| open.get()) {
                 return Err("No document is open".into());
             }

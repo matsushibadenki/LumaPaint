@@ -234,19 +234,75 @@ impl SharedCache {
     }
 }
 
-pub(super) fn parse_uncached(source: &str) -> Result<usvg::Tree, String> {
-    let _timer = crate::performance::time("svg_parse_including_text_shaping");
-    crate::performance::count("svg_parses", 1);
-    let options = usvg::Options {
-        fontdb: system_fonts(),
-        font_resolver: font_resolver(),
+type FontLoader = Arc<dyn Fn() -> Arc<usvg::fontdb::Database> + Send + Sync>;
+
+fn options_with_font_loader(load: FontLoader, eager: bool) -> usvg::Options<'static> {
+    let metrics = std::env::var_os("LUMAPAINT_ONION_METRICS").is_some();
+    let load: FontLoader = Arc::new(move || {
+        let started = std::time::Instant::now();
+        let fonts = load();
+        if metrics {
+            eprintln!(
+                "lumapaint-onion-stage stage=font_database elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
+        fonts
+    });
+    let resolver = font_resolver();
+    let fallback_load = load.clone();
+    let select_load = load.clone();
+    let mut options = usvg::Options {
+        font_resolver: usvg::FontResolver {
+            select_font: Box::new(move |font, database| {
+                // Replacing an EMPTY database is additive: no existing glyph IDs
+                // can be invalidated. Subsequent spans/fallbacks keep the same IDs.
+                if database.is_empty() {
+                    *database = select_load();
+                }
+                (resolver.select_font)(font, database)
+            }),
+            select_fallback: Box::new(move |character, excluded, database| {
+                if database.is_empty() {
+                    *database = fallback_load();
+                }
+                (resolver.select_fallback)(character, excluded, database)
+            }),
+        },
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
             resolve_string: Box::new(|_, _| None),
         },
         ..Default::default()
     };
-    usvg::Tree::from_str(source, &options).map_err(|error| error.to_string())
+    if eager {
+        options.fontdb = load();
+    }
+    options
+}
+
+pub(super) fn svg_options() -> usvg::Options<'static> {
+    // Opt-in same-binary diagnostic baseline. Ordinary rendering loads the
+    // existing shared database only when usvg actually resolves a text node.
+    options_with_font_loader(
+        Arc::new(system_fonts),
+        std::env::var("LUMAPAINT_SVG_EAGER_FONTS").as_deref() == Ok("1"),
+    )
+}
+
+pub(super) fn parse_uncached(source: &str) -> Result<usvg::Tree, String> {
+    let _timer = crate::performance::time("svg_parse_including_text_shaping");
+    crate::performance::count("svg_parses", 1);
+    let options = svg_options();
+    let started = std::time::Instant::now();
+    let result = usvg::Tree::from_str(source, &options).map_err(|error| error.to_string());
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!(
+            "lumapaint-onion-stage stage=svg_parse elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
+    result
 }
 
 pub(super) fn parse(source: &str) -> Result<Arc<usvg::Tree>, String> {
@@ -255,10 +311,22 @@ pub(super) fn parse(source: &str) -> Result<Arc<usvg::Tree>, String> {
     parse_with_cache(source, cache)
 }
 
+pub(super) fn parse_workspace(source: &str) -> Result<Arc<usvg::Tree>, String> {
+    static CACHE: OnceLock<SharedCache> = OnceLock::new();
+    parse_with_policy(source, CACHE.get_or_init(SharedCache::new), true)
+}
+
 fn parse_with_cache(source: &str, cache: &SharedCache) -> Result<Arc<usvg::Tree>, String> {
+    parse_with_policy(source, cache, false)
+}
+fn parse_with_policy(
+    source: &str,
+    cache: &SharedCache,
+    workspace: bool,
+) -> Result<Arc<usvg::Tree>, String> {
     // Ordinary vectors/images retain their existing path. Namespaced text remains correct,
     // but bypasses this optimization. Bound source retention before doing any extra traversal.
-    let candidate = source.len() <= 512 * 1024 && source.contains("<text");
+    let candidate = source.len() <= 512 * 1024 && (workspace || source.contains("<text"));
     let fingerprint = if candidate { fingerprint(source) } else { 0 };
     if candidate {
         if let Some(tree) = cache.lookup(source, fingerprint) {
@@ -276,7 +344,7 @@ fn parse_with_cache(source: &str, cache: &SharedCache) -> Result<Arc<usvg::Tree>
     );
     let tree = Arc::new(parse_uncached(source)?);
     if candidate {
-        if let Some(charge) = retained_charge(source, &tree) {
+        if let Some(charge) = retained_charge_policy(source, &tree, workspace) {
             let entry = Entry::new(source, fingerprint, Arc::clone(&tree), charge);
             cache.insert(entry);
         }
@@ -288,10 +356,23 @@ fn parse_with_cache(source: &str, cache: &SharedCache) -> Result<Arc<usvg::Tree>
 // with allocation headroom. The immutable system font database is shared, not charged per
 // entry. Images (including bitmap emoji), filters and paint servers bypass retention to
 // avoid hiding large decoded resources. In-flight Arc users may outlive cache eviction.
+#[cfg(test)]
 fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
-    if !tree.filters().is_empty()
+    retained_charge_policy(source, tree, false)
+}
+fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> Option<usize> {
+    // Only fixed-size blur primitives are qualified for workspace retention.
+    // Images, paint servers and other filter resources keep the bounded bypass.
+    let simple_filters = workspace
+        && tree.filters().iter().all(|filter| {
+            filter
+                .primitives()
+                .iter()
+                .all(|p| matches!(p.kind(), usvg::filter::Kind::GaussianBlur(_)))
+        });
+    if (!tree.filters().is_empty() && !simple_filters)
         || !tree.patterns().is_empty()
-        || !tree.masks().is_empty()
+        || (!workspace && !tree.masks().is_empty())
         || !tree.linear_gradients().is_empty()
         || !tree.radial_gradients().is_empty()
     {
@@ -336,11 +417,14 @@ fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
         Some(())
     }
     let mut bytes = source.len().saturating_mul(8).saturating_add(4096);
+    for filter in tree.filters() {
+        bytes = bytes.saturating_add(1024 + filter.primitives().len().saturating_mul(1024));
+    }
     // usvg Tree::has_text_nodes checks subroots, but misses ordinary nested groups.
     // Detect text in the same complete traversal used for retained-memory accounting.
     let mut has_text = false;
     visit(tree.root(), &mut bytes, 0, &mut has_text)?;
-    (has_text && bytes <= MAX_BYTES).then_some(bytes)
+    ((workspace || has_text) && bytes <= MAX_BYTES).then_some(bytes)
 }
 
 #[cfg(test)]
@@ -349,6 +433,74 @@ mod tests {
 
     const SOURCE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><text x="10" y="40" font-size="24">English 日本語 简体中文</text></svg>"#;
 
+    #[test]
+    fn workspace_reuses_shapes_and_masked_blur_but_not_decoded_images_or_other_filters() {
+        use resvg::tiny_skia;
+        let cache = SharedCache::new();
+        for body in ["<rect width='16' height='16'/>", "<defs><mask id='m'><rect width='32' height='32' fill='white'/></mask><filter id='b'><feGaussianBlur stdDeviation='1'/></filter></defs><g mask='url(#m)'><circle cx='16' cy='16' r='8' filter='url(#b)'/></g>"] {
+            let svg = format!("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'>{body}</svg>");
+            let first = parse_with_policy(&svg,&cache,true).unwrap();
+            let second = parse_with_policy(&svg,&cache,true).unwrap();
+            assert!(Arc::ptr_eq(&first,&second));
+            let fresh = parse_uncached(&svg).unwrap();
+            let draw = |tree: &usvg::Tree| { let mut p=tiny_skia::Pixmap::new(32,32).unwrap(); resvg::render(tree,tiny_skia::Transform::identity(),&mut p.as_mut());p.take() };
+            assert_eq!(draw(&first),draw(&fresh));
+        }
+        let source = "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><defs><filter id='b'><feTurbulence baseFrequency='.1'/></filter></defs><rect width='32' height='32' filter='url(#b)'/></svg>";
+        let tree = parse_uncached(source).unwrap();
+        assert!(retained_charge_policy(source, &tree, true).is_none());
+    }
+
+    #[test]
+    fn shapes_comments_and_masks_do_not_load_fonts() {
+        let options = options_with_font_loader(
+            Arc::new(|| panic!("Shape SVG must not load or wait for fonts")),
+            false,
+        );
+        for body in ["<rect width='16' height='16'/>","<!-- <text>not a node</text> --><circle r='8' cx='8' cy='8'/>","<defs><mask id='m'><rect width='16' height='16' fill='white'/></mask></defs><rect width='16' height='16' mask='url(#m)'/>"] {
+            let tree=usvg::Tree::from_str(&format!("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'>{body}</svg>"),&options).unwrap();
+            assert!(tree.fontdb().is_empty());
+        }
+    }
+    #[test]
+    fn lazy_fonts_preserve_english_japanese_chinese_namespaces_uses_and_nested_svg_pixels() {
+        use base64::Engine;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../assets/fonts/RobotoFlex.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../assets/fonts/NotoSansJP.ttf").to_vec());
+        let db = Arc::new(db);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let loader: FontLoader = {
+            let db = db.clone();
+            let calls = calls.clone();
+            Arc::new(move || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                db.clone()
+            })
+        };
+        let eager = options_with_font_loader(loader.clone(), true);
+        let lazy = options_with_font_loader(loader, false);
+        let render = |tree: &usvg::Tree| {
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(200, 64).unwrap();
+            resvg::render(
+                tree,
+                resvg::tiny_skia::Transform::identity(),
+                &mut pixmap.as_mut(),
+            );
+            pixmap.take()
+        };
+        let text="<text x='4' y='32' font-family='Roboto Flex, Noto Sans JP' font-size='22'>English 日本語 简体中文</text>";
+        let nested =
+            format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'>{text}</svg>");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(nested.as_bytes());
+        let language_sources=["English", "日本語", "简体中文"].into_iter().map(|content|format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><text x='4' y='32' font-family='Roboto Flex, Noto Sans JP' font-size='22'>{content}</text></svg>"));
+        for source in language_sources.chain([nested,format!("<s:svg xmlns:s='http://www.w3.org/2000/svg' width='200' height='64'>{}</s:svg>",text.replace("<text","<s:text").replace("</text>","</s:text>")),format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><defs><g id='t'>{text}</g></defs><use href='#t'/></svg>"),format!("<svg xmlns='http://www.w3.org/2000/svg' width='200' height='64'><image width='200' height='64' href='data:image/svg+xml;base64,{encoded}'/></svg>")]) {
+            let a=usvg::Tree::from_str(&source,&eager).unwrap();let b=usvg::Tree::from_str(&source,&lazy).unwrap();
+            let expected=render(&a);assert!(expected.chunks_exact(4).any(|p|p[3]>0));assert_eq!(expected,render(&b));
+        }
+        assert!(calls.load(Ordering::Relaxed) > 1);
+    }
     #[test]
     #[ignore = "manual Release concurrent parsing benchmark, not GUI latency"]
     fn benchmark_shared_parsed_cache_workers() {
@@ -814,12 +966,14 @@ mod tests {
                         transform,
                         false,
                         false,
+                        false,
                     )
                     .unwrap();
                     let b = super::super::rasterize_tree_region(
                         &cached,
                         [size, size],
                         transform,
+                        false,
                         false,
                         false,
                     )

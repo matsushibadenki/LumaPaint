@@ -4016,6 +4016,12 @@ impl Renderer {
             .as_ref()
             .and_then(|input| input.stage("render_encode"));
         let encode_timer = performance::time("render_encode_after_surface_host");
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_setup")),
+            performance::time("encode_setup_host"),
+        );
         let mut background_viewport = viewport;
         if self.channel != 0 || root_paint::masked_paper(document) || !document.background_visible()
         {
@@ -4151,6 +4157,13 @@ impl Renderer {
         let mut native_layers = std::collections::HashSet::<String>::new();
         #[cfg(not(feature = "skia"))]
         let native_layers = std::collections::HashSet::<String>::new();
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_native")),
+            performance::time("encode_native_host"),
+        );
         #[cfg(feature = "skia")]
         {
             self.native_geometry.begin_frame();
@@ -4174,6 +4187,13 @@ impl Renderer {
                 }
             }
         }
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_mesh")),
+            performance::time("encode_mesh_host"),
+        );
         let mut mesh_layers = std::collections::HashSet::new();
         self.motion_mesh.begin_frame(
             &document
@@ -4194,6 +4214,13 @@ impl Renderer {
                 }
             }
         }
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_glyph")),
+            performance::time("encode_glyph_host"),
+        );
         let mut glyph_layers = std::collections::HashSet::new();
         if let Some(display) = &mut self.glyph_display {
             let visible = document
@@ -4217,6 +4244,13 @@ impl Renderer {
                 }
             }
         }
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_layers")),
+            performance::time("encode_layers_host"),
+        );
         let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
             if document.has_layer_effects(&original.id) {
@@ -4510,6 +4544,13 @@ impl Renderer {
             }
             drag_metrics.full_prepare_upload_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_workspace")),
+            performance::time("encode_workspace_host"),
+        );
         let exterior_needed = document
             .visible_svg_layers()
             .any(|l| document.has_layer_effects(&l.id))
@@ -4569,6 +4610,13 @@ impl Renderer {
         } else {
             self.page_workspace_image = None;
         }
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_brush")),
+            performance::time("encode_brush_host"),
+        );
         let translated_uniforms = if offset == [0.0, 0.0]
             || (translated_layers.is_empty()
                 && partial_layers.is_empty()
@@ -4669,6 +4717,13 @@ impl Renderer {
             });
             (texture, mask_view, bind_group)
         });
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_timing")),
+            performance::time("encode_timing_host"),
+        );
         if let Some(effects) = &self.effects_display {
             effects.collect_timings(&self.device);
         }
@@ -4687,6 +4742,13 @@ impl Renderer {
             }
             slot
         });
+        drop(encode_part);
+        let encode_part = (
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage("encode_passes")),
+            performance::time("encode_passes_host"),
+        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4979,6 +5041,7 @@ impl Renderer {
                 .unwrap()
                 .resolve(slot, &mut encoder);
         }
+        drop(encode_part);
         drop(encode_timer);
         drop(encode_stage);
         {

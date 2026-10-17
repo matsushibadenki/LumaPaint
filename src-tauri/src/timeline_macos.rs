@@ -4,6 +4,7 @@ use lumapaint_core::document::animation::Keyframe;
 type OutlineCache =
     std::collections::HashMap<String, (usize, Vec<lumapaint_core::vector::VectorObject>)>;
 
+type EditingCel = (String, u32, u64, Option<u32>);
 struct Runtime {
     document_id: u64,
     revision: u64,
@@ -11,7 +12,7 @@ struct Runtime {
     rendered_frame: Option<u32>,
     started: Option<(Instant, u32)>,
     preview: Option<Document>,
-    editing: Option<(String, u32, u64)>,
+    editing: Option<EditingCel>,
     gpu_frame: Option<u32>,
     metadata_sent: bool,
     metadata_selection: Option<(String, Vec<String>)>,
@@ -22,6 +23,8 @@ struct Runtime {
 }
 #[derive(PartialEq)]
 struct OnionKey {
+    side: u32,
+    scene_revision: Option<u64>,
     document_id: u64,
     layer: String,
     frame: u32,
@@ -81,7 +84,10 @@ pub(super) fn configure_onion(canvas: &mut Canvas) {
                         && key.frame == runtime.frame
                         && DOCUMENT.with(|d| {
                             let doc = d.borrow();
-                            key.layer == doc.selected_layer_id()
+                            (key.scene_revision.is_some() || key.layer == doc.selected_layer_id())
+                                && key
+                                    .scene_revision
+                                    .is_none_or(|revision| revision == doc.revision())
                                 && key.settings == doc.animation().onion
                                 && key.settings.enabled
                         })
@@ -90,7 +96,32 @@ pub(super) fn configure_onion(canvas: &mut Canvas) {
     });
     canvas.renderer.set_onion_visible(visible);
 }
+/// Called after native viewport changes, with no Canvas borrow held.
+pub(super) fn schedule_onion() {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window(&current_label()) else {
+        return;
+    };
+    if let Some(job) = onion_job() {
+        crate::cel_previews::schedule(window, job);
+    }
+}
 pub(crate) fn onion_job() -> Option<crate::cel_previews::OnionJob> {
+    let side = DOCUMENT.with(|doc| {
+        CANVAS.with(|c| {
+            c.borrow().as_ref().map_or(1024, |c| {
+                crate::cel_previews::reference_side(
+                    doc.borrow().dimensions(),
+                    c.viewport.screen_zoom() * c.viewport.scale,
+                )
+            })
+        })
+    });
+    onion_job_at_side(side)
+}
+fn onion_job_at_side(side: u32) -> Option<crate::cel_previews::OnionJob> {
     RUNTIMES.with(|r| {
         let mut runtimes = r.borrow_mut();
         let runtime = runtimes.get_mut(&current_label())?;
@@ -98,15 +129,22 @@ pub(crate) fn onion_job() -> Option<crate::cel_previews::OnionJob> {
             let doc = d.borrow();
             let settings = &doc.animation().onion;
             let layer = doc.selected_layer_id();
+            let scene = settings.scope == lumapaint_core::document::animation::OnionScope::Scene;
             let track = doc.animation().tracks.get(layer);
-            let references = if settings.enabled && runtime.started.is_none() {
+            let enabled = settings.enabled && runtime.started.is_none();
+            let scene_references = if enabled && scene {
+                settings.scene_references(doc.animation(), runtime.frame)
+            } else {
+                vec![]
+            };
+            let references = if enabled && !scene {
                 track
                     .map(|t| settings.references(t, runtime.frame, doc.animation().duration))
                     .unwrap_or_default()
             } else {
                 vec![]
             };
-            if references.is_empty() {
+            if references.is_empty() && scene_references.is_empty() {
                 if runtime.onion_key.take().is_some() {
                     runtime.onion_generation = next_onion_generation();
                     runtime.onion_ready = false;
@@ -119,21 +157,30 @@ pub(crate) fn onion_job() -> Option<crate::cel_previews::OnionJob> {
                 return None;
             }
             let key = OnionKey {
+                side,
+                scene_revision: scene.then(|| doc.revision()),
                 document_id: identity().0,
-                layer: layer.into(),
+                layer: if scene { String::new() } else { layer.into() },
                 frame: runtime.frame,
                 dimensions: doc.dimensions(),
                 settings: settings.clone(),
-                references: references
-                    .iter()
-                    .map(|r| {
-                        (
-                            std::sync::Arc::as_ptr(&r.cel) as usize,
-                            r.opacity.to_bits(),
-                            r.color,
-                        )
-                    })
-                    .collect(),
+                references: if scene {
+                    scene_references
+                        .iter()
+                        .map(|r| (r.frame as usize, r.opacity.to_bits(), r.color))
+                        .collect()
+                } else {
+                    references
+                        .iter()
+                        .map(|r| {
+                            (
+                                std::sync::Arc::as_ptr(&r.cel) as usize,
+                                r.opacity.to_bits(),
+                                r.color,
+                            )
+                        })
+                        .collect()
+                },
             };
             // Held exposures can move the playhead without changing any skin.
             // Keep the texture and only advance its ownership stamp.
@@ -148,10 +195,26 @@ pub(crate) fn onion_job() -> Option<crate::cel_previews::OnionJob> {
             runtime.onion_key = Some(key);
             Some(crate::cel_previews::OnionJob {
                 generation: runtime.onion_generation,
+                document_id: identity().0,
+                revision: doc.revision(),
+                side,
                 label: current_label(),
                 dimensions: doc.dimensions(),
                 references,
                 mode: settings.color,
+                scene: scene.then(|| {
+                    let started = std::time::Instant::now();
+                    let snapshot = doc.clone_for_rendering();
+                    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+                        eprintln!(
+                            "lumapaint-onion-host generation={} stage=snapshot elapsed_us={}",
+                            runtime.onion_generation,
+                            started.elapsed().as_micros()
+                        );
+                    }
+                    snapshot
+                }),
+                scene_references,
             })
         })
     })
@@ -165,13 +228,19 @@ pub(crate) fn install_onion_for_window(
         return;
     };
     let accepted = RUNTIMES.with(|r| {
-        r.borrow()
-            .get(label)
-            .is_some_and(|r| r.onion_generation == generation && r.document_id == identity().0)
+        r.borrow().get(label).is_some_and(|r| {
+            r.onion_generation == generation
+                && r.document_id == identity().0
+                && r.onion_key.as_ref().is_some_and(|key| {
+                    key.scene_revision
+                        .is_none_or(|revision| revision == identity().1)
+                })
+        })
     });
     if !accepted {
         return;
     }
+    let upload_started = std::time::Instant::now();
     let installed = CANVAS.with(|c| {
         let mut canvas = c.borrow_mut();
         let Some(canvas) = canvas.as_mut() else {
@@ -179,6 +248,9 @@ pub(crate) fn install_onion_for_window(
         };
         canvas.renderer.install_onion_skin(result?)
     });
+    if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
+        eprintln!("lumapaint-onion-host generation={generation} stage=upload elapsed_us={} accepted=true success={}", upload_started.elapsed().as_micros(), installed.is_ok());
+    }
     match installed {
         Ok(()) => {
             RUNTIMES.with(|r| {
@@ -197,25 +269,59 @@ pub(crate) fn thumbnail_sources(
     if request.document_id != identity().0 || request.cels.len() > 64 {
         return Err("Stale or excessive cel preview request".into());
     }
+    let editing = RUNTIMES.with(|r| {
+        r.borrow()
+            .get(&current_label())
+            .filter(|r| r.document_id == identity().0)
+            .and_then(|r| r.editing.clone())
+    });
     DOCUMENT.with(|d| {
         let doc = d.borrow();
+        let live = editing
+            .as_ref()
+            .filter(|(_, _, revision, _)| *revision != doc.revision())
+            .and_then(|(layer, frame, _, cel)| {
+                let cel = (*cel).or_else(|| {
+                    doc.animation()
+                        .tracks
+                        .get(layer)?
+                        .exposure_at(*frame, doc.animation().duration)
+                        .map(|(_, e)| e.cel)
+                })?;
+                Some((layer.clone(), cel, doc.animation_drawing(layer).ok()?))
+            });
         request
             .cels
             .into_iter()
             .map(|(layer, frame)| {
-                let cel = doc
-                    .animation()
-                    .tracks
-                    .get(&layer)
-                    .and_then(|t| {
-                        if request.library {
-                            t.cel_library.get(&frame).map(|c| &c.drawing)
-                        } else {
-                            t.cels.get(&frame)
-                        }
+                let identity = if request.library {
+                    Some(frame)
+                } else {
+                    doc.animation()
+                        .tracks
+                        .get(&layer)
+                        .and_then(|t| t.exposures.get(&frame))
+                        .map(|e| e.cel)
+                };
+                let live_cel = live
+                    .as_ref()
+                    .filter(|(id, cel, _)| *id == layer && Some(*cel) == identity)
+                    .map(|(_, _, drawing)| drawing.clone());
+                let cel = live_cel
+                    .or_else(|| {
+                        doc.animation()
+                            .tracks
+                            .get(&layer)
+                            .and_then(|t| {
+                                if request.library {
+                                    t.cel_library.get(&frame).map(|c| &c.drawing)
+                                } else {
+                                    t.cels.get(&frame)
+                                }
+                            })
+                            .cloned()
                     })
-                    .ok_or("Cel is no longer available")?
-                    .clone();
+                    .ok_or("Cel is no longer available")?;
                 Ok(crate::cel_previews::ThumbnailSource {
                     layer,
                     frame,
@@ -327,7 +433,7 @@ pub(super) fn begin_editing() -> Result<(), String> {
     Ok(())
 }
 fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
-    let Some((layer, frame, revision)) = runtime.editing.clone() else {
+    let Some((layer, frame, revision, library_cel)) = runtime.editing.clone() else {
         return Ok(false);
     };
     if runtime.document_id != identity().0 {
@@ -340,6 +446,10 @@ fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
         if doc.revision() == revision {
             return Ok(false);
         }
+        if let Some(cel) = library_cel {
+            doc.record_animation_library_cel(&layer, cel)?;
+            return Ok(true);
+        }
         let start = doc
             .animation()
             .tracks
@@ -351,6 +461,111 @@ fn record_edit(runtime: &mut Runtime) -> Result<bool, String> {
     })?;
     runtime.editing = None;
     Ok(changed)
+}
+pub(super) fn editing_library_drawing(
+) -> Option<std::sync::Arc<lumapaint_core::document::animation::Cel>> {
+    let (layer, _, _, cel) = RUNTIMES.with(|r| {
+        r.borrow()
+            .get(&current_label())
+            .filter(|r| r.document_id == identity().0)
+            .and_then(|r| r.editing.clone())
+    })?;
+    DOCUMENT.with(|d| {
+        d.borrow()
+            .animation()
+            .tracks
+            .get(&layer)?
+            .cel_library
+            .get(&cel?)
+            .map(|c| c.drawing.clone())
+    })
+}
+pub(super) fn restore_library_history(
+    before: Option<std::sync::Arc<lumapaint_core::document::animation::Cel>>,
+) {
+    let Some(before) = before else {
+        return;
+    };
+    let after = editing_library_drawing();
+    if after
+        .as_ref()
+        .is_some_and(|after| std::sync::Arc::ptr_eq(&before, after))
+    {
+        return;
+    }
+    RUNTIMES.with(|r| {
+        let mut runtimes = r.borrow_mut();
+        let Some(runtime) = runtimes.get_mut(&current_label()) else {
+            return;
+        };
+        if let Some((layer, _, revision, Some(cel))) = runtime.editing.as_mut() {
+            if DOCUMENT
+                .with(|d| {
+                    d.borrow_mut()
+                        .restore_animation_library_drawing(layer, *cel)
+                })
+                .is_ok()
+            {
+                *revision = identity().1;
+            } else {
+                runtime.editing = None;
+            }
+        }
+    });
+}
+/// Rebuild the displayed frame before the native Undo/Redo redraw, avoiding a
+/// transient view of the ordinary drawing while metadata refresh is pending.
+pub(super) fn refresh_history_preview() {
+    RUNTIMES.with(|r| {
+        let mut runtimes = r.borrow_mut();
+        let Some(runtime) = runtimes.get_mut(&current_label()) else {
+            return;
+        };
+        if runtime.document_id == identity().0
+            && runtime.preview.is_some()
+            && runtime.editing.is_none()
+            && runtime.revision != identity().1
+        {
+            reset_stale(runtime);
+            runtime.frame = runtime
+                .frame
+                .min(DOCUMENT.with(|d| d.borrow().animation().duration) - 1);
+            evaluate(runtime);
+        }
+    });
+}
+/// Finish before locking or deleting the target layer.
+pub(super) fn finish_editing_layer(layer: &str) -> Result<(), String> {
+    RUNTIMES.with(|r| {
+        let mut runtimes = r.borrow_mut();
+        if let Some(runtime) = runtimes.get_mut(&current_label()) {
+            if runtime
+                .editing
+                .as_ref()
+                .is_some_and(|(id, _, _, _)| id == layer)
+            {
+                record_edit(runtime)?;
+            }
+        }
+        Ok(())
+    })
+}
+/// Flush before native save; keep the cel selected for subsequent strokes.
+pub(super) fn flush_editing() -> Result<(), String> {
+    RUNTIMES.with(|r| {
+        let mut runtimes = r.borrow_mut();
+        let Some(runtime) = runtimes.get_mut(&current_label()) else {
+            return Ok(());
+        };
+        if runtime.document_id != identity().0 {
+            runtime.editing = None;
+            return Ok(());
+        }
+        let editing = runtime.editing.clone();
+        record_edit(runtime)?;
+        runtime.editing = editing.map(|(layer, frame, _, cel)| (layer, frame, identity().1, cel));
+        Ok(())
+    })
 }
 fn validate_motion_font(
     doc: &Document,
@@ -425,7 +640,9 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
     | Request::RemoveMotion { document_id, .. }
     | Request::MoveMotion { document_id, .. }
     | Request::ExposureBatch { document_id, .. }
+    | Request::ExposureGroup { document_id, .. }
     | Request::EditExposure { document_id, .. }
+    | Request::LoadCel { document_id, .. }
     | Request::AssignCel { document_id, .. }
     | Request::RenameCel { document_id, .. }
     | Request::CreateCel { document_id, .. }
@@ -451,6 +668,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         close(&current_label());
         return Ok(Response {
             exposure_selection: None,
+            exposure_group_selection: None,
             frame: 0,
             playing: false,
             preview: false,
@@ -504,6 +722,11 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             }
         }
         let mut exposure_selection = None;
+        let mut exposure_group_selection = None;
+        if let Request::ExposureGroup { revision, edits, .. } = &request {
+            if *revision != identity().1 { return Err("The document was updated; refresh the selection / 文書が更新されました。選択し直してください / 文档已更新，请重新选择".into()); }
+            exposure_group_selection = Some(DOCUMENT.with(|d| d.borrow().animation_exposure_group_selection(edits))?);
+        }
         if let Request::ExposureBatch{revision,layer,frames,edit,..}=&request {
             if *revision!=identity().1{return Err("The document was updated; refresh the selection / 文書が更新されました。選択し直してください / 文档已更新，请重新选择".into());}
             exposure_selection = Some((layer.clone(), DOCUMENT.with(|d|d.borrow().animation_exposure_batch_selection(layer,frames,edit))?));
@@ -529,8 +752,10 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 | Request::Stop
                 | Request::StopMotion { .. }
                 | Request::Load { .. }
+                | Request::LoadCel { .. }
                 | Request::Select { .. }
                 | Request::ExposureBatch { .. }
+                | Request::ExposureGroup { .. }
                 | Request::EditExposure { .. }
                 | Request::AssignCel { .. }
                 | Request::RenameCel { .. }
@@ -541,6 +766,12 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         ) {
             changed |= record_edit(runtime)?;
         }
+        let restore_preview = matches!(request, Request::Get | Request::Refresh)
+            && runtime.document_id == identity().0
+            && runtime.revision != identity().1
+            && runtime.preview.is_some()
+            && runtime.editing.is_none()
+            && !DOCUMENT.with(|d| d.borrow().has_active_stroke());
         reset_stale(runtime);
         let duration = DOCUMENT.with(|d| {
             let d = d.borrow();
@@ -550,7 +781,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         runtime.frame = runtime.frame.min(duration - 1);
         match request {
             Request::Get => {
-                if first_open
+                if restore_preview || (first_open
                     && DOCUMENT.with(|d| {
                         let doc = d.borrow();
                         !doc.has_active_stroke()
@@ -559,12 +790,12 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                                 .tracks
                                 .get(doc.selected_layer_id())
                                 .is_some_and(|t| !t.cels.is_empty())
-                    })
+                    }))
                 {
                     redraw_needed = evaluate(runtime);
                 }
             }
-            Request::Refresh => {}
+            Request::Refresh => { if restore_preview { redraw_needed = evaluate(runtime); } }
             Request::Onion { settings, .. } => {
                 settings.validate(duration)?;
                 let preview = runtime.preview.is_some();
@@ -577,8 +808,8 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 if preview {
                     evaluate(runtime);
                 }
-                if let Some((layer, frame, _)) = editing {
-                    runtime.editing = Some((layer, frame, identity().1));
+                if let Some((layer, frame, _, library_cel)) = editing {
+                    runtime.editing = Some((layer, frame, identity().1, library_cel));
                 }
                 changed = true;
                 redraw_needed = true;
@@ -626,9 +857,10 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             edit => {
                 // Validate the edit completely before invalidating preview state.
                 let editing = match &edit {
-                    Request::Load { layer, frame } | Request::Capture { layer, frame, .. } => {
-                        Some((layer.clone(), *frame))
-                    }
+                    Request::Load { layer, frame } => Some((layer.clone(), *frame, None)),
+                    Request::Capture { layer, frame, blank } => Some((layer.clone(), *frame,
+                        if *blank { None } else { runtime.editing.as_ref().filter(|(id, f, _, _)| id == layer && f == frame).and_then(|(_, _, _, cel)| *cel) })),
+                    Request::LoadCel { layer, cel, .. } => Some((layer.clone(), runtime.frame, Some(*cel))),
                     _ => None,
                 };
                 let next_frame = match &edit {
@@ -637,10 +869,15 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     | Request::Duplicate { frame, .. }
                     | Request::MoveKey { frame, .. }
                     | Request::AssignCel { frame, .. } => Some(*frame),
+                    Request::ExposureGroup { .. } => exposure_group_selection.as_ref().and_then(|groups| {
+                        let selected = DOCUMENT.with(|d| d.borrow().selected_layer_id().to_string());
+                        groups.iter().find(|(layer, frames)| *layer == selected && !frames.is_empty())
+                            .or_else(|| groups.iter().find(|(_, frames)| !frames.is_empty())).and_then(|(_, frames)| frames.first().copied())
+                    }),
                     Request::EditExposure { start, .. } => Some(*start),
                     _ => None,
                 };
-                let show_preview = matches!(
+                let show_preview = (matches!(edit, Request::Select { .. }) && runtime.preview.is_some()) || matches!(
                     edit,
                     Request::Key { .. }
                         | Request::MoveKey { .. }
@@ -650,6 +887,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                         | Request::RemoveMotion { .. }
                         | Request::MoveMotion { .. }
                         | Request::ExposureBatch { .. }
+                | Request::ExposureGroup { .. }
                 | Request::EditExposure { .. }
                         | Request::AssignCel { .. }
                         | Request::RenameCel { .. }
@@ -663,6 +901,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     match edit {
                         Request::Select { layer } => doc.select_layer(layer),
                         Request::ExposureBatch {layer,frames,edit,..} => doc.edit_animation_exposure_batch(&layer,&frames,&edit),
+                        Request::ExposureGroup { edits, .. } => doc.edit_animation_exposure_group(&edits),
                         Request::EditExposure {
                             layer,
                             from,
@@ -698,13 +937,15 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                             frame,
                             blank,
                         } => {
-                            if blank {
+                            if !blank && runtime.editing.as_ref().is_some_and(|(id, f, _, cel)| *id == layer && *f == frame && cel.is_some()) {
+                                doc.record_animation_library_cel(&layer, runtime.editing.as_ref().unwrap().3.unwrap())
+                            } else if blank {
                                 doc.blank_animation_cel(&layer, frame)
                             } else {
                                 let frame = if runtime
                                     .editing
                                     .as_ref()
-                                    .is_some_and(|(id, f, _)| *id == layer && *f == frame)
+                                    .is_some_and(|(id, f, _, cel)| *id == layer && *f == frame && cel.is_none())
                                 {
                                     doc.animation()
                                         .tracks
@@ -723,6 +964,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                             doc.duplicate_animation_cel(&layer, from, frame)
                         }
                         Request::Load { layer, frame } => doc.load_animation_cel(&layer, frame),
+                        Request::LoadCel { layer, cel, .. } => doc.load_animation_library_cel(&layer, cel),
                         Request::Key {
                             layer,
                             frame,
@@ -771,8 +1013,14 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 runtime.preview = None;
                 runtime.revision = identity().1;
                 runtime.gpu_frame = None;
-                if let Some((layer, frame)) = editing {
-                    runtime.editing = Some((layer, frame, runtime.revision));
+                if let Some((layer, frame, library_cel)) = editing {
+                    // Resolve exposure loads once. Undoing an assignment must
+                    // never redirect pending strokes to the replacement cel.
+                    let library_cel = library_cel.or_else(|| DOCUMENT.with(|d| {
+                        let doc = d.borrow();
+                        doc.animation().tracks.get(&layer)?.exposure_at(frame, doc.animation().duration).map(|(_, e)| e.cel)
+                    }));
+                    runtime.editing = Some((layer, frame, runtime.revision, library_cel));
                     runtime.frame = frame;
                 }
                 if let Some(frame) = next_frame {
@@ -872,6 +1120,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         };
         Ok(Response {
             exposure_selection,
+            exposure_group_selection,
             frame: runtime.frame,
             playing: runtime.started.is_some(),
             preview: runtime.preview.is_some(),
@@ -1100,6 +1349,58 @@ mod tests {
         })
         .unwrap();
         close(&current_label());
+    }
+    #[test]
+    fn scene_onion_jobs_follow_all_tracks_revision_and_selection() {
+        use lumapaint_core::document::animation::{OnionScope, OnionSettings};
+        let _restore = setup();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.capture_animation_cel("layer-1", 0, false).unwrap();
+            doc.begin(
+                lumapaint_core::document::Point { x: 30., y: 30. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+            doc.capture_animation_cel("layer-1", 6, false).unwrap();
+            doc.blank_animation_cel("layer-1", 3).unwrap();
+        });
+        command(Request::Get).unwrap();
+        command(Request::Onion {
+            document_id: identity().0,
+            settings: OnionSettings {
+                enabled: true,
+                scope: OnionScope::Scene,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        command(Request::Seek { frame: 3 }).unwrap();
+        let job = onion_job().unwrap();
+        assert!(job.references.is_empty());
+        assert!(job.scene.is_some());
+        assert!(!job.scene_references.is_empty());
+        let before = DOCUMENT.with(|d| d.borrow().document_state());
+        assert!(crate::cel_previews::prepare_onion(&job).unwrap().is_some());
+        assert_eq!(
+            serde_json::to_value(DOCUMENT.with(|d| d.borrow().document_state())).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        assert!(onion_job().is_none());
+        let small = onion_job_at_side(64).unwrap();
+        assert_eq!(small.side, 64);
+        assert!(onion_job_at_side(64).is_none());
+        let enlarged = onion_job_at_side(128).unwrap();
+        assert_eq!(enlarged.side, 128);
+        assert_ne!(small.generation, enlarged.generation);
+        DOCUMENT.with(|d| {
+            d.borrow_mut().add_paint_layer().unwrap();
+        });
+        let next = onion_job().unwrap();
+        assert_ne!(next.generation, job.generation);
+        command(Request::Play).unwrap();
+        assert!(onion_job().is_none());
     }
     #[test]
     fn onion_jobs_preserve_live_edits_and_hide_during_playback() {
@@ -1451,6 +1752,274 @@ mod tests {
         });
     }
     #[test]
+    fn cross_track_edits_return_each_selection_and_reject_the_whole_stale_or_colliding_edit() {
+        use lumapaint_core::document::animation::{ExposureBatchEdit, ExposureTrackEdit};
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.set_animation_settings(24, 12, true).unwrap();
+            let layer = doc.add_paint_layer().unwrap();
+            for id in ["layer-1", layer.as_str()] {
+                for f in [0, 4, 8] {
+                    doc.capture_animation_cel(id, f, true).unwrap();
+                    doc.edit_animation_exposure(id, f, f, f + 2).unwrap();
+                }
+            }
+            layer
+        });
+        command(Request::Seek { frame: 0 }).unwrap();
+        let selected = command(Request::Select {
+            layer: layer.clone(),
+        })
+        .unwrap();
+        assert!(selected.preview);
+        let jobs = || {
+            vec![
+                ExposureTrackEdit {
+                    layer: "layer-1".into(),
+                    frames: vec![0],
+                    edit: ExposureBatchEdit::Shift {
+                        delta: 1,
+                        ripple: false,
+                    },
+                },
+                ExposureTrackEdit {
+                    layer: layer.clone(),
+                    frames: vec![0],
+                    edit: ExposureBatchEdit::Shift {
+                        delta: 1,
+                        ripple: false,
+                    },
+                },
+            ]
+        };
+        let (id, revision) = identity();
+        let response = command(Request::ExposureGroup {
+            document_id: id,
+            revision,
+            edits: jobs(),
+        })
+        .unwrap();
+        assert_eq!(
+            response.exposure_group_selection,
+            Some(vec![("layer-1".into(), vec![1]), (layer.clone(), vec![1])])
+        );
+        assert!(response.preview);
+        let changed = DOCUMENT.with(|d| d.borrow_mut().encode().unwrap());
+        assert!(command(Request::ExposureGroup {
+            document_id: id,
+            revision,
+            edits: jobs()
+        })
+        .is_err());
+        assert!(command(Request::ExposureGroup {
+            document_id: id + 1,
+            revision: identity().1,
+            edits: jobs()
+        })
+        .is_err());
+        let mut invalid = jobs();
+        invalid[0].frames = vec![1];
+        invalid[1].frames = vec![1];
+        invalid[1].edit = ExposureBatchEdit::Shift {
+            delta: 3,
+            ripple: false,
+        };
+        assert!(command(Request::ExposureGroup {
+            document_id: id,
+            revision: identity().1,
+            edits: invalid
+        })
+        .is_err());
+        assert_eq!(DOCUMENT.with(|d| d.borrow_mut().encode().unwrap()), changed);
+        DOCUMENT.with(|d| {
+            d.borrow_mut().undo();
+        });
+        assert!(DOCUMENT.with(|d| d.borrow().animation().tracks["layer-1"]
+            .exposures
+            .contains_key(&0)));
+        assert!(DOCUMENT.with(|d| d.borrow().animation().tracks[&layer]
+            .exposures
+            .contains_key(&0)));
+        refresh_history_preview();
+        assert!(active());
+        let refreshed = command(Request::Refresh).unwrap();
+        assert!(refreshed.preview);
+        assert_eq!(refreshed.frame, response.frame);
+        DOCUMENT.with(|d| {
+            d.borrow_mut().redo();
+        });
+        let refreshed = command(Request::Refresh).unwrap();
+        assert!(refreshed.preview);
+        assert_eq!(refreshed.frame, response.frame);
+    }
+    #[test]
+    fn library_drawing_previews_and_save_do_not_create_exposures() {
+        let _restore = setup();
+        let cel = DOCUMENT.with(|d| d.borrow_mut().create_animation_cel("layer-1").unwrap());
+        let id = identity().0;
+        command(Request::LoadCel {
+            document_id: id,
+            layer: "layer-1".into(),
+            cel,
+        })
+        .unwrap();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.begin(
+                lumapaint_core::document::Point { x: 20., y: 20. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+        });
+        command(Request::Get).unwrap();
+        let request = || crate::timeline::ThumbnailRequest {
+            document_id: id,
+            cels: vec![("layer-1".into(), cel)],
+            library: true,
+        };
+        let sources = thumbnail_sources(request()).unwrap();
+        assert_eq!(sources[0].cel.strokes.len(), 1);
+        DOCUMENT.with(|d| {
+            assert!(d.borrow().animation().tracks["layer-1"].cel_library[&cel]
+                .drawing
+                .strokes
+                .is_empty())
+        });
+        flush_editing().unwrap();
+        let before = editing_library_drawing();
+        DOCUMENT.with(|d| {
+            d.borrow_mut().undo();
+        });
+        restore_library_history(before);
+        assert_eq!(
+            DOCUMENT.with(|d| d.borrow().committed_paint_strokes().count()),
+            0
+        );
+        let before = editing_library_drawing();
+        DOCUMENT.with(|d| {
+            d.borrow_mut().redo();
+        });
+        restore_library_history(before);
+        assert_eq!(
+            DOCUMENT.with(|d| d.borrow().committed_paint_strokes().count()),
+            1
+        );
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let restored = Document::decode(&doc.encode().unwrap()).unwrap();
+            let track = &restored.animation().tracks["layer-1"];
+            assert!(track.exposures.is_empty());
+            assert_eq!(track.cel_library[&cel].drawing.strokes.len(), 1);
+            doc.begin(
+                lumapaint_core::document::Point { x: 40., y: 40. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+        });
+        command(Request::Seek { frame: 1 }).unwrap();
+        DOCUMENT.with(|d| {
+            let doc = d.borrow();
+            assert!(doc.animation().tracks["layer-1"].exposures.is_empty());
+            assert_eq!(
+                doc.animation().tracks["layer-1"].cel_library[&cel]
+                    .drawing
+                    .strokes
+                    .len(),
+                2
+            );
+        });
+        assert!(command(Request::LoadCel {
+            document_id: id + 1,
+            layer: "layer-1".into(),
+            cel
+        })
+        .is_err());
+    }
+    #[test]
+    fn unrecorded_shared_cel_thumbnails_follow_drawing_without_mutating_history() {
+        let _restore = setup();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.capture_animation_cel("layer-1", 0, true).unwrap();
+            let cel = doc.animation().tracks["layer-1"].exposures[&0].cel;
+            doc.assign_animation_cel("layer-1", 5, cel).unwrap();
+        });
+        command(Request::Load {
+            layer: "layer-1".into(),
+            frame: 2,
+        })
+        .unwrap();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.begin(
+                lumapaint_core::document::Point { x: 20., y: 20. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+        });
+        let revision = identity().1;
+        let sources = thumbnail_sources(crate::timeline::ThumbnailRequest {
+            document_id: identity().0,
+            cels: vec![("layer-1".into(), 0), ("layer-1".into(), 5)],
+            library: false,
+        })
+        .unwrap();
+        assert_eq!(sources[0].cel.strokes.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(&sources[0].cel, &sources[1].cel));
+        assert_eq!(identity().1, revision);
+        DOCUMENT.with(|d| {
+            d.borrow_mut().undo();
+        });
+        let sources = thumbnail_sources(crate::timeline::ThumbnailRequest {
+            document_id: identity().0,
+            cels: vec![("layer-1".into(), 0)],
+            library: false,
+        })
+        .unwrap();
+        assert!(sources[0].cel.strokes.is_empty());
+    }
+    #[test]
+    fn undoing_an_assignment_does_not_redirect_pending_drawing() {
+        let _restore = setup();
+        let (a, b) = DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let a = doc.create_animation_cel("layer-1").unwrap();
+            let b = doc.create_animation_cel("layer-1").unwrap();
+            doc.assign_animation_cel("layer-1", 0, a).unwrap();
+            doc.assign_animation_cel("layer-1", 0, b).unwrap();
+            (a, b)
+        });
+        command(Request::Load {
+            layer: "layer-1".into(),
+            frame: 0,
+        })
+        .unwrap();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            doc.undo(); // Loaded drawing history.
+            doc.undo(); // Exposure assignment history.
+            assert_eq!(doc.animation().tracks["layer-1"].exposures[&0].cel, a);
+            doc.begin(
+                lumapaint_core::document::Point { x: 20., y: 20. },
+                Brush::default(),
+            )
+            .unwrap();
+            doc.finish();
+        });
+        command(Request::Seek { frame: 1 }).unwrap();
+        DOCUMENT.with(|d| {
+            let doc = d.borrow();
+            let track = &doc.animation().tracks["layer-1"];
+            assert!(track.cel_library[&a].drawing.strokes.is_empty());
+            assert_eq!(track.cel_library[&b].drawing.strokes.len(), 1);
+            assert_eq!(track.exposures[&0].cel, a);
+        });
+    }
+    #[test]
     fn editing_existing_key_rebuilds_preview_at_its_frame() {
         use lumapaint_core::document::animation::{Interpolation, Property};
         let _restore = setup();
@@ -1528,7 +2097,7 @@ mod tests {
         }
     }
     #[test]
-    fn timeline_stops_stale_previews_and_releases_closed_document() {
+    fn timeline_refreshes_current_frame_preview_stops_playback_and_releases_closed_document() {
         let _restore = setup();
         command(Request::Get).unwrap();
         RUNTIMES.with(|r| {
@@ -1544,7 +2113,7 @@ mod tests {
                 .unwrap()
         });
         let response = command(Request::Get).unwrap();
-        assert!(!response.preview);
+        assert!(response.preview);
         assert!(!response.playing);
         DOCUMENT_OPEN.with(|o| o.set(false));
         assert!(command(Request::Get).unwrap().data.is_none());
