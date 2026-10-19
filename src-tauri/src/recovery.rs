@@ -64,6 +64,14 @@ struct Profile {
     active: Mutex<std::collections::HashSet<PathBuf>>,
 }
 
+impl Drop for Profile {
+    fn drop(&mut self) {
+        // A duplicated descriptor (including one inherited during process creation)
+        // can outlive this file. Release explicitly after the final writer stops.
+        let _ = self._lock.unlock();
+    }
+}
+
 fn remove_if_present(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -324,6 +332,22 @@ mod tests {
             .unwrap();
         doc.finish();
         doc
+    }
+    #[test]
+    fn final_writer_releases_lock_even_with_a_duplicated_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = Recovery::start(directory.path().into()).unwrap();
+        let descriptor = first.profile._lock.try_clone().unwrap();
+        let second = first.fork().unwrap();
+        drop(first);
+        assert!(Recovery::start(directory.path().into()).is_err());
+        drop(second);
+        let restarted = Recovery::start(directory.path().into()).unwrap();
+        assert!(Recovery::start(directory.path().into()).is_err());
+        drop(descriptor);
+        assert!(Recovery::start(directory.path().into()).is_err());
+        drop(restarted);
+        assert!(Recovery::start(directory.path().into()).is_ok());
     }
     #[test]
     fn restart_discovers_checkpoint_and_restores_unsaved_work() {

@@ -199,7 +199,7 @@
     },
     {
       "name": "aws-lc-rs",
-      "version": "1.18.1",
+      "version": "1.18.2",
       "license": "ISC AND (Apache-2.0 OR ISC)",
       "license_file": null,
       "source_notices": [
@@ -210,7 +210,7 @@
     },
     {
       "name": "aws-lc-sys",
-      "version": "0.45.0",
+      "version": "0.46.0",
       "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
       "license_file": null,
       "source_notices": [
@@ -752,7 +752,7 @@
     },
     {
       "name": "combine",
-      "version": "4.6.8",
+      "version": "4.6.9",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -1069,7 +1069,7 @@
     },
     {
       "name": "defmt",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1081,7 +1081,7 @@
     },
     {
       "name": "defmt-macros",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1093,16 +1093,19 @@
     },
     {
       "name": "defmt-parser",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
-      "source_notices": [],
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/knurling-rs/defmt"
     },
     {
       "name": "deranged",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1387,7 +1390,7 @@
     },
     {
       "name": "equivalent",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -1541,7 +1544,7 @@
     },
     {
       "name": "font-types",
-      "version": "0.12.6",
+      "version": "0.12.7",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2266,7 +2269,7 @@
     },
     {
       "name": "i_key_sort",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [],
@@ -2275,7 +2278,7 @@
     },
     {
       "name": "i_overlay",
-      "version": "9.0.1",
+      "version": "9.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [],
@@ -2295,7 +2298,7 @@
     },
     {
       "name": "i_tree",
-      "version": "0.19.0",
+      "version": "0.20.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -2523,7 +2526,7 @@
     },
     {
       "name": "inout",
-      "version": "0.2.2",
+      "version": "0.2.4",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2830,7 +2833,7 @@
     },
     {
       "name": "libc",
-      "version": "0.2.190",
+      "version": "0.2.191",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2898,7 +2901,7 @@
     },
     {
       "name": "libz-sys",
-      "version": "1.1.29",
+      "version": "1.1.30",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2934,7 +2937,7 @@
     },
     {
       "name": "litrs",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4378,7 +4381,7 @@
     },
     {
       "name": "rustls",
-      "version": "0.23.45",
+      "version": "0.23.46",
       "license": "Apache-2.0 OR ISC OR MIT",
       "license_file": null,
       "source_notices": [
@@ -4391,7 +4394,7 @@
     },
     {
       "name": "rustls-native-certs",
-      "version": "0.8.4",
+      "version": "0.8.5",
       "license": "Apache-2.0 OR ISC OR MIT",
       "license_file": null,
       "source_notices": [
@@ -4496,7 +4499,7 @@
     },
     {
       "name": "schannel",
-      "version": "0.1.29",
+      "version": "0.1.30",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -4529,7 +4532,7 @@
     },
     {
       "name": "schemars",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -4800,7 +4803,7 @@
     },
     {
       "name": "sha2",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5047,6 +5050,20 @@
       "repository": "https://github.com/nvzqz/static-assertions-rs"
     },
     {
+      "name": "static_vcruntime",
+      "version": "3.0.0",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "LICENSE-ZLIB"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/ChrisDenton/static_vcruntime"
+    },
+    {
       "name": "strict-num",
       "version": "0.1.1",
       "license": "MIT",
@@ -5178,7 +5195,7 @@
     },
     {
       "name": "syn",
-      "version": "3.0.8",
+      "version": "3.0.9",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5296,7 +5313,7 @@
     },
     {
       "name": "tauri",
-      "version": "2.12.3",
+      "version": "2.12.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5308,7 +5325,7 @@
     },
     {
       "name": "tauri-build",
-      "version": "2.7.2",
+      "version": "2.7.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5320,7 +5337,7 @@
     },
     {
       "name": "tauri-codegen",
-      "version": "2.7.2",
+      "version": "2.7.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5332,7 +5349,7 @@
     },
     {
       "name": "tauri-macros",
-      "version": "2.7.2",
+      "version": "2.7.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5344,7 +5361,7 @@
     },
     {
       "name": "tauri-runtime",
-      "version": "2.12.1",
+      "version": "2.12.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5356,7 +5373,7 @@
     },
     {
       "name": "tauri-runtime-wry",
-      "version": "2.12.1",
+      "version": "2.12.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5368,7 +5385,7 @@
     },
     {
       "name": "tauri-utils",
-      "version": "2.10.1",
+      "version": "2.10.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5557,7 +5574,7 @@
     },
     {
       "name": "tokio",
-      "version": "1.53.2",
+      "version": "1.53.3",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -5874,7 +5891,7 @@
     },
     {
       "name": "unicode-ident",
-      "version": "1.0.26",
+      "version": "1.0.27",
       "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -5887,12 +5904,13 @@
     },
     {
       "name": "unicode-normalization",
-      "version": "0.1.25",
-      "license": "MIT OR Apache-2.0",
+      "version": "0.1.26",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
       "license_file": null,
       "source_notices": [
         "LICENSE-APACHE",
-        "LICENSE-MIT"
+        "LICENSE-MIT",
+        "LICENSE-UNICODE"
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/unicode-rs/unicode-normalization"
@@ -7077,7 +7095,7 @@
     },
     {
       "name": "zerocopy",
-      "version": "0.8.62",
+      "version": "0.8.63",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7090,7 +7108,7 @@
     },
     {
       "name": "zerocopy-derive",
-      "version": "0.8.62",
+      "version": "0.8.63",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [

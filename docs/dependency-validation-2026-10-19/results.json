@@ -1,0 +1,605 @@
+{
+  "checked_date": "2026-10-19",
+  "registry_snapshot": [
+    {
+      "kind": "cargo",
+      "name": "serde",
+      "current": "=1.0.229",
+      "latest": "1.0.229",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/serde"
+    },
+    {
+      "kind": "cargo",
+      "name": "tauri-build",
+      "current": "=2.7.2",
+      "latest": "2.7.3",
+      "changed": true,
+      "url": "https://crates.io/api/v1/crates/tauri-build"
+    },
+    {
+      "kind": "cargo",
+      "name": "libc",
+      "current": "=0.2.190",
+      "latest": "0.2.191",
+      "changed": true,
+      "url": "https://crates.io/api/v1/crates/libc"
+    },
+    {
+      "kind": "cargo",
+      "name": "unicode-segmentation",
+      "current": "=1.13.3",
+      "latest": "1.13.3",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/unicode-segmentation"
+    },
+    {
+      "kind": "cargo",
+      "name": "base64",
+      "current": "=0.23.1",
+      "latest": "0.23.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/base64"
+    },
+    {
+      "kind": "cargo",
+      "name": "tauri",
+      "current": "=2.12.3",
+      "latest": "2.12.4",
+      "changed": true,
+      "url": "https://crates.io/api/v1/crates/tauri"
+    },
+    {
+      "kind": "cargo",
+      "name": "serde_json",
+      "current": "=1.0.154",
+      "latest": "1.0.154",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/serde_json"
+    },
+    {
+      "kind": "cargo",
+      "name": "tempfile",
+      "current": "=3.27.0",
+      "latest": "3.27.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/tempfile"
+    },
+    {
+      "kind": "cargo",
+      "name": "rfd",
+      "current": "=0.17.2",
+      "latest": "0.17.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/rfd"
+    },
+    {
+      "kind": "cargo",
+      "name": "reqwest",
+      "current": "=0.13.5",
+      "latest": "0.13.5",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/reqwest"
+    },
+    {
+      "kind": "cargo",
+      "name": "image",
+      "current": "=0.25.10",
+      "latest": "0.25.10",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/image"
+    },
+    {
+      "kind": "cargo",
+      "name": "security-framework",
+      "current": "=3.7.0",
+      "latest": "3.7.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/security-framework"
+    },
+    {
+      "kind": "cargo",
+      "name": "pollster",
+      "current": "=1.0.1",
+      "latest": "1.0.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/pollster"
+    },
+    {
+      "kind": "cargo",
+      "name": "raw-window-handle",
+      "current": "=0.6.2",
+      "latest": "0.6.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/raw-window-handle"
+    },
+    {
+      "kind": "cargo",
+      "name": "objc2",
+      "current": "=0.6.5",
+      "latest": "0.6.5",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/objc2"
+    },
+    {
+      "kind": "cargo",
+      "name": "objc2-app-kit",
+      "current": "=0.3.2",
+      "latest": "0.3.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/objc2-app-kit"
+    },
+    {
+      "kind": "cargo",
+      "name": "objc2-foundation",
+      "current": "=0.3.2",
+      "latest": "0.3.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/objc2-foundation"
+    },
+    {
+      "kind": "cargo",
+      "name": "usvg",
+      "current": "0.48.1",
+      "latest": "0.48.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/usvg"
+    },
+    {
+      "kind": "cargo",
+      "name": "tiny-skia-path",
+      "current": "=0.12.0",
+      "latest": "0.12.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/tiny-skia-path"
+    },
+    {
+      "kind": "cargo",
+      "name": "roxmltree",
+      "current": "=0.21.1",
+      "latest": "0.21.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/roxmltree"
+    },
+    {
+      "kind": "cargo",
+      "name": "i_overlay",
+      "current": "=9.0.1",
+      "latest": "9.1.0",
+      "changed": true,
+      "url": "https://crates.io/api/v1/crates/i_overlay"
+    },
+    {
+      "kind": "cargo",
+      "name": "wgpu",
+      "current": "=30.0.1",
+      "latest": "30.0.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/wgpu"
+    },
+    {
+      "kind": "cargo",
+      "name": "bytemuck",
+      "current": "=1.25.2",
+      "latest": "1.25.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/bytemuck"
+    },
+    {
+      "kind": "cargo",
+      "name": "resvg",
+      "current": "=0.48.1",
+      "latest": "0.48.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/resvg"
+    },
+    {
+      "kind": "cargo",
+      "name": "ttf-parser",
+      "current": "=0.25.1",
+      "latest": "0.25.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/ttf-parser"
+    },
+    {
+      "kind": "cargo",
+      "name": "rustybuzz",
+      "current": "=0.20.1",
+      "latest": "0.20.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/rustybuzz"
+    },
+    {
+      "kind": "cargo",
+      "name": "skia-safe",
+      "current": "=0.153.3",
+      "latest": "0.153.3",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/skia-safe"
+    },
+    {
+      "kind": "cargo",
+      "name": "objc2-metal",
+      "current": "=0.3.2",
+      "latest": "0.3.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/objc2-metal"
+    },
+    {
+      "kind": "cargo",
+      "name": "metal",
+      "current": "=0.33.0",
+      "latest": "0.33.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/metal"
+    },
+    {
+      "kind": "cargo",
+      "name": "lopdf",
+      "current": "=0.45.0",
+      "latest": "0.45.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/lopdf"
+    },
+    {
+      "kind": "cargo",
+      "name": "png",
+      "current": "=0.18.1",
+      "latest": "0.18.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/png"
+    },
+    {
+      "kind": "cargo",
+      "name": "fontdb",
+      "current": "=0.24.0",
+      "latest": "0.24.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/fontdb"
+    },
+    {
+      "kind": "cargo",
+      "name": "svgtypes",
+      "current": "=0.16.1",
+      "latest": "0.16.1",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/svgtypes"
+    },
+    {
+      "kind": "cargo",
+      "name": "crc32fast",
+      "current": "=1.5.2",
+      "latest": "1.5.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/crc32fast"
+    },
+    {
+      "kind": "cargo",
+      "name": "flate2",
+      "current": "=1.1.10",
+      "latest": "1.1.10",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/flate2"
+    },
+    {
+      "kind": "cargo",
+      "name": "svg2pdf",
+      "current": "0.13.0",
+      "latest": "0.13.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/svg2pdf"
+    },
+    {
+      "kind": "cargo",
+      "name": "sha2",
+      "current": "=0.11.0",
+      "latest": "0.11.1",
+      "changed": true,
+      "url": "https://crates.io/api/v1/crates/sha2"
+    },
+    {
+      "kind": "cargo",
+      "name": "freetype-rs",
+      "current": "=0.38.0",
+      "latest": "0.38.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/freetype-rs"
+    },
+    {
+      "kind": "cargo",
+      "name": "simplecss",
+      "current": "0.2.2",
+      "latest": "0.2.2",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/simplecss"
+    },
+    {
+      "kind": "cargo",
+      "name": "freetype-sys",
+      "current": "0.23.0",
+      "latest": "0.23.0",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/freetype-sys"
+    },
+    {
+      "kind": "cargo",
+      "name": "block",
+      "current": "0.1.6",
+      "latest": "0.1.6",
+      "changed": false,
+      "url": "https://crates.io/api/v1/crates/block"
+    },
+    {
+      "kind": "npm",
+      "name": "@tauri-apps/api",
+      "current": "^2.12.3",
+      "latest": "2.12.4",
+      "changed": true,
+      "url": "https://registry.npmjs.org/%40tauri-apps%2Fapi"
+    },
+    {
+      "kind": "npm",
+      "name": "react",
+      "current": "^19.3.0",
+      "latest": "19.3.1",
+      "changed": true,
+      "url": "https://registry.npmjs.org/react"
+    },
+    {
+      "kind": "npm",
+      "name": "react-dom",
+      "current": "^19.3.0",
+      "latest": "19.3.1",
+      "changed": true,
+      "url": "https://registry.npmjs.org/react-dom"
+    },
+    {
+      "kind": "npm",
+      "name": "@tauri-apps/cli",
+      "current": "^2.12.2",
+      "latest": "2.12.3",
+      "changed": true,
+      "url": "https://registry.npmjs.org/%40tauri-apps%2Fcli"
+    },
+    {
+      "kind": "npm",
+      "name": "@types/react",
+      "current": "^19.3.0",
+      "latest": "19.3.0",
+      "changed": false,
+      "url": "https://registry.npmjs.org/%40types%2Freact"
+    },
+    {
+      "kind": "npm",
+      "name": "@types/react-dom",
+      "current": "^19.3.0",
+      "latest": "19.3.0",
+      "changed": false,
+      "url": "https://registry.npmjs.org/%40types%2Freact-dom"
+    },
+    {
+      "kind": "npm",
+      "name": "@vitejs/plugin-react",
+      "current": "^6.1.2",
+      "latest": "6.1.2",
+      "changed": false,
+      "url": "https://registry.npmjs.org/%40vitejs%2Fplugin-react"
+    },
+    {
+      "kind": "npm",
+      "name": "typescript",
+      "current": "^7.0.2",
+      "latest": "7.0.2",
+      "changed": false,
+      "url": "https://registry.npmjs.org/typescript"
+    },
+    {
+      "kind": "npm",
+      "name": "vite",
+      "current": "^8.3.4",
+      "latest": "8.3.4",
+      "changed": false,
+      "url": "https://registry.npmjs.org/vite"
+    }
+  ],
+  "cargo_changed_or_added_packages": [
+    {
+      "name": "aws-lc-rs",
+      "version": "1.18.2"
+    },
+    {
+      "name": "aws-lc-sys",
+      "version": "0.46.0"
+    },
+    {
+      "name": "combine",
+      "version": "4.6.9"
+    },
+    {
+      "name": "defmt",
+      "version": "1.2.0"
+    },
+    {
+      "name": "defmt-macros",
+      "version": "1.2.0"
+    },
+    {
+      "name": "defmt-parser",
+      "version": "1.1.0"
+    },
+    {
+      "name": "deranged",
+      "version": "0.5.9"
+    },
+    {
+      "name": "equivalent",
+      "version": "1.0.3"
+    },
+    {
+      "name": "font-types",
+      "version": "0.12.7"
+    },
+    {
+      "name": "i_key_sort",
+      "version": "0.12.0"
+    },
+    {
+      "name": "i_overlay",
+      "version": "9.1.0"
+    },
+    {
+      "name": "i_tree",
+      "version": "0.20.0"
+    },
+    {
+      "name": "inout",
+      "version": "0.2.4"
+    },
+    {
+      "name": "libc",
+      "version": "0.2.191"
+    },
+    {
+      "name": "libz-sys",
+      "version": "1.1.30"
+    },
+    {
+      "name": "litrs",
+      "version": "1.0.1"
+    },
+    {
+      "name": "rustls",
+      "version": "0.23.46"
+    },
+    {
+      "name": "rustls-native-certs",
+      "version": "0.8.5"
+    },
+    {
+      "name": "schannel",
+      "version": "0.1.30"
+    },
+    {
+      "name": "schemars",
+      "version": "1.2.3"
+    },
+    {
+      "name": "sha2",
+      "version": "0.11.1"
+    },
+    {
+      "name": "static_vcruntime",
+      "version": "3.0.0"
+    },
+    {
+      "name": "syn",
+      "version": "3.0.9"
+    },
+    {
+      "name": "tauri",
+      "version": "2.12.4"
+    },
+    {
+      "name": "tauri-build",
+      "version": "2.7.3"
+    },
+    {
+      "name": "tauri-codegen",
+      "version": "2.7.3"
+    },
+    {
+      "name": "tauri-macros",
+      "version": "2.7.3"
+    },
+    {
+      "name": "tauri-runtime",
+      "version": "2.12.2"
+    },
+    {
+      "name": "tauri-runtime-wry",
+      "version": "2.12.2"
+    },
+    {
+      "name": "tauri-utils",
+      "version": "2.10.2"
+    },
+    {
+      "name": "tokio",
+      "version": "1.53.3"
+    },
+    {
+      "name": "unicode-ident",
+      "version": "1.0.27"
+    },
+    {
+      "name": "unicode-normalization",
+      "version": "0.1.26"
+    },
+    {
+      "name": "zerocopy",
+      "version": "0.8.63"
+    },
+    {
+      "name": "zerocopy-derive",
+      "version": "0.8.63"
+    }
+  ],
+  "checks": {
+    "frontend_build": "passed",
+    "architecture": "passed",
+    "measurements": "passed",
+    "color_modes": "passed",
+    "workspace_notifications": "passed",
+    "timeline_view": "passed",
+    "cargo_fmt": "passed",
+    "workspace_all_target_clippy_warnings_denied": "passed",
+    "workspace_tests": {
+      "passed": 1003,
+      "failed": 0,
+      "ignored": 66
+    },
+    "block_runtime": {
+      "passed": 1,
+      "failed": 0
+    },
+    "gpu_tests": {
+      "adapter": "Apple M4",
+      "backend": "Metal",
+      "passed": 27,
+      "failed": 0
+    },
+    "shared_metal_tests": {
+      "passed": 5,
+      "failed": 0
+    },
+    "brush_visual_export": {
+      "passed": 1,
+      "repeats_test_in_gpu_suite": true,
+      "alpha_reference_max_difference": "2/255",
+      "images_inspected": [
+        "crossing-one-stroke.png",
+        "crossing-six-passes.png"
+      ]
+    },
+    "native_link_and_rgba_decode": {
+      "status": "passed",
+      "freetype": "2.15.0",
+      "libpng": "1.6.59"
+    },
+    "macos_tauri_debug_bundle": "passed"
+  },
+  "pending": [
+    "Windows/Linux native execution",
+    "Full interactive GUI acceptance",
+    "Signed/notarized release validation"
+  ],
+  "retained_upstream_constraints": [
+    "brotli-decompressor 6.0.1",
+    "generic-array 0.14.7",
+    "toml 0.8.2",
+    "toml_datetime 0.6.3",
+    "toml_edit 0.20.2",
+    "FreeType-adapted private zlib 1.3.1",
+    "Skia upstream native dependency pins"
+  ]
+}

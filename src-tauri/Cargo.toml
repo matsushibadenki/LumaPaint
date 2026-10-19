@@ -12,17 +12,17 @@ name = "lumapaint_app"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "=2.7.2", features = [] }
+tauri-build = { version = "=2.7.3", features = [] }
 
 [dependencies]
-libc = "=0.2.190"
+libc = "=0.2.191"
 unicode-segmentation = "=1.13.3"
 lumapaint-fonts = { path = "../crates/lumapaint-fonts" }
 base64 = "=0.23.1"
 lumapaint-renderer = { path = "../crates/lumapaint-renderer" }
 lumapaint-formats = { path = "../crates/lumapaint-formats" }
 lumapaint-svg = { path = "../crates/lumapaint-svg" }
-tauri = { version = "=2.12.3", features = [] }
+tauri = { version = "=2.12.4", features = [] }
 lumapaint-core = { path = "../crates/lumapaint-core" }
 serde.workspace = true
 serde_json = "=1.0.154"
