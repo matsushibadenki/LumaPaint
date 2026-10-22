@@ -921,7 +921,11 @@ fn dab_density_on_tiles(
         if dab.weight == 0.0 {
             continue;
         }
-        let fringe = 2.0 * dab.texture_scale;
+        // Texture coordinates remain in document space, but a downsampled tip
+        // still needs an output-pixel filter footprint. Otherwise a dab between
+        // pixel centers can disappear entirely from thumbnails/onion references.
+        let filter_scale = dab.texture_scale.max(1.0);
+        let fringe = 2.0 * filter_scale;
         let left = ((dab.x - dab.radius - fringe).floor() as i32).max(0) as u32;
         let top = ((dab.y - dab.radius - fringe).floor() as i32).max(0) as u32;
         let right = ((dab.x + dab.radius + fringe).ceil() as i32)
@@ -962,10 +966,10 @@ fn dab_density_on_tiles(
                         let dx = x as f32 + 0.5 - dab.x;
                         let dy = y as f32 + 0.5 - dab.y;
                         let distance = dx.hypot(dy);
-                        // Share the GPU brush's document-pixel radial profile. A 2x
-                        // preview must scale the fringe as well as the tip radius.
-                        let aa = ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01)
-                            * dab.texture_scale;
+                        // Preserve the existing 1x/2x radial profile while keeping
+                        // antialiasing at least one output pixel wide when reduced.
+                        let aa =
+                            ((dx.abs() + dy.abs()) / distance.max(0.001)).max(0.01) * filter_scale;
                         let edge = (inner + aa).max(dab.radius + aa);
                         let t = ((distance - inner) / (edge - inner)).clamp(0.0, 1.0);
                         let profile = 1.0 - t * t * (3.0 - 2.0 * t);

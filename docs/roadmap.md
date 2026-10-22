@@ -1,5 +1,13 @@
 # Roadmap
 
+## macOS CIの通知・縮小プレビュー修正（2026-10-22）
+
+- 🟢 [Done] [Actions run 39753504904](https://github.com/matsushibadenki/LumaPaint/actions/runs/39753504904) のmacOSテスト失敗2件をローカルで再現。`workspace_notification_preserves_payloads` は `f32` のJSON文字列化（0.6）と `Value` 化（0.6000000238418579）の違いが原因。通知内の文字列・文書ID・タブ情報を検証し、用紙設定は本来の型へ復号して比較するよう修正。
+- 🟢 [Done] `scene_worker_reuses_pixels_and_rejects_stale_cache_keys` は、用紙・画材の座標固定に使う縮小率がアンチエイリアス幅も縮め、16pxの筆跡が64pxのプレビューで全透明になる問題。テクスチャ座標の縮尺を維持しつつ、フィルター幅は最低1出力画素分を確保。通常解像度と2倍解像度の計算は維持。
+- 🟢 [Done] 出力画素の角・中心・中間に位置する筆跡を64／128pxで確認する回帰テストを追加。透明背景、筆跡の局所性、文書を変更しないことも確認し、キャッシュのテストでは元画像に筆跡が存在することを明示的に検査。
+- 🟢 [Done] ローカルmacOSで `cargo test --workspace --locked --offline`、macOS専用 `block` ランタイムテスト、Clippy（全ターゲット・警告をエラー扱い）、Rust整形、フロントエンドビルド、通知差分テスト、依存境界チェックが成功。全体テストのHTTPモックにはlocalhost接続を許可して検証。
+- ⭕️ [Pending] 修正を反映したGitHub Actionsでの再確認。報告された実行のWindows・Ubuntuは成功。macOSランナーの混雑通知はテスト失敗とは別の待機時間に関する通知。
+
 ## LUTエディタ（2026-10-22）
 
 - 🟢 [Done] 右上のパネル開閉ボタンの列で、カラートーンクリエイターの左にLUTボタンを追加。独立した編集ページを遅延ロードし、配色／素材ページとの排他表示、背面キャンバスの非表示・ショートカット抑止、閉じる／Escapeに対応。日本語・英語・简体中文を実装。

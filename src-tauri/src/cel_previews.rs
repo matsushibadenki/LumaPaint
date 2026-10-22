@@ -528,6 +528,10 @@ mod tests {
             side: job.side,
         };
         let cached = scene_cache().lock().unwrap().get(key).unwrap();
+        assert!(
+            cached.pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+            "Scene reference must contain the reduced stroke"
+        );
         let again = prepare_onion(&job).unwrap().unwrap();
         assert_eq!(again.pixels, first.pixels);
         assert!(Arc::ptr_eq(
@@ -536,7 +540,10 @@ mod tests {
         ));
         job.mode = OnionColor::Original;
         let original = prepare_onion(&job).unwrap().unwrap();
-        assert_ne!(original.pixels, first.pixels);
+        assert!(
+            original.pixels != first.pixels,
+            "Original and tinted references must differ"
+        );
         assert!(Arc::ptr_eq(
             &cached,
             &scene_cache().lock().unwrap().get(key).unwrap()

@@ -381,6 +381,35 @@ mod tests {
         image.data()[offset..offset + 4].try_into().unwrap()
     }
     #[test]
+    fn scene_reference_preserves_reduced_dabs_between_pixel_centers() {
+        // 960 -> 64 places (30, 30) on an output pixel corner. A 16px brush
+        // becomes ~1px wide and used to miss every sample after texture scaling.
+        for (x, y) in [(30., 30.), (37.5, 37.5), (32., 34.)] {
+            let mut doc = Document::default();
+            doc.begin(Point { x, y }, Brush::default()).unwrap();
+            doc.finish();
+            let before = doc.encode().unwrap();
+            for side in [64, 128] {
+                let reference = scene_pixels(&doc, side).unwrap();
+                assert!(
+                    reference.pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+                    "Stroke disappeared at ({x}, {y}), side={side}"
+                );
+                assert_eq!(&reference.pixels[..4], &[0; 4]);
+                let occupied = reference
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[3] > 0)
+                    .count();
+                assert!(occupied < 64, "Reduced stroke must stay localized");
+            }
+            assert_eq!(doc.encode().unwrap(), before);
+        }
+    }
+
+    #[test]
     fn scene_reference_composes_layers_without_paper_or_document_mutation() {
         let mut state = Document::default().document_state();
         state.width = 32;

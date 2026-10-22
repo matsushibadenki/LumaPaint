@@ -6394,10 +6394,30 @@ mod tests {
                 }],
             };
             let workspace = serde_json::to_string(&snapshot).unwrap();
+            let received: serde_json::Value = serde_json::from_str(&workspace).unwrap();
             assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&workspace).unwrap(),
-                serde_json::to_value(&snapshot).unwrap()
+                received["activeId"],
+                serde_json::to_value(snapshot.active_id).unwrap()
             );
+            assert_eq!(
+                received["documents"],
+                serde_json::to_value(&snapshot.documents).unwrap()
+            );
+            if let Some(active) = &snapshot.active {
+                assert_eq!(received["active"]["name"], active.name);
+                assert_eq!(
+                    received["active"]["fileName"],
+                    serde_json::to_value(&active.file_name).unwrap()
+                );
+                // JSON text uses the shortest f32 representation (0.6), whereas
+                // to_value promotes it to f64 (0.6000000238418579). Compare the
+                // decoded domain type, not these different intermediate numbers.
+                let paper: lumapaint_core::natural_media::PaperSettings =
+                    serde_json::from_value(received["active"]["paper"].clone()).unwrap();
+                assert_eq!(paper, active.paper);
+            } else {
+                assert!(received["active"].is_null());
+            }
         }
     }
 
