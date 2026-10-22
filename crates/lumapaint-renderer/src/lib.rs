@@ -368,7 +368,18 @@ fn selection_bind_group_mode(
             },
             SelectionGpuRegion {
                 paint: [0.; 4],
-                bounds: [e, f, end as f32, 0.],
+                bounds: [
+                    e,
+                    f,
+                    end as f32,
+                    if mask.interpolation
+                        == lumapaint_core::selection_raster::SelectionInterpolation::Linear
+                    {
+                        1.
+                    } else {
+                        0.
+                    },
+                ],
                 info: [0.; 4],
             },
         ];

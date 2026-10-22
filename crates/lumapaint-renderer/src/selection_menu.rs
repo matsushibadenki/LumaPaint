@@ -16,7 +16,27 @@ fn bounded(value: Option<f32>, default: f32, min: f32, max: f32) -> Result<f32, 
     }
 }
 pub fn evaluate(doc: &Document, request: &PixelSelectionRequest) -> Result<Selection, String> {
+    if request.action == "transform" {
+        return doc
+            .selection()
+            .ok_or("Select an area first / 範囲を選択してください / 请先选择区域")?
+            .transformed(
+                request
+                    .matrix
+                    .ok_or("Transform missing / 変形値がありません / 缺少变换参数")?,
+            );
+    }
     let dimensions = doc.dimensions();
+    // Refinement depends only on coverage. Avoid rasterizing artwork or allocating
+    // RGBA samples on every slider update; use the same grid for preview and apply.
+    if matches!(request.action.as_str(), "refine" | "modify") {
+        let scale = (1024. / dimensions.0.max(dimensions.1) as f32).min(1.);
+        let size = [
+            (dimensions.0 as f32 * scale).round().max(1.) as u32,
+            (dimensions.1 as f32 * scale).round().max(1.) as u32,
+        ];
+        return analyze(size, &[], dimensions, doc.selection(), request);
+    }
     let sample = crate::selection_tools::EdgeMap::from_automatic_document(
         &doc.selection_sampling_document(request.all_layers.unwrap_or(true)),
     )?;
@@ -31,7 +51,9 @@ fn analyze(
     request: &PixelSelectionRequest,
 ) -> Result<Selection, String> {
     let (w, h) = (size[0] as usize, size[1] as usize);
-    if w == 0 || h == 0 || w * h > 4 * 1024 * 1024 || pixels.len() != w * h * 4 {
+    let coverage_only = matches!(request.action.as_str(), "refine" | "modify");
+    if w == 0 || h == 0 || w * h > 4 * 1024 * 1024 || (!coverage_only && pixels.len() != w * h * 4)
+    {
         return Err("Invalid sampling image".into());
     }
     let sx = dimensions.0 as f32 / size[0] as f32;
@@ -382,6 +404,87 @@ fn morph(input: &[f32], w: usize, h: usize, radius: usize, max: bool) -> Vec<f32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumapaint_formats::native::NativeDocumentCodec;
+    #[test]
+    fn selection_refine_coverage_only_matches_sampled_path() {
+        let mut state = Document::default().document_state();
+        state.width = 64;
+        state.height = 48;
+        let mut doc = Document::from_document_state(state).unwrap();
+        doc.set_tool_pixel_selection(Some(Selection::new(
+            lumapaint_core::selection::SelectionShape::Rectangle,
+            [10., 10., 30., 20.],
+        )))
+        .unwrap();
+        for inverse in [false, true] {
+            let request = PixelSelectionRequest {
+                action: "refine".into(),
+                smooth: Some(2.),
+                feather: Some(3.),
+                shift: Some(-2.),
+                contrast: Some(25.),
+                inverse: Some(inverse),
+                ..Default::default()
+            };
+            let direct = evaluate(&doc, &request).unwrap();
+            let sampled = analyze(
+                [64, 48],
+                &vec![127; 64 * 48 * 4],
+                (64, 48),
+                doc.selection(),
+                &request,
+            )
+            .unwrap();
+            assert_eq!(direct, sampled);
+        }
+        let invalid = PixelSelectionRequest {
+            action: "refine".into(),
+            feather: Some(f32::NAN),
+            ..Default::default()
+        };
+        assert!(evaluate(&doc, &invalid).is_err());
+    }
+    #[test]
+    fn transform_evaluates_selection_without_rendering_or_mutating_artwork() {
+        let mut doc = Document::default();
+        doc.begin(Point { x: 100., y: 100. }, Default::default())
+            .unwrap();
+        doc.finish();
+        doc.set_path_selection(
+            vec![Point { x: 300.5, y: 200.5 }],
+            0.5,
+            lumapaint_core::selection::SelectionMode::Replace,
+        )
+        .unwrap();
+        let before = doc.encode().unwrap();
+        let transformed = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "transform".into(),
+                matrix: Some([2., 0., 0., 2., 0.25, 0.5]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(transformed.raster.as_ref().unwrap().size[0] <= 4);
+        assert!(
+            transformed.coverage(Point {
+                x: 601.25,
+                y: 401.5
+            }) > 0.99
+        );
+        assert_eq!(doc.encode().unwrap(), before);
+        assert!(evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "transform".into(),
+                matrix: Some([f32::NAN; 6]),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(doc.encode().unwrap(), before);
+    }
     fn request(action: &str) -> PixelSelectionRequest {
         PixelSelectionRequest {
             action: action.into(),

@@ -267,6 +267,7 @@ pub fn run() {
             canvas::selection_path_action,
             canvas::vector_selection_action,
             canvas::pixel_selection_action,
+            canvas::pixel_selection_preview,
             canvas::set_paint_bucket_settings,
             canvas::set_clone_stamp_settings,
             canvas::retouch_settings,

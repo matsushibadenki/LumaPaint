@@ -7,14 +7,22 @@ fn selection_segment_distance(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>)->f32 {let v=b
 fn selection_edge_cross(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>)->bool {if (a.y>p.y)==(b.y>p.y){return false;}return p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x;}
 fn selection_start()->u32 {if selection_regions[0].info.x==8.{return 1u;}return select(0u,2u,selection_regions[0].info.x==7.);}
 fn selection_end()->u32 {return select(arrayLength(&selection_regions),u32(selection_regions[0].info.y),selection_regions[0].info.x==7.);}
-fn selection_raster_coverage(point:vec2<f32>)->f32 {
- if selection_regions[0].info.x!=7. {return 0.;}
+fn selection_raster_sample(pixel:vec2<f32>)->f32 {
  let header=selection_regions[0];let second=selection_regions[1];
- let pixel=floor(vec2(header.bounds.z*point.x+header.info.z*point.y+second.bounds.x,header.bounds.w*point.x+header.info.w*point.y+second.bounds.y));
  if any(pixel<vec2(0.))||any(pixel>=header.bounds.xy){return 0.;}
  let i=u32(pixel.y)*u32(header.bounds.x)+u32(pixel.x);let r=selection_regions[u32(second.bounds.z)+i/32u];let word=(i%32u)/4u;
  var bits=0u;if word<4u{bits=bitcast<u32>(r.bounds[word]);}else{bits=bitcast<u32>(r.info[word-4u]);}
  return f32((bits>>((i%4u)*8u))&255u)/255.;
+}
+fn selection_raster_coverage(point:vec2<f32>)->f32 {
+ if selection_regions[0].info.x!=7. {return 0.;}
+ let header=selection_regions[0];let second=selection_regions[1];
+ let pixel=vec2(header.bounds.z*point.x+header.info.z*point.y+second.bounds.x,header.bounds.w*point.x+header.info.w*point.y+second.bounds.y);
+ if second.bounds.w<0.5 {return selection_raster_sample(floor(pixel));}
+ let centered=pixel-vec2(0.5);let base=floor(centered);let fraction=centered-base;
+ let top=mix(selection_raster_sample(base),selection_raster_sample(base+vec2(1.,0.)),fraction.x);
+ let bottom=mix(selection_raster_sample(base+vec2(0.,1.)),selection_raster_sample(base+vec2(1.,1.)),fraction.x);
+ return mix(top,bottom,fraction.y);
 }
 fn selection_distance(point:vec2<f32>)->f32 {
  var result=select(-100000.,0.5-selection_raster_coverage(point),selection_start()==2u);var nearest=100000.;var parity=false;

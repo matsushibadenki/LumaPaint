@@ -4807,6 +4807,9 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return result;
     }
 
+    if let Some(result) = pixel_selection_menu::render(canvas) {
+        return result;
+    }
     if let Some(result) = selection_tools::render(canvas) {
         return result;
     }
@@ -10572,6 +10575,7 @@ pub fn tool_preview(request: Option<super::ToolPreviewRequest>) -> Result<(), St
     request_redraw()
 }
 pub fn clear_window_preview(label: &str) {
+    pixel_selection_menu::clear_preview(label);
     TOOL_WINDOW_PREVIEWS.with(|previews| previews.borrow_mut().remove(label));
     if let Ok(_session) = SessionGuard::enter(label) {
         let _ = request_redraw();

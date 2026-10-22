@@ -2679,6 +2679,7 @@ pub async fn pixel_selection_action(
             "similar",
             "modify",
             "refine",
+            "transform",
         ]
         .contains(&request.action.as_str())
         {
@@ -2730,5 +2731,41 @@ pub async fn rasterize_vector_layer(
     {
         let _ = (window, id);
         Err("Native rasterization is pending on this platform".into())
+    }
+}
+
+/// Transient Select and Mask coverage overlay. No mask pixels cross IPC.
+#[tauri::command]
+pub async fn pixel_selection_preview(
+    window: tauri::WebviewWindow,
+    request: Option<lumapaint_core::document::PixelSelectionRequest>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(request) = request else {
+            return on_main(window, platform::pixel_selection_menu::cancel_preview).await;
+        };
+        let job = on_main(window.clone(), move || {
+            platform::pixel_selection_menu::prepare_preview(request)
+        })
+        .await?;
+        let result = crate::diagnostic_jobs::spawn_blocking(move || {
+            platform::pixel_selection_menu::evaluate_preview(job)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        on_main(window, move || {
+            platform::pixel_selection_menu::install_preview(result)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        if request.is_none() {
+            Ok(true)
+        } else {
+            Err("Native preview is pending on this platform".into())
+        }
     }
 }

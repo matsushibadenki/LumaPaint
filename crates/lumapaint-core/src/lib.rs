@@ -50,5 +50,6 @@ pub mod retouch;
 pub mod history_storage;
 
 pub mod selection_raster;
+mod selection_transform;
 
 pub mod natural_media;

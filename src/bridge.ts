@@ -679,3 +679,7 @@ export const pixelSelectionAction=(request:PixelSelectionRequest)=>invoke<Docume
 export async function setPaperSimulation(paper:PaperSettings):Promise<DocumentSnapshot>{return invoke("set_paper_simulation",{paper});}
 
 export async function rasterizeVectorLayer(id:string):Promise<DocumentSnapshot>{return invoke("rasterize_vector_layer",{id});}
+
+/** Rust-owned transient coverage; cancellation never changes document/history. */
+export const pixelSelectionPreview=(request:PixelSelectionRequest|null)=>
+  invoke<boolean>('pixel_selection_preview',{request});

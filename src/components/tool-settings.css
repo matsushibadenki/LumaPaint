@@ -44,3 +44,5 @@
 .pixel-selection-dialog input[type=checkbox]{width:14px;height:14px;min-height:14px;flex:none;padding:0;margin:0}
 .pixel-selection-dialog fieldset>label:has(input[type=checkbox]){justify-content:flex-start}
 .pixel-selection-dialog fieldset>label>select{max-width:65%;min-width:0}
+
+.pixel-selection-dialog .tool-preview [role=status]{margin-left:auto;font-size:11px;color:var(--color-muted)}

@@ -287,7 +287,7 @@ impl Selection {
         let mask = self.raster.as_ref().unwrap();
         let [a, b, c, d, e, f] = mask.transform;
         let mut bounds = [mask.size[0], mask.size[1], 0, 0];
-        for &[start, len, value] in &mask.runs {
+        for &[start, len, value] in mask.runs.iter() {
             if value < 128 {
                 continue;
             }

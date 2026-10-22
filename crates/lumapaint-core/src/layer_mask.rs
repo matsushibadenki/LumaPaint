@@ -377,7 +377,8 @@ impl LayerMask {
                     for v in mask.transform {
                         hash.write_u32(v.to_bits());
                     }
-                    for run in &mask.runs {
+                    hash.write_u8(mask.interpolation as u8);
+                    for run in mask.runs.iter() {
                         for &v in run {
                             hash.write_u32(v);
                         }

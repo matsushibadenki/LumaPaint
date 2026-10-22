@@ -139,72 +139,11 @@ impl Document {
                 self.commit_path_selection(Some(result))?;
             }
             "transform" => {
-                let mut result = self
+                let result = self
                     .selection
-                    .clone()
-                    .ok_or("Select an area first / 範囲を選択してください / 请先选择区域")?;
-                let [a, b, c, d, e, f] = request.matrix.ok_or("Transform missing")?;
-                if [a, b, c, d, e, f]
-                    .iter()
-                    .any(|v| !v.is_finite() || v.abs() > 32768.)
-                    || (a * d - b * c).abs() < 1e-6
-                {
-                    return Err(
-                        "Invalid selection transform / 選択範囲の変形値が不正です / 选区变换无效"
-                            .into(),
-                    );
-                }
-                if result.regions.iter().any(|r| {
-                    r.shape == SelectionShape::Stroke || r.operation == SelectionOperation::Invert
-                }) {
-                    result = result.rasterized(self.dimensions(), 1024)?;
-                }
-                if let Some(mask) = &result.raster {
-                    result.raster = Some(Arc::new(mask.transformed([a, b, c, d, e, f])?));
-                }
-                for region in &mut result.regions {
-                    let [x, y, w, h] = region.bounds;
-                    let points=match region.shape {
-                        SelectionShape::Rectangle=>vec![Point{x,y},Point{x:x+w,y},Point{x:x+w,y:y+h},Point{x,y:y+h}],
-                        SelectionShape::Ellipse=>(0..128).map(|i|{let t=i as f32*std::f32::consts::TAU/128.;Point{x:x+w*(0.5+0.5*t.cos()),y:y+h*(0.5+0.5*t.sin())}}).collect(),
-                        SelectionShape::Polygon=>region.points.clone(),
-                        SelectionShape::Stroke=>return Err("Convert brush selections before transforming / ブラシ選択は輪郭に変換してから変形してください / 请先将画笔选区转换为轮廓".into()),
-                    };
-                    region.points = points
-                        .into_iter()
-                        .map(|p| Point {
-                            x: a * p.x + c * p.y + e,
-                            y: b * p.x + d * p.y + f,
-                        })
-                        .collect();
-                    let minx = region
-                        .points
-                        .iter()
-                        .map(|p| p.x)
-                        .fold(f32::INFINITY, f32::min);
-                    let maxx = region
-                        .points
-                        .iter()
-                        .map(|p| p.x)
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    let miny = region
-                        .points
-                        .iter()
-                        .map(|p| p.y)
-                        .fold(f32::INFINITY, f32::min);
-                    let maxy = region
-                        .points
-                        .iter()
-                        .map(|p| p.y)
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    region.bounds = [minx, miny, (maxx - minx).max(1.), (maxy - miny).max(1.)];
-                    region.shape = SelectionShape::Polygon;
-                    region.radius = 0.;
-                    if region.operation == SelectionOperation::Invert {
-                        return Err("Rasterize inverse selections before transforming / 反転選択は輪郭に変換してから変形してください / 请先转换反选区域".into());
-                    }
-                }
-                result.validate()?;
+                    .as_ref()
+                    .ok_or("Select an area first / 範囲を選択してください / 请先选择区域")?
+                    .transformed(request.matrix.ok_or("Transform missing")?)?;
                 self.commit_path_selection(Some(result))?;
             }
             "save" | "update" | "rename" | "delete" => {

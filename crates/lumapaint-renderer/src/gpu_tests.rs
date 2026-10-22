@@ -3922,3 +3922,67 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
         .unwrap();
     std::fs::write("/tmp/lumapaint-natural-media-gpu.png", output).unwrap();
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_transformed_mask_matches_cpu_at_fractional_edges() {
+    let gpu = Gpu::new();
+    let pixels = (0..64)
+        .map(|i| match (i % 8 + i / 8) % 4 {
+            0 => 0,
+            1 => 64,
+            2 => 128,
+            _ => 255,
+        })
+        .collect::<Vec<_>>();
+    let base = lumapaint_core::selection_raster::SelectionRaster::from_pixels(
+        [8, 8],
+        [1., 0., 0., 1., 0., 0.],
+        &pixels,
+    )
+    .unwrap();
+    for matrix in [
+        [6., 0., 0., 5., 400.25, 260.5],
+        [4.8, 3.6, -3., 4., 400.5, 260.25],
+        [-6., 0., 1.5, 5., 440.25, 260.5],
+    ] {
+        let selection = Selection::from_raster(base.clone())
+            .unwrap()
+            .transformed(matrix)
+            .unwrap();
+        let stroke = Stroke {
+            eraser: false,
+            clear: false,
+            brush: Brush {
+                size: 512.,
+                hardness: 1.,
+                color: [0, 0, 0],
+                ..Default::default()
+            },
+            points: vec![Point { x: 100., y: 300. }, Point { x: 880., y: 300. }],
+            pressures: vec![],
+            selection: Some(selection),
+        };
+        let gpu_pixels = gpu.render(std::slice::from_ref(&stroke));
+        let cpu_pixels = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        let mut fractional = 0;
+        for y in 245..330 {
+            for x in 365..475 {
+                let at = (((y + 64) * W + x + 32) * 4) as usize;
+                if cpu_pixels[at] > 0 && cpu_pixels[at] < 255 {
+                    fractional += 1;
+                }
+                assert!(
+                    gpu_pixels[at].abs_diff(cpu_pixels[at]) <= 2,
+                    "mask {matrix:?} at {x},{y}: GPU {} CPU {}",
+                    gpu_pixels[at],
+                    cpu_pixels[at]
+                );
+            }
+        }
+        assert!(
+            fractional > 100,
+            "fixture must exercise soft interpolated edges"
+        );
+    }
+}

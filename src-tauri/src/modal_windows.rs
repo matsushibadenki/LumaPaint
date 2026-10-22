@@ -405,9 +405,10 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
         if matches!(entry.context.kind, Kind::PdfImport) {
             crate::pdf_import::discard(app, &entry.owner);
         }
+        // Invalidate workers even if the editor itself has already been destroyed.
+        #[cfg(target_os = "macos")]
+        crate::canvas::clear_window_preview(&entry.owner);
         if let Some(parent) = app.get_webview_window(&entry.owner) {
-            #[cfg(target_os = "macos")]
-            crate::canvas::clear_window_preview(&entry.owner);
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = parent.set_enabled(true);
