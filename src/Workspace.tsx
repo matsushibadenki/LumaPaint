@@ -26,6 +26,8 @@ import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from './measure
 import {placeImage,subscribePlaceImage} from './bridge';
 import { ToolSettingsDialog, toolSettingsLabels } from './components/ToolSettingsDialog';
 import { lazy, Suspense } from 'react';
+const LutStudio = lazy(() => import('./components/LutStudio').then(module=>({default:module.LutStudio})));
+import { lutLabels } from './lut-editor';
 import { ToneStudio, toneStudioLabels } from './components/ToneStudio';
 import { DocumentDock } from './components/DocumentDock';
 import { NativeModal } from './NativeModal';
@@ -76,6 +78,8 @@ export function Workspace() {
   const [mediaBrowserOpen,setMediaBrowserOpen]=useState(false);
   const closeMediaBrowser=useCallback(()=>setMediaBrowserOpen(false),[]);
   const [toneStudioOpen,setToneStudioOpen]=useState(false);
+  const [lutStudioOpen,setLutStudioOpen]=useState(false);
+  const [lutStudioLoaded,setLutStudioLoaded]=useState(false);
   const [toneStudioLoaded,setToneStudioLoaded]=useState(false);
   const [colorPickerOcclusion, setColorPickerOcclusion] = useState<ColorPickerOcclusion | null>(null);
   useEffect(() => {
@@ -562,7 +566,7 @@ export function Workspace() {
     finally { setBusy(false); }
   }, [ready, busy, fileBusy, updateDocument]);
 
-  useShortcutInputBlocked(placingImage||mediaBrowserOpen||toneStudioOpen||settingsOpen||colorSettingsOpen||newDocumentOpen||importImageOpen||directControlOpen||!!transformAction||shortcutsOpen||!!toolSettings||!!layerMaskTarget||!!savedSelectionDialog||!!pixelSelectionDialog);
+  useShortcutInputBlocked(placingImage||mediaBrowserOpen||toneStudioOpen||lutStudioOpen||settingsOpen||colorSettingsOpen||newDocumentOpen||importImageOpen||directControlOpen||!!transformAction||shortcutsOpen||!!toolSettings||!!layerMaskTarget||!!savedSelectionDialog||!!pixelSelectionDialog);
   useShortcutCommands('tools',[
     ...toolCommands(locale,documentEditable&&!placingImage&&!shortcutsOpen,tool=>{setTool(tool);if(tool==='text')showTextPanel();if(tool==='gradient')showGradientPanel();}),
     {id:'layer.addPaint',label:{ja:'新規ピクセルレイヤー',en:'New Pixel Layer','zh-CN':'新建像素图层'}[locale],category:t.layers,defaultKey:'Primary+Alt+Shift+KeyN',enabled:documentEditable,action:()=>void createLayer('paint')},
@@ -580,7 +584,7 @@ export function Workspace() {
         if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
         return;
       }
-      if (mediaBrowserOpen || toneStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
+      if (mediaBrowserOpen || toneStudioOpen || lutStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
       const target = event.target as HTMLElement;
       if (event.defaultPrevented || directControlOpen || target.closest('dialog[open], [role=menu]')) return;
@@ -603,7 +607,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [shortcutsOpen, documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [shortcutsOpen, documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, lutStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -643,12 +647,13 @@ export function Workspace() {
         onPixelSelection={action=>{if(action==='findLayers'){setPanels(true);setLayerPanelRequest(n=>n+1);void editLayerGroups({action:'filter',name:''}).then(updateDocument).catch(cause=>setError(String(cause)));}else if(['all','deselect','reselect','inverse','quickMask','grow','similar'].includes(action)){void pixelSelectionAction({action}).then(updateDocument).catch(cause=>setError(String(cause)));}else setPixelSelectionDialog(action);}}
         onPanels={() => setPanels(value => !value)} onReset={() => { setPanels(window.innerWidth > 720); changeZoom(0); }} onError={setError} />
       <div className="workspace-preferences">
-        <button className="icon-button media-browser-launcher" title={mediaBrowserTitle[locale]} aria-label={mediaBrowserTitle[locale]} aria-pressed={mediaBrowserOpen} aria-controls="media-browser-overlay" onClick={()=>{if(inlineText)endText(true);setToneStudioOpen(false);setMediaBrowserOpen(value=>!value);}}><Icon name="image"/></button>
-        <button className="icon-button tone-studio-launcher" title={toneStudioLabels[locale].title} aria-label={toneStudioLabels[locale].title} aria-pressed={toneStudioOpen} aria-controls="tone-studio-overlay" onClick={()=>{if(inlineText)endText(true);setMediaBrowserOpen(false);setToneStudioLoaded(true);setToneStudioOpen(value=>!value);}}><Icon name="palette"/></button>
+        <button className="icon-button media-browser-launcher" title={mediaBrowserTitle[locale]} aria-label={mediaBrowserTitle[locale]} aria-pressed={mediaBrowserOpen} aria-controls="media-browser-overlay" onClick={()=>{if(inlineText)endText(true);setToneStudioOpen(false);setLutStudioOpen(false);setMediaBrowserOpen(value=>!value);}}><Icon name="image"/></button>
+        <button className="icon-button lut-studio-launcher" title={lutLabels[locale].title} aria-label={lutLabels[locale].title} aria-pressed={lutStudioOpen} aria-controls="lut-studio-overlay" onClick={()=>{if(inlineText)endText(true);setMediaBrowserOpen(false);setToneStudioOpen(false);setLutStudioLoaded(true);setLutStudioOpen(value=>!value);}}><Icon name="lut"/></button>
+        <button className="icon-button tone-studio-launcher" title={toneStudioLabels[locale].title} aria-label={toneStudioLabels[locale].title} aria-pressed={toneStudioOpen} aria-controls="tone-studio-overlay" onClick={()=>{if(inlineText)endText(true);setMediaBrowserOpen(false);setLutStudioOpen(false);setToneStudioLoaded(true);setToneStudioOpen(value=>!value);}}><Icon name="palette"/></button>
         <button className="icon-button" title={t.panels} aria-label={t.panels} aria-pressed={panels} onClick={() => setPanels(value => !value)}><Icon name="panels" /></button>
       </div>
     </header>
-    <div className="options-bar" inert={toneStudioOpen || mediaBrowserOpen} aria-label={cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
+    <div className="options-bar" inert={toneStudioOpen || lutStudioOpen || mediaBrowserOpen} aria-label={cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : t[toolState.tools[toolMode]]}>
       <span className="current-tool"><Icon name={canvasTool} /><span><small className="current-mode">{t[modeLabels[toolMode]]}</small>{cropTool ? t.crop : gradientTool ? gradientLabel : zoomTool ? common[zoomTool] : canvasTool === 'vectorDirectSelect' ? t.vectorDirectSelect : t[toolState.tools[toolMode]]}</span></span>
       {isRetouch(canvasTool)?<><label>{t.size}<SizeInput label={t.size} resolution={horizontalResolution} value={brush.size} onChange={size=>setBrush(previous=>({...previous,size}))}/></label><label>{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness=>setBrush(previous=>({...previous,hardness}))}/></label><RetouchControls key={canvasTool} locale={locale} tool={canvasTool} onError={setError}/></>:isPathSelection(canvasTool)?<SelectionPathControls key={canvasTool} locale={locale} tool={canvasTool} onError={setError}/>:canvasTool==='paintBucket'?<><PaintBucketControls key={`${activeDocumentId}:${documentState.pages.pages[documentState.pages.active]?.id}`} locale={locale} layers={documentState.layers} onError={setError}/><label className="color-control">{t.foreground}<ColorPickerPopover locale={locale} color={brush.color} label={t.foreground} noColor={!!brush.noColor} onNone={()=>setBrush(previous=>({...previous,noColor:true}))} onChange={changeForeground}/></label></>:canvasTool==='cloneStamp'? <><label>{t.size}<SizeInput label={t.size} resolution={horizontalResolution} value={brush.size} onChange={size=>setBrush(previous=>({...previous,size}))}/></label><label>{t.hardness}<PercentInput label={t.hardness} value={brush.hardness} onChange={hardness=>setBrush(previous=>({...previous,hardness}))}/></label><CloneStampControls locale={locale} onError={setError}/></> : cropTool ? <><span className="selection-hint">{t.cropHint}</span><button disabled={!documentEditable || !ready} onClick={()=>void invoke('crop_action',{confirm:true}).catch(cause=>setError(String(cause)))}>{t.cropApply}</button><button onClick={()=>void invoke('crop_action',{confirm:false}).catch(cause=>setError(String(cause)))}>{t.cropCancel}</button></> : documentState.guides.selected.length > 0 ? <GuideOptions key={documentState.guides.selected.join('|')+measurementUnit+documentState.guides.origin.join(',')} document={documentState} locale={locale} enabled={ready && !busy && documentEditable} onUpdate={updateDocument} onError={setError}/> : documentState.selectedVectorObjects.length > 0 && !inlineText && !zoomTool && canvasTool !== 'vectorDirectSelect' ? <SelectionOptions document={documentState} locale={locale} enabled={ready && !busy && documentEditable}
         onAppearance={async (opacity, blendMode) => { updateDocument(await setVectorAppearance([...documentState.selectedVectorObjects], opacity, blendMode)); }}
@@ -665,7 +670,7 @@ export function Workspace() {
       {documentState.selection && <button className="selection-clear" disabled={!ready || busy} onClick={() => void edit('deselect')}>{t.deselect}</button>}
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
-    <main className="editor-layout" inert={toneStudioOpen || mediaBrowserOpen}>
+    <main className="editor-layout" inert={toneStudioOpen || lutStudioOpen || mediaBrowserOpen}>
       {shortcutsOpen && <NativeModal kind="shortcuts" locale={locale} theme={theme} onClose={()=>setShortcutsOpen(false)} onError={setError}><ShortcutDialog locale={locale} onClose={()=>setShortcutsOpen(false)}/></NativeModal>}
       {layerMaskTarget && layerMaskTarget.documentId===activeDocumentId && <NativeModal kind="layerMask" action={layerMaskTarget.id} locale={locale} theme={theme} onClose={()=>setLayerMaskTarget(null)} onError={setError}><LayerMaskDialog locale={locale} document={documentState} targetId={layerMaskTarget.id} onClose={()=>setLayerMaskTarget(null)} onUpdate={updateDocument}/></NativeModal>}
       {pixelSelectionDialog&&<NativeModal kind="pixelSelection" action={pixelSelectionDialog} locale={locale} theme={theme} onClose={()=>setPixelSelectionDialog(null)} onError={setError}><PixelSelectionDialog locale={locale} document={documentState} action={pixelSelectionDialog} onClose={()=>setPixelSelectionDialog(null)} onUpdate={updateDocument}/></NativeModal>}
@@ -728,7 +733,7 @@ export function Workspace() {
           filePending.current=true;setFileBusy(true);
           try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
         }}/>}
-        <DocumentDock locale={locale} timelineRequest={timelineRequest}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale} timelineRequest={timelineRequest}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !lutStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
@@ -742,6 +747,7 @@ export function Workspace() {
     </main>
     {error && <div className="workspace-error" role="alert">{error}<button aria-label={common.dismiss} onClick={() => setError('')}>×</button></div>}
     {mediaBrowserOpen&&<Suspense fallback={null}><MediaBrowser locale={locale} onClose={closeMediaBrowser}/></Suspense>}
+    {lutStudioLoaded&&<Suspense fallback={null}><LutStudio locale={locale} open={lutStudioOpen} onClose={()=>setLutStudioOpen(false)}/></Suspense>}
     {toneStudioLoaded&&<ToneStudio locale={locale} open={toneStudioOpen} onClose={()=>setToneStudioOpen(false)}/>}
     {settingsOpen && <NativeModal kind="settings" locale={locale} theme={theme} onClose={closeSettings} onError={setError}><SettingsDialog locale={locale} theme={theme} onLocale={setLocale} onTheme={setTheme} onClose={closeSettings} /></NativeModal>}
     {importImageOpen && <NativeModal kind="importImage" locale={locale} theme={theme} onClose={()=>setImportImageOpen(false)} onError={setError}><ImportImageDialog locale={locale} onClose={() => setImportImageOpen(false)} onImport={async format => {

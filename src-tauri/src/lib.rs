@@ -67,6 +67,9 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("cel-preview", |_context, request, responder| {
             cel_previews::serve(request, responder)
         })
+        .register_asynchronous_uri_scheme_protocol("lut-preview", |_context, request, responder| {
+            lut_editor::serve(request, responder)
+        })
         .setup(|app| {
             if let Err(error) = media_browser::initialize(app.handle()) {
                 eprintln!("Media browser: {error}");
@@ -134,6 +137,7 @@ pub fn run() {
             }
         })
         .manage(shortcuts::Store::default())
+        .manage(lut_editor::Store::default())
         .invoke_handler(tauri::generate_handler![
             shortcuts::shortcut_catalog,
             shortcuts::save_shortcuts,
@@ -234,6 +238,7 @@ pub fn run() {
             canvas::set_gradient_tool,
             gradient_presets::gradient_library,
             swatches::swatch_library,
+            lut_editor::lut_editor,
             ai::ai_credentials,
             ai::ai_open_key_page,
             ai::ai_bookmarks,
@@ -349,6 +354,7 @@ mod ai_raster;
 mod canvas;
 mod editor_windows;
 mod gradient_presets;
+mod lut_editor;
 mod modal_windows;
 #[cfg(any(target_os = "macos", test))]
 mod render_queue;
