@@ -1550,6 +1550,7 @@ fn native_stroke_style(o: &VectorObject) -> bool {
         && o.stroke_style.validate().is_ok()
         && o.stroke_style.alignment == StrokeAlignment::Center
         && o.stroke_style.contour_alignments.is_empty()
+        && o.stroke_style.brush != lumapaint_core::stroke::VectorBrush::Bristle
         && o.stroke_style.profile == WidthProfile::Uniform
         && o.stroke_style.start_arrow == Arrowhead::None
         && o.stroke_style.end_arrow == Arrowhead::None

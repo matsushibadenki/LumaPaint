@@ -832,6 +832,7 @@ pub struct TileUpload {
 /// One sampled brush dab in document pixels. Radius already includes pressure.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RasterDab {
+    pub material: crate::natural_media::MaterialSettings,
     pub texture: f32,
     pub texture_scale: f32,
     pub x: f32,
@@ -843,10 +844,11 @@ pub struct RasterDab {
 
 impl RasterDab {
     fn validate(self) -> Result<(), String> {
+        self.material.validate()?;
         if !self.texture.is_finite()
             || !(0.0..=2.0).contains(&self.texture)
             || !self.texture_scale.is_finite()
-            || !(1.0..=2.0).contains(&self.texture_scale)
+            || !(0.001..=2.0).contains(&self.texture_scale)
             || !self.x.is_finite()
             || !self.y.is_finite()
             || self.x.abs() >= 100_000.0
@@ -948,12 +950,13 @@ fn dab_density_on_tiles(
                     .or_insert_with(|| vec![0.0; TILE_BYTES / 4]);
                 for y in top.max(tile_y * TILE_SIZE)..bottom.min((tile_y + 1) * TILE_SIZE) {
                     for x in left.max(tile_x * TILE_SIZE)..right.min((tile_x + 1) * TILE_SIZE) {
-                        if selection.is_some_and(|selection| {
-                            !selection.contains(Point {
+                        let selection_alpha = selection.map_or(1., |s| {
+                            s.coverage(Point {
                                 x: x as f32 + 0.5,
                                 y: y as f32 + 0.5,
                             })
-                        }) {
+                        });
+                        if selection_alpha <= 0. {
                             continue;
                         }
                         let dx = x as f32 + 0.5 - dab.x;
@@ -969,8 +972,18 @@ fn dab_density_on_tiles(
                         if profile <= 0.0 {
                             continue;
                         }
+                        let (m, a, p) = dab.material.packed();
+                        let deposition = crate::natural_media::deposition(
+                            (x as f32 + 0.5) / dab.texture_scale,
+                            (y as f32 + 0.5) / dab.texture_scale,
+                            distance / dab.radius,
+                            m,
+                            a,
+                            p,
+                        );
                         let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
-                        coverage[index] += (4.0 + 12.0 * dab.hardness)
+                        coverage[index] += deposition
+                            * (4.0 + 12.0 * dab.hardness)
                             * dab.weight
                             * profile
                             * brush_texture(
@@ -979,6 +992,26 @@ fn dab_density_on_tiles(
                                 dab.texture,
                             );
                     }
+                }
+            }
+        }
+    }
+    // Selection coverage clips the completed stroke, not each dab's optical
+    // depth. Otherwise overlapping dabs would turn a feathered edge opaque.
+    if let Some(selection) = selection.filter(|s| s.has_soft_mask()) {
+        for (coord, tile) in &mut density {
+            for (index, depth) in tile.iter_mut().enumerate() {
+                if *depth <= 0. {
+                    continue;
+                }
+                let point = Point {
+                    x: (coord.x * TILE_SIZE + index as u32 % TILE_SIZE) as f32 + 0.5,
+                    y: (coord.y * TILE_SIZE + index as u32 / TILE_SIZE) as f32 + 0.5,
+                };
+                let alpha = selection.coverage(point);
+                if alpha < 1. {
+                    let coverage = (1. - (-*depth).exp()) * alpha;
+                    *depth = -(1. - coverage).max(1e-7).ln();
                 }
             }
         }
@@ -1770,11 +1803,12 @@ impl TiledRasterDocument {
             for (index, pixel) in after.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = coord.x * TILE_SIZE + index as u32 % TILE_SIZE;
                 let y = coord.y * TILE_SIZE + index as u32 / TILE_SIZE;
-                if selection.contains(crate::document::Point {
+                let alpha = selection.coverage(crate::document::Point {
                     x: x as f32 + 0.5,
                     y: y as f32 + 0.5,
-                }) {
-                    pixel.fill(0);
+                });
+                for c in pixel {
+                    *c = (f32::from(*c) * (1. - alpha)).round() as u8;
                 }
             }
             if before == after {
@@ -2269,6 +2303,7 @@ mod tests {
         let mut base = TiledRasterDocument::new(768, 256).unwrap();
         base.add_layer("paint".into(), "Paint".into()).unwrap();
         let dabs = [RasterDab {
+            material: Default::default(),
             texture: 1.,
             texture_scale: 1.,
             x: 256.,
@@ -2537,6 +2572,7 @@ mod tests {
         let coord = TileCoord { x: 0, y: 0 };
         let occupied = BTreeMap::from([(coord, vec![255; TILE_BYTES])]);
         let dabs = [RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: TILE_SIZE as f32,
@@ -2577,6 +2613,7 @@ mod tests {
         doc.write_rect("paint", [10, 10, 1, 1], &[200, 50, 20, 255])
             .unwrap();
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 10.5,
@@ -2923,6 +2960,7 @@ mod tests {
         let mut document = TiledRasterDocument::new(512, 256).unwrap();
         document.add_layer("paint".into(), "Paint".into()).unwrap();
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 256.0,
@@ -2957,8 +2995,10 @@ mod tests {
         let mut document = TiledRasterDocument::new(32, 32).unwrap();
         document.add_layer("paint".into(), "Paint".into()).unwrap();
         let selection = Selection {
+            raster: None,
             regions: vec![
                 SelectionRegion {
+                    paint: None,
                     points: Vec::new(),
                     radius: 0.,
                     shape: SelectionShape::Rectangle,
@@ -2966,6 +3006,7 @@ mod tests {
                     operation: SelectionOperation::Replace,
                 },
                 SelectionRegion {
+                    paint: None,
                     points: Vec::new(),
                     radius: 0.,
                     shape: SelectionShape::Rectangle,
@@ -2975,6 +3016,7 @@ mod tests {
             ],
         };
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 16.0,
@@ -3001,6 +3043,7 @@ mod tests {
             .write_rect("paint", [5, 5, 1, 1], &[200, 0, 0, 128])
             .unwrap();
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 5.5,
@@ -3128,6 +3171,7 @@ mod tests {
         document.set_layer_mask("paint", true, false, 1.0).unwrap();
         let selection = Selection::new(SelectionShape::Rectangle, [0.0, 0.0, 256.0, 32.0]);
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 256.0,
@@ -3156,6 +3200,7 @@ mod tests {
             .paint_mask_dabs(
                 "paint",
                 &[RasterDab {
+                    material: Default::default(),
                     weight: f32::NAN,
                     ..dab
                 }],
@@ -3168,6 +3213,7 @@ mod tests {
             .paint_mask_dabs(
                 "paint",
                 &[RasterDab {
+                    material: Default::default(),
                     weight: 10.0,
                     ..dab
                 }],
@@ -3242,6 +3288,7 @@ mod tests {
         let mut document = TiledRasterDocument::new(256, 256).unwrap();
         document.add_layer("paint".into(), "Paint".into()).unwrap();
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 30.0,
@@ -3261,6 +3308,7 @@ mod tests {
                 &[
                     dab,
                     RasterDab {
+                        material: Default::default(),
                         texture: 0.0,
                         texture_scale: 1.0,
                         radius: f32::NAN,
@@ -3276,6 +3324,7 @@ mod tests {
     #[test]
     fn overlapping_dabs_match_separate_same_color_strokes_within_rgba_rounding() {
         let dab = RasterDab {
+            material: Default::default(),
             texture: 0.0,
             texture_scale: 1.0,
             x: 20.5,

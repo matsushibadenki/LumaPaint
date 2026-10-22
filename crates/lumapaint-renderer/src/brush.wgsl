@@ -9,8 +9,11 @@ struct VertexOut {
     @location(4) @interpolate(flat) hardness: f32,
     @location(5) @interpolate(flat) weight: f32,
     @location(6) @interpolate(flat) texture: f32,
+    @location(7) @interpolate(flat) material: vec4<f32>,
+    @location(8) @interpolate(flat) medium_aux: vec4<f32>,
+    @location(9) @interpolate(flat) paper: vec4<f32>,
 }
-@vertex fn vs_main(@builtin(vertex_index) vertex: u32, @location(0) ends: vec4<f32>, @location(1) color: vec4<f32>, @location(2) radius: f32, @location(3) hardness: f32, @location(4) weight: f32, @location(5) texture: f32) -> VertexOut {
+@vertex fn vs_main(@builtin(vertex_index) vertex: u32, @location(0) ends: vec4<f32>, @location(1) color: vec4<f32>, @location(2) radius: f32, @location(3) hardness: f32, @location(4) weight: f32, @location(5) texture: f32, @location(6) material:vec4<f32>, @location(7) medium_aux:vec4<f32>, @location(8) paper:vec4<f32>) -> VertexOut {
     let corners = array<vec2<f32>, 6>(vec2(0.0,0.0),vec2(1.0,0.0),vec2(0.0,1.0),vec2(0.0,1.0),vec2(1.0,0.0),vec2(1.0,1.0));
     let size = u.viewport.xy / u.viewport.z;
     let scale = max(0.01, min((size.x-48.0)/u.document.x, (size.y-48.0)/u.document.y)) * u.viewport.w;
@@ -20,7 +23,7 @@ struct VertexOut {
     var out: VertexOut;
     out.position = vec4(screen.x/size.x*2.0-1.0, 1.0-screen.y/size.y*2.0, 0.0, 1.0);
     out.point=point; out.ends=ends; out.color=color; out.radius=radius; out.hardness=hardness; out.weight=weight;
-    out.texture=texture;
+    out.texture=texture;out.material=material;out.medium_aux=medium_aux;out.paper=paper;
     return out;
 }
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
@@ -50,9 +53,10 @@ struct VertexOut {
             grain_factor = mix(pencil, dry, in.texture - 1.0);
         }
     }
-    let optical_depth=density * in.weight * profile * grain_factor;
+    let optical_depth=density * in.weight * profile * grain_factor * media_deposition(in.point,distance/in.radius,in.material,in.medium_aux,in.paper);
     if any(in.point<vec2(0.0)) || any(in.point>=u.document.xy) { discard; }
-    if !selection_contains(in.point) { discard; }
+    let selection_alpha=selection_coverage(in.point);
+    if selection_alpha<=0. { discard; }
     // Color is constant within this stroke. Store it once; only density adds.
     return vec4(in.color.rgb, optical_depth);
 }

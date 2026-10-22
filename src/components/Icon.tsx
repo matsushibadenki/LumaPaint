@@ -1,4 +1,4 @@
-type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
+type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'objectSelection' | 'quickSelection' | 'magicWand' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
 type PanelIconName = 'align' | 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   animationRecord: 'M4 4h16v16H4z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
@@ -9,6 +9,9 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   lasso:'M5 5c-5 3-4 10 4 12s14-6 10-10S8 2 5 5 M8 15c4 5-5 8-5 3',
   polygonLasso:'M3 3l17 3-6 13-11-5z M4 14c-3 7 5 9 5 3',
   magneticLasso:'M3 13V5h4v8a5 5 0 0 0 10 0V5h4v8a9 9 0 0 1-18 0 M3 9h4 M17 9h4',
+  objectSelection:'M3 8V3h5 M16 3h5v5 M21 16v5h-5 M8 21H3v-5 M8 8h8v8H8z',
+  quickSelection:'M3 6h4 M10 6h4 M3 10v4 M3 18h4 M10 18h4 M15 14l5-8 2 2-5 8-4 2z',
+  magicWand:'M4 20L17 7l3 3L7 23z M4 3v4 M2 5h4 M16 1v4 M14 3h4 M21 15v4 M19 17h4',
   selectionBrush:'M3 5h4 M10 5h4 M17 5h4v4 M21 12v4 M21 19h-4 M14 19h-4 M7 19H3v-4 M3 12V9 M10 12l8-8 3 3-8 8-5 1z',
   blur: 'M12 2C10 6 5 11 5 16a7 7 0 0 0 14 0C19 11 14 6 12 2z',
   sharpen: 'M12 3L2 21h20L12 3z M12 9l6 10H6z',

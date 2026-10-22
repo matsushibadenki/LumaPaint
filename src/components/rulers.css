@@ -6,7 +6,7 @@
 .ruler-corner{grid-column:1;grid-row:1;padding:0;font-size:9px;min-width:0;border-radius:0}
 .ruler-horizontal{grid-column:2;grid-row:1}.ruler-vertical{grid-column:1;grid-row:2}
 .ruler-horizontal svg,.ruler-vertical svg{display:block;overflow:hidden}.ruler-horizontal path,.ruler-vertical path{stroke:currentColor;stroke-width:1;fill:none}.ruler-horizontal text,.ruler-vertical text{fill:currentColor;font:9px system-ui;font-variant-numeric:tabular-nums}
-.ruler-menu{position:fixed;z-index:1500;width:200px;padding:5px;border:1px solid var(--color-rule);border-radius:5px;background:var(--color-panel);box-shadow:0 8px 24px #0005}.ruler-menu button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:7px 8px}.ruler-menu button>span{width:14px}.ruler-menu small{margin-left:auto}.ruler-menu button:hover,.ruler-menu button:focus-visible{background:var(--color-focus);color:white}
+.ruler-menu{position:fixed;z-index:1500;width:200px;padding:5px;border:1px solid var(--color-rule);border-radius:5px;background:var(--color-panel);box-shadow:0 8px 24px #0005}.ruler-menu button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:7px 8px}.ruler-menu button>span{width:14px;flex-shrink:0;order:1;margin-left:auto}.ruler-menu button>span:empty{display:none}.ruler-menu small{order:2;margin-left:auto}.ruler-menu button>span:not(:empty)~small{margin-left:0}.ruler-menu button:hover,.ruler-menu button:focus-visible{background:var(--color-focus);color:white}
 
 .ruler-horizontal{cursor:row-resize;touch-action:none}.ruler-vertical{cursor:col-resize;touch-action:none}
 

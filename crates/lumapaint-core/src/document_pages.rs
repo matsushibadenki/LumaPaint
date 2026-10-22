@@ -274,6 +274,7 @@ impl Document {
         next.saved_revision = self.saved_revision;
         next.file_name = self.file_name.clone();
         next.svg_geometry_backend = self.svg_geometry_backend.clone();
+        next.text_layout_backend = self.text_layout_backend;
         *self = next;
     }
     pub(super) fn undo_page(&mut self) {
@@ -312,6 +313,7 @@ impl Document {
                 .ok_or("Page has no content")?,
         );
         next.svg_geometry_backend = self.svg_geometry_backend.clone();
+        next.text_layout_backend = self.text_layout_backend;
         next.name = self.name.clone();
         next.file_name = self.file_name.clone();
         next.revision = self.revision + 1;

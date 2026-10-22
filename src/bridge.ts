@@ -15,11 +15,13 @@ export async function newEditorWindow(): Promise<string> {
 }
 
 
-export type CanvasTool = 'blur' | 'sharpen' | 'smudge' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'eraser' | 'crop' | 'gradient' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
+export type CanvasTool = 'blur' | 'sharpen' | 'smudge' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'objectSelection' | 'quickSelection' | 'magicWand' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'eraser' | 'crop' | 'gradient' | 'eyedropper' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'zoomIn' | 'zoomOut' | 'hand';
 export type DocumentEditAction = 'createTrimMarks' | 'registrationFill' | 'registrationStroke' | 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'lockSelection' | 'lockArtworkAbove' | 'lockOtherLayers' | 'unlockAllObjects' | 'hideSelection' | 'hideArtworkAbove' | 'hideOtherLayers' | 'showAllObjects' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse' | 'polygon' | 'stroke'; points?:{x:number;y:number}[]; radius?:number; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'intersect' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
-export interface Brush { opacity?: number; flow?: number; smoothing?: number; alpha?: number; blendMode?: import('./brush-settings').BrushBlendMode; noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
+export interface PaperSettings { enabled:boolean; kind:'smooth'|'coldPress'|'rough'|'canvas'|'washi'; scale:number; depth:number; color:[number,number,number] }
+export interface MaterialSettings { enabled:boolean; medium:'graphite'|'charcoal'|'pastel'|'watercolor'|'gouache'|'oil'; loading:number; wetness:number; granulation:number; edge:number; paper:PaperSettings }
+export interface Brush { material?:MaterialSettings; opacity?: number; flow?: number; smoothing?: number; alpha?: number; blendMode?: import('./brush-settings').BrushBlendMode; noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface TransformPanelInfo { corners: [number, number][]; width: number; height: number; rotation: number; shear: number; rectangle: boolean; radii: [number, number, number, number] }
 export interface TransformPanelEdit { field: 'x'|'y'|'width'|'height'|'rotation'|'shear'|'corners'; values: [number, number, number, number]; reference: [number, number]; proportional: boolean; scaleCorners: boolean; scaleStrokes: boolean; revision: number; ids: string[] }
 export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSnapshot> {
@@ -35,12 +37,17 @@ export interface GuideEdit {action:'visibility'|'lock'|'make'|'release'|'clear'|
 export function editGuides(edit:GuideEdit):Promise<DocumentSnapshot>{return invoke('edit_guides',{edit});}
 export function rulerGuide(axis:'horizontal'|'vertical',position:number,phase:number):Promise<void>{return invoke('ruler_guide',{axis,position,phase});}
 export interface LayerGroup {id:string;name:string;visible:boolean;locked:boolean;collapsed:boolean;maskEnabled:boolean;maskInverted:boolean;maskDensity:number;children:string[]}
-export interface LayerGroupsState {groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
-export interface LayerGroupEdit {action:'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
+export interface LayerGroupsState {filterEnabled?:boolean;filterQuery?:string;isolated?:string[];groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
+export interface LayerGroupEdit {action:'selectAll'|'deselectAll'|'filter'|'clearFilter'|'isolate'|'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
 export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
 export interface CompoundShapeSnapshot { id: string; operation: PathfinderOperation; operands: {id:string;name:string;transform:[number,number,number,number,number,number]}[] }
 export type LayerEditTarget = 'content' | 'mask' | 'none';
+export type VectorAssetKind='graphicStyle'|'symbolInstance'|'linkedText';
+export interface VectorAssetSummary{id:string;name:string;kind:VectorAssetKind;count:number;selected:boolean;overset:boolean}
 export interface DocumentSnapshot {
+ paper?:PaperSettings;
+  savedPixelSelections?:string[];canReselectPixels?:boolean;quickMask?:boolean;
+  vectorAssets:VectorAssetSummary[];
   layerEditTarget: LayerEditTarget;
   editingChannel: DisplayChannel;
   compoundShapes?: CompoundShapeSnapshot[];
@@ -70,13 +77,14 @@ export interface DocumentSnapshot {
 }
 export interface WidthStop { position: number; width: number; slope: number }
 export interface StrokeStyle {
+  brush:'basic'|'pencil'|'bristle';
   cap: 'butt' | 'round' | 'square'; join: 'miter' | 'round' | 'bevel'; miterLimit: number;
   alignment: 'center' | 'inside' | 'outside'; dashArray: number[]; dashOffset: number;
   startArrow: 'none' | 'triangle' | 'open' | 'circle' | 'diamond' | 'square' | 'bar' | 'stealth'; endArrow: 'none' | 'triangle' | 'open' | 'circle' | 'diamond' | 'square' | 'bar' | 'stealth';
   arrowScale: number; profile: 'uniform' | 'taperBoth' | 'taperStart' | 'taperEnd' | 'bulge' | 'custom';
   widthCurve: WidthStop[]; startArrowScale: number | null; endArrowScale: number | null; contourAlignments: ('center' | 'inside' | 'outside')[];
 }
-export const defaultStrokeStyle: StrokeStyle = { cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform', widthCurve: [{ position: 0, width: 1, slope: 0 }, { position: 1, width: 1, slope: 0 }], startArrowScale: null, endArrowScale: null, contourAlignments: [] };
+export const defaultStrokeStyle: StrokeStyle = { brush:'basic', cap: 'butt', join: 'miter', miterLimit: 4, alignment: 'center', dashArray: [], dashOffset: 0, startArrow: 'none', endArrow: 'none', arrowScale: 1, profile: 'uniform', widthCurve: [{ position: 0, width: 1, slope: 0 }, { position: 1, width: 1, slope: 0 }], startArrowScale: null, endArrowScale: null, contourAlignments: [] };
 export interface GradientStop { position: number; color: [number,number,number,number]; midpoint: number }
 export interface Gradient { pixelStyle?: 'angular'|'reflected'|'diamond'; geometry?: [number,number,number,number,number,number]; kind: "linear" | "radial"; angle: number; aspect: number; dither?: boolean; method: "classic" | "linear" | "perceptual"; stops: GradientStop[] }
 export type FrameFit="contain"|"cover"|"stretch";
@@ -174,7 +182,7 @@ export interface DocumentSettings { name: string; width: number; height: number;
 export type NewDocumentGuideLayout = {kind: 'print'; bleedMm: number} | {kind: 'manga'; trimWidthMm: number; trimHeightMm: number};
 export interface NewDocumentSettings { guideLayout?: NewDocumentGuideLayout; pages?:{count:number;facing:boolean;binding:PagesSnapshot['binding']}; document: DocumentSettings; colorMode: ColorMode; colorProfile: ColorProfile; bitDepth: BitDepth }
 export const emptyDocument: DocumentSnapshot = {
-  savedVectorSelections:[],canReselectVectors:false,layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerEditTarget: 'content', editingChannel: 0, layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
+  vectorAssets:[],savedVectorSelections:[],canReselectVectors:false,layerGroups:{groups:[],roots:[],members:[],selected:[]}, guides:{nudge:[1,10],origin:[0,0],snap:true,visible:true,locked:true,nextId:1,selected:[],items:[]}, pages:{facing:false,binding:"leftToRight",active:0,pages:[{id:"page-1",number:1,width:960,height:640,spread:0,side:"single"}]}, hasHiddenObjects: false, hasLockedObjects: false, activeSavedPath: null, savedPaths: [], selection: null, name: 'Untitled-1', width: 960, height: 640, unit: 'pixels', resolution: 72, artboards: false, canvasColor: 'white', pixelAspectRatio: 1, layerId: 'layer-1', layerEditTarget: 'content', editingChannel: 0, layerVisible: true, colorMode: 'rgb', colorProfile: 'srgb', bitDepth: 8, strokeCount: 0, layers: [{ objects: [], id: 'layer-1', name: 'Layer 1', kind: 'paint', visible: true, opacity: 1, locked: false, alphaLocked: false, maskEnabled: false, maskInverted: false, maskDensity: 1, deletable: false, strokeCount: 0 }], selectedVectorObjects: [], textObjects: [], canUndo: false, canRedo: false, revision: 0, dirty: false, fileName: null };
 
 export interface RuntimeInfo {
   version: string;
@@ -654,7 +662,7 @@ export function manageImageLinks(ids:string[],action:"update"|"relink"|"embed"):
 
 export function rulerOrigin(point:[number,number],phase:number):Promise<void>{return invoke('ruler_origin',{point,phase});}
 
-export type VectorSelectionRequest={action:string;criterion?:string;name?:string;newName?:string};
+export type VectorSelectionRequest={bulk?:{criteria:string[];matchAny:boolean;scope:'page'|'artboard'|'sameLayers'};action:string;criterion?:string;name?:string;newName?:string};
 export const vectorSelectionAction=(request:VectorSelectionRequest)=>invoke<DocumentSnapshot>('vector_selection_action',{request});
 
 export function createScreentoneLayer(tone: Screentone): Promise<DocumentSnapshot> { return textCommand("create_screentone_layer", {tone}); }
@@ -664,3 +672,10 @@ export type AlignAction='left'|'horizontalCenter'|'right'|'center'|'top'|'vertic
 export type AlignmentSettings={target:AlignmentTarget;keyObject:string|null;spacing:number};
 export type AlignmentRequest={action?:AlignAction;target?:AlignmentTarget;keyObject?:string;spacing?:number};
 export function editAlignment(request:AlignmentRequest):Promise<DocumentSnapshot>{const result=canvasQueue.then(()=>invoke<DocumentSnapshot>('edit_alignment',{request}));canvasQueue=result.then(()=>undefined,()=>undefined);return result;}
+
+export interface PixelSelectionRequest {action:string;kind?:string;amount?:number;smooth?:number;feather?:number;contrast?:number;shift?:number;color?:[number,number,number];inverse?:boolean;allLayers?:boolean;outputMask?:boolean;name?:string;newName?:string;mode?:'replace'|'add'|'subtract'|'intersect';matrix?:[number,number,number,number,number,number]}
+export const pixelSelectionAction=(request:PixelSelectionRequest)=>invoke<DocumentSnapshot>('pixel_selection_action',{request});
+
+export async function setPaperSimulation(paper:PaperSettings):Promise<DocumentSnapshot>{return invoke("set_paper_simulation",{paper});}
+
+export async function rasterizeVectorLayer(id:string):Promise<DocumentSnapshot>{return invoke("rasterize_vector_layer",{id});}

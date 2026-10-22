@@ -684,7 +684,9 @@ pub(crate) fn rasterize_svg_reference(
     {
         return Err("Invalid reference raster dimensions".into());
     }
-    let tree = parsed_text::parse(source)?;
+    // Share the existing bounded CPU-tree cache with workspace preparation.
+    // Reference raster dimensions do not affect parsing or font shaping.
+    let tree = parsed_text::parse_workspace(source)?;
     let size = tree.size();
     let scale = (width as f32 / size.width()).min(height as f32 / size.height());
     let x = (width as f32 - size.width() * scale) * 0.5;
@@ -1131,6 +1133,114 @@ pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vector_assets_linked_text_uses_system_fonts_and_preserves_paints_through_reflow() {
+        use lumapaint_core::document::{Document, TextSettings, VectorSelectionRequest};
+        use lumapaint_core::vector::VectorText;
+        let mut doc = Document::default();
+        doc.set_text_layout_backend(Some(super::reflow_text_with_system_fonts));
+        let story = "日本語と ABC 😀 のリンク文字を複数のフレームに流します。";
+
+        for (index, content) in [story, ""].iter().enumerate() {
+            let mut text = VectorText {
+                content: (*content).into(),
+                point_text: false,
+                font_size: 16.,
+                box_width: 96.,
+                box_height: Some(38.),
+                ..Default::default()
+            };
+            super::reflow_text_with_system_fonts(&mut text, [255, 0, 0]).unwrap();
+            doc.set_text_object(TextSettings {
+                id: None,
+                text,
+                position: [index as f32 * 120., 0.],
+                color: [255, 0, 0],
+            })
+            .unwrap();
+        }
+        doc.vector_selection_action(VectorSelectionRequest {
+            action: "all".into(),
+            criterion: None,
+            name: None,
+            new_name: None,
+            bulk: None,
+        })
+        .unwrap();
+        doc.vector_asset_action(VectorSelectionRequest {
+            action: "assetCreate".into(),
+            criterion: Some("linkedText".into()),
+            name: Some("Story".into()),
+            new_name: None,
+            bulk: None,
+        })
+        .unwrap();
+        let frames: Vec<_> = doc
+            .svg_layers()
+            .flat_map(|l| &l.vector_objects)
+            .filter_map(|o| o.text.as_ref())
+            .collect();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|t| t.content.as_str())
+                .collect::<String>(),
+            story
+        );
+        assert!(!frames[0].content.is_empty());
+        assert!(!frames[1].content.is_empty());
+        assert!(frames
+            .iter()
+            .flat_map(|t| &t.runs)
+            .all(|r| r.style.color == [255, 0, 0]));
+        let sources: Vec<_> = doc.svg_layers().map(|l| l.source.clone()).collect();
+        for source in sources {
+            let image = super::rasterize_svg(&source, 240, 100);
+            assert!(image.is_ok());
+        }
+        assert!(doc.snapshot().vector_assets[0].overset);
+    }
+    #[test]
+    fn reference_tree_reuse_preserves_pixels_sizes_and_source_changes() {
+        for body in [
+            "<rect x='3' y='4' width='18' height='20'/>",
+            "<defs><mask id='m'><rect width='32' height='32' fill='white'/></mask><filter id='b'><feGaussianBlur stdDeviation='1'/></filter></defs><g mask='url(#m)'><circle cx='16' cy='16' r='8' filter='url(#b)'/></g>",
+            "<g transform='rotate(5 16 16)' opacity='.5'><text x='1' y='16' font-size='6'>English 日本語 简体中文</text></g>",
+        ] {
+            let mut previous = None;
+            for color in ["red", "blue", "red"] {
+                let source = format!("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' fill='{color}'>{body}</svg>");
+                let fresh = super::parsed_text::parse_uncached(&source).unwrap();
+                // A workspace parse must also be reusable by the reference route.
+                super::parsed_text::parse_workspace(&source).unwrap();
+                for (width, height) in [(17, 11), (64, 64), (129, 64)] {
+                    crate::performance::take();
+                    let actual = super::rasterize_svg_reference(&source, width, height).unwrap();
+                    let stats = crate::performance::take();
+                    if crate::performance::enabled()
+                        && !stats.counts.contains_key("parsed_text_cache_lookup_contended")
+                        && !stats.counts.contains_key("parsed_text_cache_lookup_poisoned")
+                        && !stats.counts.contains_key("parsed_text_cache_misses")
+                    {
+                        assert_eq!(stats.counts.get("parsed_text_cache_hits"), Some(&1));
+                        assert!(!stats.counts.contains_key("svg_parses"));
+                    }
+                    let scale = (width as f32 / 32.).min(height as f32 / 32.);
+                    let mut expected = super::tiny_skia::Pixmap::new(width, height).unwrap();
+                    resvg::render(&fresh, super::tiny_skia::Transform::from_row(scale, 0., 0., scale, (width as f32 - 32.*scale)*0.5, (height as f32 - 32.*scale)*0.5), &mut expected.as_mut());
+                    assert_eq!(actual.backend, super::SvgBackend::Resvg);
+                    assert_eq!(actual.pixels, expected.data());
+                    if (width, height) == (64, 64) {
+                        if let Some(old) = &previous { assert_ne!(&actual.pixels, old); }
+                        previous = Some(actual.pixels);
+                    }
+                }
+            }
+        }
+        for (width, height) in [(0, 32), (32, 0), (1025, 32), (32, 1025)] {
+            assert!(super::rasterize_svg_reference("<svg/>", width, height).is_err());
+        }
+    }
     #[test]
     fn internal_raster_limits_are_independent_from_clipboard_limits() {
         assert_eq!(
@@ -2789,6 +2899,42 @@ mod stroke_appearance_tests {
     }
     fn alpha(image: &SvgRaster, x: usize, y: usize) -> u8 {
         image.pixels[(y * 160 + x) * 4 + 3]
+    }
+    #[test]
+    fn object_bristle_brush_has_fibers_and_matching_pick_geometry() {
+        let path = "M25 50C50 20 110 80 135 50";
+        let style = StrokeStyle {
+            brush: VectorBrush::Bristle,
+            ..Default::default()
+        };
+        let bristle = render(path, &style);
+        let basic = render(path, &StrokeStyle::default());
+        assert_ne!(bristle.pixels, basic.pixels);
+        assert!(bristle.pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+        let geometry = selection_geometry(path, 10., &style, [1., 0., 0., 1., 0., 0.], false);
+        // A strand is subpixel at 1x. Compare geometric containment at 4x,
+        // where fiber interiors are resolved instead of rounded to zero alpha.
+        let body = svg_stroke(path, path, "nonzero", 10., &style, "#ff0000", 0);
+        let high = rasterize_svg(
+            &format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100">{body}</svg>"#
+            ),
+            640,
+            400,
+        )
+        .unwrap();
+        for y in (20..380).step_by(13) {
+            for x in (20..620).step_by(13) {
+                let pixel = high.pixels[(y * 640 + x) * 4 + 3];
+                if pixel == 0 || pixel == 255 {
+                    assert_eq!(
+                        geometry.contains([(x as f32 + 0.5) / 4., (y as f32 + 0.5) / 4.], 0.),
+                        pixel == 255,
+                        "{x},{y}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn advanced_strokes_match_visible_pixels_and_pick_regions() {

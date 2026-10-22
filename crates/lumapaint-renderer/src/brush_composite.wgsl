@@ -1,3 +1,5 @@
+struct Uniforms {viewport:vec4<f32>,appearance:vec4<f32>,document:vec4<f32>}
+@group(2) @binding(0) var<uniform> u:Uniforms;
 @group(0) @binding(0) var brush_texture: texture_2d<f32>;
 @group(0) @binding(1) var brush_sampler: sampler;
 
@@ -20,6 +22,10 @@ struct VertexOut {
 
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let accumulated = textureSample(brush_texture, brush_sampler, in.uv);
-    let alpha = 1.0 - exp(-accumulated.a);
+    let size=u.viewport.xy/u.viewport.z;
+    let pixel=in.position.xy/u.viewport.z;
+    let scale=max(0.01,min((size.x-48.)/u.document.x,(size.y-48.)/u.document.y))*u.viewport.w;
+    let point=(pixel-size*0.5-u.appearance.yz)/scale+u.document.xy*0.5;
+    let alpha = (1.0 - exp(-accumulated.a))*selection_coverage(point);
     return vec4(accumulated.rgb * alpha, alpha);
 }

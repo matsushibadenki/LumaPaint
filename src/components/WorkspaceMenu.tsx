@@ -1,3 +1,5 @@
+import {pixelSelectionLabels,pixelModifyKinds} from '../pixel-selection-i18n';
+import {vectorAssetLabels} from '../vector-assets-i18n';
 import {featureIcons, featureLabels, commandFeature, type FeatureType} from '../feature-types';
 import {alignmentLabels,alignActions} from '../alignment-i18n';
 import type {AlignmentRequest} from '../bridge';
@@ -27,8 +29,9 @@ const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 b
 type Props = {
   onTimeline:()=>void;
   onShortcuts:()=>void;
+  onPixelSelection:(action:string)=>void;
   onVectorSelection:(request:VectorSelectionRequest)=>void;
-  onSavedSelections:(mode:'save'|'edit')=>void;
+  onSavedSelections:(mode:'save'|'edit'|'bulk'|'assets'|'attribute')=>void;
   onLayerGroupEdit:(edit:import('../bridge').LayerGroupEdit)=>void;
   onGuides:(action:'visibility'|'lock'|'make'|'release'|'clear'|'snap'|'selectAll'|'invertSelection'|'deselect'|'thirds'|'quarters'|'margins'|'saveLayout'|'loadLayout')=>void;
   outlineDisplay: boolean; onOutlineDisplay: (value: boolean) => void;
@@ -73,12 +76,13 @@ export function WorkspaceMenu(props: Props) {
   const canGroup = canEdit && selectedEntities.size >= 2 && new Set(selectedObjects.map(item => item.layer.id)).size === 1;
   const canUngroup = canEdit && selectedObjects.some(item => item.object.groupPath.length > 0);
   const future = (label: string): Entry => ({ label, planned: true });
+  const ps=pixelSelectionLabels[locale];
   const vs=vectorSelectionLabels[locale];
   const vectorReady=canEdit&&!doc.activeSavedPath;
   const hasVectors=doc.layers.some(l=>l.kind==='vector'&&l.visible&&!l.locked&&l.objects.some(o=>o.visible&&!o.locked));
   const vectorAction=(action:string,criterion?:string,name?:string)=>()=>props.onVectorSelection({action,criterion,name});
   const sameEntry=(index:number):Entry=>({id:`vector.same.${sameCriteria[index]}`,label:vs.sameNames[index],enabled:index<9||selectedTexts.length>0,action:vectorAction('same',sameCriteria[index])});
-  const sameEntries:Entry[]=[sameEntry(0),sameEntry(1),future(vs.unavailable[3]),...sameCriteria.slice(2,8).map((_,i)=>sameEntry(i+2)),future(vs.unavailable[4]),sameEntry(8),future(vs.unavailable[5]),future(vs.unavailable[6]),null,{id:'command.text',label: {ja:'テキスト',en:'Text','zh-CN':'文本'}[locale],enabled:false},...sameCriteria.slice(9).map((_,i)=>sameEntry(i+9))];
+  const sameEntries:Entry[]=[sameEntry(0),sameEntry(1),{id:'vector.same.appearanceAttribute',label:vs.unavailable[3],action:()=>props.onSavedSelections('attribute')},...sameCriteria.slice(2,8).map((_,i)=>sameEntry(i+2)),{id:'vector.same.graphicStyle',label:vs.unavailable[4],enabled:(doc.vectorAssets??[]).some(a=>a.kind==='graphicStyle'&&a.selected),action:vectorAction('same','graphicStyle')},sameEntry(8),{id:'vector.same.symbolInstance',label:vs.unavailable[5],enabled:(doc.vectorAssets??[]).some(a=>a.kind==='symbolInstance'&&a.selected),action:vectorAction('same','symbolInstance')},{id:'vector.same.linkedText',label:vs.unavailable[6],enabled:(doc.vectorAssets??[]).some(a=>a.kind==='linkedText'&&a.selected),action:vectorAction('same','linkedText')},null,{id:'command.text',label: {ja:'テキスト',en:'Text','zh-CN':'文本'}[locale],enabled:false},...sameCriteria.slice(9).map((_,i)=>sameEntry(i+9))];
   const savedKey=(name:string)=>{let hash=0xcbf29ce484222325n;for(const byte of new TextEncoder().encode(name)){hash=BigInt.asUintN(64,(hash^BigInt(byte))*0x100000001b3n);}return hash.toString(16);};
   const vectorMenus:Entry[]=[
     { id: 'vector.selectAll', label: t.selectAll,enabled:vectorReady&&hasVectors,shortcut:'',action:vectorAction('all')},
@@ -89,8 +93,8 @@ export function WorkspaceMenu(props: Props) {
     {id:'vector.above',label:vs.above,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+]',action:vectorAction('above')},
     {id:'vector.below',label:vs.below,enabled:vectorReady&&selectedObjects.length>0,shortcut:'CmdOrCtrl+Alt+[',action:vectorAction('below')},null,
     {id:'vector.same',label:vs.same,enabled:vectorReady&&selectedObjects.length>0,children:sameEntries},
-    {id:'vector.object',label:vs.object,enabled:vectorReady&&hasVectors,children:[{id:'vector.object.sameLayers',label:vs.objectNames[0],enabled:selectedObjects.length>0,action:vectorAction('object','sameLayers')},future(vs.unavailable[0]),null,future(vs.unavailable[1]),future(vs.unavailable[2]),...objectCriteria.slice(1,3).map((criterion,i)=>({id:`vector.object.${criterion}`,label:vs.objectNames[i+1],action:vectorAction('object',criterion)})),null,...objectCriteria.slice(3).map((criterion,i)=>({id:`vector.object.${criterion}`,label:vs.objectNames[i+3],action:vectorAction('object',criterion)}))]},
-    future(vs.unavailable[7]),null,
+    {id:'vector.object',label:vs.object,enabled:vectorReady&&hasVectors,children:objectCriteria.flatMap((criterion,index):Entry[]=>[...(index===2||index===6?[null]:[]),{id:`vector.object.${criterion}`,label:vs.objectNames[index],enabled:index<2?selectedObjects.length>0:true,action:vectorAction('object',criterion)}])},
+    {id:'vector.bulk',label:vs.bulk,enabled:vectorReady&&selectedObjects.length>0,action:()=>props.onSavedSelections('bulk')},{id:'vector.assets',label:vectorAssetLabels[locale].title+'…',enabled:vectorReady,action:()=>props.onSavedSelections('assets')},null,
     {id:'vector.save',label:vs.save,enabled:vectorReady&&selectedObjects.length>0,action:()=>props.onSavedSelections('save')},
     {id:'vector.edit',label:vs.edit,enabled:vectorReady&&doc.savedVectorSelections.length>0,action:()=>props.onSavedSelections('edit')},
     {id:'vector.update',label:vs.update,enabled:vectorReady&&selectedObjects.length>0&&doc.savedVectorSelections.length>0,children:doc.savedVectorSelections.map(item=>({id:`savedSelection.update.${savedKey(item.name)}`,label:item.name,action:vectorAction('update',undefined,item.name)}))},
@@ -155,9 +159,16 @@ export function WorkspaceMenu(props: Props) {
       { id: 'menu.ungroupAll', label: t.ungroupAll, enabled: canUngroup, action: () => onGroup('ungroupAll') }, null,
       { id: 'menu.showLayer', label: w.showLayer, enabled: canEdit, checked: doc.layerVisible, action: () => onEdit('toggleLayer') }],
     [{id:'command.create-outlines',shortcut:'CmdOrCtrl+Shift+O',label: {ja:'アウトラインを作成',en:'Create Outlines','zh-CN':'创建轮廓'}[locale],enabled:canEdit && selectedObjects.some(({object,layer})=>object.kind==='text' && layer.visible && !layer.locked),action:props.onOutlineText}, null, { label: directionLabels[0], enabled: canEdit && selectedTexts.length > 0 && selectedTexts.every(text => text.editable), children: (['horizontal', 'vertical'] as const).map((mode, index) => ({ id:`text.direction.${mode}`,label: directionLabels[index + 1], checked: selectedTexts.length > 0 && selectedTexts.every(text => (text.text.writingMode ?? 'horizontal') === mode), action: () => props.onWritingMode(mode) })) }, null, future(t.font), future(t.fontSize), future(t.paragraph)],
-    [{ id: 'menu.selectAll', label: t.selectAll, enabled: canEdit, shortcut: 'CmdOrCtrl+A', action: () => onEdit('selectAll') },
-      { id: 'menu.deselect', label: t.deselect, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+A', action: () => onEdit('deselect') },
-      { id: 'menu.invert', label: t.invert, enabled: canEdit && !!doc.selection, shortcut: 'CmdOrCtrl+Shift+I', action: () => onEdit('invertSelection') }],
+    [
+      ...[0,1,2,3].map((index)=>({id:`pixelSelection.${['all','deselect','reselect','inverse'][index]}`,label:ps.items[index],enabled:canEdit&&(index===0||(index===2?!!doc.canReselectPixels:!!doc.selection)),shortcut:['CmdOrCtrl+A','CmdOrCtrl+D','CmdOrCtrl+Shift+D','CmdOrCtrl+Shift+I'][index],action:()=>props.onPixelSelection(['all','deselect','reselect','inverse'][index])})),null,
+      ...[4,5,6,7].map((index)=>({id:`pixelSelection.layers.${index}`,label:ps.items[index],enabled:canEdit&&(index!==7||!!doc.layerGroups.selected.length||!!doc.layerGroups.isolated?.length),checked:index===7?!!doc.layerGroups.isolated?.length:undefined,action:()=>{if(index===6)props.onPixelSelection('findLayers');else props.onLayerGroupEdit({action:({4:'selectAll',5:'deselectAll',7:'isolate'}as const)[index as 4|5|7]});}})),null,
+      ...[8,9,10,11,12].map((index)=>({id:`pixelSelection.analysis.${index}`,label:ps.items[index],enabled:canEdit&&index!==10&&index!==11&&(index!==12||!!doc.selection),action:()=>props.onPixelSelection(({8:'colorRange',9:'focusArea',12:'refine'}as const)[index as 8|9|12])})),null,
+      {id:'pixelSelection.modify',label:ps.items[13],enabled:canEdit&&!!doc.selection,children:pixelModifyKinds.map((kind,i)=>({id:`pixelSelection.modify.${kind}`,label:ps.modify[i],action:()=>props.onPixelSelection(`modify:${kind}`)}))},
+      ...[14,15,16].map((index)=>({id:`pixelSelection.edit.${index}`,label:ps.items[index],enabled:canEdit&&!!doc.selection,action:()=>props.onPixelSelection(({14:'grow',15:'similar',16:'transform'}as const)[index as 14|15|16])})),null,
+      {id:'pixelSelection.quickMask',label:ps.items[17],checked:!!doc.quickMask,enabled:canEdit,shortcut:'Q',action:()=>props.onPixelSelection('quickMask')},null,
+      {id:'pixelSelection.load',label:ps.items[18],enabled:canEdit&&!!doc.savedPixelSelections?.length,action:()=>props.onPixelSelection('load')},
+      {id:'pixelSelection.save',label:ps.items[19],enabled:canEdit&&!!doc.selection,action:()=>props.onPixelSelection('save')}
+    ],
     [future(t.blur), future(t.sharpen), future(t.adjustments)],
     [{id:'command.preview',label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
       {id:'command.outline',label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
@@ -289,13 +300,13 @@ export function WorkspaceMenu(props: Props) {
     </div>
     {open !== null && createPortal(<div ref={popup} id="workspace-dropdown" data-floating-panel="menu" role="menu" aria-labelledby={`menu-trigger-${open}`} className="workspace-dropdown" style={{...position,maxHeight:'calc(100vh - 16px)',overflowY:'auto'}} onScroll={()=>setSubmenuOpen(null)} onKeyDown={popupKey}>
       {menus[open].map((entry, index) => entry === null ? <div role="separator" key={index} /> : entry.children ? <div className="menu-nested" key={index} onPointerLeave={() => setSubmenuOpen(null)}>
-        <button role="menuitem" title={entry.feature ? featureLabels[locale][entry.feature] : undefined} aria-haspopup="menu" aria-expanded={submenuOpen === index} tabIndex={-1} onPointerEnter={() => setSubmenuOpen(index)} onClick={() => setSubmenuOpen(index)} onKeyDown={event => {
-          if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); setSubmenuOpen(index); }
+        <button role="menuitem" title={entry.feature ? featureLabels[locale][entry.feature] : undefined} aria-haspopup="menu" aria-disabled={entry.enabled===false} aria-expanded={submenuOpen === index} tabIndex={-1} onPointerEnter={() => {if(entry.enabled!==false)setSubmenuOpen(index);}} onClick={() => {if(entry.enabled!==false)setSubmenuOpen(index);}} onKeyDown={event => {
+          if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); if(entry.enabled!==false)setSubmenuOpen(index); }
         }}><span className="menu-check" />{featureBadge(entry)}<span>{entry.label}</span><span className="menu-chevron" aria-hidden="true">›</span></button>
         {submenuOpen === index && <div className="workspace-submenu" data-floating-panel="submenu" role="menu" aria-label={entry.label} onKeyDown={event => {
           if (event.key === 'ArrowLeft') { event.preventDefault(); event.stopPropagation(); setSubmenuOpen(null); }
-        }}>{entry.children.map((child, childIndex) => child === null ? <div role="separator" key={childIndex} /> : <button key={childIndex} title={child.feature ? featureLabels[locale][child.feature] : undefined} role={child.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={child.checked} aria-disabled={!child.action || child.enabled === false} tabIndex={-1} onClick={() => {
-          if (!child.action || child.enabled === false) return; close(); child.action();
+        }}>{entry.children.map((child, childIndex) => child === null ? <div role="separator" key={childIndex} /> : <button key={childIndex} title={child.feature ? featureLabels[locale][child.feature] : undefined} role={child.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={child.checked} aria-disabled={entry.enabled===false || !child.action || child.enabled === false} tabIndex={-1} onClick={() => {
+          if (entry.enabled===false || !child.action || child.enabled === false) return; close(); child.action();
         }}><span className="menu-check" aria-hidden="true">{child.checked ? '✓' : ''}</span>{featureBadge(child)}<span>{child.label}</span></button>)}</div>}
       </div> : <button key={index} title={entry.feature ? featureLabels[locale][entry.feature] : undefined} role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={entry.checked} aria-disabled={!entry.action || entry.enabled === false} tabIndex={-1}
           onClick={() => { if (!entry.action || entry.enabled === false) return; close(); entry.action(); }}>

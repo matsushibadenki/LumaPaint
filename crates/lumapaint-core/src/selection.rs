@@ -26,6 +26,9 @@ pub enum SelectionOperation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectionRegion {
+    /// Quick-mask brush target gray and hardness; ordinary boolean regions omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint: Option<[f32; 2]>,
     pub shape: SelectionShape,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<Point>,
@@ -45,14 +48,20 @@ impl SelectionRegion {
         match self.shape {
             SelectionShape::Polygon => {
                 let mut inside = false;
+                let mut boundary = false;
                 for (a, b) in self
                     .points
                     .iter()
                     .zip(self.points.iter().cycle().skip(1))
                     .take(self.points.len())
                 {
-                    if segment_distance(point, *a, *b) < 0.0001 {
-                        return true;
+                    // Even/odd paths may connect disjoint contours with a doubled
+                    // bridge. Reversed edges cancel, including on the boundary.
+                    // Count a vertex only at the start of its nonzero edge.
+                    if segment_distance(point, *a, *b) < 0.0001
+                        && (point.x - b.x).hypot(point.y - b.y) >= 0.0001
+                    {
+                        boundary = !boundary;
                     }
                     if (a.y > point.y) != (b.y > point.y)
                         && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
@@ -60,7 +69,7 @@ impl SelectionRegion {
                         inside = !inside;
                     }
                 }
-                inside
+                inside || boundary
             }
             SelectionShape::Stroke => {
                 self.points
@@ -83,8 +92,10 @@ impl SelectionRegion {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Selection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<std::sync::Arc<crate::selection_raster::SelectionRaster>>,
     pub regions: Vec<SelectionRegion>,
 }
 
@@ -94,6 +105,8 @@ impl<'de> Deserialize<'de> for Selection {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Composite {
+            #[serde(default)]
+            raster: Option<std::sync::Arc<crate::selection_raster::SelectionRaster>>,
             regions: Vec<SelectionRegion>,
         }
         #[derive(Deserialize)]
@@ -111,6 +124,7 @@ impl<'de> Deserialize<'de> for Selection {
         }
         let selection = match Saved::deserialize(deserializer)? {
             Saved::Composite(value) => Self {
+                raster: value.raster,
                 regions: value.regions,
             },
             Saved::Legacy(value) => {
@@ -131,7 +145,9 @@ impl<'de> Deserialize<'de> for Selection {
 impl Selection {
     pub fn new(shape: SelectionShape, bounds: [f32; 4]) -> Self {
         Self {
+            raster: None,
             regions: vec![SelectionRegion {
+                paint: None,
                 points: Vec::new(),
                 radius: 0.,
                 shape,
@@ -141,13 +157,25 @@ impl Selection {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.regions.is_empty() || self.regions.len() > MAX_SELECTION_REGIONS {
+        if let Some(raster) = &self.raster {
+            raster.validate()?;
+        }
+        if (self.regions.is_empty() && self.raster.is_none())
+            || self.regions.len() > MAX_SELECTION_REGIONS
+        {
             return Err("Invalid selection region count".into());
         }
         if self.regions.iter().map(|r| r.points.len()).sum::<usize>() > 32768 {
             return Err("Selection path exceeds point limit".into());
         }
         for (index, region) in self.regions.iter().enumerate() {
+            if region.paint.is_some_and(|v| {
+                v.iter().any(|v| !v.is_finite() || !(0. ..=1.).contains(v))
+                    || region.shape != SelectionShape::Stroke
+                    || region.operation != SelectionOperation::Add
+            }) {
+                return Err("Invalid grayscale selection brush".into());
+            }
             if region.points.iter().any(|p| {
                 !p.x.is_finite() || !p.y.is_finite() || p.x.abs() > 16384. || p.y.abs() > 16384.
             }) || !region.radius.is_finite()
@@ -170,7 +198,8 @@ impl Selection {
                 || h < 1.0
                 || w > limit
                 || h > limit
-                || (index == 0) != (region.operation == SelectionOperation::Replace)
+                || (self.raster.is_none()
+                    && (index == 0) != (region.operation == SelectionOperation::Replace))
                 || (region.operation == SelectionOperation::Invert
                     && region.shape != SelectionShape::Rectangle)
             {
@@ -180,18 +209,127 @@ impl Selection {
         Ok(())
     }
     pub fn contains(&self, point: Point) -> bool {
-        let mut inside = false;
+        self.coverage(point) >= 0.5
+    }
+    pub fn coverage(&self, point: Point) -> f32 {
+        let mut coverage = self.raster.as_ref().map_or(0., |mask| mask.coverage(point));
         for region in &self.regions {
-            let hit = region.contains(point);
-            inside = match region.operation {
+            if let Some([value, hardness]) = region.paint {
+                let distance = region
+                    .points
+                    .windows(2)
+                    .map(|p| segment_distance(point, p[0], p[1]))
+                    .fold(f32::INFINITY, f32::min)
+                    .min(
+                        region
+                            .points
+                            .first()
+                            .map_or(f32::INFINITY, |p| (point.x - p.x).hypot(point.y - p.y)),
+                    );
+                let inner = region.radius * hardness;
+                let edge = (region.radius + 1.).max(inner + 1.);
+                let t = ((distance - inner) / (edge - inner)).clamp(0., 1.);
+                let alpha = 1. - t * t * (3. - 2. * t);
+                coverage = coverage * (1. - alpha) + value * alpha;
+                continue;
+            }
+            let hit = if region.contains(point) { 1. } else { 0. };
+            coverage = match region.operation {
                 SelectionOperation::Replace => hit,
-                SelectionOperation::Add => inside || hit,
-                SelectionOperation::Subtract => inside && !hit,
-                SelectionOperation::Intersect => inside && hit,
-                SelectionOperation::Invert => hit && !inside,
+                SelectionOperation::Add => coverage.max(hit),
+                SelectionOperation::Subtract => coverage * (1. - hit),
+                SelectionOperation::Intersect => coverage.min(hit),
+                SelectionOperation::Invert => hit * (1. - coverage),
             };
         }
-        inside
+        coverage
+    }
+    pub fn from_raster(mask: crate::selection_raster::SelectionRaster) -> Result<Self, String> {
+        mask.validate()?;
+        Ok(Self {
+            raster: Some(std::sync::Arc::new(mask)),
+            regions: vec![],
+        })
+    }
+    pub fn rasterized(&self, dimensions: (u32, u32), limit: u32) -> Result<Self, String> {
+        let scale = (limit as f32 / dimensions.0.max(dimensions.1) as f32).min(1.);
+        let size = [
+            (dimensions.0 as f32 * scale).ceil() as u32,
+            (dimensions.1 as f32 * scale).ceil() as u32,
+        ];
+        if size.contains(&0) {
+            return Err("Invalid selection dimensions".into());
+        }
+        let sx = dimensions.0 as f32 / size[0] as f32;
+        let sy = dimensions.1 as f32 / size[1] as f32;
+        let pixels = (0..size[0] * size[1])
+            .map(|i| {
+                (self.coverage(Point {
+                    x: ((i % size[0]) as f32 + 0.5) * sx,
+                    y: ((i / size[0]) as f32 + 0.5) * sy,
+                }) * 255.)
+                    .round() as u8
+            })
+            .collect::<Vec<_>>();
+        Self::from_raster(crate::selection_raster::SelectionRaster::from_pixels(
+            size,
+            [sx, 0., 0., sy, 0., 0.],
+            &pixels,
+        )?)
+    }
+    pub fn has_soft_mask(&self) -> bool {
+        self.raster.is_some() || self.regions.iter().any(|r| r.paint.is_some())
+    }
+    pub fn snapshot_summary(&self) -> Self {
+        if self.raster.is_none() {
+            return self.clone();
+        }
+        let mask = self.raster.as_ref().unwrap();
+        let [a, b, c, d, e, f] = mask.transform;
+        let mut bounds = [mask.size[0], mask.size[1], 0, 0];
+        for &[start, len, value] in &mask.runs {
+            if value < 128 {
+                continue;
+            }
+            let top = start / mask.size[0];
+            let bottom = (start + len - 1) / mask.size[0];
+            let left = if top == bottom {
+                start % mask.size[0]
+            } else {
+                0
+            };
+            let right = if top == bottom {
+                left + len
+            } else {
+                mask.size[0]
+            };
+            bounds = [
+                bounds[0].min(left),
+                bounds[1].min(top),
+                bounds[2].max(right),
+                bounds[3].max(bottom + 1),
+            ];
+        }
+        if bounds[2] == 0 {
+            bounds = [0, 0, 1, 1];
+        }
+        let [l, t, r, bt] = bounds.map(|v| v as f32);
+        let points =
+            [(l, t), (r, t), (r, bt), (l, bt)].map(|(x, y)| [a * x + c * y + e, b * x + d * y + f]);
+        let minx = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+        let miny = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let maxx = points
+            .iter()
+            .map(|p| p[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let maxy = points
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        Self::new(
+            SelectionShape::Rectangle,
+            [minx, miny, (maxx - minx).max(1.), (maxy - miny).max(1.)],
+        )
     }
     pub fn ensure_capacity(&self) -> Result<(), String> {
         if self.regions.len() >= MAX_SELECTION_REGIONS {
@@ -206,6 +344,7 @@ impl Selection {
     pub fn invert(&mut self, width: u32, height: u32) -> Result<(), String> {
         self.ensure_capacity()?;
         self.regions.push(SelectionRegion {
+            paint: None,
             points: Vec::new(),
             radius: 0.,
             shape: SelectionShape::Rectangle,
@@ -218,11 +357,21 @@ impl Selection {
         let limit = MAX_DOCUMENT_DIMENSION as f32 * 2.0;
         let mut dx = dx;
         let mut dy = dy;
+        if let Some(mask) = &self.raster {
+            dx = dx.clamp(-32768. - mask.transform[4], 32768. - mask.transform[4]);
+            dy = dy.clamp(-32768. - mask.transform[5], 32768. - mask.transform[5]);
+        }
         for region in &self.regions {
             dx = dx.clamp(-limit - region.bounds[0], limit - region.bounds[0]);
             dy = dy.clamp(-limit - region.bounds[1], limit - region.bounds[1]);
         }
         let mut moved = self.clone();
+        if let Some(mask) = &self.raster {
+            moved.raster = Some(
+                mask.transformed([1., 0., 0., 1., dx, dy])
+                    .map_or_else(|_| mask.clone(), std::sync::Arc::new),
+            );
+        }
         for region in &mut moved.regions {
             for p in &mut region.points {
                 p.x += dx;
@@ -492,6 +641,7 @@ mod tests {
         let mut oversized = Selection::new(SelectionShape::Rectangle, [0.0, 0.0, 10.0, 10.0]);
         for _ in 1..MAX_SELECTION_REGIONS {
             oversized.regions.push(SelectionRegion {
+                paint: None,
                 points: Vec::new(),
                 radius: 0.,
                 shape: SelectionShape::Ellipse,

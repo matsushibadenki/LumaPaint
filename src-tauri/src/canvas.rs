@@ -58,6 +58,9 @@ pub enum CanvasTool {
     PolygonLasso,
     MagneticLasso,
     SelectionBrush,
+    ObjectSelection,
+    QuickSelection,
+    MagicWand,
     Eyedropper,
     Gradient,
     Crop,
@@ -436,6 +439,23 @@ pub async fn toggle_layer(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, id);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
+pub async fn set_paper_simulation(
+    window: tauri::WebviewWindow,
+    paper: lumapaint_core::natural_media::PaperSettings,
+) -> Result<DocumentSnapshot, String> {
+    paper.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_paper_simulation(paper)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, paper);
         Err("Native document editing is not supported on this platform yet".into())
     }
 }
@@ -2642,5 +2662,73 @@ pub async fn vector_selection_action(
     {
         let _ = (window, request);
         Err("Native vector editing is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn pixel_selection_action(
+    window: tauri::WebviewWindow,
+    request: lumapaint_core::document::PixelSelectionRequest,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if [
+            "colorRange",
+            "focusArea",
+            "grow",
+            "similar",
+            "modify",
+            "refine",
+        ]
+        .contains(&request.action.as_str())
+        {
+            let job = on_main(window.clone(), move || {
+                platform::pixel_selection_menu::prepare(request)
+            })
+            .await?;
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                platform::pixel_selection_menu::evaluate(job)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            on_main(window, move || {
+                platform::pixel_selection_menu::commit(result)
+            })
+            .await
+        } else {
+            on_main(window, move || {
+                platform::pixel_selection_menu::immediate(request)
+            })
+            .await
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, request);
+        Err("Selection menu is pending on this platform".into())
+    }
+}
+
+#[tauri::command]
+pub async fn rasterize_vector_layer(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let job = on_main(window.clone(), move || {
+            platform::rasterize_layer::prepare(id)
+        })
+        .await?;
+        let result =
+            tauri::async_runtime::spawn_blocking(move || platform::rasterize_layer::evaluate(job))
+                .await
+                .map_err(|e| e.to_string())??;
+        on_main(window, move || platform::rasterize_layer::commit(result)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id);
+        Err("Native rasterization is pending on this platform".into())
     }
 }

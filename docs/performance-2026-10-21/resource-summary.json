@@ -1,0 +1,82 @@
+{
+  "before": {
+    "runs": [
+      {
+        "rss_bytes": 52527104,
+        "instructions": 26152013188,
+        "cycles": 5311232709,
+        "peak_footprint_bytes": 33833536,
+        "real_seconds": 1.35,
+        "user_seconds": 1.21,
+        "system_seconds": 0.12
+      },
+      {
+        "rss_bytes": 52428800,
+        "instructions": 26177378899,
+        "cycles": 5300214247,
+        "peak_footprint_bytes": 33735232,
+        "real_seconds": 1.36,
+        "user_seconds": 1.21,
+        "system_seconds": 0.13
+      },
+      {
+        "rss_bytes": 51888128,
+        "instructions": 26051929955,
+        "cycles": 5163769054,
+        "peak_footprint_bytes": 33194560,
+        "real_seconds": 1.29,
+        "user_seconds": 1.17,
+        "system_seconds": 0.11
+      }
+    ],
+    "medians": {
+      "rss_bytes": 52428800,
+      "instructions": 26152013188,
+      "cycles": 5300214247,
+      "peak_footprint_bytes": 33735232,
+      "real_seconds": 1.35,
+      "user_seconds": 1.21,
+      "system_seconds": 0.12
+    }
+  },
+  "after": {
+    "runs": [
+      {
+        "rss_bytes": 63897600,
+        "instructions": 21183570169,
+        "cycles": 4294489119,
+        "peak_footprint_bytes": 45203984,
+        "real_seconds": 1.08,
+        "user_seconds": 1.0,
+        "system_seconds": 0.06
+      },
+      {
+        "rss_bytes": 64421888,
+        "instructions": 21528732970,
+        "cycles": 4337503466,
+        "peak_footprint_bytes": 45761040,
+        "real_seconds": 1.09,
+        "user_seconds": 1.0,
+        "system_seconds": 0.08
+      },
+      {
+        "rss_bytes": 63684608,
+        "instructions": 21200895097,
+        "cycles": 4282505625,
+        "peak_footprint_bytes": 45007400,
+        "real_seconds": 1.07,
+        "user_seconds": 1.0,
+        "system_seconds": 0.06
+      }
+    ],
+    "medians": {
+      "rss_bytes": 63897600,
+      "instructions": 21200895097,
+      "cycles": 4294489119,
+      "peak_footprint_bytes": 45203984,
+      "real_seconds": 1.08,
+      "user_seconds": 1.0,
+      "system_seconds": 0.06
+    }
+  }
+}

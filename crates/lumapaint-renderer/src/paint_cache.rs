@@ -133,6 +133,7 @@ impl PaintCache {
                             &effects,
                             mask.as_ref(),
                             true,
+                            document.paper(),
                         )
                         .map(|v| (v as f32 * opacity).round() as u8);
                         let at = ((y * extent[0] + x) * 4) as usize;

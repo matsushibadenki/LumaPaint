@@ -20,6 +20,15 @@ pub struct VectorSelectionRequest {
     pub criterion: Option<String>,
     pub name: Option<String>,
     pub new_name: Option<String>,
+    #[serde(default)]
+    pub bulk: Option<BulkVectorSelection>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BulkVectorSelection {
+    pub criteria: Vec<String>,
+    pub match_any: bool,
+    pub scope: String,
 }
 pub(super) fn validate_saved(items: &[SavedVectorSelection]) -> Result<(), String> {
     if items.len() > 128 {
@@ -58,6 +67,194 @@ fn valid_name(name: &str) -> Result<(), String> {
     }
 }
 impl Document {
+    fn selection_attribute_matches(
+        &self,
+        key: &str,
+        layer: &SvgLayer,
+        object: &VectorObject,
+        reference_layer: &SvgLayer,
+        reference: &VectorObject,
+    ) -> bool {
+        if ["graphicStyle", "symbolInstance", "linkedText"].contains(&key) {
+            return self.vector_assets.same(key, &object.id, &reference.id);
+        }
+        let effects_equal = || {
+            self.layer_effects.get(&layer.id).filter(|e| e.active())
+                == self
+                    .layer_effects
+                    .get(&reference_layer.id)
+                    .filter(|e| e.active())
+        };
+        if key == "effects" {
+            return effects_equal();
+        }
+        same(key, layer, object, reference_layer, reference)
+            && (key != "appearance" || effects_equal())
+    }
+    pub fn selected_direction_handles(&self) -> Result<Vec<(String, usize)>, String> {
+        let mut controls = Vec::new();
+        for (_, object) in self
+            .selection_candidates()
+            .into_iter()
+            .filter(|(_, o)| self.selected_vector_objects.contains(&o.id))
+        {
+            let Some(editable) = crate::bezier::editable(object) else {
+                continue;
+            };
+            for start in crate::bezier::segment_indices(&editable) {
+                for (index, anchor) in [(start + 1, start), (start + 2, start + 3)] {
+                    if editable.control_points[index] != editable.control_points[anchor] {
+                        controls.push((object.id.clone(), index));
+                        if controls.len() > 65536 {
+                            return Err(
+                                "Too many controls / 選択するハンドルが多すぎます / 控制点过多"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(controls)
+    }
+    pub fn transform_vector_controls_matrix(
+        &mut self,
+        controls: &[(String, usize)],
+        matrix: [f32; 6],
+    ) -> Result<(), String> {
+        if matrix.iter().any(|v| !v.is_finite() || v.abs() > 100000.) {
+            return Err("Invalid control transform".into());
+        }
+        if matrix == [1., 0., 0., 1., 0., 0.] {
+            return Ok(());
+        }
+        self.edit_direct_controls(controls, |object, indices| {
+            let mut edited = object.clone();
+            crate::bezier::transform_controls(&mut edited, indices, matrix)?;
+            Ok(Some(edited))
+        })
+    }
+    pub fn transform_vector_controls(
+        &mut self,
+        controls: &[(String, usize)],
+        action: &str,
+        values: [f32; 4],
+    ) -> Result<(), String> {
+        if controls.is_empty() || values.iter().any(|v| !v.is_finite() || v.abs() > 100000.) {
+            return Err("Invalid control transform".into());
+        }
+        if matches!(action, "scale" | "individual")
+            && (!(0.01..=100.).contains(&values[0]) || !(0.01..=100.).contains(&values[1]))
+        {
+            return Err(
+                "Scale must be 1–10000% / 倍率は1〜10000%です / 缩放比例应为1–10000%".into(),
+            );
+        }
+        if action == "shear" && values[0].abs() >= 89. {
+            return Err("Invalid shear angle".into());
+        }
+        let unchanged = match action {
+            "move" => values[0] == 0. && values[1] == 0.,
+            "scale" => values[0] == 1. && values[1] == 1.,
+            "rotate" | "shear" => values[0] == 0.,
+            "individual" => values[0] == 1. && values[1] == 1. && values[2] == 0.,
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        let objects = self.direct_objects();
+        let mut points = Vec::new();
+        for (id, index) in controls {
+            let o = objects
+                .iter()
+                .find(|(_, o)| &o.id == id)
+                .map(|(_, o)| o)
+                .ok_or("Path missing")?;
+            let p = *o
+                .control_points
+                .get(*index)
+                .ok_or("Invalid control index")?;
+            points.push(crate::bezier::world_point(o, p));
+        }
+        let center = |points: &[[f32; 2]]| {
+            [
+                (points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min)
+                    + points
+                        .iter()
+                        .map(|p| p[0])
+                        .fold(f32::NEG_INFINITY, f32::max))
+                    * 0.5,
+                (points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min)
+                    + points
+                        .iter()
+                        .map(|p| p[1])
+                        .fold(f32::NEG_INFINITY, f32::max))
+                    * 0.5,
+            ]
+        };
+        let origin = center(&points);
+        self.edit_direct_controls(controls, |object, indices| {
+            let origin = if action == "individual" {
+                center(
+                    &indices
+                        .iter()
+                        .map(|&i| crate::bezier::world_point(object, object.control_points[i]))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                origin
+            };
+            let [mut a, mut b, mut c, mut d] = [1., 0., 0., 1.];
+            let mut offset = [0., 0.];
+            match action {
+                "move" => offset = [values[0], values[1]],
+                "scale" => {
+                    a = values[0];
+                    d = values[1];
+                }
+                "rotate" | "individual" => {
+                    let (sn, cs) = values[if action == "rotate" { 0 } else { 2 }]
+                        .to_radians()
+                        .sin_cos();
+                    let sx = if action == "individual" {
+                        values[0]
+                    } else {
+                        1.
+                    };
+                    let sy = if action == "individual" {
+                        values[1]
+                    } else {
+                        1.
+                    };
+                    a = cs * sx;
+                    b = sn * sx;
+                    c = -sn * sy;
+                    d = cs * sy;
+                }
+                "reflect" => {
+                    let (sn, cs) = (2. * values[0].to_radians()).sin_cos();
+                    a = cs;
+                    b = sn;
+                    c = sn;
+                    d = -cs;
+                }
+                "shear" => c = values[0].to_radians().tan(),
+                _ => return Err("Unsupported control transform".into()),
+            }
+            let matrix = [
+                a,
+                b,
+                c,
+                d,
+                origin[0] - a * origin[0] - c * origin[1] + offset[0],
+                origin[1] - b * origin[0] - d * origin[1] + offset[1],
+            ];
+            let mut edited = object.clone();
+            crate::bezier::transform_controls(&mut edited, indices, matrix)?;
+            Ok(Some(edited))
+        })
+    }
     fn selection_candidates(&self) -> Vec<(&SvgLayer, &VectorObject)> {
         self.svg_layers
             .iter()
@@ -122,6 +319,51 @@ impl Document {
                 };
                 vec![o.id.clone()]
             }
+            "bulk" => {
+                let options = request
+                    .bulk
+                    .as_ref()
+                    .ok_or("Missing bulk selection conditions")?;
+                if options.criteria.is_empty()
+                    || options.criteria.len() > SAME_CRITERIA.len()
+                    || options
+                        .criteria
+                        .iter()
+                        .any(|k| !SAME_CRITERIA.contains(&k.as_str()))
+                    || !["page", "artboard", "sameLayers"].contains(&options.scope.as_str())
+                {
+                    return Err("Invalid bulk selection conditions / 一括選択の条件が不正です / 批量选择条件无效".into());
+                }
+                if reference.is_empty() {
+                    return Err("Select reference objects / 基準のオブジェクトを選択してください / 请选择参考对象".into());
+                }
+                let layers: std::collections::BTreeSet<_> =
+                    reference.iter().map(|(l, _)| l.id.as_str()).collect();
+                c.iter()
+                    .filter(|(l, o)| {
+                        (options.scope != "sameLayers" || layers.contains(l.id.as_str()))
+                            && (options.scope != "artboard"
+                                || o.intersects_selection(
+                                    [0., 0., self.width as f32, self.height as f32],
+                                    false,
+                                ))
+                            && reference.iter().any(|(rl, r)| {
+                                if options.match_any {
+                                    options
+                                        .criteria
+                                        .iter()
+                                        .any(|k| self.selection_attribute_matches(k, l, o, rl, r))
+                                } else {
+                                    options
+                                        .criteria
+                                        .iter()
+                                        .all(|k| self.selection_attribute_matches(k, l, o, rl, r))
+                                }
+                            })
+                    })
+                    .map(|(_, o)| o.id.clone())
+                    .collect()
+            }
             "same" => {
                 if !SAME_CRITERIA.contains(&criterion) {
                     return Err("Unknown same-object criterion".into());
@@ -129,12 +371,65 @@ impl Document {
                 if reference.is_empty() {
                     return Err("Select a reference object / 基準のオブジェクトを選択してください / 请选择参考对象".into());
                 }
+                if ["graphicStyle", "symbolInstance", "linkedText"].contains(&criterion)
+                    && !reference
+                        .iter()
+                        .any(|(_, r)| self.vector_assets.same(criterion, &r.id, &r.id))
+                {
+                    return Err("No linked reference / 関連付けられたオブジェクトを選択してください / 请选择已关联的参考对象".into());
+                }
+                let asset_members =
+                    if ["graphicStyle", "symbolInstance", "linkedText"].contains(&criterion) {
+                        self.vector_assets.matching_ids(
+                            criterion,
+                            &reference
+                                .iter()
+                                .map(|(_, o)| o.id.as_str())
+                                .collect::<Vec<_>>(),
+                        )
+                    } else {
+                        None
+                    };
+                let shapes: std::collections::BTreeSet<_> = if criterion == "shape" {
+                    reference
+                        .iter()
+                        .filter(|(_, o)| o.text.is_none())
+                        .map(|(_, o)| shape(o))
+                        .filter(|key| !key.is_empty())
+                        .collect()
+                } else {
+                    Default::default()
+                };
                 c.iter()
-                    .filter(|(l, o)| reference.iter().any(|(rl, r)| same(criterion, l, o, rl, r)))
+                    .filter(|(l, o)| {
+                        if let Some(members) = &asset_members {
+                            return members.contains(o.id.as_str());
+                        }
+                        if criterion == "shape" {
+                            return o.text.is_none() && shapes.contains(&shape(o));
+                        }
+                        reference
+                            .iter()
+                            .any(|(rl, r)| self.selection_attribute_matches(criterion, l, o, rl, r))
+                    })
                     .map(|(_, o)| o.id.clone())
                     .collect()
             }
             "object" => {
+                if criterion == "segments" {
+                    let handles = self.selected_direction_handles()?;
+                    if handles.is_empty() {
+                        return Err("Select paths with direction handles / 方向ハンドルを持つパスを選択してください / 请选择带方向手柄的路径".into());
+                    }
+                    let selected: std::collections::BTreeSet<_> =
+                        handles.iter().map(|(id, _)| id.as_str()).collect();
+                    let ids = c
+                        .iter()
+                        .filter(|(_, o)| selected.contains(o.id.as_str()))
+                        .map(|(_, o)| o.id.clone())
+                        .collect();
+                    return self.apply_vector_selection(ids);
+                }
                 if !OBJECT_CRITERIA.contains(&criterion) {
                     return Err("Unknown object criterion".into());
                 }
@@ -143,6 +438,14 @@ impl Document {
                 c.iter()
                     .filter(|(l, o)| match criterion {
                         "sameLayers" => layers.contains(l.id.as_str()),
+                        "bristleBrushStrokes" => {
+                            brushed(o)
+                                && o.stroke_style.brush == crate::stroke::VectorBrush::Bristle
+                        }
+                        "pencilBrushStrokes" => {
+                            brushed(o) && o.stroke_style.brush == crate::stroke::VectorBrush::Pencil
+                        }
+                        "brushStrokes" => brushed(o),
                         "clippingMasks" => o.clipping_group.is_some(),
                         "strayPoints" => stray(o),
                         "text" => o.text.is_some(),
@@ -220,6 +523,9 @@ impl Document {
             }
             _ => return Err("Unknown vector-selection action".into()),
         };
+        self.apply_vector_selection(ids)
+    }
+    pub(super) fn apply_vector_selection(&mut self, ids: Vec<String>) -> Result<(), String> {
         if ids.len() > 4096 {
             return Err("Too many selected vector objects".into());
         }
@@ -237,6 +543,10 @@ impl Document {
 }
 const SAME_CRITERIA: &[&str] = &[
     "appearance",
+    "graphicStyle",
+    "symbolInstance",
+    "linkedText",
+    "effects",
     "blendMode",
     "fillStroke",
     "fill",
@@ -255,6 +565,10 @@ const SAME_CRITERIA: &[&str] = &[
 ];
 const OBJECT_CRITERIA: &[&str] = &[
     "sameLayers",
+    "segments",
+    "bristleBrushStrokes",
+    "pencilBrushStrokes",
+    "brushStrokes",
     "clippingMasks",
     "strayPoints",
     "text",
@@ -282,10 +596,15 @@ fn same(k: &str, l: &SvgLayer, a: &VectorObject, rl: &SvgLayer, b: &VectorObject
             same("fillStroke", l, a, rl, b)
                 && same("opacity", l, a, rl, b)
                 && same("blendMode", l, a, rl, b)
-                && same("strokeWidth", l, a, rl, b)
-                && a.stroke_style == b.stroke_style
+                && (a.stroke.is_none() && a.stroke_gradient.is_none()
+                    || same("strokeWidth", l, a, rl, b) && a.stroke_style == b.stroke_style)
+                && (a.text.is_none()
+                    || b.text.is_none()
+                    || text_keys(a, "textFillStroke") == text_keys(b, "textFillStroke"))
         }
-        "shape" => a.text.is_none() && b.text.is_none() && shape(a) == shape(b),
+        "shape" => {
+            a.text.is_none() && b.text.is_none() && !a.path.data.is_empty() && shape(a) == shape(b)
+        }
         "shapeText" => {
             same("shape", l, a, rl, b)
                 || a.text.is_some()
@@ -303,31 +622,43 @@ fn same(k: &str, l: &SvgLayer, a: &VectorObject, rl: &SvgLayer, b: &VectorObject
         _ => false,
     }
 }
-fn shape(o: &VectorObject) -> String {
-    if o.control_points.is_empty() {
-        return format!("{:?}:{}", o.kind, o.path.data);
+// Compare rendered local geometry, rather than stale editing control points.
+// Absolute position and object transform do not define a shape's local outline.
+fn shape(o: &VectorObject) -> Vec<i64> {
+    use svgtypes::SimplePathSegment::*;
+    let mut origin = None;
+    let mut key = Vec::new();
+    for segment in svgtypes::SimplifyingPathParser::from(o.path.data.as_str()) {
+        let Ok(segment) = segment else {
+            return vec![];
+        };
+        let (kind, points) = match segment {
+            MoveTo { x, y } => {
+                origin.get_or_insert([x, y]);
+                (0, vec![[x, y]])
+            }
+            LineTo { x, y } => (1, vec![[x, y]]),
+            CurveTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => (2, vec![[x1, y1], [x2, y2], [x, y]]),
+            Quadratic { x1, y1, x, y } => (3, vec![[x1, y1], [x, y]]),
+            ClosePath => (4, vec![]),
+        };
+        key.push(kind);
+        let [ox, oy] = origin.unwrap_or([0., 0.]);
+        for [x, y] in points {
+            key.extend([
+                ((x - ox) * 1000.).round() as i64,
+                ((y - oy) * 1000.).round() as i64,
+            ]);
+        }
     }
-    let x = o
-        .control_points
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::INFINITY, f32::min);
-    let y = o
-        .control_points
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::INFINITY, f32::min);
-    format!(
-        "{:?}:{:?}",
-        o.kind,
-        o.control_points
-            .iter()
-            .map(|p| [
-                ((p[0] - x) * 1000.).round() as i64,
-                ((p[1] - y) * 1000.).round() as i64
-            ])
-            .collect::<Vec<_>>()
-    )
+    key
 }
 fn text_keys(o: &VectorObject, k: &str) -> Vec<String> {
     let Some(t) = &o.text else {
@@ -347,10 +678,27 @@ fn text_keys(o: &VectorObject, k: &str) -> Vec<String> {
         .iter()
         .map(|s| match k {
             "fontFamily" => s.font_family.clone(),
-            "fontStyle" => format!("{}:{}:{}", s.font_family, s.bold, s.italic),
-            "fontStyleSize" => format!("{}:{}:{}:{}", s.font_family, s.bold, s.italic, s.font_size),
+            "fontStyle" => format!(
+                "{}:{}:{}:{:?}",
+                s.font_family, s.bold, s.italic, s.font_axes
+            ),
+            "fontStyleSize" => format!(
+                "{}:{}:{}:{}:{:?}",
+                s.font_family, s.bold, s.italic, s.font_size, s.font_axes
+            ),
             "fontSize" => s.font_size.to_string(),
-            "textFill" | "textFillStroke" => format!("{}:{:?}", s.no_color, s.color),
+            "textFill" | "textFillStroke" => {
+                if s.no_color {
+                    "none".into()
+                } else {
+                    format!(
+                        "{:?}:{:?}:{}",
+                        s.color,
+                        o.fill_gradient,
+                        o.fill.map_or(255, |p| p.color[3])
+                    )
+                }
+            }
             "textStroke" => String::new(),
             _ => String::new(),
         })
@@ -358,6 +706,11 @@ fn text_keys(o: &VectorObject, k: &str) -> Vec<String> {
     keys.sort();
     keys.dedup();
     keys
+}
+fn brushed(o: &VectorObject) -> bool {
+    o.text.is_none()
+        && (o.stroke.is_some() || o.stroke_gradient.is_some())
+        && o.stroke_style.brush != crate::stroke::VectorBrush::Basic
 }
 fn stray(o: &VectorObject) -> bool {
     if o.text.is_some() {
@@ -367,10 +720,11 @@ fn stray(o: &VectorObject) -> bool {
     for command in svgtypes::PathParser::from(o.path.data.as_str()) {
         match command {
             Ok(svgtypes::PathSegment::MoveTo { .. }) => moves += 1,
+            Ok(svgtypes::PathSegment::ClosePath { .. }) if moves > 0 => {}
             _ => return false,
         }
     }
-    moves == 1
+    moves > 0
 }
 #[cfg(test)]
 mod tests {
@@ -385,6 +739,7 @@ mod tests {
             criterion: criterion.map(str::to_owned),
             name: name.map(str::to_owned),
             new_name: None,
+            bulk: None,
         }
     }
     fn object(id: &str, color: Option<[u8; 4]>) -> VectorObject {
@@ -437,6 +792,253 @@ mod tests {
         d.vector_selection_action(request("deselect", None, None))
             .unwrap();
         d
+    }
+    fn bulk(criteria: &[&str], match_any: bool, scope: &str) -> VectorSelectionRequest {
+        let mut q = request("bulk", None, None);
+        q.bulk = Some(BulkVectorSelection {
+            criteria: criteria.iter().map(|s| s.to_string()).collect(),
+            match_any,
+            scope: scope.into(),
+        });
+        q
+    }
+    #[test]
+    fn bulk_conditions_match_one_reference_and_support_any() {
+        let mut d = document();
+        d.svg_layers[0].vector_objects[1].opacity = 0.5;
+        d.svg_layers[0].vector_objects[2].opacity = 0.5;
+        d.selected_vector_objects = vec!["v0".into(), "v2".into()];
+        let revision = d.revision();
+        let before = serde_json::to_value(d.document_state().svg_layers).unwrap();
+        d.vector_selection_action(bulk(&["fill", "opacity"], false, "page"))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v2"]);
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(bulk(&["fill", "opacity"], true, "page"))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1", "v3"]);
+        assert_eq!(d.revision(), revision);
+        assert_eq!(
+            serde_json::to_value(d.document_state().svg_layers).unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn bulk_scopes_and_invalid_queries_preserve_selection() {
+        let mut d = document();
+        d.svg_layers[0].vector_objects[1].transform[4] = 2000.;
+        let layer = d.add_vector_layer().unwrap();
+        d.upsert_vector_object(&layer, object("other", Some([255, 0, 0, 255])))
+            .unwrap();
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(bulk(&["fill"], false, "sameLayers"))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1"]);
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(bulk(&["fill"], false, "artboard"))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "other"]);
+        d.locked_objects.insert("other".into());
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(bulk(&["fill"], false, "page"))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1"]);
+        let before = d.selected_vector_ids().to_vec();
+        for query in [
+            bulk(&[], false, "page"),
+            bulk(&["unknown"], false, "page"),
+            bulk(&["fill"], false, "invalid"),
+        ] {
+            assert!(d.vector_selection_action(query).is_err());
+            assert_eq!(d.selected_vector_ids(), before);
+        }
+        d.selected_vector_objects.clear();
+        assert!(d
+            .vector_selection_action(bulk(&["fill"], false, "page"))
+            .is_err());
+    }
+    #[test]
+    fn same_geometry_uses_path_outlines_and_fonts_use_variable_axes() {
+        let mut d = document();
+        d.svg_layers[0].vector_objects[1].path.data = "m100 100h20v30h-20z".into();
+        d.svg_layers[0].vector_objects[2].path.data = "M10 10Q20 0 30 10V40H10Z".into();
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("shape"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1", "v3"]);
+        for (i, o) in d.svg_layers[0].vector_objects.iter_mut().enumerate() {
+            o.text = Some(VectorText {
+                content: "A".into(),
+                ..Default::default()
+            });
+            o.text
+                .as_mut()
+                .unwrap()
+                .font_axes
+                .insert("wght".into(), if i == 1 { 700. } else { 400. });
+        }
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("fontFamily"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids().len(), 4);
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("fontStyle"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v2", "v3"]);
+    }
+    #[test]
+    fn object_queries_distinguish_brush_kinds_masks_strays_and_text() {
+        use crate::stroke::{StrokeStylePatch, VectorBrush};
+        let mut d = document();
+        d.selected_vector_objects = vec!["v0".into()];
+        d.set_selected_stroke_style(StrokeStylePatch {
+            brush: Some(VectorBrush::Pencil),
+            ..Default::default()
+        })
+        .unwrap();
+        d.selected_vector_objects = vec!["v1".into()];
+        d.set_selected_stroke_style(StrokeStylePatch {
+            brush: Some(VectorBrush::Bristle),
+            ..Default::default()
+        })
+        .unwrap();
+        let revision = d.revision();
+        let before = serde_json::to_vec(&d.document_state()).unwrap();
+        for (criterion, expected) in [
+            ("pencilBrushStrokes", vec!["v0"]),
+            ("bristleBrushStrokes", vec!["v1"]),
+            ("brushStrokes", vec!["v0", "v1"]),
+        ] {
+            d.vector_selection_action(request("object", Some(criterion), None))
+                .unwrap();
+            assert_eq!(d.selected_vector_ids(), expected);
+        }
+        assert_eq!(d.revision(), revision);
+        assert_eq!(serde_json::to_vec(&d.document_state()).unwrap(), before);
+        let state =
+            serde_json::from_slice(&serde_json::to_vec(&d.document_state()).unwrap()).unwrap();
+        let mut loaded = Document::from_document_state(state).unwrap();
+        loaded
+            .vector_selection_action(request("object", Some("bristleBrushStrokes"), None))
+            .unwrap();
+        assert_eq!(loaded.selected_vector_ids(), ["v1"]);
+        d.undo();
+        d.vector_selection_action(request("object", Some("bristleBrushStrokes"), None))
+            .unwrap();
+        assert!(d.selected_vector_ids().is_empty());
+        d.redo();
+        d.svg_layers[0].vector_objects[1].visible = false;
+        d.vector_selection_action(request("object", Some("brushStrokes"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0"]);
+        d.svg_layers[0].vector_objects[2].path.data = "M10 10Z M20 20".into();
+        d.vector_selection_action(request("object", Some("strayPoints"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v2"]);
+        d.svg_layers[0].vector_objects[3].text = Some(VectorText::default());
+        d.vector_selection_action(request("object", Some("text"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v3"]);
+    }
+    #[test]
+    fn segments_select_direction_handles_and_transform_without_moving_anchors() {
+        let mut d = document();
+        let layer = d.svg_layers[0].id.clone();
+        let mut ellipse = object("ellipse", Some([255, 0, 0, 255]));
+        ellipse.kind = VectorObjectKind::Ellipse;
+        ellipse.path.data = "M10 25 A10 15 0 1 0 30 25 A10 15 0 1 0 10 25Z".into();
+        ellipse.control_points = vec![[10., 10.], [30., 40.]];
+        d.upsert_vector_object(&layer, ellipse).unwrap();
+        d.selected_vector_objects = vec!["ellipse".into()];
+        let before = serde_json::to_vec(&d.document_state()).unwrap();
+        let revision = d.revision();
+        let handles = d.selected_direction_handles().unwrap();
+        assert_eq!(handles.len(), 8);
+        assert!(handles.iter().all(|(_, i)| !i.is_multiple_of(3)));
+        d.vector_selection_action(request("object", Some("segments"), None))
+            .unwrap();
+        assert_eq!(d.revision(), revision);
+        assert_eq!(serde_json::to_vec(&d.document_state()).unwrap(), before);
+        d.transform_vector_controls(&handles, "scale", [1., 1., 0., 0.])
+            .unwrap();
+        assert_eq!(d.revision(), revision);
+        let original = d
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == "ellipse")
+            .unwrap()
+            .1;
+        d.transform_vector_controls(&handles, "scale", [1.1, 1.1, 0., 0.])
+            .unwrap();
+        let edited = d
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == "ellipse")
+            .unwrap()
+            .1;
+        for i in crate::bezier::anchor_indices(&original) {
+            assert_eq!(original.control_points[i], edited.control_points[i]);
+        }
+        assert_ne!(original.path.data, edited.path.data);
+        d.undo();
+        assert_eq!(serde_json::to_vec(&d.document_state()).unwrap(), before);
+        d.locked_objects.insert("ellipse".into());
+        assert!(d.selected_direction_handles().unwrap().is_empty());
+        assert!(d
+            .vector_selection_action(request("object", Some("segments"), None))
+            .is_err());
+    }
+    #[test]
+    fn appearance_ignores_unused_stroke_settings() {
+        let mut d = document();
+        d.svg_layers[0].vector_objects[1].stroke_width = 12.;
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("appearance"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1"]);
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("strokeWidth"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v2", "v3"]);
+    }
+    #[test]
+    fn appearance_includes_layer_effects_and_text_paints() {
+        let mut d = document();
+        let layer = d.add_vector_layer().unwrap();
+        d.upsert_vector_object(&layer, object("effect", Some([255, 0, 0, 255])))
+            .unwrap();
+        let mut effects = crate::layer_effects::LayerEffects {
+            enabled: true,
+            ..Default::default()
+        };
+        effects.values[0] = 1.;
+        d.set_layer_effects(&layer, effects).unwrap();
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("appearance"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0", "v1"]);
+        d.selected_vector_objects = vec!["effect".into()];
+        d.vector_selection_action(request("same", Some("effects"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["effect"]);
+        for o in &mut d.svg_layers[0].vector_objects {
+            o.text = Some(VectorText {
+                content: "A".into(),
+                ..Default::default()
+            });
+        }
+        let t = d.svg_layers[0].vector_objects[1].text.as_mut().unwrap();
+        let mut style = t.base_style([0, 0, 255]);
+        style.color = [0, 0, 255];
+        t.runs = vec![crate::vector::TextRun {
+            start: 0,
+            end: 1,
+            style,
+        }];
+        d.selected_vector_objects = vec!["v0".into()];
+        d.vector_selection_action(request("same", Some("appearance"), None))
+            .unwrap();
+        assert_eq!(d.selected_vector_ids(), ["v0"]);
     }
     #[test]
     fn queries_preserve_svg_and_revision_and_skip_hidden_locked_objects() {

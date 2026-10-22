@@ -127,7 +127,8 @@ impl Preview {
                     x: x as f32 + 0.5,
                     y: y as f32 + 0.5,
                 };
-                if self.selection.as_ref().is_some_and(|s| !s.contains(q)) {
+                let selection_alpha = self.selection.as_ref().map_or(1., |s| s.coverage(q));
+                if selection_alpha <= 0. {
                     continue;
                 }
                 let distance = (q.x - p.x).hypot(q.y - p.y) / radius;
@@ -136,7 +137,8 @@ impl Preview {
                 } else {
                     ((1. - distance) / (1. - self.brush.hardness)).clamp(0., 1.)
                 };
-                let amount = coverage
+                let amount = selection_alpha
+                    * coverage
                     * self.settings.strength
                     * if self.settings.pressure_strength {
                         pressure

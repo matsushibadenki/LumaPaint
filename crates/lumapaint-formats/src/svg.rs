@@ -126,16 +126,24 @@ impl DocumentExporter for SvgExporter {
         let document =
             Document::from_document_state(state.clone()).map_err(ExportError::InvalidDocument)?;
         let mut report = ConversionReport::default();
-        if state.layer_effects.iter().any(|(id, e)| {
-            e.active()
-                && if id == "layer-1" {
-                    document.background_visible()
-                } else {
-                    document.visible_svg_layers().any(|l| &l.id == id)
-                }
-        }) {
+        if (state.paper.enabled
+            && document.background_visible()
+            && state.canvas_color.unwrap_or_default() == CanvasColor::White)
+            || state.layer_effects.iter().any(|(id, e)| {
+                e.active()
+                    && if id == "layer-1" {
+                        document.background_visible()
+                    } else {
+                        document.visible_svg_layers().any(|l| &l.id == id)
+                    }
+            })
+        {
             report.issues.push(ConversionIssue {
-                code: "svg.layer_effects_rasterized",
+                code: if state.paper.enabled {
+                    "svg.paper_rasterized"
+                } else {
+                    "svg.layer_effects_rasterized"
+                },
                 tier: CompatibilityTier::C,
             });
             if !options.allow_lossy {
@@ -267,6 +275,26 @@ impl DocumentExporter for SvgExporter {
 mod tests {
     use super::*;
     use crate::export::export;
+    #[test]
+    fn natural_media_paper_requires_report_and_composite() {
+        let mut d = Document::default();
+        d.set_paper(lumapaint_core::natural_media::PaperSettings {
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let snap = ExportSnapshot::capture(&d);
+        assert!(matches!(
+            SvgExporter.export(&snap, ExportOptions::default()),
+            Err(ExportError::LossyConversionRequiresConsent(_))
+        ));
+        assert!(matches!(
+            SvgExporter.export(&snap, ExportOptions { allow_lossy: true }),
+            Err(ExportError::UnsupportedFeature(
+                "svg.layer_effects_require_raster_fallback"
+            ))
+        ));
+    }
     #[test]
     fn svg_keeps_unpainted_editable_geometry() {
         let mut d = Document::default();

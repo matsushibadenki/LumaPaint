@@ -5,7 +5,7 @@ export type ToolMode = typeof toolModes[number];
 export type ModeTool = Exclude<CanvasTool, 'crop' | 'gradient' | 'eyedropper' | 'zoomIn' | 'zoomOut' | 'hand' | 'vectorScale' | 'vectorRotate' | 'rectangle' | 'ellipse' | 'vectorSelect' | 'vectorDirectSelect'>;
 
 export const modeTools: Record<ToolMode, readonly ModeTool[]> = {
-  paint: ['blur', 'sharpen', 'smudge', 'brush', 'eraser', 'cloneStamp', 'paintBucket', 'lasso', 'polygonLasso', 'magneticLasso', 'selectionBrush'],
+  paint: ['blur', 'sharpen', 'smudge', 'brush', 'eraser', 'cloneStamp', 'paintBucket', 'lasso', 'polygonLasso', 'magneticLasso', 'selectionBrush', 'objectSelection', 'quickSelection', 'magicWand'],
   vector: ['vectorPen', 'vectorPencil', 'vectorAnchorAdd', 'vectorAnchorDelete', 'vectorAnchorConvert', 'vectorRectangle', 'vectorEllipse'],
   layout: ['imageFrameRectangle', 'imageFrameEllipse', 'text', 'textVertical', 'textFrame', 'textFrameVertical'],
   animation: ['brush'],

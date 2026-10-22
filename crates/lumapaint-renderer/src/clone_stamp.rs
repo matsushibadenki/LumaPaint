@@ -106,11 +106,8 @@ impl Preview {
                     x: x as f32 + 0.5,
                     y: y as f32 + 0.5,
                 };
-                if self
-                    .selection
-                    .as_ref()
-                    .is_some_and(|s| !s.contains(position))
-                {
+                let selection_alpha = self.selection.as_ref().map_or(1., |s| s.coverage(position));
+                if selection_alpha <= 0. {
                     continue;
                 }
                 let dx = position.x - p.x;
@@ -195,7 +192,14 @@ impl Preview {
                         *v = self.original[index * 4 + c] as f32 / 255.;
                     }
                     value[4..8].copy_from_slice(&self.source_at(x, y));
-                    value[8] = self.coverage[index] * self.settings.opacity;
+                    value[8] = self.coverage[index]
+                        * self.settings.opacity
+                        * self.selection.as_ref().map_or(1., |s| {
+                            s.coverage(Point {
+                                x: x as f32 + 0.5,
+                                y: y as f32 + 0.5,
+                            })
+                        });
                     value[9] = mode;
                     values.push(value);
                 }

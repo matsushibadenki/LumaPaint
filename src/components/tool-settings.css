@@ -24,3 +24,23 @@
 .paint-bucket-reference-list label { min-width:0; }
 .paint-bucket-reference-list label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .paint-bucket-references p { margin:8px 0; }
+
+.tool-settings-dialog .bulk-selection-conditions{border:1px solid var(--color-rule);padding:10px;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;max-height:310px;overflow:auto}
+.tool-settings-dialog .bulk-selection-conditions label{display:flex;align-items:center;gap:8px;margin:0;white-space:normal}
+.tool-settings-dialog .bulk-selection-conditions input{width:14px;height:14px;min-height:14px;flex:none;padding:0;margin:0}
+
+.vector-selection-dialog{position:fixed;top:16px;left:50%;transform:translateX(-50%)}
+.native-modal-page .vector-selection-dialog{transform:none}
+.saved-selection-actions{display:flex;flex-wrap:wrap;gap:8px}
+.vector-selection-dialog .bulk-selection-conditions{max-height:min(310px,calc(100dvh - 320px))}
+.vector-asset-tabs,.vector-asset-actions{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.vector-asset-tabs [aria-selected=true]{border-color:var(--color-accent);background:var(--color-active)}
+.vector-asset-list{width:100%;margin-bottom:12px;min-height:112px}
+.vector-asset-actions svg{width:14px;height:14px}
+.vector-assets-dialog{width:min(460px,calc(100vw - 32px));font-size:12px;padding:16px}
+.vector-assets-dialog button{font-size:12px}
+.tool-settings-dialog.pixel-selection-dialog{position:fixed;top:16px;left:50%;transform:translateX(-50%)}
+.native-modal-page .pixel-selection-dialog{position:static;transform:none}
+.pixel-selection-dialog input[type=checkbox]{width:14px;height:14px;min-height:14px;flex:none;padding:0;margin:0}
+.pixel-selection-dialog fieldset>label:has(input[type=checkbox]){justify-content:flex-start}
+.pixel-selection-dialog fieldset>label>select{max-width:65%;min-width:0}

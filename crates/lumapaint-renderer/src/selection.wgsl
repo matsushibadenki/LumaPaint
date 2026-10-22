@@ -18,6 +18,8 @@ fn selected(point: vec2<f32>) -> bool {
     let dx = abs(dpdx(distance));
     let dy = abs(dpdy(distance));
     let edge = abs(distance)/max(dx+dy,0.0001);
+    if quick_mask_mode(){if any(point<vec2(0.))||any(point>=u.document.xy){discard;}return vec4(1.,0.,0.,0.5*(1.-selection_coverage(point)));}
+
     if edge > 0.9 { discard; }
     // Coincident union edges and a completely subtracted selection are not boundaries.
     let step = 1.0/(scale*u.viewport.z);

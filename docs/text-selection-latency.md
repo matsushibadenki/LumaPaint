@@ -28,3 +28,12 @@ Moved reuse checks ahead of preparation. Unchanged stationary layers keep their 
 Regression fixtures cover partial/whole/empty selections, exterior-content rejection, and exact pixel equality between translating retained Japanese/English/Chinese text and regenerating the translated text SVG. The actual document's end-to-end drag latency remains unmeasured.
 
 Validation: the full renderer suite passed 165 tests (32 existing manual/GPU tests ignored). The retained object-texture translation test was then run explicitly on Apple M4 / Metal and passed, including movement across artboard bounds without reupload. The sandbox did not expose a Metal adapter; the same test succeeded outside that restriction. Workspace Clippy with warnings denied and the macOS debug binary build passed. No running-app restart or end-to-end timing was performed.
+
+
+## Color-slider flicker follow-up (2026-10-22)
+
+The native color command regenerated the changed vector layer, then requested a deferred frame without marking the old complete frame for retention. A cold/invalid layer cache is deliberately excluded from deferred composition. Consequently, while the SVG worker prepared the replacement, that frame could omit the entire edited layer, including its unselected objects. This is an identified code path; the user's exact document has not been reproduced.
+
+After an actual fill/stroke paint change, the host now marks the current document/revision/canvas token for complete-frame retention using the existing vector-commit mechanism. Worker scheduling continues, but no incomplete replacement is presented while that generation is missing. A newer slider edit replaces the pending generation; readiness clears it. No-op edits add no wait. The paint-source/eraser rendering branch now respects this retention too, covering mixed vector/pixel documents. Rust retains artwork and render resources; no frame data is sent to the WebView.
+
+Verification: 8 targeted native-host tests pass: repeated color-command edits preserve an unselected neighboring object and each pending generation; existing raster readiness, stale document/revision/canvas rejection, frame retention, import and export regressions also pass. Host Clippy (lib/tests, warnings denied), formatting, architecture boundaries and diff checks pass. These tests do not exercise a physical GPU surface. Physical native-window slider interaction, visual confirmation on the reported document and measured color-update latency remain pending. The running application was not restarted, preserving unsaved work.

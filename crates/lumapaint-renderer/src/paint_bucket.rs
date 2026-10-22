@@ -143,10 +143,10 @@ fn fill_impl(
     let seed = straight(&sample[start * 4..start * 4 + 4]);
     let allowed = |i: usize| {
         selection.is_none_or(|s| {
-            s.contains(Point {
+            s.coverage(Point {
                 x: (i % w as usize) as f32 + 0.5,
                 y: (i / w as usize) as f32 + 0.5,
-            })
+            }) > 0.
         })
     };
     if !allowed(start) {
@@ -319,7 +319,14 @@ fn fill_impl(
                     }
                     value[7] = 1.;
                 }
-                value[8] = mask[i] as f32 / 255. * settings.opacity;
+                value[8] = mask[i] as f32 / 255.
+                    * settings.opacity
+                    * selection.map_or(1., |s| {
+                        s.coverage(Point {
+                            x: (i % w as usize) as f32 + 0.5,
+                            y: (i / w as usize) as f32 + 0.5,
+                        })
+                    });
                 value[9] = crate::clone_stamp::mode_number(settings.mode);
                 values.push(value);
             }

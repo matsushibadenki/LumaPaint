@@ -159,6 +159,11 @@ fn render_sized_ink(
     for stroke in document.committed_paint_strokes() {
         let mut selection = stroke.selection.clone();
         if let Some(selection) = &mut selection {
+            if let Some(mask) = &selection.raster {
+                selection.raster = Some(std::sync::Arc::new(
+                    mask.transformed([scale, 0., 0., scale, 0., 0.])?,
+                ));
+            }
             for region in &mut selection.regions {
                 for p in &mut region.points {
                     p.x *= scale;
@@ -180,6 +185,7 @@ fn render_sized_ink(
                 dab.x *= scale;
                 dab.y *= scale;
                 dab.radius = (dab.radius * scale).max(0.025);
+                dab.texture_scale = scale;
             }
             tiles.paint_brush_dabs_clipped_in_tiles(
                 "thumb",
@@ -207,6 +213,7 @@ fn render_sized_ink(
                 &effects,
                 mask.as_ref(),
                 snapshot.canvas_color == CanvasColor::White && !ink_only,
+                document.paper(),
             );
             let index = ((y * width + x) * 4) as usize;
             paint[index..index + 4].copy_from_slice(&pixel);

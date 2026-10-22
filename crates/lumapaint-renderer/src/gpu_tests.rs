@@ -167,7 +167,12 @@ fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
 #[ignore = "requires a real GPU"]
 fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
     let gpu = Gpu::new();
-    let (layout, composite) = create_brush_composite(&gpu.device, wgpu::TextureFormat::Rgba16Float);
+    let (layout, composite) = create_brush_composite(
+        &gpu.device,
+        wgpu::TextureFormat::Rgba16Float,
+        &gpu.selection_layout,
+        &gpu.uniform_layout,
+    );
     let descriptor = |format, usage| wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -196,8 +201,12 @@ fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
         wgpu::TextureFormat::Rgba16Float,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
     ));
-    let (baseline_layout, baseline_pipeline) =
-        create_brush_composite(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+    let (baseline_layout, baseline_pipeline) = create_brush_composite(
+        &gpu.device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &gpu.selection_layout,
+        &gpu.uniform_layout,
+    );
     let baseline = gpu.device.create_texture(&descriptor(
         wgpu::TextureFormat::Rgba8Unorm,
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
@@ -245,6 +254,7 @@ fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
             ],
         })
     };
+    let unrestricted_selection = selection_bind_group(&gpu.device, &gpu.selection_layout, None);
     let density_group = bind(&density_view);
     let present_group = bind(&accumulation_view);
     let presentation = create_textured_layer_pipeline(
@@ -272,6 +282,8 @@ fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
         });
         pass.set_pipeline(&composite);
         pass.set_bind_group(0, &density_group, &[]);
+        pass.set_bind_group(1, &unrestricted_selection, &[]);
+        pass.set_bind_group(2, &gpu.uniforms, &[]);
         for _ in 0..512 {
             pass.draw(0..6, 0..1);
         }
@@ -311,6 +323,8 @@ fn gpu_rgba16f_accumulates_low_alpha_and_presents_without_channel_conversion() {
         });
         pass.set_pipeline(&baseline_pipeline);
         pass.set_bind_group(0, &baseline_group, &[]);
+        pass.set_bind_group(1, &unrestricted_selection, &[]);
+        pass.set_bind_group(2, &gpu.uniforms, &[]);
         for _ in 0..512 {
             pass.draw(0..6, 0..1);
         }
@@ -423,6 +437,8 @@ impl Gpu {
                 label: None,
                 // The default case has fit = 1 and translation = (32,64).
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, scale, zoom],
                     appearance: [0.0; 4],
@@ -447,8 +463,12 @@ impl Gpu {
             let brush = create_brush_pipeline(&device, &layout);
             let outline =
                 create_selection_pipeline(&device, &layout, wgpu::TextureFormat::Rgba8UnormSrgb);
-            let (texture_layout, composite) =
-                create_brush_composite(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            let (texture_layout, composite) = create_brush_composite(
+                &device,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                &selection_layout,
+                &uniform_layout,
+            );
             Self {
                 device,
                 uniform_layout,
@@ -482,6 +502,14 @@ impl Gpu {
     }
 
     fn render_with_outline(&self, strokes: &[Stroke], outline: Option<&Selection>) -> Vec<u8> {
+        self.render_with_outline_mode(strokes, outline, false)
+    }
+    fn render_with_outline_mode(
+        &self,
+        strokes: &[Stroke],
+        outline: Option<&Selection>,
+        quick: bool,
+    ) -> Vec<u8> {
         let all: Vec<_> = strokes
             .iter()
             .flat_map(|stroke| segments(stroke, 1.0))
@@ -586,11 +614,18 @@ impl Gpu {
                 });
                 pass.set_pipeline(&self.composite);
                 pass.set_bind_group(0, &group, &[]);
+                pass.set_bind_group(1, &selection, &[]);
+                pass.set_bind_group(2, &self.uniforms, &[]);
                 pass.draw(0..6, 0..1);
             }
         }
         if let Some(selection) = outline {
-            let group = selection_bind_group(&self.device, &self.selection_layout, Some(selection));
+            let group = selection_bind_group_mode(
+                &self.device,
+                &self.selection_layout,
+                Some(selection),
+                quick,
+            );
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &output_view,
@@ -1349,6 +1384,8 @@ fn gpu_tile_preview_uses_document_coordinates_and_premultiplied_blending() {
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::bytes_of(&Uniforms {
+                paper: [0.; 4],
+                paper_color: [0.; 4],
                 pasteboard: [0.0; 4],
                 viewport: [305.0, 51.0, 1.0, 1.0],
                 appearance: [0.0; 4],
@@ -1471,6 +1508,7 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
     let mut selection = Selection::new(SelectionShape::Rectangle, [200.0, 180.0, 220.0, 220.0]);
     selection.regions.extend([
         SelectionRegion {
+            paint: None,
             points: Vec::new(),
             radius: 0.,
             shape: SelectionShape::Ellipse,
@@ -1478,6 +1516,7 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
             operation: SelectionOperation::Add,
         },
         SelectionRegion {
+            paint: None,
             points: Vec::new(),
             radius: 0.,
             shape: SelectionShape::Rectangle,
@@ -1485,6 +1524,7 @@ fn gpu_composite_selection_clips_holes_and_moves_as_one_region() {
             operation: SelectionOperation::Subtract,
         },
         SelectionRegion {
+            paint: None,
             points: Vec::new(),
             radius: 0.,
             shape: SelectionShape::Rectangle,
@@ -1557,6 +1597,7 @@ fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
     };
     let mut selection = Selection::new(SelectionShape::Rectangle, [100.5, 100.5, 100.0, 200.0]);
     selection.regions.push(SelectionRegion {
+        paint: None,
         points: Vec::new(),
         radius: 0.,
         shape: SelectionShape::Rectangle,
@@ -1578,6 +1619,7 @@ fn gpu_selection_outline_has_no_union_seam_or_fully_subtracted_border() {
         "Visible outline is missing"
     );
     selection.regions.push(SelectionRegion {
+        paint: None,
         points: Vec::new(),
         radius: 0.,
         shape: SelectionShape::Rectangle,
@@ -1893,6 +1935,8 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
                     appearance: [0.0; 4],
@@ -2148,6 +2192,8 @@ fn gpu_channel_components_and_alpha() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [1., 1., 1., 1.],
                     appearance: [(mode * 2) as f32, 0., 0., 0.],
@@ -2586,6 +2632,8 @@ fn gpu_artboard_exterior_masks_page_pixels() {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [100., 100., 1., zoom],
                     appearance: [0., pan, 0., 0.],
@@ -2878,6 +2926,8 @@ fn verify_object_texture_moves(shared: bool) {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1., 960. / 976.],
                     appearance: [0.; 4],
@@ -3013,10 +3063,45 @@ fn gpu_path_selection_matches_cpu_for_concave_polygon_brush_and_subtraction() {
         selection: None,
     };
     let baseline = gpu.render(std::slice::from_ref(&stroke));
+    let point = |(x, y)| Point { x, y };
+    doc.set_path_selection(
+        vec![
+            (200., 200.),
+            (260., 200.),
+            (260., 260.),
+            (200., 260.),
+            (200., 200.),
+            (440., 350.),
+            (500., 350.),
+            (500., 410.),
+            (440., 410.),
+            (440., 350.),
+            (200., 200.),
+        ]
+        .into_iter()
+        .map(point)
+        .collect(),
+        0.,
+        lumapaint_core::selection::SelectionMode::Replace,
+    )
+    .unwrap();
+    let disconnected = doc.selection().unwrap().clone();
+    doc.set_path_selection(
+        vec![(200., 200.), (300., 300.), (400., 400.)]
+            .into_iter()
+            .map(point)
+            .collect(),
+        0.,
+        lumapaint_core::selection::SelectionMode::Replace,
+    )
+    .unwrap();
+    let degenerate = doc.selection().unwrap().clone();
     for selection in [
         selection.clone(),
         selection.translated(60., 20.),
         intersection,
+        disconnected,
+        degenerate,
     ] {
         let mut clipped = stroke.clone();
         clipped.selection = Some(selection.clone());
@@ -3273,6 +3358,8 @@ fn retained_text_frames_comparison(opacity: f32, overlap: bool, tiled: bool) {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::bytes_of(&Uniforms {
+                    paper: [0.; 4],
+                    paper_color: [0.; 4],
                     viewport: [W as f32, H as f32, 1., 960. / 976. * zoom],
                     appearance: [0.; 4],
                     document: [960., 640., 0., 0.],
@@ -3625,4 +3712,213 @@ fn gpu_tiled_text_replacement_clears_old_bounds_without_materialization() {
         drop(pixels);
         readback.unmap();
     }
+}
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_raster_soft_alpha_matches_native_brush() {
+    let gpu = Gpu::new();
+    let w = 960u32;
+    let h = 640u32;
+    let mut mask = vec![0u8; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            mask[(y * w + x) as usize] = if x < 320 {
+                0
+            } else if x < 640 {
+                128
+            } else {
+                255
+            };
+        }
+    }
+    let selection = Selection::from_raster(
+        lumapaint_core::selection_raster::SelectionRaster::from_pixels(
+            [w, h],
+            [1., 0., 0., 1., 0., 0.],
+            &mask,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stroke = Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush {
+            size: 512.,
+            hardness: 1.,
+            color: [0, 0, 0],
+            ..Default::default()
+        },
+        points: vec![Point { x: 100., y: 300. }, Point { x: 880., y: 300. }],
+        pressures: vec![],
+        selection: Some(selection),
+    };
+    let pixels = gpu.render(std::slice::from_ref(&stroke));
+    let native = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+    for x in [200u32, 480, 760] {
+        let at = (((300 + 64) * W + x + 32) * 4) as usize;
+        assert!(
+            pixels[at].abs_diff(native[at]) <= 2,
+            "soft selection at {x}: {} vs {}",
+            pixels[at],
+            native[at]
+        );
+    }
+    assert_eq!(pixels[(((300 + 64) * W + 200 + 32) * 4) as usize], 255);
+    let middle = pixels[(((300 + 64) * W + 480 + 32) * 4) as usize];
+    assert!(
+        (180..=195).contains(&middle),
+        "soft selection must cap opacity, got {middle}"
+    );
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_quick_mask_overlays_protected_area() {
+    let gpu = Gpu::new();
+    let selection = Selection::new(SelectionShape::Rectangle, [200., 200., 100., 100.]);
+    let stroke = Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush::default(),
+        points: vec![Point { x: 10., y: 10. }],
+        pressures: vec![],
+        selection: None,
+    };
+    let pixels = gpu.render_with_outline_mode(&[stroke], Some(&selection), true);
+    let at = |x: u32, y: u32| (((y + 64) * W + x + 32) * 4) as usize;
+    assert_eq!(
+        &pixels[at(250, 250)..at(250, 250) + 4],
+        &[255, 255, 255, 255]
+    );
+    let masked = &pixels[at(400, 250)..at(400, 250) + 4];
+    assert_eq!(masked[0], 255);
+    assert!(masked[1].abs_diff(188) <= 2 && masked[2].abs_diff(188) <= 2);
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_gray_brush_matches_cpu() {
+    let gpu = Gpu::new();
+    let mut doc = lumapaint_core::document::Document::default();
+    doc.pixel_selection_action(lumapaint_core::document::PixelSelectionRequest {
+        action: "quickMask".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    doc.quick_mask_pointer(Point { x: 480., y: 300. }, 0, 100., 0.25, 0.3)
+        .unwrap();
+    doc.quick_mask_pointer(Point { x: 480., y: 300. }, 2, 100., 0.25, 0.3)
+        .unwrap();
+    let stroke = Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush {
+            size: 512.,
+            hardness: 1.,
+            color: [0, 0, 0],
+            ..Default::default()
+        },
+        points: vec![Point { x: 100., y: 300. }, Point { x: 880., y: 300. }],
+        pressures: vec![],
+        selection: doc.selection().cloned(),
+    };
+    let pixels = gpu.render(std::slice::from_ref(&stroke));
+    let native = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+    for x in [440u32, 480, 520] {
+        let at = (((300 + 64) * W + x + 32) * 4) as usize;
+        assert!(
+            pixels[at].abs_diff(native[at]) <= 2,
+            "gray mask at {x}: {} vs {}",
+            pixels[at],
+            native[at]
+        );
+    }
+    let center = pixels[(((300 + 64) * W + 480 + 32) * 4) as usize];
+    assert!(center.abs_diff(225) <= 4, "gray stroke alpha cap: {center}");
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
+    use lumapaint_core::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+    let gpu = Gpu::new();
+    let strokes: Vec<_> = [
+        Medium::Graphite,
+        Medium::Charcoal,
+        Medium::Pastel,
+        Medium::Watercolor,
+        Medium::Gouache,
+        Medium::Oil,
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, medium)| Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush {
+            size: 60.,
+            hardness: 0.6,
+            color: [42, 95, 150],
+            material: MaterialSettings {
+                enabled: true,
+                medium: *medium,
+                loading: 0.35,
+                paper: PaperSettings {
+                    enabled: true,
+                    kind: PaperKind::ColdPress,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        points: vec![
+            Point {
+                x: 100.,
+                y: 60. + i as f32 * 100.,
+            },
+            Point {
+                x: 850.,
+                y: 60. + i as f32 * 100.,
+            },
+        ],
+        pressures: vec![],
+        selection: None,
+    })
+    .collect();
+    let pixels = gpu.render(&strokes);
+    let cpu = gpu.render_tiled_strokes(&strokes);
+    let mut sums = Vec::new();
+    for i in 0..6 {
+        let mut sum = 0u32;
+        for y in [50, 60, 70] {
+            for x in (130..820).step_by(19) {
+                let at = (((y + i * 100 + 64) * W + x + 32) * 4) as usize;
+                for c in 0..3 {
+                    assert!(
+                        pixels[at + c].abs_diff(cpu[at + c]) <= 4,
+                        "medium {i}, {x},{y}, channel {c}: {} vs {}",
+                        pixels[at + c],
+                        cpu[at + c]
+                    );
+                }
+                sum += pixels[at] as u32;
+            }
+        }
+        sums.push(sum);
+    }
+    sums.sort();
+    sums.dedup();
+    assert!(sums.len() >= 5, "materials should have distinct deposition");
+    let mut output = Vec::new();
+    let mut encoder = png::Encoder::new(&mut output, W, H);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&pixels)
+        .unwrap();
+    std::fs::write("/tmp/lumapaint-natural-media-gpu.png", output).unwrap();
 }

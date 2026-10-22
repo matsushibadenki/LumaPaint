@@ -1736,3 +1736,53 @@ mod extended_corner_tests {
         );
     }
 }
+
+/// Transform selected controls in document coordinates. Adjacent handles follow
+/// a selected anchor; selecting handles alone never moves the anchors.
+pub fn transform_controls(
+    object: &mut VectorObject,
+    indices: &[usize],
+    matrix: [f32; 6],
+) -> Result<(), String> {
+    let original = object.clone();
+    let ranges = contour_ranges(&original);
+    let mut selected = std::collections::BTreeSet::new();
+    for &index in indices {
+        let &(start, end, closed) = ranges
+            .iter()
+            .find(|&&(s, e, _)| index >= s && index < e)
+            .ok_or("Invalid control index")?;
+        selected.insert(index);
+        if (index - start).is_multiple_of(3) {
+            if index > start {
+                selected.insert(index - 1);
+            }
+            if index + 1 < end {
+                selected.insert(index + 1);
+            }
+            if closed && (index == start || index == end - 1) {
+                selected.extend([start, end - 1]);
+                if start + 1 < end {
+                    selected.insert(start + 1);
+                }
+                if end >= start + 2 {
+                    selected.insert(end - 2);
+                }
+            }
+        }
+    }
+    let [a, b, c, d, e, f] = matrix;
+    let mut points = original.control_points.clone();
+    for index in selected {
+        let p = world_point(&original, points[index]);
+        let world = [a * p[0] + c * p[1] + e, b * p[0] + d * p[1] + f];
+        points[index] = local_point(&original, world)?;
+    }
+    object.live_corners = None;
+    let contours = ranges
+        .into_iter()
+        .map(|(s, e, closed)| (points[s..e].to_vec(), closed))
+        .collect();
+    pack(object, contours)?;
+    object.validate()
+}

@@ -88,6 +88,15 @@ impl Cache {
             retired.push(old);
         }
         self.bytes += entry.charge;
+        crate::performance::count("parsed_tree_cache_admissions", 1);
+        crate::performance::count("parsed_tree_cache_admitted_bytes", entry.charge as u64);
+        // Insertion-event samples, not a process RSS gauge. Callers may sum
+        // multiple events; the cache's own bound remains MAX_BYTES.
+        crate::performance::count(
+            "parsed_tree_cache_insertion_retained_bytes",
+            self.bytes as u64,
+        );
+        crate::performance::count("parsed_tree_cache_evictions", retired.len() as u64);
         self.entries.push(entry);
         retired
     }

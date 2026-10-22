@@ -10,6 +10,7 @@ struct Draft {
     mode: SelectionMode,
     radius: f32,
     preview: Document,
+    settings: Settings,
     edges: Option<lumapaint_renderer::selection_tools::EdgeMap>,
 }
 thread_local! {static DRAFTS:RefCell<std::collections::BTreeMap<String,Draft>>=const{RefCell::new(std::collections::BTreeMap::new())};static SETTINGS:RefCell<std::collections::BTreeMap<String,Settings>>=const{RefCell::new(std::collections::BTreeMap::new())};}
@@ -20,6 +21,9 @@ pub(super) fn is_tool(tool: CanvasTool) -> bool {
             | CanvasTool::PolygonLasso
             | CanvasTool::MagneticLasso
             | CanvasTool::SelectionBrush
+            | CanvasTool::ObjectSelection
+            | CanvasTool::QuickSelection
+            | CanvasTool::MagicWand
     )
 }
 pub(super) fn settings() -> Settings {
@@ -27,6 +31,7 @@ pub(super) fn settings() -> Settings {
 }
 pub(super) fn configure(settings: Settings) -> Result<(), String> {
     settings.validate()?;
+    invalidate();
     SETTINGS.with(|s| s.borrow_mut().insert(current_label(), settings));
     if let Some(app) = APP.get() {
         let _ = app.emit("selection-tool-settings-changed", ());
@@ -36,12 +41,39 @@ pub(super) fn configure(settings: Settings) -> Result<(), String> {
 pub(super) fn active() -> bool {
     DRAFTS.with(|d| d.borrow().contains_key(&current_label()))
 }
+thread_local! { static GENERATIONS: RefCell<std::collections::BTreeMap<String,u64>> = const { RefCell::new(std::collections::BTreeMap::new()) }; }
+fn invalidate() -> u64 {
+    GENERATIONS.with(|g| {
+        let mut g = g.borrow_mut();
+        let n = g.entry(current_label()).or_default();
+        *n = n.wrapping_add(1);
+        *n
+    })
+}
 pub(super) fn cancel() -> bool {
+    invalidate();
     DRAFTS.with(|d| d.borrow_mut().remove(&current_label()).is_some())
+}
+fn automatic(tool: CanvasTool) -> bool {
+    matches!(
+        tool,
+        CanvasTool::ObjectSelection | CanvasTool::QuickSelection | CanvasTool::MagicWand
+    )
 }
 fn update_preview(draft: &mut Draft) -> Result<(), String> {
     draft.preview.set_tool_pixel_selection(draft.base.clone())?;
     let mut points = draft.points.clone();
+    if draft.tool == CanvasTool::ObjectSelection {
+        let a = points[0];
+        let b = *points.last().unwrap();
+        if (a.x - b.x).abs() < 1. || (a.y - b.y).abs() < 1. {
+            return Ok(());
+        }
+        points = vec![a, Point { x: b.x, y: a.y }, b, Point { x: a.x, y: b.y }];
+    }
+    if draft.tool == CanvasTool::MagicWand {
+        return Ok(());
+    }
     if draft.tool == CanvasTool::PolygonLasso {
         if let Some(hover) = draft.hover {
             points.push(hover);
@@ -57,15 +89,96 @@ fn commit_draft(doc: &mut Document, draft: Draft) -> Result<(), String> {
     {
         return Err("Selection target changed / 選択対象が変更されました / 选择目标已更改".into());
     }
-    if draft.points.len() < if draft.radius > 0. { 1 } else { 3 } {
+    if !automatic(draft.tool) && draft.points.len() < if draft.radius > 0. { 1 } else { 3 } {
         return Ok(());
     }
+    doc.commit_path_selection(evaluate(draft)?).map(|_| ())
+}
+fn evaluate(draft: Draft) -> Result<Option<Selection>, String> {
     let mut preview = draft.preview;
     preview.set_tool_pixel_selection(draft.base)?;
-    preview.set_path_selection(draft.points, draft.radius, draft.mode)?;
-    doc.commit_path_selection(preview.selection().cloned())
-        .map(|_| ())
+    let points = if automatic(draft.tool) {
+        use lumapaint_renderer::selection_tools::{AutoSelectionKind, EdgeMap};
+        let kind = match draft.tool {
+            CanvasTool::ObjectSelection => AutoSelectionKind::Object,
+            CanvasTool::QuickSelection => AutoSelectionKind::Quick,
+            _ => AutoSelectionKind::Wand,
+        };
+        let sample = EdgeMap::from_automatic_document(
+            &preview.selection_sampling_document(draft.settings.all_layers),
+        )?;
+        sample.automatic_path(kind, &draft.points, draft.settings, preview.dimensions())?
+    } else {
+        draft.points
+    };
+    preview.set_path_selection(
+        points,
+        if automatic(draft.tool) {
+            0.
+        } else {
+            draft.radius
+        },
+        draft.mode,
+    )?;
+    Ok(preview.selection().cloned())
 }
+fn schedule(draft: Draft) -> Result<(), String> {
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
+    type Work = std::collections::BTreeMap<String, (tauri::AppHandle, u64, Draft)>;
+    static WORK: OnceLock<Arc<(Mutex<Work>, Condvar)>> = OnceLock::new();
+    let app = APP.get().ok_or("Application is unavailable")?.clone();
+    let generation = invalidate();
+    let work = WORK.get_or_init(|| {
+        let work: Arc<(Mutex<Work>, Condvar)> = Arc::new((Mutex::new(Work::new()), Condvar::new()));
+        let worker = work.clone();
+        let _ = std::thread::spawn(move || loop {
+            let (label, (app, generation, draft)) = {
+                let mut pending = worker.0.lock().unwrap();
+                while pending.is_empty() {
+                    pending = worker.1.wait(pending).unwrap();
+                }
+                pending.pop_first().unwrap()
+            };
+            let document_id = draft.document_id;
+            let revision = draft.revision;
+            let tool = draft.tool;
+            let result = evaluate(draft);
+            let _ = app.run_on_main_thread(move || {
+                let Ok(_session) = SessionGuard::enter(&label) else {
+                    return;
+                };
+                if GENERATIONS.with(|g| g.borrow().get(&label).copied()) != Some(generation)
+                    || ACTIVE_DOCUMENT_ID.with(|id| id.get()) != document_id
+                    || TOOL.with(|t| t.get()) != tool
+                {
+                    return;
+                }
+                let result = DOCUMENT.with(|doc| {
+                    let mut doc = doc.borrow_mut();
+                    if doc.revision() != revision {
+                        return Ok(());
+                    }
+                    doc.commit_path_selection(result?).map(|_| ())
+                });
+                match result {
+                    Ok(()) => {
+                        emit_document();
+                        let _ = redraw();
+                    }
+                    Err(e) => emit_error(e),
+                }
+            });
+        });
+        work
+    });
+    work.0
+        .lock()
+        .unwrap()
+        .insert(current_label(), (app, generation, draft));
+    work.1.notify_one();
+    Ok(())
+}
+
 pub(super) fn confirm() -> Result<(), String> {
     if let Some(draft) = DRAFTS.with(|d| d.borrow_mut().remove(&current_label())) {
         DOCUMENT.with(|doc| commit_draft(&mut doc.borrow_mut(), draft))?;
@@ -114,6 +227,7 @@ pub(super) fn pointer(
             {
                 return Ok(());
             }
+            invalidate();
             let mode = if flags.contains(NSEventModifierFlags::Shift | NSEventModifierFlags::Option)
             {
                 SelectionMode::Intersect
@@ -135,6 +249,7 @@ pub(super) fn pointer(
             };
             let point = edges
                 .as_ref()
+                .filter(|_| tool == CanvasTool::MagneticLasso)
                 .map_or(point, |edges| edges.snap(point, settings, zoom));
             drafts.insert(
                 label.clone(),
@@ -146,12 +261,16 @@ pub(super) fn pointer(
                     hover: None,
                     base: doc.selection().cloned(),
                     mode,
-                    radius: if tool == CanvasTool::SelectionBrush {
+                    radius: if matches!(
+                        tool,
+                        CanvasTool::SelectionBrush | CanvasTool::QuickSelection
+                    ) {
                         settings.diameter / 2.
                     } else {
                         0.
                     },
                     preview: doc.clone_for_rendering(),
+                    settings,
                     edges,
                 },
             );
@@ -166,8 +285,14 @@ pub(super) fn pointer(
             let point = draft
                 .edges
                 .as_ref()
+                .filter(|_| tool == CanvasTool::MagneticLasso)
                 .map_or(point, |edges| edges.snap(point, settings, zoom));
-            if phase == 0 && matches!(tool, CanvasTool::PolygonLasso | CanvasTool::MagneticLasso) {
+            if tool == CanvasTool::ObjectSelection && matches!(phase, 1 | 2) {
+                draft.points.truncate(1);
+                draft.points.push(point);
+            } else if phase == 0
+                && matches!(tool, CanvasTool::PolygonLasso | CanvasTool::MagneticLasso)
+            {
                 let close = draft.points.len() >= 3
                     && ((point.x - draft.points[0].x).hypot(point.y - draft.points[0].y) * zoom
                         <= 8.
@@ -185,7 +310,12 @@ pub(super) fn pointer(
                 draft.points.push(point);
             } else if matches!(
                 tool,
-                CanvasTool::Lasso | CanvasTool::SelectionBrush | CanvasTool::MagneticLasso
+                CanvasTool::Lasso
+                    | CanvasTool::SelectionBrush
+                    | CanvasTool::MagneticLasso
+                    | CanvasTool::QuickSelection
+                    | CanvasTool::ObjectSelection
+                    | CanvasTool::MagicWand
             ) && (phase == 1
                 || phase == 3 && tool == CanvasTool::MagneticLasso
                 || phase == 2 && tool != CanvasTool::MagneticLasso)
@@ -209,8 +339,13 @@ pub(super) fn pointer(
                 draft.hover = Some(point);
             }
         }
-        if phase == 2 && matches!(tool, CanvasTool::Lasso | CanvasTool::SelectionBrush) {
+        if phase == 2
+            && (automatic(tool) || matches!(tool, CanvasTool::Lasso | CanvasTool::SelectionBrush))
+        {
             if let Some(draft) = drafts.remove(&label) {
+                if automatic(tool) && APP.get().is_some() {
+                    return schedule(draft);
+                }
                 return commit_draft(doc, draft);
             }
         }
@@ -231,6 +366,11 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
             return None;
         }
         let mut points = draft.points.clone();
+        if draft.tool == CanvasTool::ObjectSelection {
+            let a = points[0];
+            let b = *points.last().unwrap();
+            points = vec![a, Point { x: b.x, y: a.y }, b, Point { x: a.x, y: b.y }, a];
+        }
         if draft.tool == CanvasTool::PolygonLasso {
             if let Some(p) = draft.hover {
                 points.push(p);
@@ -259,6 +399,48 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_selection_commits_once_and_preserves_artwork_through_undo_redo() {
+        use lumapaint_core::document::Brush;
+        cancel();
+        ACTIVE_DOCUMENT_ID.with(|id| id.set(904));
+        configure(Settings::default()).unwrap();
+        let mut doc = Document::default();
+        let point = Point { x: 30., y: 40. };
+        doc.begin(point, Brush::default()).unwrap();
+        doc.finish();
+        let strokes = doc.snapshot().stroke_count;
+        pointer(
+            &mut doc,
+            CanvasTool::MagicWand,
+            point,
+            0,
+            NSEventModifierFlags::empty(),
+            false,
+        )
+        .unwrap();
+        assert!(doc.selection().is_none());
+        pointer(
+            &mut doc,
+            CanvasTool::MagicWand,
+            point,
+            2,
+            NSEventModifierFlags::empty(),
+            false,
+        )
+        .unwrap();
+        assert!(doc.selection().unwrap().contains(point));
+        assert!(!doc
+            .selection()
+            .unwrap()
+            .contains(Point { x: 200., y: 200. }));
+        assert_eq!(doc.snapshot().stroke_count, strokes);
+        doc.undo();
+        assert!(doc.selection().is_none());
+        assert_eq!(doc.snapshot().stroke_count, strokes);
+        doc.redo();
+        assert!(doc.selection().unwrap().contains(point));
+    }
     #[test]
     fn polygon_clicks_close_without_changing_document_until_commit() {
         cancel();

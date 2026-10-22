@@ -4,6 +4,7 @@ import type { Locale } from '../i18n';
 import { defaultScreentone, screentoneLabels, toneDesigns, toneKinds, type Screentone, type ToneKind } from '../screentone';
 import { tonePresetLabels, tonePresets, presetScreentone, matchesTonePreset } from '../screentone';
 import { ScreentoneSample } from './ScreentoneSample';
+import { ColorPickerPopover } from './ColorPickerPopover';
 import './screentone-panel.css';
 export function ScreentonePanel({locale,layer,resolution,enabled,canCreate,onUpdate}:{locale:Locale;layer?:LayerSnapshot;resolution:number;enabled:boolean;canCreate:boolean;onUpdate:(snapshot:DocumentSnapshot)=>void}) {
   const t=screentoneLabels[locale];
@@ -37,7 +38,7 @@ export function ScreentonePanel({locale,layer,resolution,enabled,canCreate,onUpd
       {number('frequency',t.frequency,1,150)}{number('density',t.density,0,100)}{number('size',t.size,.1,4,.1)}{number('angle',t.angle,-360,360)}
       <details><summary>{t.design}</summary>{[t.x,t.y].map((label,i)=><ToneNumber key={label} label={label} value={draft.offset[i]} min={-100000} max={100000} step={1} onCommit={value=>{const offset:[number,number]=[...draft.offset];offset[i]=value;patch({offset});}}/>)}{number('seed',t.seed,0,65535)}</details>
       {draft.kind==='gradient' && <>{number('gradientEnd',t.end,0,100)}{number('extent',t.extent,1,100000)}</>}
-      {draft.kind!=='white' && <label className="screentone-row"><span>{t.color}</span><input type="color" aria-label={t.color} value={'#'+draft.color.map(c=>c.toString(16).padStart(2,'0')).join('')} onChange={e=>patch({color:e.currentTarget.value.slice(1).match(/../g)!.map(c=>parseInt(c,16)) as [number,number,number]})}/></label>}
+      {draft.kind!=='white' && <label className="screentone-row"><span>{t.color}</span><ColorPickerPopover locale={locale} label={t.color} color={draft.color} disabled={!editable} onChange={color=>patch({color})}/></label>}
       {(['paper','luminance','inverted'] as const).map(field=><label className="screentone-check" key={field}><input type="checkbox" checked={field==='luminance'&&draft.kind==='copy'?true:draft[field]} disabled={field==='luminance'&&draft.kind==='copy'} onChange={e=>patch({[field]:e.currentTarget.checked})}/>{t[field]}</label>)}
     </fieldset>
     <p className="screentone-note">{t.resolution}: {resolution} dpi · {t.existing}</p>

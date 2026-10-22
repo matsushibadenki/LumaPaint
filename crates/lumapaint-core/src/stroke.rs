@@ -9,6 +9,7 @@ macro_rules! choices {
     };
 }
 choices!(LineCap, Butt, Round, Square);
+choices!(VectorBrush, Basic, Pencil, Bristle);
 choices!(LineJoin, Miter, Round, Bevel);
 choices!(StrokeAlignment, Center, Inside, Outside);
 choices!(Arrowhead, None, Triangle, Open, Circle, Diamond, Square, Bar, Stealth);
@@ -46,6 +47,7 @@ fn default_curve() -> Vec<WidthStop> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct StrokeStyle {
+    pub brush: VectorBrush,
     pub cap: LineCap,
     pub join: LineJoin,
     pub miter_limit: f32,
@@ -64,6 +66,7 @@ pub struct StrokeStyle {
 impl Default for StrokeStyle {
     fn default() -> Self {
         Self {
+            brush: VectorBrush::Basic,
             cap: LineCap::Butt,
             join: LineJoin::Miter,
             miter_limit: 4.,
@@ -84,6 +87,7 @@ impl Default for StrokeStyle {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StrokeStylePatch {
+    pub brush: Option<VectorBrush>,
     pub cap: Option<LineCap>,
     pub join: Option<LineJoin>,
     pub miter_limit: Option<f32>,
@@ -151,7 +155,8 @@ impl StrokeStyle {
     }
     pub fn validate_geometry(&self, data: &str, width: f32) -> Result<(), String> {
         self.validate()?;
-        if self.profile == WidthProfile::Uniform
+        if self.brush != VectorBrush::Bristle
+            && self.profile == WidthProfile::Uniform
             && self.start_arrow == Arrowhead::None
             && self.end_arrow == Arrowhead::None
             && self.alignment == StrokeAlignment::Center
@@ -169,7 +174,7 @@ impl StrokeStyle {
         {
             return Err("Stroke path is invalid or too complex / パスが不正か複雑すぎます / 描边路径无效或过于复杂".into());
         }
-        if self.profile != WidthProfile::Uniform {
+        if self.profile != WidthProfile::Uniform || self.brush == VectorBrush::Bristle {
             let mut bytes = 0;
             for contour in &geometry {
                 let outline = variable_outline(contour, f64::from(width), self)
@@ -185,6 +190,7 @@ impl StrokeStyle {
     pub fn apply(&mut self, patch: &StrokeStylePatch) {
         macro_rules! apply { ($($field:ident),+) => { $(if let Some(value) = &patch.$field { self.$field = value.clone(); })+ }; }
         apply!(
+            brush,
             cap,
             join,
             miter_limit,
@@ -485,6 +491,58 @@ fn ribbon(out: &mut String, points: &[Sample], style: &StrokeStyle, closed: bool
     }
 }
 fn variable_outline(contour: &Contour, width: f64, style: &StrokeStyle) -> Option<String> {
+    if style.brush == VectorBrush::Bristle {
+        let mut out = String::new();
+        if contour.points.len() < 2 {
+            return Some(out);
+        }
+        let mut strand_style = style.clone();
+        strand_style.brush = VectorBrush::Basic;
+        if !contour.closed && strand_style.profile == WidthProfile::Uniform {
+            strand_style.profile = WidthProfile::TaperBoth;
+        }
+        let count = contour.points.len();
+        for strand in 0..12 {
+            let spread = (f64::from(strand) / 11. - 0.5) * width * 0.90;
+            let mut fiber = contour.clone();
+            for (index, point) in fiber.points.iter_mut().enumerate() {
+                let sample = if contour.closed && index + 1 == count {
+                    0
+                } else {
+                    index
+                };
+                let previous = if sample == 0 {
+                    if contour.closed {
+                        count - 2
+                    } else {
+                        0
+                    }
+                } else {
+                    sample - 1
+                };
+                let next = if sample + 1 < count {
+                    sample + 1
+                } else {
+                    count - 1
+                };
+                let n = normal(contour.points[previous], contour.points[next]);
+                let phase = sample as f64 / (count - 1) as f64;
+                let flutter = (phase * std::f64::consts::TAU * 2. + f64::from(strand) * 1.7).sin()
+                    * width
+                    * 0.009;
+                *point = offset(contour.points[index], n, spread + flutter);
+            }
+            out.push_str(&variable_outline(
+                &fiber,
+                width * (0.032 + f64::from(strand % 3) * 0.004),
+                &strand_style,
+            )?);
+            if out.len() > 3 * 1024 * 1024 {
+                return None;
+            }
+        }
+        return Some(out);
+    }
     let mut out = String::new();
     let length: f64 = contour
         .points
@@ -699,7 +757,8 @@ fn svg_stroke_scoped(
     if width <= 0. || color == "none" {
         return String::new();
     }
-    let geometry = if style.alignment != StrokeAlignment::Center
+    let geometry = if style.brush == VectorBrush::Bristle
+        || style.alignment != StrokeAlignment::Center
         || !style.contour_alignments.is_empty()
         || style.profile != WidthProfile::Uniform
         || style.start_arrow != Arrowhead::None
@@ -811,7 +870,7 @@ fn svg_stroke_scoped(
         }
         StrokeAlignment::Center => {}
     }
-    if style.profile == WidthProfile::Uniform {
+    if style.profile == WidthProfile::Uniform && style.brush != VectorBrush::Bristle {
         let _ = write!(
             out,
             r#"<path d="{data}" fill="none" stroke="{color}" stroke-width="{weight}" {}/>"#,
@@ -1139,6 +1198,7 @@ mod tests {
     fn default_style_elision_checks_every_appearance_field() {
         assert!(StrokeStyle::default().is_default());
         let mutations: &[fn(&mut StrokeStyle)] = &[
+            |s| s.brush = VectorBrush::Bristle,
             |s| s.cap = LineCap::Round,
             |s| s.join = LineJoin::Bevel,
             |s| s.miter_limit = 5.,

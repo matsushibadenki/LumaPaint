@@ -186,6 +186,7 @@ pub(crate) fn prepare(path: PathBuf, as_layer: bool) -> Result<Prepared, String>
                 return Err("Expected SVG document".into());
             };
             lumapaint_svg::attach(&mut document);
+            document.set_text_layout_backend(Some(text_editor::reflow_text));
             (OpenDocumentContent::Legacy(document), None, None)
         }
         _ => {

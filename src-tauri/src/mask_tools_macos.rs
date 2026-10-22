@@ -291,6 +291,9 @@ pub(super) fn pointer(point: Point, phase: u8) -> Result<bool, String> {
             | CanvasTool::PolygonLasso
             | CanvasTool::MagneticLasso
             | CanvasTool::SelectionBrush
+            | CanvasTool::ObjectSelection
+            | CanvasTool::QuickSelection
+            | CanvasTool::MagicWand
     ) {
         return Ok(false);
     }

@@ -1,3 +1,6 @@
+import {PixelSelectionDialog} from './components/PixelSelectionDialog';
+import {VectorAssetsDialog} from './components/VectorAssetsDialog';
+import {BulkVectorSelectionDialog} from './components/BulkVectorSelectionDialog';
 import {ShortcutDialog} from './components/ShortcutDialog';
 import { LayerMaskDialog } from './components/LayerMaskDialog';
 import {SavedSelectionsDialog} from './components/SavedSelectionsDialog';
@@ -73,8 +76,12 @@ export function ModalPage() {
   if (!context) return error ? <div role="alert">{error}<button onClick={close}>Close</button></div> : null;
   let content;
   switch (context.kind) {
+    case 'pixelSelection': content=context.document&&<PixelSelectionDialog locale={context.locale} document={context.document} action={context.action} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;
     case 'shortcuts': content=<ShortcutDialog locale={context.locale} onClose={close}/>;break;
     case 'layerMask': content=context.document&&<LayerMaskDialog locale={context.locale} document={context.document} targetId={context.action} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;
+    case 'appearanceAttribute': content=context.document&&<BulkVectorSelectionDialog attributeOnly locale={context.locale} document={context.document} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
+    case 'vectorAssets': content=context.document&&<VectorAssetsDialog locale={context.locale} document={context.document} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
+    case 'bulkVectorSelection': content=context.document&&<BulkVectorSelectionDialog locale={context.locale} document={context.document} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
     case 'vectorSelections': content=context.document&&<SavedSelectionsDialog locale={context.locale} document={context.document} mode={context.action==='save'?'save':'edit'} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})}/>;break;
     case 'toolSettings': content = context.document && <ToolSettingsDialog tool={context.action as CanvasTool} locale={context.locale} document={context.document} onClose={close} onUpdate={()=>{}}/>; break;
     case 'settings': content = <SettingsDialog locale={context.locale} theme={context.theme} onLocale={locale => preferences(locale, context.theme)} onTheme={theme => preferences(context.locale, theme)} onClose={close}/>; break;

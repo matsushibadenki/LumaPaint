@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-21",
+  "timezone": "Asia/Tokyo",
+  "baseline_head": "da3e5d5b4f621032473aa73823f62ae341bfbdbe",
+  "baseline_tree": "clean before adding benchmark",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "cpu": "arm64",
+  "build_features": "renderer default (CPU reference path is the same with skia)",
+  "flags": "Release opt-level=3, thin LTO, codegen-units=1",
+  "benchmark": "crates/lumapaint-renderer/examples/bench_scene_reference.rs",
+  "binaries": {
+    "before": "fc1f21451aeecb826158acb0b6d972b370d3b8642fe8f507021fdb7b51c4b428",
+    "after": "693dd58dcb3230e079921e7fa4a1dbfc536be128b434e885b826e38871087ed1"
+  },
+  "artwork_sha256": "5d405e8dc3480eac836207c246e44513ae9b7ceffd6bef237ac0985505f1dce8",
+  "benchmark_sha256": "179f35e95dfb0d00481f58687f9a91091bc2553b3cd43610fa0b221173e40bdb",
+  "environment": {
+    "LUMAPAINT_ONION_GPU_BASELINE": null,
+    "LUMAPAINT_WORKSPACE_GPU_BASELINE": null,
+    "LUMAPAINT_PARALLEL_TEXT_CACHE": null,
+    "LUMAPAINT_SVG_EAGER_FONTS": null,
+    "LUMAPAINT_RENDER_METRICS": null
+  },
+  "commands": {
+    "build": "cargo build --release --offline -p lumapaint-renderer --example bench_scene_reference",
+    "primary": "before/after executable --case CASE --samples 100 --runs 1, outer_trial=0..4; reverse case order and after-first on odd trials",
+    "confirmation": "before/after executable --case small|stress --samples 200 --runs 1, outer_trial=0..4; after-first on odd trials",
+    "diagnostics": "LUMAPAINT_RENDER_METRICS=1 executable --samples 5 --runs 5 (separate from timing)",
+    "resources": "/usr/bin/time -l executable --samples 5 --runs 5 (3 interleaved processes per variant)",
+    "profile": "sample <PID> 1 -file sample.txt; before --case medium --samples 2000 --runs 1"
+  },
+  "timing_protocol": "No builds or tests overlapped accepted timing, profiling and resource measurements. No system-wide CPU isolation. Cold source each process; warm samples follow the first draw. Full output equality and document_state serialization checks occur outside the timed interval."
+}

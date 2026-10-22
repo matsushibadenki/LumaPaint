@@ -6,6 +6,12 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerGroupsState {
+    #[serde(skip)]
+    pub filter_enabled: bool,
+    #[serde(skip)]
+    pub filter_query: String,
+    #[serde(skip)]
+    pub isolated: Vec<String>,
     #[serde(default)]
     pub groups: Vec<LayerGroup>,
     #[serde(default)]
@@ -67,6 +73,9 @@ pub struct GroupMaskSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerGroupsSnapshot {
+    pub filter_enabled: bool,
+    pub filter_query: String,
+    pub isolated: Vec<String>,
     pub groups: Vec<LayerGroup>,
     pub roots: Vec<String>,
     pub members: Vec<LayerGroupMember>,
@@ -115,7 +124,10 @@ impl LayerGroupsState {
             }
         }
         self.members.retain(|m| layers.iter().any(|l| l.id == m.id));
-        self.selected.retain(|id| valid.contains(id));
+        self.selected
+            .retain(|id| id == "layer-1" || valid.contains(id));
+        self.isolated
+            .retain(|id| id == "layer-1" || valid.contains(id));
     }
     pub(super) fn validate(&self, layers: &[SvgLayer]) -> Result<(), String> {
         if self.groups.len() > 4096 || self.next_id > 1_000_000_000 {
@@ -183,6 +195,9 @@ impl Document {
             state.roots.retain(|id| id != &edit.layer_id);
         }
         LayerGroupsSnapshot {
+            filter_enabled: state.filter_enabled,
+            filter_query: state.filter_query,
+            isolated: state.isolated,
             groups: state.groups,
             roots: state.roots,
             members: state.members,
@@ -296,6 +311,59 @@ impl Document {
         }
         self.layer_groups.reconcile(&self.svg_layers);
         let id = e.id.as_deref().unwrap_or("");
+        match e.action.as_str() {
+            "selectAll" => {
+                self.layer_groups.selected = self
+                    .svg_layers
+                    .iter()
+                    .map(|l| l.id.clone())
+                    .chain(self.layer_groups.groups.iter().map(|g| g.id.clone()))
+                    .chain(std::iter::once("layer-1".into()))
+                    .collect();
+                if !self
+                    .svg_layers
+                    .iter()
+                    .any(|l| l.id == self.selected_layer_id())
+                {
+                    self.selected_layer = None;
+                }
+                self.layer_edit_selection = None;
+                self.selected_vector_objects.clear();
+                return Ok(());
+            }
+            "deselectAll" => {
+                self.layer_groups.selected.clear();
+                self.selected_vector_objects.clear();
+                self.layer_edit_selection = Some((
+                    self.selected_layer_id().into(),
+                    crate::layer_mask::LayerEditTarget::None,
+                ));
+                return Ok(());
+            }
+            "filter" => {
+                let query = e.name.unwrap_or_default();
+                if query.chars().count() > 100 {
+                    return Err("Layer query too long".into());
+                }
+                self.layer_groups.filter_enabled = true;
+                self.layer_groups.filter_query = query;
+                return Ok(());
+            }
+            "clearFilter" => {
+                self.layer_groups.filter_enabled = false;
+                self.layer_groups.filter_query.clear();
+                return Ok(());
+            }
+            "isolate" => {
+                if self.layer_groups.isolated.is_empty() {
+                    self.layer_groups.isolated = self.layer_groups.selected.clone();
+                } else {
+                    self.layer_groups.isolated.clear();
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         if e.action == "select" {
             if id != "layer-1"
                 && !self.svg_layers.iter().any(|l| l.id == id)
@@ -839,5 +907,57 @@ mod tests {
         let mut old = serde_json::to_value(Document::default().document_state()).unwrap();
         old.as_object_mut().unwrap().remove("layerGroups");
         assert!(Document::from_document_state(serde_json::from_value(old).unwrap()).is_ok());
+    }
+}
+#[cfg(test)]
+mod selection_menu_tests {
+    use super::*;
+    fn request(action: &str) -> LayerGroupEdit {
+        serde_json::from_value(serde_json::json!({"action":action})).unwrap()
+    }
+    #[test]
+    fn selection_menu_layer_actions_are_transient_and_do_not_hide_artwork() {
+        let mut d = Document::default();
+        let first = d.add_vector_layer().unwrap();
+        let second = d.add_vector_layer().unwrap();
+        let revision = d.revision();
+        let sources = d
+            .svg_layers()
+            .map(|l| (l.id.clone(), l.source.clone(), l.visible))
+            .collect::<Vec<_>>();
+        d.edit_layer_groups(request("selectAll")).unwrap();
+        let selected = d.layer_groups_snapshot().selected;
+        assert!(
+            selected.contains(&first)
+                && selected.contains(&second)
+                && selected.contains(&"layer-1".into())
+        );
+        d.edit_layer_groups(request("deselectAll")).unwrap();
+        assert!(d.layer_groups_snapshot().selected.is_empty());
+        assert_eq!(
+            d.layer_edit_target(),
+            crate::layer_mask::LayerEditTarget::None
+        );
+        d.edit_layer_groups(request("selectAll")).unwrap();
+        assert_eq!(
+            d.layer_edit_target(),
+            crate::layer_mask::LayerEditTarget::Content
+        );
+        let mut query = request("filter");
+        query.name = Some("Vector".into());
+        d.edit_layer_groups(query).unwrap();
+        assert_eq!(d.layer_groups_snapshot().filter_query, "Vector");
+        d.edit_layer_groups(request("isolate")).unwrap();
+        assert!(!d.layer_groups_snapshot().isolated.is_empty());
+        d.edit_layer_groups(request("isolate")).unwrap();
+        assert!(d.layer_groups_snapshot().isolated.is_empty());
+        d.edit_layer_groups(request("clearFilter")).unwrap();
+        assert_eq!(d.revision(), revision);
+        assert_eq!(
+            sources,
+            d.svg_layers()
+                .map(|l| (l.id.clone(), l.source.clone(), l.visible))
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -5,6 +5,8 @@ mod crop_tool;
 mod gradient_tool;
 #[path = "input_timing_macos.rs"]
 mod input_timing;
+#[path = "pixel_selection_menu_macos.rs"]
+pub(super) mod pixel_selection_menu;
 #[path = "timeline_macos.rs"]
 pub(crate) mod timeline;
 #[path = "window_sessions_macos.rs"]
@@ -520,8 +522,8 @@ impl PaintView {
                     CanvasTool::VectorSelect => Some(selection_cursor()),
                     CanvasTool::VectorScale | CanvasTool::VectorRotate => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
                     CanvasTool::VectorDirectSelect | CanvasTool::VectorPen | CanvasTool::VectorPencil | CanvasTool::VectorAnchorAdd | CanvasTool::VectorAnchorDelete | CanvasTool::VectorAnchorConvert | CanvasTool::VectorRectangle | CanvasTool::VectorEllipse | CanvasTool::ImageFrameRectangle | CanvasTool::ImageFrameEllipse | CanvasTool::Rectangle | CanvasTool::Ellipse => Some(tool_icon_cursor(TOOL.with(|tool|tool.get()))),
-                    CanvasTool::PaintBucket | CanvasTool::Lasso | CanvasTool::PolygonLasso | CanvasTool::MagneticLasso => Some(NSCursor::crosshairCursor()),
-                    CanvasTool::Brush | CanvasTool::Eraser | CanvasTool::CloneStamp | CanvasTool::Blur | CanvasTool::Sharpen | CanvasTool::Smudge | CanvasTool::SelectionBrush => BRUSH_CURSOR.with(|cursor| cursor.borrow().clone()).or_else(|| Some(NSCursor::crosshairCursor())),
+                    CanvasTool::ObjectSelection | CanvasTool::MagicWand | CanvasTool::PaintBucket | CanvasTool::Lasso | CanvasTool::PolygonLasso | CanvasTool::MagneticLasso => Some(NSCursor::crosshairCursor()),
+                    CanvasTool::Brush | CanvasTool::Eraser | CanvasTool::CloneStamp | CanvasTool::Blur | CanvasTool::Sharpen | CanvasTool::Smudge | CanvasTool::SelectionBrush | CanvasTool::QuickSelection => BRUSH_CURSOR.with(|cursor| cursor.borrow().clone()).or_else(|| Some(NSCursor::crosshairCursor())),
                 }
             };
             if let Some(cursor) = cursor { self.addCursorRect_cursor(self.bounds(), &cursor); }
@@ -688,7 +690,7 @@ impl PaintView {
             else if [51,117].contains(&event.keyCode()) && selection_tools::active() {if let Err(e)=selection_tools::remove_last().and_then(|_|redraw()){emit_error(e);}}
             else if [36,76].contains(&event.keyCode()) && TOOL.with(|t|t.get())==CanvasTool::Crop { if let Err(e)=crop_tool::commit(){emit_error(e);} }
             else if event.keyCode() == 53 {
-                if selection_tools::cancel() || crop_tool::cancel() || cancel_vector_drag() || DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
+                if DOCUMENT.with(|doc|doc.borrow_mut().cancel_quick_mask_stroke()) || selection_tools::cancel() || crop_tool::cancel() || cancel_vector_drag() || DOCUMENT.with(|doc| doc.borrow_mut().cancel_selection_gesture()) {
                     if let Err(error) = redraw() { emit_error(error); }
                     emit_document();
                 } else { report_edit(DocumentAction::Deselect); }
@@ -1201,6 +1203,28 @@ impl PaintView {
             .with(|doc| {
                 let mut doc = doc.borrow_mut();
                 let tool = TOOL.with(|value| value.get());
+                if doc.quick_mask_active() && matches!(tool, CanvasTool::Brush | CanvasTool::Eraser)
+                {
+                    let brush = BRUSH.with(|b| *b.borrow());
+                    if brush.no_color && tool != CanvasTool::Eraser {
+                        return Ok(());
+                    }
+                    let value = if tool == CanvasTool::Eraser {
+                        1.
+                    } else {
+                        (f32::from(brush.color[0]) * 0.2126
+                            + f32::from(brush.color[1]) * 0.7152
+                            + f32::from(brush.color[2]) * 0.0722)
+                            / 255.
+                    };
+                    return doc.quick_mask_pointer(
+                        point,
+                        phase,
+                        (brush.size * 0.5).clamp(0.5, 512.),
+                        value,
+                        brush.hardness,
+                    );
+                }
                 if selection_uses_pixel_move(&doc, tool) {
                     return pixel_move::pointer(&mut doc, point, phase, event.modifierFlags());
                 }
@@ -1602,6 +1626,12 @@ fn switch_canvas_tool(tool: CanvasTool) -> Result<(), String> {
         crop_tool::cancel();
         selection_tools::cancel();
         cancel_vector_drag();
+        if !matches!(
+            tool,
+            CanvasTool::VectorDirectSelect | CanvasTool::VectorScale | CanvasTool::VectorRotate
+        ) {
+            DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        }
         TOOL.with(|current| current.set(tool));
     }
     Ok(())
@@ -2070,7 +2100,14 @@ fn vector_pointer(
             stroke
         },
         stroke_width,
-        stroke_style: Default::default(),
+        stroke_style: lumapaint_core::stroke::StrokeStyle {
+            brush: if tool == CanvasTool::VectorPencil {
+                lumapaint_core::stroke::VectorBrush::Pencil
+            } else {
+                lumapaint_core::stroke::VectorBrush::Basic
+            },
+            ..Default::default()
+        },
         visible: true,
         kind,
         control_points,
@@ -2488,6 +2525,31 @@ struct ScaleDraft {
     start: [f32; 2],
     scale: f32,
 }
+fn transform_selected_controls(
+    document: &mut Document,
+    center: [f32; 2],
+    scale: f32,
+    angle: f32,
+) -> Result<bool, String> {
+    let points = DIRECT_POINTS.with(|p| p.borrow().clone());
+    if points.is_empty() {
+        return Ok(false);
+    }
+    let (sn, cs) = angle.sin_cos();
+    let (a, b, c, d) = (cs * scale, sn * scale, -sn * scale, cs * scale);
+    document.transform_vector_controls_matrix(
+        &points,
+        [
+            a,
+            b,
+            c,
+            d,
+            center[0] - a * center[0] - c * center[1],
+            center[1] - b * center[0] - d * center[1],
+        ],
+    )?;
+    Ok(true)
+}
 fn scale_pointer(
     document: &mut Document,
     point: lumapaint_core::document::Point,
@@ -2522,7 +2584,9 @@ fn scale_pointer(
         });
         if phase == 2 {
             if let Some(draft) = SCALE_DRAFT.with(|d| d.borrow_mut().take()) {
-                document.scale_selected_vectors(draft.center, draft.scale)?;
+                if !transform_selected_controls(document, draft.center, draft.scale, 0.)? {
+                    document.scale_selected_vectors(draft.center, draft.scale)?;
+                }
             }
         }
     }
@@ -2575,7 +2639,9 @@ fn rotate_pointer(
         });
         if phase == 2 {
             if let Some(d) = ROTATE_DRAFT.with(|d| d.borrow_mut().take()) {
-                document.rotate_selected_vectors(d.center, d.angle)?;
+                if !transform_selected_controls(document, d.center, 1., d.angle)? {
+                    document.rotate_selected_vectors(d.center, d.angle)?;
+                }
             }
         }
     }
@@ -3736,6 +3802,7 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                             criterion: None,
                             name: None,
                             new_name: None,
+                            bulk: None,
                         },
                     )?;
                 } else {
@@ -3750,6 +3817,7 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                             criterion: None,
                             name: None,
                             new_name: None,
+                            bulk: None,
                         },
                     )?;
                 }
@@ -3765,6 +3833,7 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                             criterion: None,
                             name: None,
                             new_name: None,
+                            bulk: None,
                         },
                     )?;
                 } else {
@@ -4793,10 +4862,14 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
     ) {
         let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
         if let Some(draft) = ROTATE_DRAFT.with(|d| *d.borrow()) {
-            preview.rotate_selected_vectors(draft.center, draft.angle)?;
+            if !transform_selected_controls(&mut preview, draft.center, 1., draft.angle)? {
+                preview.rotate_selected_vectors(draft.center, draft.angle)?;
+            }
         }
         if let Some(draft) = SCALE_DRAFT.with(|d| *d.borrow()) {
-            preview.scale_selected_vectors(draft.center, draft.scale)?;
+            if !transform_selected_controls(&mut preview, draft.center, draft.scale, 0.)? {
+                preview.scale_selected_vectors(draft.center, draft.scale)?;
+            }
         }
         if let Some(corners) = preview.selected_vector_box() {
             canvas
@@ -4939,6 +5012,17 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         {
             if RASTER_SENDER.get().is_some() {
                 schedule_raster_job(canvas, &document)?;
+                if waiting_for_vector_commit(
+                    &mut canvas.pending_vector_commit,
+                    RasterKey {
+                        document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+                        revision: document.revision(),
+                        canvas_token: canvas.token,
+                    },
+                    !canvas.renderer.svg_layers_ready(&document, canvas.viewport),
+                ) {
+                    return Ok(());
+                }
                 return canvas.renderer.render_deferred(canvas.viewport, &document);
             }
             return canvas.renderer.render(canvas.viewport, &document);
@@ -5504,7 +5588,7 @@ thread_local! {
     static BRUSH_CURSOR_KEY: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
     // This slot is accessed exclusively from Tauri's main-thread callbacks.
     static CANVAS: RefCell<Option<Canvas>> = const { RefCell::new(None) };
-    static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); lumapaint_svg::attach(&mut document); let _ = document.select_layer("layer-1".into()); document });
+    static DOCUMENT: RefCell<Document> = RefCell::new({ let mut document = Document::default(); lumapaint_svg::attach(&mut document); document.set_text_layout_backend(Some(text_editor::reflow_text)); let _ = document.select_layer("layer-1".into()); document });
     static ACTIVE_TILED_DOCUMENT: RefCell<Option<TiledSession>> = const { RefCell::new(None) };
     static BRUSH: RefCell<Brush> = RefCell::new(Brush::default());
     static TOOL: std::cell::Cell<CanvasTool> = const { std::cell::Cell::new(CanvasTool::Brush) };
@@ -5732,6 +5816,7 @@ fn activate_document(entry: OpenDocument) {
         OpenDocumentContent::Shared(_) => unreachable!("shared content was resolved"),
         OpenDocumentContent::Legacy(mut document) => {
             lumapaint_svg::attach(&mut document);
+            document.set_text_layout_backend(Some(text_editor::reflow_text));
             document.initialize_layer_selection();
             ACTIVE_TILED_DOCUMENT.with(|slot| slot.borrow_mut().take());
             DOCUMENT.with(|slot| *slot.borrow_mut() = *document);
@@ -5926,7 +6011,12 @@ fn update_brush_cursor(viewport: Viewport) -> bool {
         .min((height - 48.0) / viewport.document_height)
         .max(0.01)
         * viewport.zoom;
-    let size = if TOOL.with(|tool| tool.get()) == CanvasTool::SelectionBrush {
+    let size = if TOOL.with(|tool| {
+        matches!(
+            tool.get(),
+            CanvasTool::SelectionBrush | CanvasTool::QuickSelection
+        )
+    }) {
         selection_tools::settings().diameter
     } else {
         BRUSH.with(|brush| brush.borrow().size)
@@ -7893,6 +7983,7 @@ mod tests {
         });
         let mut document = Document::decode(&serde_json::to_vec(&project).unwrap()).unwrap();
         lumapaint_svg::attach(&mut document);
+        document.set_text_layout_backend(Some(text_editor::reflow_text));
         assert!(!selection_uses_pixel_move(
             &document,
             CanvasTool::VectorDirectSelect
@@ -8774,6 +8865,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     return Err("Expected SVG document".into());
                 };
                 lumapaint_svg::attach(&mut document);
+                document.set_text_layout_backend(Some(text_editor::reflow_text));
                 for layer in document.svg_layers() {
                     validate_svg(&layer.source)?;
                 }
@@ -9210,7 +9302,20 @@ pub fn transform_objects(action: &str, values: [f32; 4]) -> Result<DocumentSnaps
         return result;
     }
     cancel_vector_drag();
-    DOCUMENT.with(|d| d.borrow_mut().transform_selected_vectors(action, values))?;
+    DOCUMENT.with(|d| {
+        let mut document = d.borrow_mut();
+        let controls = DIRECT_POINTS.with(|p| p.borrow().clone());
+        if TOOL.with(|t| t.get()) == CanvasTool::VectorDirectSelect
+            && !controls.is_empty()
+            && action != "reset"
+        {
+            document.transform_vector_controls(&controls, action, values)
+        } else {
+            document
+                .transform_selected_vectors(action, values)
+                .map(|_| ())
+        }
+    })?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
@@ -9237,7 +9342,18 @@ pub fn set_vector_paint(
     color: Option<[u8; 3]>,
 ) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
-    DOCUMENT.with(|d| d.borrow_mut().set_selected_vector_paint(ids, target, color))?;
+    DOCUMENT.with(|d| {
+        let mut document = d.borrow_mut();
+        let revision = document.revision();
+        document.set_selected_vector_paint(ids, target, color)?;
+        if document.revision() != revision {
+            // A color edit invalidates the whole layer raster, including its
+            // unselected objects. Keep the complete frame until replacement
+            // content is ready; never present that layer as temporarily absent.
+            hold_vector_commit_frame(&document);
+        }
+        Ok::<_, String>(())
+    })?;
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
@@ -9390,6 +9506,64 @@ pub fn edit_direct_controls(
 #[cfg(test)]
 mod direct_command_tests {
     use super::*;
+    #[test]
+    fn color_slider_edits_preserve_neighbors_and_hold_each_worker_generation() {
+        let (id, _) = fixture();
+        let neighbor = DOCUMENT.with(|slot| {
+            let mut document = slot.borrow_mut();
+            let layer = document.svg_layers().next().unwrap().id.clone();
+            let mut neighbor = document.svg_layers().next().unwrap().vector_objects[0].clone();
+            neighbor.id = "unselected-color-neighbor".into();
+            neighbor.transform[4] = 200.;
+            document
+                .upsert_vector_object(&layer, neighbor.clone())
+                .unwrap();
+            document.select_direct_objects(vec![id.clone()]).unwrap();
+            neighbor
+        });
+        let mut pending = None;
+        let mut previous = None;
+        for color in [[255, 0, 0], [120, 80, 20], [0, 100, 255]] {
+            set_vector_paint(std::slice::from_ref(&id), "fill", Some(color)).unwrap();
+            let key = DOCUMENT.with(|slot| {
+                let document = slot.borrow();
+                let objects = &document.svg_layers().next().unwrap().vector_objects;
+                assert_eq!(
+                    objects.iter().find(|o| o.id == neighbor.id).unwrap(),
+                    &neighbor
+                );
+                assert_eq!(
+                    objects
+                        .iter()
+                        .find(|o| o.id == id)
+                        .unwrap()
+                        .fill
+                        .as_ref()
+                        .unwrap()
+                        .color,
+                    [color[0], color[1], color[2], 255]
+                );
+                RasterKey {
+                    document_id: 7,
+                    revision: document.revision(),
+                    canvas_token: 3,
+                }
+            });
+            assert_ne!(previous, Some(key));
+            pending = Some(key);
+            // Repeated redraws before this generation is installed must keep
+            // the complete frame, even while older worker results are arriving.
+            assert!(waiting_for_vector_commit(&mut pending, key, true));
+            assert!(waiting_for_vector_commit(&mut pending, key, true));
+            previous = Some(key);
+        }
+        assert!(!waiting_for_vector_commit(
+            &mut pending,
+            previous.unwrap(),
+            false
+        ));
+        assert!(pending.is_none());
+    }
     fn fixture() -> (String, u64) {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
@@ -9434,6 +9608,94 @@ mod direct_command_tests {
         ("direct-command".into(), revision)
     }
     #[test]
+    fn object_segments_menu_preserves_anchors_through_preview_and_scale_gesture() {
+        let (id, _) = fixture();
+        DOCUMENT.with(|slot| {
+            let mut d = slot.borrow_mut();
+            let layer = d.svg_layers().next().unwrap().id.clone();
+            let mut o = d.svg_layers().next().unwrap().vector_objects[0].clone();
+            o.kind = VectorObjectKind::Ellipse;
+            o.control_points = vec![[10., 10.], [110., 110.]];
+            o.path.data = "M10 60 A50 50 0 1 0 110 60 A50 50 0 1 0 10 60Z".into();
+            d.upsert_vector_object(&layer, o).unwrap();
+        });
+        TOOL.with(|t| t.set(CanvasTool::VectorSelect));
+        let revision = DOCUMENT.with(|d| d.borrow().revision());
+        vector_selection_action(lumapaint_core::document::VectorSelectionRequest {
+            action: "object".into(),
+            criterion: Some("segments".into()),
+            name: None,
+            new_name: None,
+            bulk: None,
+        })
+        .unwrap();
+        assert_eq!(TOOL.with(|t| t.get()), CanvasTool::VectorDirectSelect);
+        assert_eq!(DIRECT_POINTS.with(|p| p.borrow().len()), 8);
+        assert_eq!(DOCUMENT.with(|d| d.borrow().revision()), revision);
+        let original = DOCUMENT.with(|d| {
+            d.borrow()
+                .direct_objects()
+                .into_iter()
+                .find(|(_, o)| o.id == id)
+                .unwrap()
+                .1
+        });
+        let (preview, _) = DOCUMENT
+            .with(|d| {
+                build_tool_preview(
+                    &d.borrow(),
+                    super::super::ToolPreviewRequest::Transform {
+                        action: "scale".into(),
+                        values: [1.1, 1.1, 0., 0.],
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(DOCUMENT.with(|d| d.borrow().revision()), revision);
+        let projected = preview
+            .direct_objects()
+            .into_iter()
+            .find(|(_, o)| o.id == id)
+            .unwrap()
+            .1;
+        for index in lumapaint_core::bezier::anchor_indices(&original) {
+            assert_eq!(
+                original.control_points[index],
+                projected.control_points[index]
+            );
+        }
+        switch_canvas_tool(CanvasTool::VectorScale).unwrap();
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            scale_pointer(
+                &mut doc,
+                lumapaint_core::document::Point { x: 160., y: 60. },
+                0,
+            )
+            .unwrap();
+            scale_pointer(
+                &mut doc,
+                lumapaint_core::document::Point { x: 170., y: 60. },
+                2,
+            )
+            .unwrap();
+        });
+        let edited = DOCUMENT.with(|d| {
+            d.borrow()
+                .direct_objects()
+                .into_iter()
+                .find(|(_, o)| o.id == id)
+                .unwrap()
+                .1
+        });
+        for index in lumapaint_core::bezier::anchor_indices(&original) {
+            assert_eq!(original.control_points[index], edited.control_points[index]);
+        }
+        assert_ne!(original.path.data, edited.path.data);
+        switch_canvas_tool(CanvasTool::VectorSelect).unwrap();
+        assert!(DIRECT_POINTS.with(|p| p.borrow().is_empty()));
+    }
+    #[test]
     fn vector_selection_commands_and_context_shortcuts_keep_pixel_selection_separate() {
         let (id, revision) = fixture();
         TOOL.with(|t| t.set(CanvasTool::VectorSelect));
@@ -9454,6 +9716,7 @@ mod direct_command_tests {
                 criterion: None,
                 name: None,
                 new_name: None,
+                bulk: None,
             })
             .unwrap();
         assert_eq!(
@@ -9465,17 +9728,29 @@ mod direct_command_tests {
             criterion: None,
             name: Some("制作対象".into()),
             new_name: None,
+            bulk: None,
         })
         .unwrap();
         assert_eq!(saved.saved_vector_selections[0].name, "制作対象");
+        let style = vector_selection_action(lumapaint_core::document::VectorSelectionRequest {
+            action: "assetCreate".into(),
+            criterion: Some("graphicStyle".into()),
+            name: Some("共通スタイル".into()),
+            new_name: None,
+            bulk: None,
+        })
+        .unwrap();
+        assert_eq!(style.vector_assets[0].count, 1);
         let encoded = DOCUMENT.with(|d| d.borrow_mut().encode().unwrap());
         let mut restored = Document::decode(&encoded).unwrap();
+        assert_eq!(restored.snapshot().vector_assets[0].name, "共通スタイル");
         restored
             .vector_selection_action(lumapaint_core::document::VectorSelectionRequest {
                 action: "load".into(),
                 criterion: None,
                 name: Some("制作対象".into()),
                 new_name: None,
+                bulk: None,
             })
             .unwrap();
         assert_eq!(restored.selected_vector_ids(), [id]);
@@ -9556,6 +9831,7 @@ mod direct_command_tests {
         DIRECT_POINTS.with(|p| p.borrow_mut().clear());
         let mut doc = Document::default();
         lumapaint_svg::attach(&mut doc);
+        doc.set_text_layout_backend(Some(text_editor::reflow_text));
         doc.import_svg("Imported".into(),r##"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640"><defs><clipPath id="clip"><path d="M0 0H100V100H0Z"/></clipPath></defs><g clip-path="url(#clip)"><path fill="#3070ff" d="M20 20H80V80H20Z"/></g></svg>"##.into()).unwrap();
         let original = doc.svg_layers().next().unwrap().source.clone();
         let p = lumapaint_core::document::Point { x: 20., y: 20. };
@@ -10173,7 +10449,15 @@ fn build_tool_preview(
             preview.set_text_object(*settings)?;
         }
         Request::Transform { action, values } => {
-            preview.transform_selected_vectors(&action, values)?;
+            let controls = DIRECT_POINTS.with(|p| p.borrow().clone());
+            if TOOL.with(|t| t.get()) == CanvasTool::VectorDirectSelect
+                && !controls.is_empty()
+                && action != "reset"
+            {
+                preview.transform_vector_controls(&controls, &action, values)?;
+            } else {
+                preview.transform_selected_vectors(&action, values)?;
+            }
         }
         Request::Zoom { zoom: value } => zoom = Some(value),
         Request::Sample { x, y } => {
@@ -10874,6 +11158,7 @@ pub fn apply_pdf_import(
         return Err("Expected PDF vector document".into());
     };
     lumapaint_svg::attach(&mut document);
+    document.set_text_layout_backend(Some(text_editor::reflow_text));
     for index in 0..document.pages_snapshot().pages.len() {
         let page = document.page_document(index).ok_or("Missing PDF page")?;
         for layer in page.svg_layers() {
@@ -10990,20 +11275,38 @@ pub fn vector_selection_action(
     }
     text_editor::finish(true)?;
     finish_open_pen()?;
-    let selecting = !matches!(
-        request.action.as_str(),
-        "save" | "rename" | "delete" | "update"
-    );
-    DOCUMENT.with(|d| d.borrow_mut().vector_selection_action(request))?;
+    let segments = request.action == "object" && request.criterion.as_deref() == Some("segments");
+    let segment_controls = if segments {
+        DOCUMENT.with(|d| d.borrow().selected_direction_handles())?
+    } else {
+        Vec::new()
+    };
+    let asset_action = request.action.starts_with("asset");
+    let selecting = (matches!(request.action.as_str(), "assetSelect" | "assetInsert")
+        || !asset_action)
+        && !matches!(
+            request.action.as_str(),
+            "save" | "rename" | "delete" | "update"
+        );
+    DOCUMENT.with(|d| {
+        let mut document = d.borrow_mut();
+        document.set_text_layout_backend(Some(text_editor::reflow_text));
+        if asset_action {
+            document.vector_asset_action(request)
+        } else {
+            document.vector_selection_action(request)
+        }
+    })?;
     if selecting {
-        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
-        switch_canvas_tool(CanvasTool::VectorSelect)?;
+        DIRECT_POINTS.with(|p| *p.borrow_mut() = segment_controls);
+        let tool = if segments {
+            CanvasTool::VectorDirectSelect
+        } else {
+            CanvasTool::VectorSelect
+        };
+        switch_canvas_tool(tool)?;
         if let Some(app) = APP.get() {
-            let _ = app.emit_to(
-                current_label(),
-                "canvas-tool-changed",
-                CanvasTool::VectorSelect,
-            );
+            let _ = app.emit_to(current_label(), "canvas-tool-changed", tool);
         }
     }
     redraw()?;
@@ -11099,3 +11402,19 @@ pub(crate) fn ai_apply(prepared: crate::ai_raster::Prepared, name: String) -> Re
     emit_document();
     Ok(())
 }
+
+pub fn set_paper_simulation(
+    paper: lumapaint_core::natural_media::PaperSettings,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        return Err("Paper simulation requires a standard document / 通常形式の文書で実行してください / 请在标准文档中执行".into());
+    }
+    DOCUMENT.with(|d| d.borrow_mut().set_paper(paper))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+#[path = "rasterize_layer_macos.rs"]
+pub(crate) mod rasterize_layer;

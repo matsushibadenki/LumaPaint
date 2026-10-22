@@ -3,12 +3,13 @@ import type { Brush } from '../bridge';
 import type { Locale } from '../i18n';
 import { HexInput, toHex } from './BrushControls';
 import { labToRgb, rgbToLab, rgbToGray, cmykToRgb, rgbToCmyk, type CmykColor } from '../color-models';
+import { setColorWheelShape, useColorWheelShape } from '../color-wheel-preference';
 import { workspaceMessages } from '../workspace-i18n';
 
 export const colorPanelLabels = {
-  ja: { color: 'カラー', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', gray: 'グレー', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
-  en: { color: 'Color', hue: 'Hue', saturation: 'Saturation', value: 'Brightness', model: 'Color model', red: 'Red', green: 'Green', blue: 'Blue', cyan: 'Cyan', magenta: 'Magenta', yellow: 'Yellow', black: 'Black', gray: 'Gray', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK uses RGB conversion (no ICC transform).' },
-  'zh-CN': { color: '颜色', hue: '色相', saturation: '饱和度', value: '明度', model: '颜色模型', red: '红', green: '绿', blue: '蓝', cyan: '青色', magenta: '品红', yellow: '黄色', black: '黑色', gray: '灰度', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK为RGB换算值（无ICC转换）。' },
+  ja: { color: 'カラー', wheelShape: 'ホイールの形状', square: '四角形', triangle: '三角形', hue: '色相', saturation: '彩度', value: '明度', model: 'カラー方式', red: '赤', green: '緑', blue: '青', cyan: 'シアン', magenta: 'マゼンタ', yellow: 'イエロー', black: 'ブラック', gray: 'グレー', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYKはRGB換算値です（ICC変換なし）。' },
+  en: { color: 'Color', wheelShape: 'Wheel shape', square: 'Square', triangle: 'Triangle', hue: 'Hue', saturation: 'Saturation', value: 'Brightness', model: 'Color model', red: 'Red', green: 'Green', blue: 'Blue', cyan: 'Cyan', magenta: 'Magenta', yellow: 'Yellow', black: 'Black', gray: 'Gray', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK uses RGB conversion (no ICC transform).' },
+  'zh-CN': { color: '颜色', wheelShape: '色轮形状', square: '方形', triangle: '三角形', hue: '色相', saturation: '饱和度', value: '明度', model: '颜色模型', red: '红', green: '绿', blue: '蓝', cyan: '青色', magenta: '品红', yellow: '黄色', black: '黑色', gray: '灰度', lightness: 'L*', labA: 'a*', labB: 'b*', labNote: 'CIE Lab D50 → sRGB', cmykNote: 'CMYK为RGB换算值（无ICC转换）。' },
 };
 function hsv(rgb: Brush['color']) {
   const [r, g, b] = rgb.map(v => v / 255);
@@ -66,10 +67,12 @@ function ChannelNumber({ value, min=0, max, label, onChange }: { value: number; 
 
 export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false, noColor = false, onNone, foregroundNone = false, backgroundNone = false }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean; noColor?: boolean; onNone?: () => void; foregroundNone?: boolean; backgroundNone?: boolean }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
+  const wheelShape = useColorWheelShape();
   const [colorModel, setColorModel] = useState<ColorModel>('hsb');
   const [labEdits, setLabEdits] = useState<Partial<Record<ColorTarget, {hex:string;values:[number,number,number]}>>>({});
   const [cmykEdits, setCmykEdits] = useState<Partial<Record<ColorTarget, { hex: string; values: CmykColor }>>>({});
   const [rememberedHue, setRememberedHue] = useState(0);
+  const [hsvEdit, setHsvEdit] = useState<{ hex: string; target: ColorTarget; h: number; s: number; v: number } | null>(null);
   const labels = vectorColors ? vectorLabels[locale] : workspaceMessages[locale];
   const fill = vectorColors?.fill ?? foregroundColor, stroke = vectorColors?.stroke ?? backgroundColor;
   const status = vectorColors ? (activeColor === 'foreground' ? vectorColors.fillStatus : vectorColors.strokeStatus) : (noColor || (activeColor === 'foreground' ? foregroundNone : backgroundNone) ? 'none' : null);
@@ -78,14 +81,17 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
   const savedCmyk = cmykEdits[activeColor];
   // Preserve the chosen black/ink separation: RGB alone cannot reconstruct it.
   const cmyk = savedCmyk?.hex === toHex(color) ? savedCmyk.values : rgbToCmyk(color);
-  const current = hsv(color);
+  // RGB black cannot encode saturation. Retain the user's HSV coordinates so
+  // the square marker and brightness adjustments don't jump to gray at black.
+  const current = hsvEdit?.hex === toHex(color) && hsvEdit.target === activeColor ? hsvEdit : hsv(color);
   const h = current.s === 0 ? rememberedHue : current.h;
   const canvas = useRef<HTMLCanvasElement>(null);
-  const mode = useRef<'hue' | 'triangle' | null>(null);
+  const mode = useRef<'hue' | 'triangle' | 'square' | null>(null);
+  useEffect(() => { if (current.s > 0) setRememberedHue(current.h); }, [current.h, current.s]);
   const pure = toHex(rgb(h, 1, 1));
   useEffect(() => {
     const ctx = canvas.current?.getContext('2d');
-    if (!ctx) return;
+    if (!ctx || wheelShape !== 'triangle') return;
     const size = 480, data = ctx.createImageData(size, size);
     const hueColor = rgb(h, 1, 1);
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
@@ -99,22 +105,33 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
       data.data[offset + 3] = 255;
     }
     ctx.putImageData(data, 0, 0);
-  }, [h]);
-  function changeHue(next: number) { setRememberedHue(next); onChange(rgb(next, current.s, current.v)); }
+  }, [h, wheelShape]);
+  function changeHsv(h: number, s: number, v: number) {
+    const next = rgb(h, s, v);
+    setHsvEdit({ hex: toHex(next), target: activeColor, h, s, v });
+    setRememberedHue(h);
+    onChange(next);
+  }
+  function changeHue(next: number) { changeHsv(next, current.s, current.v); }
   function pick(event: PointerEvent<HTMLDivElement>, start = false) {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = (event.clientX - rect.left) / rect.width * 100;
     const y = (event.clientY - rect.top) / rect.height * 100;
     if (start) {
       const radius = Math.hypot(x - 50, y - 50);
-      mode.current = radius >= 42 ? 'hue' : x >= 29 && x <= 91 && Math.abs(y - 50) <= 36 * (1 - (x - 29) / 62) ? 'triangle' : null;
+      mode.current = radius >= 42 && radius <= 50 ? 'hue' : wheelShape === 'square'
+        ? (x >= 22 && x <= 78 && y >= 22 && y <= 78 ? 'square' : null)
+        : (x >= 29 && x <= 91 && Math.abs(y - 50) <= 36 * (1 - (x - 29) / 62) ? 'triangle' : null);
     }
     if (mode.current === 'hue') changeHue((Math.atan2(50 - y, x - 50) * 180 / Math.PI + 360) % 360);
+    if (mode.current === 'square') {
+      changeHsv(h, Math.max(0, Math.min(1, (x - 22) / 56)), Math.max(0, Math.min(1, (78 - y) / 56)));
+    }
     if (mode.current === 'triangle') {
       const c = Math.max(0, Math.min(1, (x - 29) / 62));
       const white = Math.max(0, Math.min(1 - c, (1 - c - (y - 50) / 36) / 2));
       const v = c + white;
-      onChange(rgb(h, v === 0 ? 0 : c / v, v));
+      changeHsv(h, v === 0 ? 0 : c / v, v);
     }
   }
   const c = current.s * current.v, white = current.v - c;
@@ -161,12 +178,14 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     }
     n = Math.max(0, Math.min(key === 'hue' ? 359 : 100, n));
     if (key === 'hue') changeHue(n);
-    else onChange(rgb(h, key === 'saturation' ? n / 100 : current.s, key === 'value' ? n / 100 : current.v));
+    else changeHsv(h, key === 'saturation' ? n / 100 : current.s, key === 'value' ? n / 100 : current.v);
   }
   return <div className={`color-panel-controls${singleColor ? ' single-color' : ''}`}>
-    <label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
+    <div className="color-panel-toolbar"><label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
       <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option><option value="grayscale">{locale==='ja'?'グレースケール':locale==='zh-CN'?'灰度':'Grayscale'}</option><option value="lab">Lab</option>
     </select></label>
+      <div className="color-wheel-shapes" role="group" aria-label={t.wheelShape}>{(['square','triangle'] as const).map(shape=><button key={shape} type="button" aria-label={t[shape]} title={t[shape]} aria-pressed={wheelShape===shape} onClick={()=>setColorWheelShape(shape)}><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">{shape==='square'?<rect x="4" y="4" width="12" height="12"/>:<path d="M4 3L17 10L4 17Z"/>}</svg></button>)}</div>
+    </div>
     <div className="hsb-header">
       {!singleColor && <ColorPairControl foregroundStatus={vectorColors?.fillStatus ?? (foregroundNone ? 'none' : null)} backgroundStatus={vectorColors?.strokeStatus ?? (backgroundNone ? 'none' : null)} locale={locale} labels={vectorColors ? vectorLabels[locale] : undefined} foreground={fill} background={stroke} activeColor={activeColor} onSelectColor={onSelectColor} onSwap={vectorColors?.swap ?? onSwap} />}
       <div className="hsb-sliders">{channels.map(item => <div className="color-slider" key={activeColor + item.key}>
@@ -176,15 +195,15 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     </div>
     {colorModel === 'lab' && <p className="color-model-note">{t.labNote}</p>}
     {colorModel === 'cmyk' && <p className="color-model-note">{t.cmykNote}</p>}
-    <div className="color-wheel" role="group" aria-label={t.color}
+    <div className={`color-wheel color-wheel-${wheelShape}`} role="group" aria-label={t.color}
       onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); pick(event, true); }}
       onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) pick(event); }}
       onPointerUp={event => { mode.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
       onPointerCancel={() => { mode.current = null; }}>
       <div className="color-wheel-center" />
-      <canvas ref={canvas} width="480" height="480" className="color-triangle" aria-hidden="true" />
+      {wheelShape === 'square' ? <div className="color-square" style={{backgroundColor:pure}} aria-hidden="true" /> : <canvas ref={canvas} width="480" height="480" className="color-triangle" aria-hidden="true" />}
       <span className="color-wheel-marker" style={{ left: (50 + 46 * Math.cos(h * Math.PI / 180)) + '%', top: (50 - 46 * Math.sin(h * Math.PI / 180)) + '%' }} />
-      <span className="color-wheel-marker" style={{ left: (29 + 62 * c) + '%', top: (50 + 36 * (1 - c - 2 * white)) + '%' }} />
+      <span className="color-wheel-marker" style={{ left: (wheelShape === 'square' ? 22 + 56 * current.s : 29 + 62 * c) + '%', top: (wheelShape === 'square' ? 78 - 56 * current.v : 50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
     {(vectorColors || onNone) && <div className="color-none-control"><button type="button" aria-pressed={status === 'none'} onClick={()=>vectorColors ? vectorColors.change(activeColor==='foreground'?'fill':'stroke',null) : onNone?.()}><span className="paint-none" aria-hidden="true" />{vectorLabels[locale].none}</button>{status === 'mixed' && <span>{vectorLabels[locale].mixed}</span>}</div>}
     <HexInput key={activeColor} color={color} onChange={onChange} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />

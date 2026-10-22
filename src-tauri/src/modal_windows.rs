@@ -23,7 +23,11 @@ pub(crate) enum Kind {
     PdfImport,
     ToolSettings,
     VectorSelections,
+    BulkVectorSelection,
+    VectorAssets,
+    AppearanceAttribute,
     LayerMask,
+    PixelSelection,
 }
 impl Kind {
     fn geometry(self) -> (f64, f64) {
@@ -38,6 +42,10 @@ impl Kind {
             Self::PdfImport => (740., 680.),
             Self::ToolSettings => (440., 580.),
             Self::VectorSelections => (400., 320.),
+            Self::BulkVectorSelection => (400., 620.),
+            Self::VectorAssets => (460., 560.),
+            Self::AppearanceAttribute => (400., 240.),
+            Self::PixelSelection => (440., 600.),
             Self::LayerMask => (460., 660.),
         }
     }
@@ -60,7 +68,15 @@ impl Kind {
             Self::ImportImage => ["Import", "読み込み", "导入"],
             Self::PdfImport => ["PDF Page", "PDFページ", "PDF页面"],
             Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
+            Self::AppearanceAttribute => ["Appearance Attribute", "アピアランス属性", "外观属性"],
+            Self::VectorAssets => ["Vector Assets", "ベクター素材", "矢量资源"],
+            Self::BulkVectorSelection => [
+                "Select Objects in Bulk",
+                "オブジェクトを一括選択",
+                "批量选择对象",
+            ],
             Self::VectorSelections => ["Saved Selections", "選択範囲の保存・編集", "已保存的选择"],
+            Self::PixelSelection => ["Selection", "選択範囲", "选区"],
             Self::LayerMask => ["Layer mask", "レイヤーマスク", "图层蒙版"],
         };
         titles[match locale {

@@ -229,6 +229,8 @@ struct Uniforms {
     appearance: [f32; 4],
     document: [f32; 4],
     pasteboard: [f32; 4],
+    paper: [f32; 4],
+    paper_color: [f32; 4],
 }
 
 #[repr(C)]
@@ -240,11 +242,15 @@ struct Segment {
     hardness: f32,
     weight: f32,
     texture: f32,
+    material: [f32; 4],
+    medium_aux: [f32; 4],
+    paper: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SelectionGpuRegion {
+    paint: [f32; 4],
     bounds: [f32; 4],
     info: [f32; 4],
 }
@@ -269,6 +275,14 @@ fn selection_bind_group(
     layout: &wgpu::BindGroupLayout,
     selection: Option<&Selection>,
 ) -> wgpu::BindGroup {
+    selection_bind_group_mode(device, layout, selection, false)
+}
+fn selection_bind_group_mode(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    selection: Option<&Selection>,
+    quick: bool,
+) -> wgpu::BindGroup {
     let mut regions = Vec::new();
     if let Some(selection) = selection {
         for region in &selection.regions {
@@ -283,20 +297,26 @@ fn selection_bind_group(
                 region.shape,
                 SelectionShape::Polygon | SelectionShape::Stroke
             ) {
-                let count = if region.shape == SelectionShape::Polygon {
-                    region.points.len()
+                let mut edges = if region.shape == SelectionShape::Polygon {
+                    selection_tools::polygon_edges(&region.points)
+                } else if region.points.len() == 1 {
+                    vec![[region.points[0], region.points[0]]]
                 } else {
-                    region.points.len().saturating_sub(1).max(1)
+                    region.points.windows(2).map(|p| [p[0], p[1]]).collect()
                 };
-                for i in 0..count {
-                    let a = region.points[i];
-                    let b = region.points[(i + 1).min(region.points.len() - 1)];
-                    let b = if region.shape == SelectionShape::Polygon {
-                        region.points[(i + 1) % region.points.len()]
-                    } else {
-                        b
+                if edges.is_empty() {
+                    let outside = lumapaint_core::document::Point {
+                        x: -16384.,
+                        y: -16384.,
                     };
+                    edges.push([outside, outside]);
+                }
+                let count = edges.len();
+                for (i, [a, b]) in edges.into_iter().enumerate() {
                     regions.push(SelectionGpuRegion {
+                        paint: region
+                            .paint
+                            .map_or([0.; 4], |[value, hardness]| [1., value, hardness, 0.]),
                         bounds: [a.x, a.y, b.x, b.y],
                         info: [
                             op,
@@ -312,6 +332,9 @@ fn selection_bind_group(
                 }
             } else {
                 regions.push(SelectionGpuRegion {
+                    paint: region
+                        .paint
+                        .map_or([0.; 4], |[value, hardness]| [1., value, hardness, 0.]),
                     bounds: region.bounds,
                     info: [
                         op,
@@ -328,9 +351,52 @@ fn selection_bind_group(
         }
     } else {
         regions.push(SelectionGpuRegion {
+            paint: [0.; 4],
             bounds: [0.; 4],
             info: [4., 0., 0., 0.],
         });
+    }
+    if let Some(mask) = selection.and_then(|s| s.raster.as_ref()) {
+        let [a, b, c, d, e, f] =
+            lumapaint_core::image_frame::inverse(mask.transform).expect("validated selection mask");
+        let end = regions.len() + 2;
+        let mut packed = vec![
+            SelectionGpuRegion {
+                paint: [0.; 4],
+                bounds: [mask.size[0] as f32, mask.size[1] as f32, a, b],
+                info: [7., end as f32, c, d],
+            },
+            SelectionGpuRegion {
+                paint: [0.; 4],
+                bounds: [e, f, end as f32, 0.],
+                info: [0.; 4],
+            },
+        ];
+        packed.extend(regions);
+        for bytes in mask.pixels().chunks(32) {
+            let mut words = [0u32; 8];
+            for (i, &byte) in bytes.iter().enumerate() {
+                words[i / 4] |= u32::from(byte) << ((i % 4) * 8);
+            }
+            packed.push(SelectionGpuRegion {
+                paint: [0.; 4],
+                bounds: std::array::from_fn(|i| f32::from_bits(words[i])),
+                info: std::array::from_fn(|i| f32::from_bits(words[i + 4])),
+            });
+        }
+        if quick {
+            packed[1].info[3] = 1.;
+        }
+        regions = packed;
+    } else if quick {
+        regions.insert(
+            0,
+            SelectionGpuRegion {
+                paint: [0.; 4],
+                bounds: [0.; 4],
+                info: [8., 0., 0., 0.],
+            },
+        );
     }
     let buffer = crate::gpu_metrics::create_buffer_init!(
         device,
@@ -371,6 +437,7 @@ fn segments(stroke: &Stroke, opacity: f32) -> Vec<Segment> {
     if stroke.eraser {
         brush.simulation = Default::default();
         brush.envelope.enabled = false;
+        brush.material.enabled = false;
     }
     dabs_along_path(&points, brush, opacity)
 }
@@ -437,10 +504,12 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     if stroke.eraser {
         brush.simulation = Default::default();
         brush.envelope.enabled = false;
+        brush.material.enabled = false;
     }
     let dabs = dabs_along_path(&points, brush, 1.0)
         .into_iter()
         .map(|segment| RasterDab {
+            material: brush.material,
             texture: segment.texture,
             texture_scale: 1.0,
             x: segment.ends[0],
@@ -508,6 +577,12 @@ pub fn paint_stroke_into_tiles_at_scale(
     }
     let selection = stroke.selection.as_ref().map(|selection| {
         let mut scaled = selection.clone();
+        if let Some(mask) = &selection.raster {
+            scaled.raster = Some(std::sync::Arc::new(
+                mask.transformed([factor, 0., 0., factor, 0., 0.])
+                    .expect("validated preview scale"),
+            ));
+        }
         for region in &mut scaled.regions {
             for p in &mut region.points {
                 p.x *= factor;
@@ -1079,17 +1154,25 @@ fn dabs_along_path(
     let mut emit = |p: Point, pressure: f32, length: f32, distance: f32| {
         let radius = base_radius * pressure.max(0.05);
         let level = brush.envelope.level(distance);
-        let base_texture = match brush.simulation {
-            lumapaint_core::document::BrushSimulation::Pencil => 1.0,
-            lumapaint_core::document::BrushSimulation::DryBrush => 2.0,
-            _ => 0.0,
+        let base_texture = if brush.material.enabled {
+            0.
+        } else {
+            match brush.simulation {
+                lumapaint_core::document::BrushSimulation::Pencil => 1.0,
+                lumapaint_core::document::BrushSimulation::DryBrush => 2.0,
+                _ => 0.0,
+            }
         };
         let dryness = if brush.envelope.enabled {
             (1.0 - level) * brush.envelope.dryness
         } else {
             0.0
         };
+        let (material, medium_aux, paper) = brush.material.packed();
         result.push(Segment {
+            material,
+            medium_aux,
+            paper,
             ends: [p.x, p.y, p.x, p.y],
             color,
             radius,
@@ -1230,7 +1313,11 @@ fn create_brush_pipeline(
             format!(
                 "{}\n{}",
                 include_str!("selection_common.wgsl"),
-                include_str!("brush.wgsl")
+                concat!(
+                    include_str!("natural_media.wgsl"),
+                    "\n",
+                    include_str!("brush.wgsl")
+                )
             )
             .into(),
         ),
@@ -1240,7 +1327,7 @@ fn create_brush_pipeline(
             vertex: wgpu::VertexState {
                 module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32] })],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4] })],
             },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
@@ -1298,6 +1385,8 @@ fn create_selection_pipeline(
 fn create_brush_composite(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    selection_layout: &wgpu::BindGroupLayout,
+    viewport_layout: &wgpu::BindGroupLayout,
 ) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Brush mask texture layout"),
@@ -1322,12 +1411,23 @@ fn create_brush_composite(
     });
     let brush_composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Brush composite layout"),
-        bind_group_layouts: &[Some(&bind_layout)],
+        bind_group_layouts: &[
+            Some(&bind_layout),
+            Some(selection_layout),
+            Some(viewport_layout),
+        ],
         immediate_size: 0,
     });
     let brush_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Brush mask composite"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("brush_composite.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "{}\n{}",
+                include_str!("selection_common.wgsl"),
+                include_str!("brush_composite.wgsl")
+            )
+            .into(),
+        ),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Brush composite pipeline"),
@@ -3485,7 +3585,14 @@ impl Renderer {
         let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, surface_format);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GPU preview pattern"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("preview.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("natural_media.wgsl"),
+                    "\n",
+                    include_str!("preview.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("LumaPaint preview pipeline"),
@@ -3520,7 +3627,8 @@ impl Renderer {
         });
         let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
         let selection_pipeline = create_selection_pipeline(&device, &paint_layout, surface_format);
-        let (brush_bind_layout, brush_composite_pipeline) = create_brush_composite(&device, format);
+        let (brush_bind_layout, brush_composite_pipeline) =
+            create_brush_composite(&device, format, &selection_layout, &bind_layout);
         let brush_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
@@ -3706,6 +3814,8 @@ impl Renderer {
 
     fn uniforms(viewport: Viewport) -> Uniforms {
         Uniforms {
+            paper: [0.; 4],
+            paper_color: [0.; 4],
             viewport: [
                 viewport.width as f32,
                 viewport.height as f32,
@@ -4031,6 +4141,13 @@ impl Renderer {
         uniforms.appearance[0] += self.channel as f32 * 2.0;
         let grayscale = document.color_mode() == lumapaint_core::document::ColorMode::Grayscale;
         uniforms.document[3] = f32::from(grayscale);
+        uniforms.paper = document.paper().packed();
+        uniforms.paper_color = [
+            document.paper().color[0] as f32 / 255.,
+            document.paper().color[1] as f32 / 255.,
+            document.paper().color[2] as f32 / 255.,
+            1.,
+        ];
         if self.channel != 0 && background_viewport.canvas_color == CanvasColor::Transparent {
             uniforms.appearance[3] = 2.0;
         }
@@ -4042,12 +4159,29 @@ impl Renderer {
             self.tile_preview = None;
         }
         let vector_overlays: Vec<lumapaint_core::document::Selection> = Vec::new();
+        let quick_full = document.quick_mask_active().then(|| {
+            Selection::new(
+                SelectionShape::Rectangle,
+                [
+                    0.,
+                    0.,
+                    document.dimensions().0 as f32,
+                    document.dimensions().1 as f32,
+                ],
+            )
+        });
         let outline_selections = document
             .selection()
+            .or(quick_full.as_ref())
             .into_iter()
             .chain(vector_overlays.iter())
             .map(|selection| {
-                selection_bind_group(&self.device, &self.selection_layout, Some(selection))
+                selection_bind_group_mode(
+                    &self.device,
+                    &self.selection_layout,
+                    Some(selection),
+                    document.quick_mask_active(),
+                )
             })
             .collect::<Vec<_>>();
         let tiled_preview_visible = self
@@ -4857,6 +4991,8 @@ impl Renderer {
                 });
                 composite_pass.set_pipeline(&self.brush_composite_pipeline);
                 composite_pass.set_bind_group(0, mask_bind_group, &[]);
+                composite_pass.set_bind_group(1, selection_group, &[]);
+                composite_pass.set_bind_group(2, &self.bind_group, &[]);
                 composite_pass.draw(0..6, 0..1);
             }
         }
@@ -5251,7 +5387,12 @@ mod tests {
         assert!((uniforms.pasteboard[1] - 0.21586).abs() < 0.00001);
         assert_eq!(uniforms.pasteboard[2..], [0.0, 1.0]);
         assert_eq!(uniforms.document[2..], [0.0, 0.0]);
-        let module = wgpu::naga::front::wgsl::parse_str(include_str!("preview.wgsl")).unwrap();
+        let module = wgpu::naga::front::wgsl::parse_str(concat!(
+            include_str!("natural_media.wgsl"),
+            "\n",
+            include_str!("preview.wgsl")
+        ))
+        .unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
@@ -5265,7 +5406,11 @@ mod tests {
         let source = format!(
             "{}\n{}",
             include_str!("selection_common.wgsl"),
-            include_str!("brush.wgsl")
+            concat!(
+                include_str!("natural_media.wgsl"),
+                "\n",
+                include_str!("brush.wgsl")
+            )
         );
         let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
         wgpu::naga::valid::Validator::new(
@@ -6196,6 +6341,7 @@ mod clipboard_pixel_tests {
         };
         let mut selection = Selection::new(SelectionShape::Rectangle, [8., 8., 24., 24.]);
         selection.regions.push(SelectionRegion {
+            paint: None,
             points: Vec::new(),
             radius: 0.,
             shape: SelectionShape::Ellipse,
@@ -6895,3 +7041,5 @@ mod detailed_motion_tests {
         }
     }
 }
+
+pub mod selection_menu;

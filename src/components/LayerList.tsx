@@ -1,3 +1,4 @@
+import {LayerContextMenu} from './LayerContextMenu';
 import { MaskLinkButton } from './MaskLinkButton';
 import { layerGroupLabels } from './layer-group-labels';
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from 'react';
@@ -8,7 +9,8 @@ import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onToggleMaskLink, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder }: {
+export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onToggleMaskLink, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder, onRasterize }: {
+  onRasterize?: (id:string)=>Promise<void>;
   editTarget: LayerEditTarget; onSelectTarget: (id: string, target: LayerEditTarget) => void;
   groups:LayerGroupsState; onGroupEdit:(edit:LayerGroupEdit)=>void;
   thumbnails?: Record<string,string>; thumbnailError?: string;
@@ -30,6 +32,12 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
   const targetLabel = (id: string, target: 'content' | 'mask', name: string) => `${targetSelected(id, target) ? targetLabels.deselect : targetLabels[target]}: ${name}`;
   const toggleTarget = (id: string, target: LayerEditTarget) => onSelectTarget(id, targetSelected(id, target) ? 'none' : target);
 
+  const [rasterizing,setRasterizing]=useState(false);
+  const [contextMenu,setContextMenu]=useState<{id:string;x:number;y:number}|null>(null);
+  useEffect(()=>setContextMenu(null),[layers,enabled]);
+  const contextLayer=layers.find(layer=>layer.id===contextMenu?.id);
+  const contextLocked=(()=>{if(contextLayer?.locked)return true;let id=contextLayer?.id;for(let i=0;id&&i<groups.groups.length;i++){const parent=groups.groups.find(g=>g.children.includes(id!));if(!parent)break;if(parent.locked)return true;id=parent.id;}return false;})();
+  useEffect(()=>{if(contextMenu&&(!contextLayer||contextLayer.kind!=="vector"))setContextMenu(null)},[contextLayer,contextMenu]);
   const list = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -43,13 +51,15 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
   const textLayers = new Set(textObjects.map(object => object.layerId));
   const groupText = layerGroupLabels[locale];
   type Row = LayerSnapshot & {group?:LayerGroup;depth:number;parent?:string};
-  const displayed:Row[] = [];
+  let displayed:Row[] = [];
+  const filtering=!!groups.filterEnabled||!!groups.isolated?.length;
+  reorderEnabled=reorderEnabled&&!filtering;
   const append = (ids:string[],depth:number,parent?:string) => {
     for (const id of ids) {
       const group = groups.groups.find(g=>g.id===id);
       if (group) {
         displayed.push({id:group.id,name:group.name,kind:'svg',visible:group.visible,locked:group.locked,opacity:1,alphaLocked:false,maskEnabled:false,maskInverted:false,maskDensity:1,deletable:true,strokeCount:0,objects:[],group,depth,parent});
-        if (!group.collapsed) append(group.children,depth+1,group.id);
+        if (!group.collapsed||filtering) append(group.children,depth+1,group.id);
       } else {
         const layer=layers.find(l=>l.id===id);
         if(layer) displayed.push({...layer,depth,parent});
@@ -60,6 +70,17 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
   // Old projects and the fixed background have no folder metadata.
   for(const layer of [...layers].reverse()) if(!displayed.some(row=>row.id===layer.id)&&!groups.groups.some(g=>g.children.includes(layer.id))) displayed.push({...layer,depth:0});
 
+  if(filtering){
+    const query=(groups.filterQuery??'').trim().toLocaleLowerCase();
+    const matches=new Set(displayed.filter(row=>{
+      let current:Row|undefined=row;let nameMatch=!query,isolateMatch=!groups.isolated?.length;
+      for(let i=0;current&&i<=groups.groups.length;i++){nameMatch ||= current.name.toLocaleLowerCase().includes(query);isolateMatch ||= !!groups.isolated?.includes(current.id);current=displayed.find(r=>r.id===current?.parent);}
+      return nameMatch&&isolateMatch;
+    }).map(row=>row.id));
+    for(const row of displayed.filter(row=>matches.has(row.id))){let parent=row.parent;for(let i=0;parent&&i<=groups.groups.length;i++){matches.add(parent);parent=displayed.find(row=>row.id===parent)?.parent;}}
+    displayed=displayed.filter(row=>matches.has(row.id));
+  }
+  const filterLabels={ja:{search:'レイヤーを検索',clear:'検索を解除',isolate:'レイヤー分離を解除'},en:{search:'Find Layers',clear:'Clear layer filter',isolate:'Exit layer isolation'},'zh-CN':{search:'查找图层',clear:'清除图层筛选',isolate:'退出图层隔离'}}[locale];
   const orderKey = displayed.map(layer => layer.id).join('|');
 
   function cancel() {
@@ -262,6 +283,8 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
     onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}
     onPointerLeave={() => { if (!gesture.current?.dragging) cancel(); }}
     onDragStart={event => { if (!(event.target as Element).closest('.layer-object-row')) event.preventDefault(); }}>
+    {groups.filterEnabled&&<div className="layer-search"><input autoFocus type="search" aria-label={filterLabels.search} placeholder={filterLabels.search} value={groups.filterQuery??''} onChange={e=>onGroupEdit({action:'filter',name:e.target.value})}/><button type="button" title={filterLabels.clear} aria-label={filterLabels.clear} onClick={()=>onGroupEdit({action:'clearFilter'})}>×</button></div>}
+    {!!groups.isolated?.length&&<button type="button" onClick={()=>onGroupEdit({action:'isolate'})}>{filterLabels.isolate}</button>}
     {displayed.map((layer, index) => {
       if(layer.group) {
         const group=layer.group;
@@ -287,10 +310,12 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
       const objects = layer.objects ?? [];
       const isExpanded = expanded.has(layer.id);
       return <Fragment key={layer.id}><div data-layer-id={layer.id} role="listitem" tabIndex={selectable ? 0 : -1}
-      className={`layer-row${groups.selected.includes(layer.id) || (groups.selected.length===0&&selectedId === layer.id) ? ' selected' : ''}${draggedId === layer.id ? ' dragging' : ''}${gap === index ? ' insert-before' : ''}`}
+      className={`layer-row${groups.selected.includes(layer.id) || (groups.selected.length===0&&selectedId === layer.id&&editTarget!=='none') ? ' selected' : ''}${draggedId === layer.id ? ' dragging' : ''}${gap === index ? ' insert-before' : ''}`}
       style={{paddingLeft:6}} data-movable={reorderEnabled && (!enabled || layer.deletable)} title={reorderEnabled && (!enabled || layer.deletable) ? t.reorderLayer : t.fixedBaseLayer}
+      onContextMenu={event=>{if((event.target as Element).closest('input,textarea'))return;if(layer.kind==='vector'){event.preventDefault();event.stopPropagation();if(rasterizing)return;cancel();setContextMenu({id:layer.id,x:event.clientX,y:event.clientY})}}}
       onPointerDown={event => { if (!reorderEnabled && selectable && event.button === 0 && !(event.target as Element).closest('input, button')) onSelect(layer.id); else start(event, layer); }}
       onKeyDown={event => {
+        if (!(event.target as Element).closest('input,textarea')&&(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10'))&&layer.kind==='vector'){event.preventDefault();if(rasterizing)return;const b=event.currentTarget.getBoundingClientRect();setContextMenu({id:layer.id,x:b.left+16,y:b.bottom});return;}
         if (!selectable || (event.target as Element).closest('input, button')) return;
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(layer.id); }
         if (!enabled && reorderEnabled && event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
@@ -302,7 +327,7 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
           return;
         }
         if (!enabled) return;
-        if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key) || !layer.deletable) return;
+        if (!reorderEnabled || !event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key) || !layer.deletable) return;
         event.preventDefault();
         const ids=[...(layer.parent?groups.groups.find(g=>g.id===layer.parent)!.children:groups.roots)];
         const position=ids.indexOf(layer.id);
@@ -341,5 +366,6 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
       {renderObjects(layer)}
     </div>}
     </Fragment>; })}
+    {contextMenu&&contextLayer?.kind==='vector'&&<LayerContextMenu key={contextMenu.id} locale={locale} x={contextMenu.x} y={contextMenu.y} enabled={enabled&&!rasterizing&&!contextLocked&&!!onRasterize} onClose={()=>setContextMenu(null)} onRasterize={async()=>{if(!onRasterize||rasterizing)return;setRasterizing(true);try{await onRasterize(contextMenu.id)}finally{setRasterizing(false)}}}/>}
   </div>;
 }

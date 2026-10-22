@@ -9,6 +9,16 @@ pub struct Settings {
     pub magnetic_contrast: f32,
     pub magnetic_frequency: f32,
     pub all_layers: bool,
+    #[serde(default = "default_tolerance")]
+    pub tolerance: f32,
+    #[serde(default = "default_contiguous")]
+    pub contiguous: bool,
+}
+fn default_tolerance() -> f32 {
+    24.
+}
+fn default_contiguous() -> bool {
+    true
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -19,12 +29,16 @@ impl Default for Settings {
             magnetic_contrast: 10.,
             magnetic_frequency: 8.,
             all_layers: true,
+            tolerance: default_tolerance(),
+            contiguous: true,
         }
     }
 }
 impl Settings {
     pub fn validate(self) -> Result<(), String> {
-        if !self.diameter.is_finite()
+        if !self.tolerance.is_finite()
+            || !(0. ..=255.).contains(&self.tolerance)
+            || !self.diameter.is_finite()
             || !(1. ..=512.).contains(&self.diameter)
             || !self.magnetic_width.is_finite()
             || !(1. ..=40.).contains(&self.magnetic_width)
@@ -36,6 +50,29 @@ impl Settings {
             Err("Invalid selection tool settings".into())
         } else {
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_settings_receive_automatic_selection_defaults_and_validate_tolerance() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "mode":"replace","diameter":32,"magneticWidth":10,
+            "magneticContrast":10,"magneticFrequency":8,"allLayers":true
+        }))
+        .unwrap();
+        assert_eq!(settings.tolerance, 24.);
+        assert!(settings.contiguous);
+        for tolerance in [f32::NAN, -1., 256.] {
+            assert!(Settings {
+                tolerance,
+                ..settings
+            }
+            .validate()
+            .is_err());
         }
     }
 }

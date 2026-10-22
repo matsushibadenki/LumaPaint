@@ -1,0 +1,272 @@
+[
+  {
+    "trial": 0,
+    "case": "small",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "identical": true
+  },
+  {
+    "trial": 0,
+    "case": "medium",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "identical": true
+  },
+  {
+    "trial": 0,
+    "case": "large",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "identical": true
+  },
+  {
+    "trial": 0,
+    "case": "stress",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "identical": true
+  },
+  {
+    "trial": 0,
+    "case": "artwork",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "identical": true
+  },
+  {
+    "trial": 0,
+    "case": "text_blur",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "small",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "medium",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "large",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "stress",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "artwork",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "identical": true
+  },
+  {
+    "trial": 1,
+    "case": "text_blur",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "small",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "medium",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "large",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "stress",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "artwork",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "identical": true
+  },
+  {
+    "trial": 2,
+    "case": "text_blur",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "small",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "medium",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "large",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "stress",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "artwork",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "identical": true
+  },
+  {
+    "trial": 3,
+    "case": "text_blur",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "small",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "medium",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "large",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "stress",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "artwork",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "identical": true
+  },
+  {
+    "trial": 4,
+    "case": "text_blur",
+    "width": 256,
+    "height": 171,
+    "bytes": 175104,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "identical": true
+  }
+]

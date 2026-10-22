@@ -86,6 +86,46 @@ impl LayerMask {
                 selection: selection.clone(),
                 edits: Vec::new(),
             },
+            MaskKind::Pixel if selection.has_soft_mask() => {
+                let mut runs = Vec::new();
+                let mut gray = Vec::new();
+                let mut active: Option<(u32, u32, u8)> = None;
+                for i in 0..width * height {
+                    let value = (selection.coverage(Point {
+                        x: (i % width) as f32 + 0.5,
+                        y: (i / width) as f32 + 0.5,
+                    }) * 255.)
+                        .round() as u8;
+                    if let Some((start, len, v)) = active {
+                        if value == v && i % width != 0 {
+                            active = Some((start, len + 1, v));
+                            continue;
+                        }
+                        if v == 255 {
+                            runs.push([start, len]);
+                        } else if v > 0 {
+                            gray.push([start, len, u32::from(v)]);
+                        }
+                    }
+                    active = Some((i, 1, value));
+                    if runs.len() + gray.len() > 1_048_576 {
+                        return Err("Pixel mask complexity limit exceeded".into());
+                    }
+                }
+                if let Some((start, len, v)) = active {
+                    if v == 255 {
+                        runs.push([start, len]);
+                    } else if v > 0 {
+                        gray.push([start, len, u32::from(v)]);
+                    }
+                }
+                MaskContent::Pixel {
+                    width,
+                    height,
+                    runs,
+                    gray,
+                }
+            }
             MaskKind::Pixel => {
                 let mut runs = Vec::new();
                 let rectangle = selection.regions.len() == 1
@@ -256,7 +296,7 @@ impl LayerMask {
         ];
         let value = match &self.content {
             Some(MaskContent::Vector { selection, edits }) => {
-                let mut hit = selection.contains(Point {
+                let mut hit = selection.coverage(Point {
                     x: point[0],
                     y: point[1],
                 });
@@ -265,10 +305,10 @@ impl LayerMask {
                     if edit.selection.contains(p)
                         && edit.clip.as_ref().is_none_or(|clip| clip.contains(p))
                     {
-                        hit = edit.reveal;
+                        hit = f32::from(edit.reveal);
                     }
                 }
-                f32::from(hit)
+                hit
             }
             Some(MaskContent::Pixel {
                 width,
@@ -330,8 +370,29 @@ impl LayerMask {
                 if let Ok(bytes) = serde_json::to_vec(edits) {
                     hash.write(&bytes);
                 }
+                if let Some(mask) = &selection.raster {
+                    for v in mask.size {
+                        hash.write_u32(v);
+                    }
+                    for v in mask.transform {
+                        hash.write_u32(v.to_bits());
+                    }
+                    for run in &mask.runs {
+                        for &v in run {
+                            hash.write_u32(v);
+                        }
+                    }
+                }
                 hash.write_usize(selection.regions.len());
                 for r in &selection.regions {
+                    if let Some(paint) = r.paint {
+                        hash.write_u8(1);
+                        for v in paint {
+                            hash.write_u32(v.to_bits());
+                        }
+                    } else {
+                        hash.write_u8(0);
+                    }
                     hash.write_u8(r.shape as u8);
                     hash.write_u8(r.operation as u8);
                     hash.write_u32(r.radius.to_bits());

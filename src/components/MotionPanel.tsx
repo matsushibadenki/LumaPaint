@@ -5,6 +5,7 @@ import type { Locale } from '../i18n';
 import { motionBehavior } from '../motion-behavior';
 import { motionLabels } from '../motion-i18n';
 import { curveDefaults, newMotion, type Curve, type MotionCatalog, type MotionClip, type MotionPreset, type MotionState, type VariableFont, defaultAxes } from '../motion-types';
+import { ColorPickerPopover } from './ColorPickerPopover';
 import './motion-panel.css';
 
 const curveRanges:Record<string,[number,number,number]>={exponent:[1,8,.1],overshoot:[0,8,.01],amplitude:[1,5,.01],period:[.05,2,.01],restitution:[.1,.95,.01],stiffness:[1,2000,1],damping:[.1,200,.1],mass:[.1,20,.1],count:[1,120,1],strength:[0,2,.01],points:[2,120,1],plateau:[.05,.95,.01],ratio:[1.01,100,.01],cycles:[1,30,.1],decay:[.1,30,.1]};
@@ -173,7 +174,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
           {has('blur')&&number(t.blur,draft.blur,value=>edit({blur:value}),0,64,1,'px')}
           {has('glow')&&number(t.glow,draft.glow,value=>edit({glow:value}),0,64,1,'px')}
           {has('particles','confetti','snow','embers','fireworks','coalesce')&&number(t.particles,draft.particleCount,value=>edit({particleCount:value}),0,128)}
-          <label className="motion-number"><span>{t.color}</span><input aria-label={t.color} type="color" value={`#${draft.color.slice(0,3).map(value=>value.toString(16).padStart(2,'0')).join('')}`} disabled={disabled} onChange={event=>edit({color:[parseInt(event.target.value.slice(1,3),16),parseInt(event.target.value.slice(3,5),16),parseInt(event.target.value.slice(5,7),16),255]})}/></label>
+          <label className="motion-number"><span>{t.color}</span><ColorPickerPopover locale={locale} label={t.color} color={[draft.color[0],draft.color[1],draft.color[2]]} disabled={disabled} onChange={color=>edit({color:[...color,255]})}/></label>
         </div></details>}
         {has('textSwap')&&<label className="motion-field"><span>{t.alternateText}</span><input aria-label={t.alternateText} value={draft.alternateText} disabled={disabled} maxLength={8192} onChange={event=>edit({alternateText:event.target.value})}/></label>}
         {has('counter')&&<div className="motion-parameter-grid">{number(t.from,draft.numberFrom,value=>edit({numberFrom:value}),-1e12,1e12)}{number(t.to,draft.numberTo,value=>edit({numberTo:value}),-1e12,1e12)}</div>}

@@ -47,3 +47,7 @@ pub mod selection_tools;
 pub mod retouch;
 
 pub mod history_storage;
+
+pub mod selection_raster;
+
+pub mod natural_media;

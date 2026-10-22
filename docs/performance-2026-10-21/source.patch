@@ -1,0 +1,83 @@
+diff --git a/crates/lumapaint-renderer/src/vector.rs b/crates/lumapaint-renderer/src/vector.rs
+index 9ab679a..da4eec6 100644
+--- a/crates/lumapaint-renderer/src/vector.rs
++++ b/crates/lumapaint-renderer/src/vector.rs
+@@ -684,7 +684,9 @@ pub(crate) fn rasterize_svg_reference(
+     {
+         return Err("Invalid reference raster dimensions".into());
+     }
+-    let tree = parsed_text::parse(source)?;
++    // Share the existing bounded CPU-tree cache with workspace preparation.
++    // Reference raster dimensions do not affect parsing or font shaping.
++    let tree = parsed_text::parse_workspace(source)?;
+     let size = tree.size();
+     let scale = (width as f32 / size.width()).min(height as f32 / size.height());
+     let x = (width as f32 - size.width() * scale) * 0.5;
+@@ -1131,6 +1133,47 @@ pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn reference_tree_reuse_preserves_pixels_sizes_and_source_changes() {
++        for body in [
++            "<rect x='3' y='4' width='18' height='20'/>",
++            "<defs><mask id='m'><rect width='32' height='32' fill='white'/></mask><filter id='b'><feGaussianBlur stdDeviation='1'/></filter></defs><g mask='url(#m)'><circle cx='16' cy='16' r='8' filter='url(#b)'/></g>",
++            "<g transform='rotate(5 16 16)' opacity='.5'><text x='1' y='16' font-size='6'>English 日本語 简体中文</text></g>",
++        ] {
++            let mut previous = None;
++            for color in ["red", "blue", "red"] {
++                let source = format!("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' fill='{color}'>{body}</svg>");
++                let fresh = super::parsed_text::parse_uncached(&source).unwrap();
++                // A workspace parse must also be reusable by the reference route.
++                super::parsed_text::parse_workspace(&source).unwrap();
++                for (width, height) in [(17, 11), (64, 64), (129, 64)] {
++                    crate::performance::take();
++                    let actual = super::rasterize_svg_reference(&source, width, height).unwrap();
++                    let stats = crate::performance::take();
++                    if crate::performance::enabled()
++                        && !stats.counts.contains_key("parsed_text_cache_lookup_contended")
++                        && !stats.counts.contains_key("parsed_text_cache_lookup_poisoned")
++                        && !stats.counts.contains_key("parsed_text_cache_misses")
++                    {
++                        assert_eq!(stats.counts.get("parsed_text_cache_hits"), Some(&1));
++                        assert!(!stats.counts.contains_key("svg_parses"));
++                    }
++                    let scale = (width as f32 / 32.).min(height as f32 / 32.);
++                    let mut expected = super::tiny_skia::Pixmap::new(width, height).unwrap();
++                    resvg::render(&fresh, super::tiny_skia::Transform::from_row(scale, 0., 0., scale, (width as f32 - 32.*scale)*0.5, (height as f32 - 32.*scale)*0.5), &mut expected.as_mut());
++                    assert_eq!(actual.backend, super::SvgBackend::Resvg);
++                    assert_eq!(actual.pixels, expected.data());
++                    if (width, height) == (64, 64) {
++                        if let Some(old) = &previous { assert_ne!(&actual.pixels, old); }
++                        previous = Some(actual.pixels);
++                    }
++                }
++            }
++        }
++        for (width, height) in [(0, 32), (32, 0), (1025, 32), (32, 1025)] {
++            assert!(super::rasterize_svg_reference("<svg/>", width, height).is_err());
++        }
++    }
+     #[test]
+     fn internal_raster_limits_are_independent_from_clipboard_limits() {
+         assert_eq!(
+diff --git a/crates/lumapaint-renderer/src/vector/parsed_text.rs b/crates/lumapaint-renderer/src/vector/parsed_text.rs
+index 4ddab4e..1829a83 100644
+--- a/crates/lumapaint-renderer/src/vector/parsed_text.rs
++++ b/crates/lumapaint-renderer/src/vector/parsed_text.rs
+@@ -88,6 +88,15 @@ impl Cache {
+             retired.push(old);
+         }
+         self.bytes += entry.charge;
++        crate::performance::count("parsed_tree_cache_admissions", 1);
++        crate::performance::count("parsed_tree_cache_admitted_bytes", entry.charge as u64);
++        // Insertion-event samples, not a process RSS gauge. Callers may sum
++        // multiple events; the cache's own bound remains MAX_BYTES.
++        crate::performance::count(
++            "parsed_tree_cache_insertion_retained_bytes",
++            self.bytes as u64,
++        );
++        crate::performance::count("parsed_tree_cache_evictions", retired.len() as u64);
+         self.entries.push(entry);
+         retired
+     }

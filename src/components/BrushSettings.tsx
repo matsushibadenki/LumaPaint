@@ -1,3 +1,4 @@
+import {MaterialControls} from './NaturalMediaPanel';
 import type { Brush } from '../bridge';
 import type { Locale } from '../i18n';
 import { brushBlendGroups, brushBlendName, brushSettingsLabels, type BrushBlendMode } from '../brush-settings';
@@ -35,6 +36,7 @@ export function BrushSettings({ brush, locale, onChange, enabled = true, compact
   </label>;
   return compact ? <>{mode}{percentages}</> : <div className="brush-settings">
     {mode}{percentages}
+    <MaterialControls brush={brush} locale={locale} enabled={enabled&&!eraser} onChange={onChange}/>
     <p className="muted small">{t.hint}</p>
   </div>;
 }

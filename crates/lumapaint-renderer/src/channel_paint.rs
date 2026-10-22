@@ -114,8 +114,9 @@ pub fn clear(
             x: (i as u32 % size.0) as f32 + 0.5,
             y: (i as u32 / size.0) as f32 + 0.5,
         };
-        if selection.is_none_or(|s| s.contains(point)) {
-            let out = paint_pixel(*p, channel as usize - 1, 0, 255);
+        let coverage = (selection.map_or(1., |s| s.coverage(point)) * 255.).round() as u8;
+        if coverage > 0 {
+            let out = paint_pixel(*p, channel as usize - 1, 0, coverage);
             p.copy_from_slice(&out);
         }
     }

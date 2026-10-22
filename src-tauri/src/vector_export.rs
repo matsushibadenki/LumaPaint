@@ -29,7 +29,11 @@ fn build(document: &Document, format: FormatId) -> Result<ExportedDocument, Stri
     let mut copy = document.clone();
     copy.finish();
     let mut snapshot = ExportSnapshot::capture(&copy);
-    if snapshot.state().layer_effects.values().any(|e| e.active()) {
+    if (copy.paper().enabled
+        && copy.background_visible()
+        && copy.canvas_color() == lumapaint_core::document::CanvasColor::White)
+        || snapshot.state().layer_effects.values().any(|e| e.active())
+    {
         snapshot = snapshot
             .with_document_png(lumapaint_renderer::thumbnails::document_png(&copy)?)
             .map_err(export_error)?;

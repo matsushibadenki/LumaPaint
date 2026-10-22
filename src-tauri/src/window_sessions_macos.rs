@@ -67,6 +67,7 @@ impl Default for Runtime {
             document: {
                 let mut document = Document::default();
                 lumapaint_svg::attach(&mut document);
+                document.set_text_layout_backend(Some(text_editor::reflow_text));
                 let _ = document.select_layer("layer-1".into());
                 document
             },

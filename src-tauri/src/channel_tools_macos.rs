@@ -75,6 +75,9 @@ pub(super) fn pointer(point: Point, phase: u8, pressure: f32) -> Result<bool, St
             | CanvasTool::PolygonLasso
             | CanvasTool::MagneticLasso
             | CanvasTool::SelectionBrush
+            | CanvasTool::ObjectSelection
+            | CanvasTool::QuickSelection
+            | CanvasTool::MagicWand
     ) {
         return Ok(false);
     }

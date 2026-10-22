@@ -14,6 +14,8 @@ export const featureLabels: Record<Locale, Record<FeatureType, string>> = {
 export function commandFeature(id: string | undefined, fallback?: FeatureType): FeatureType | undefined {
   if (!id) return fallback;
   if (['shortcuts.edit','command.new-window','menu.panels','menu.resetWorkspace'].includes(id)) return undefined;
+  if (id.startsWith('pixelSelection.layers.')) return 'combined';
+  if (id.startsWith('pixelSelection.')) return 'pixel';
   if (id === 'menu.importSvg' || id === 'command.place') return 'vector';
   if (id === 'command.import') return 'pixel';
   if (id === 'window.timeline') return 'animation';

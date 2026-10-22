@@ -6,6 +6,11 @@ use crate::{
 };
 
 fn bounds(selection: &Selection) -> [f32; 4] {
+    if selection.raster.is_some() {
+        let s = selection.snapshot_summary();
+        let b = s.regions[0].bounds;
+        return [b[0], b[1], b[0] + b[2], b[1] + b[3]];
+    }
     selection.regions.iter().fold(
         [
             f32::INFINITY,
@@ -353,6 +358,7 @@ mod tests {
         mask.paint_brush_dabs(
             (32, 32),
             &[crate::tiles::RasterDab {
+                material: Default::default(),
                 x: 4.,
                 y: 4.,
                 radius: 2.,
@@ -378,6 +384,7 @@ mod tests {
         use crate::{brush_blend::BrushBlendMode, document::Brush, tiles::RasterDab};
         let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, 32, 32).unwrap();
         let dab = RasterDab {
+            material: Default::default(),
             x: 16.,
             y: 16.,
             radius: 8.,

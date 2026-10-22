@@ -1,3 +1,9 @@
+#[path = "document_pixel_selection.rs"]
+mod pixel_selection;
+pub use pixel_selection::{PixelSelectionRequest, SavedPixelSelection};
+#[path = "document_vector_assets.rs"]
+mod vector_assets;
+pub use vector_assets::{TextLayout, VectorAssetSummary, VectorAssets};
 #[path = "document_alignment.rs"]
 mod alignment;
 pub use alignment::{AlignAction, AlignmentRequest, AlignmentSettings, AlignmentTarget};
@@ -10,7 +16,7 @@ mod document_layer_masks;
 #[path = "document_vector_selection.rs"]
 mod vector_selection;
 pub use vector_selection::{
-    SavedVectorSelection, SavedVectorSelectionSummary, VectorSelectionRequest,
+    BulkVectorSelection, SavedVectorSelection, SavedVectorSelectionSummary, VectorSelectionRequest,
 };
 #[path = "document_clone_stamp.rs"]
 mod clone_stamp;
@@ -161,6 +167,8 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
+    #[serde(default)]
+    pub material: crate::natural_media::MaterialSettings,
     #[serde(default = "default_hardness")]
     pub opacity: f32,
     #[serde(default = "default_hardness")]
@@ -265,6 +273,7 @@ pub enum BrushSimulation {
 impl Default for Brush {
     fn default() -> Self {
         Self {
+            material: Default::default(),
             opacity: 1.,
             flow: 1.,
             alpha: 1.,
@@ -288,6 +297,7 @@ impl Brush {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.envelope.validate()?;
+        self.material.validate()?;
         if [self.opacity, self.flow, self.alpha, self.smoothing]
             .iter()
             .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
@@ -527,8 +537,12 @@ pub struct TextSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSnapshot {
+    pub quick_mask: bool,
+    pub saved_pixel_selections: Vec<String>,
+    pub can_reselect_pixels: bool,
     pub alignment: AlignmentSettings,
     pub saved_vector_selections: Vec<SavedVectorSelectionSummary>,
+    pub vector_assets: Vec<VectorAssetSummary>,
     pub can_reselect_vectors: bool,
     pub compound_shapes: Vec<CompoundShapeSnapshot>,
     pub layer_groups: LayerGroupsSnapshot,
@@ -550,6 +564,7 @@ pub struct DocumentSnapshot {
     pub resolution: u32,
     pub artboards: bool,
     pub canvas_color: CanvasColor,
+    pub paper: crate::natural_media::PaperSettings,
     pub pixel_aspect_ratio: f32,
     pub layer_id: String,
     pub editing_channel: u32,
@@ -603,6 +618,8 @@ struct PathEditing {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct VectorHistoryState {
+    #[serde(default)]
+    vector_assets: std::sync::Arc<VectorAssets>,
     paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
     crop_dimensions: Option<(u32, u32)>,
@@ -651,6 +668,9 @@ enum VectorHistoryEntry {
     PaintBucket(crate::paint_bucket::Settings),
     Animation(std::sync::Arc<animation::Animation>),
     SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
+    Paper(crate::natural_media::PaperSettings),
+    SavedPixelSelections(std::sync::Arc<Vec<SavedPixelSelection>>),
+    VectorAssets(std::sync::Arc<VectorAssets>),
     PixelSelection(Option<Selection>),
     State(Box<VectorHistoryState>),
     Objects {
@@ -731,6 +751,12 @@ impl PaintProjectionState {
 
 #[derive(Clone)]
 pub struct Document {
+    quick_mask: bool,
+    quick_mask_stroke: Option<pixel_selection::QuickMaskGesture>,
+    saved_pixel_selections: std::sync::Arc<Vec<SavedPixelSelection>>,
+    previous_pixel_selection: Option<Selection>,
+    vector_assets: std::sync::Arc<VectorAssets>,
+    text_layout_backend: Option<TextLayout>,
     alignment: AlignmentSettings,
     paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
@@ -759,6 +785,7 @@ pub struct Document {
     page_undo: Vec<pages::PageHistory>,
     page_redo: Vec<pages::PageHistory>,
     canvas_color: CanvasColor,
+    paper: crate::natural_media::PaperSettings,
     pixel_aspect_ratio: f32,
     layer_effects: std::collections::BTreeMap<String, crate::layer_effects::LayerEffects>,
     paint_source: Option<String>,
@@ -798,9 +825,15 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            vector_assets: Default::default(),
+            text_layout_backend: None,
             alignment: Default::default(),
             paint_bucket_settings: Default::default(),
             animation: Default::default(),
+            saved_pixel_selections: Default::default(),
+            previous_pixel_selection: None,
+            quick_mask: false,
+            quick_mask_stroke: None,
             saved_vector_selections: std::sync::Arc::new(Vec::new()),
             previous_vector_selection: Vec::new(),
             compound_shapes: Vec::new(),
@@ -826,6 +859,7 @@ impl Default for Document {
             page_undo: Vec::new(),
             page_redo: Vec::new(),
             canvas_color: CanvasColor::White,
+            paper: Default::default(),
             pixel_aspect_ratio: 1.0,
             layer_effects: Default::default(),
             paint_source: None,
@@ -870,6 +904,9 @@ impl Document {
     /// This is not a project backup: use the original document for saving/editing.
     pub fn clone_for_rendering(&self) -> Self {
         Self {
+            quick_mask: self.quick_mask,
+            vector_assets: self.vector_assets.clone(),
+            text_layout_backend: self.text_layout_backend,
             paint_bucket_settings: self.paint_bucket_settings.clone(),
             animation: self.animation.clone(),
             compound_shapes: self.compound_shapes.clone(),
@@ -889,6 +926,7 @@ impl Document {
             resolution: self.resolution,
             artboards: self.artboards,
             canvas_color: self.canvas_color,
+            paper: self.paper,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
             layer_effects: self.layer_effects.clone(),
             paint_source: self.paint_source.clone(),
@@ -940,6 +978,23 @@ impl Document {
     /// Pixel dimensions without allocating a UI snapshot or cloning text/layer metadata.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+    pub fn paper(&self) -> crate::natural_media::PaperSettings {
+        self.paper
+    }
+    pub fn set_paper(&mut self, paper: crate::natural_media::PaperSettings) -> Result<(), String> {
+        paper.validate()?;
+        if self.paper == paper {
+            return Ok(());
+        }
+        self.finish();
+        self.vector_undo.push(VectorHistoryEntry::Paper(self.paper));
+        self.paper = paper;
+        self.undo_order.push(HistoryKind::Vector);
+        self.vector_redo.clear();
+        self.redo_order.clear();
+        self.revision += 1;
+        Ok(())
     }
     pub fn canvas_color(&self) -> CanvasColor {
         self.canvas_color
@@ -1155,6 +1210,14 @@ impl Document {
         );
         DocumentSnapshot {
             alignment: self.alignment_settings(),
+            vector_assets: self.vector_assets_snapshot(),
+            saved_pixel_selections: self
+                .saved_pixel_selections
+                .iter()
+                .map(|s| s.name.clone())
+                .collect(),
+            can_reselect_pixels: self.previous_pixel_selection.is_some(),
+            quick_mask: self.quick_mask,
             saved_vector_selections: self
                 .saved_vector_selections
                 .iter()
@@ -1189,7 +1252,7 @@ impl Document {
                     clipping: self.clipping_path_id.as_ref() == Some(&p.id),
                 })
                 .collect(),
-            selection: self.selection.clone(),
+            selection: self.selection.as_ref().map(Selection::snapshot_summary),
             name: self.name.clone(),
             width: self.width,
             height: self.height,
@@ -1199,6 +1262,7 @@ impl Document {
             artboards: self.artboards,
             pages: self.pages_snapshot(),
             canvas_color: self.canvas_color,
+            paper: self.paper,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
             layer_id: self.selected_layer_id().to_owned(),
             layer_edit_target: self.layer_edit_target(),
@@ -1255,7 +1319,9 @@ impl Document {
         DocumentState {
             paint_bucket_settings: self.paint_bucket_settings(),
             animation: self.animation.as_ref().clone(),
+            saved_pixel_selections: self.saved_pixel_selections.as_ref().clone(),
             saved_vector_selections: self.saved_vector_selections.as_ref().clone(),
+            vector_assets: self.vector_assets.as_ref().clone(),
             pixel_selection: self.selection.clone(),
             compound_shapes: self.compound_shapes.clone(),
             layer_groups,
@@ -1272,6 +1338,7 @@ impl Document {
             artboards: Some(self.artboards),
             pages: self.pages_state(),
             canvas_color: Some(self.canvas_color),
+            paper: self.paper,
             pixel_aspect_ratio: Some(self.pixel_aspect_ratio),
             layer_visible: self.visible,
             layer_name: Some(self.layer_name.clone()),
@@ -1306,6 +1373,7 @@ impl Document {
     /// Validate and restore model state; file signatures and codecs belong to the I/O layer.
     pub fn from_document_state(mut file: DocumentState) -> Result<Self, String> {
         file.animation.validate(file.width, file.height)?;
+        file.paper.validate()?;
         if let Some(selection) = &file.pixel_selection {
             selection.validate()?;
         }
@@ -1423,6 +1491,8 @@ impl Document {
             .map(pages::PageBook::from_state)
             .transpose()?;
         vector_selection::validate_saved(&file.saved_vector_selections)?;
+        pixel_selection::validate_saved(&file.saved_pixel_selections)?;
+        file.vector_assets.validate(&file.svg_layers)?;
         compound_shapes::validate_compound_shapes(&file.compound_shapes, &file.svg_layers)?;
         let noncanonical_vector_sources = file
             .svg_layers
@@ -1436,7 +1506,9 @@ impl Document {
         Ok(Self {
             paint_bucket_settings: file.paint_bucket_settings,
             animation: std::sync::Arc::new(file.animation),
+            saved_pixel_selections: std::sync::Arc::new(file.saved_pixel_selections),
             saved_vector_selections: std::sync::Arc::new(file.saved_vector_selections),
+            vector_assets: std::sync::Arc::new(file.vector_assets),
             previous_vector_selection: Vec::new(),
             selection: file.pixel_selection,
             compound_shapes: file.compound_shapes,
@@ -1457,6 +1529,7 @@ impl Document {
             page_undo: Vec::new(),
             page_redo: Vec::new(),
             canvas_color: file.canvas_color.unwrap_or_default(),
+            paper: file.paper,
             pixel_aspect_ratio: file.pixel_aspect_ratio.unwrap_or(1.0),
             layer_effects: file.layer_effects,
             paint_source: file.paint_source,
@@ -1638,9 +1711,10 @@ impl Document {
     pub fn begin_with_pressure(
         &mut self,
         point: Point,
-        brush: Brush,
+        mut brush: Brush,
         pressure: f32,
     ) -> Result<bool, String> {
+        brush.material.paper = self.paper;
         brush.validate()?;
         if brush.no_color {
             return Ok(false);
@@ -2052,6 +2126,7 @@ impl Document {
                 .then(|| layer.source.clone()),
             selection: self.selection.clone(),
             canvas_color: CanvasColor::Transparent,
+            paper: self.paper,
             ..Self::default()
         }))
     }
@@ -2972,6 +3047,14 @@ impl Document {
         }
         self.ensure_object_unlocked(&object.id)?;
         if self
+            .vector_assets
+            .threads
+            .iter()
+            .any(|t| t.frames.contains(&object.id))
+        {
+            return self.update_threaded_object(layer_id, object);
+        }
+        if self
             .path_editing
             .as_ref()
             .is_some_and(|edit| edit.layer_id != layer_id || object.text.is_some())
@@ -3101,8 +3184,20 @@ impl Document {
                 let mut style = object.stroke_style.clone();
                 style.apply(&patch);
                 style.validate()?;
-                if style == object.stroke_style {
+                let add_stroke = patch
+                    .brush
+                    .is_some_and(|b| b != crate::stroke::VectorBrush::Basic)
+                    && object.stroke.is_none()
+                    && object.stroke_gradient.is_none();
+                if style == object.stroke_style && !add_stroke {
                     continue;
+                }
+                if add_stroke {
+                    object.stroke = Some(object.fill.unwrap_or(VectorPaint {
+                        registration: false,
+                        color: [0, 0, 0, 255],
+                    }));
+                    object.stroke_width = object.stroke_width.max(1.);
                 }
                 object.stroke_style = style;
                 object.validate()?;
@@ -3629,7 +3724,7 @@ impl Document {
             fill_rule: crate::vector::FillRule::NonZero,
         };
         let mut path = rectangle(0., 0., self.width as f32, self.height as f32);
-        if let Some(selection) = &self.selection {
+        if let Some(selection) = self.selection.as_ref().filter(|s| !s.has_soft_mask()) {
             for region in &selection.regions {
                 let [x, y, w, h] = region.bounds;
                 let shape = match region.shape {
@@ -3758,6 +3853,15 @@ impl Document {
                     ..Default::default()
                 },
             );
+        }
+        if let Some(selection) = self.selection.as_ref().filter(|s| s.has_soft_mask()) {
+            let mask = crate::layer_mask::LayerMask::from_selection(
+                crate::layer_mask::MaskKind::Vector,
+                Some(selection),
+                self.width,
+                self.height,
+            )?;
+            self.layer_effects.entry(id.clone()).or_default().mask = Some(mask);
         }
         self.layer_groups.reconcile(&self.svg_layers);
         self.selected_layer = Some(id.clone());
@@ -7269,6 +7373,18 @@ impl Document {
             VectorHistoryEntry::Animation(previous) => {
                 VectorHistoryEntry::Animation(std::mem::replace(&mut self.animation, previous))
             }
+            VectorHistoryEntry::VectorAssets(previous) => VectorHistoryEntry::VectorAssets(
+                std::mem::replace(&mut self.vector_assets, previous),
+            ),
+            VectorHistoryEntry::Paper(previous) => {
+                VectorHistoryEntry::Paper(std::mem::replace(&mut self.paper, previous))
+            }
+            VectorHistoryEntry::SavedPixelSelections(previous) => {
+                VectorHistoryEntry::SavedPixelSelections(std::mem::replace(
+                    &mut self.saved_pixel_selections,
+                    previous,
+                ))
+            }
             VectorHistoryEntry::SavedSelections(previous) => VectorHistoryEntry::SavedSelections(
                 std::mem::replace(&mut self.saved_vector_selections, previous),
             ),
@@ -7348,6 +7464,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            vector_assets: self.vector_assets.clone(),
             paint_bucket_settings: self.paint_bucket_settings.clone(),
             animation: self.animation.clone(),
             crop_dimensions: None,
@@ -7371,6 +7488,7 @@ impl Document {
         }
     }
     fn restore_vector_history(&mut self, state: VectorHistoryState) {
+        self.vector_assets = state.vector_assets;
         self.paint_bucket_settings = state.paint_bucket_settings;
         self.animation = state.animation;
         if let Some((width, height)) = state.crop_dimensions {
@@ -7416,6 +7534,13 @@ impl Document {
         }
     }
     fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        if !self.vector_assets.is_empty() {
+            let mut assets = self.vector_assets.as_ref().clone();
+            assets.reconcile(&self.svg_layers);
+            if assets != *self.vector_assets {
+                self.vector_assets = std::sync::Arc::new(assets);
+            }
+        }
         self.transform_slots.0.clear();
         let previous_objects: std::collections::HashMap<_, _> = previous
             .layers
@@ -7692,6 +7817,7 @@ impl Document {
                 ];
                 if bounds[2] >= 1.0 && bounds[3] >= 1.0 {
                     let region = SelectionRegion {
+                        paint: None,
                         points: Vec::new(),
                         radius: 0.,
                         shape: gesture.shape,
@@ -7749,6 +7875,9 @@ impl Document {
     pub fn deselect(&mut self) {
         self.guides.selected.clear();
         self.finish();
+        if self.selection.is_some() {
+            self.previous_pixel_selection = self.selection.clone();
+        }
         self.selection = None;
         self.selection_anchor = None;
     }
@@ -9493,6 +9622,8 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
+    #[serde(default, skip_serializing_if = "VectorAssets::is_empty")]
+    pub vector_assets: VectorAssets,
     #[serde(
         default,
         skip_serializing_if = "crate::paint_bucket::Settings::is_default"
@@ -9502,6 +9633,8 @@ pub struct DocumentState {
     pub animation: animation::Animation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub saved_vector_selections: Vec<SavedVectorSelection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub saved_pixel_selections: Vec<SavedPixelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixel_selection: Option<Selection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -9532,6 +9665,8 @@ pub struct DocumentState {
     pub pages: Option<PageBookState>,
     #[serde(default)]
     pub canvas_color: Option<CanvasColor>,
+    #[serde(default)]
+    pub paper: crate::natural_media::PaperSettings,
     #[serde(default)]
     pub pixel_aspect_ratio: Option<f32>,
     pub layer_visible: bool,
@@ -10220,7 +10355,8 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 object_index,
             ));
             svg.push_str("</g>");
-        } else if appearance.profile == crate::stroke::WidthProfile::Uniform
+        } else if appearance.brush != crate::stroke::VectorBrush::Bristle
+            && appearance.profile == crate::stroke::WidthProfile::Uniform
             && appearance.alignment == crate::stroke::StrokeAlignment::Center
             && appearance.start_arrow == crate::stroke::Arrowhead::None
             && appearance.end_arrow == crate::stroke::Arrowhead::None
@@ -13545,6 +13681,7 @@ impl Document {
         let maxx = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max) + padding;
         let maxy = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max) + padding;
         let mut region = SelectionRegion {
+            paint: None,
             shape: if radius > 0. {
                 SelectionShape::Stroke
             } else {
@@ -13562,10 +13699,12 @@ impl Document {
         };
         let mut result = match mode {
             SelectionMode::Replace => Selection {
+                raster: None,
                 regions: Vec::new(),
             },
             SelectionMode::Add | SelectionMode::Intersect => {
                 self.selection.clone().unwrap_or(Selection {
+                    raster: None,
                     regions: Vec::new(),
                 })
             }
@@ -13577,7 +13716,7 @@ impl Document {
             }),
         };
         result.ensure_capacity()?;
-        region.operation = if result.regions.is_empty() {
+        region.operation = if result.regions.is_empty() && result.raster.is_none() {
             SelectionOperation::Replace
         } else if mode == SelectionMode::Intersect {
             SelectionOperation::Intersect
@@ -13602,6 +13741,9 @@ impl Document {
         }
         self.finish();
         let previous = std::mem::replace(&mut self.selection, selection);
+        if previous.is_some() {
+            self.previous_pixel_selection = previous.clone();
+        }
         self.vector_undo
             .push(VectorHistoryEntry::PixelSelection(previous));
         self.vector_redo.clear();
@@ -13726,6 +13868,7 @@ fn history_bytes(entry: &VectorHistoryEntry) -> usize {
                 .map(|layer| layer.source.len() + layer.vector_objects.len() * 512)
                 .sum::<usize>()
                 + animation_history_bytes(&state.animation)
+                + state.vector_assets.history_bytes()
                 + state.paint_source.as_ref().map_or(0, String::len)
                 + state.strokes.as_ref().map_or(0, |strokes| {
                     strokes
@@ -13735,6 +13878,7 @@ fn history_bytes(entry: &VectorHistoryEntry) -> usize {
                 })
         }
         VectorHistoryEntry::Animation(animation) => animation_history_bytes(animation),
+        VectorHistoryEntry::VectorAssets(assets) => assets.history_bytes(),
         VectorHistoryEntry::SavedSelections(selections) => selections
             .iter()
             .map(|s| s.name.len() + s.object_ids.iter().map(|id| id.len() + 24).sum::<usize>())
@@ -13782,3 +13926,6 @@ fn animation_history_bytes(animation: &animation::Animation) -> usize {
         })
         .sum()
 }
+
+#[path = "document_rasterize.rs"]
+mod document_rasterize;

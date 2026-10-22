@@ -95,6 +95,14 @@ pub(super) fn config(e: &LayerEffects) -> Option<Vec<f32>> {
                 }
             }
             MaskContent::Vector { selection, edits } => {
+                if selection.has_soft_mask()
+                    || edits.iter().any(|e| {
+                        e.selection.has_soft_mask()
+                            || e.clip.as_ref().is_some_and(|c| c.has_soft_mask())
+                    })
+                {
+                    return None;
+                }
                 out[1125] = 2.;
                 out[1130] = selection.regions.len() as f32;
                 fn append(out: &mut Vec<f32>, selection: &Selection) {
@@ -893,6 +901,7 @@ mod mask_tests {
                         mask.paint_brush_dabs(
                             (32, 32),
                             &[lumapaint_core::tiles::RasterDab {
+                                material: Default::default(),
                                 x: 16.,
                                 y: 16.,
                                 radius: 10.,
