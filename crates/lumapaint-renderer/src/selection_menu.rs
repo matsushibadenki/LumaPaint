@@ -30,12 +30,7 @@ pub fn evaluate(doc: &Document, request: &PixelSelectionRequest) -> Result<Selec
     // Refinement depends only on coverage. Avoid rasterizing artwork or allocating
     // RGBA samples on every slider update; use the same grid for preview and apply.
     if matches!(request.action.as_str(), "refine" | "modify") {
-        let scale = (1024. / dimensions.0.max(dimensions.1) as f32).min(1.);
-        let size = [
-            (dimensions.0 as f32 * scale).round().max(1.) as u32,
-            (dimensions.1 as f32 * scale).round().max(1.) as u32,
-        ];
-        return analyze(size, &[], dimensions, doc.selection(), request);
+        return refine_selection(dimensions, doc.selection(), request);
     }
     let sample = crate::selection_tools::EdgeMap::from_automatic_document(
         &doc.selection_sampling_document(request.all_layers.unwrap_or(true)),
@@ -43,10 +38,106 @@ pub fn evaluate(doc: &Document, request: &PixelSelectionRequest) -> Result<Selec
     let (size, pixels) = sample.sampled_rgba();
     analyze(size, pixels, dimensions, doc.selection(), request)
 }
+// Crop to coverage plus every filter's support. Small selections on large pages
+// retain document-pixel detail; very large footprints still have a bounded budget.
+fn refine_selection(
+    dimensions: (u32, u32),
+    selection: Option<&Selection>,
+    request: &PixelSelectionRequest,
+) -> Result<Selection, String> {
+    let source = selection.ok_or("Select an area first / 範囲を選択してください / 请先选择区域")?;
+    let amount = bounded(request.amount, 32., 0., 255.)?;
+    let padding = if request.action == "refine" {
+        let smooth = bounded(request.smooth, 0., 0., 100.)?;
+        let shift = bounded(request.shift, 0., -100., 100.)?;
+        let feather = bounded(request.feather, 0., 0., 255.)?;
+        let contrast = bounded(request.contrast, 0., 0., 100.)?;
+        if smooth == 0. && shift == 0. && feather == 0. && contrast == 0. {
+            let mut result = source.clone();
+            if request.inverse.unwrap_or(false) {
+                result.invert(dimensions.0, dimensions.1)?;
+            }
+            return Ok(result);
+        }
+        smooth.round() + shift.abs().round() + 3. * (feather * 0.58).ceil()
+    } else {
+        match request.kind.as_deref().unwrap_or("expand") {
+            "feather" => 3. * (amount * 0.58).ceil(),
+            "expand" | "contract" | "border" | "smooth" => amount.round(),
+            _ => return Err("Unknown selection modification".into()),
+        }
+    } + 1.;
+    let bounds = source.coverage_bounds().unwrap_or([0.; 4]);
+    let crop = |padding: f32| {
+        let left = (bounds[0].floor() - padding).clamp(0., dimensions.0 as f32);
+        let top = (bounds[1].floor() - padding).clamp(0., dimensions.1 as f32);
+        [
+            left,
+            top,
+            (bounds[2].ceil() + padding).clamp(left, dimensions.0 as f32),
+            (bounds[3].ceil() + padding).clamp(top, dimensions.1 as f32),
+        ]
+    };
+    // Match document-edge behavior; artificial crop edges need transparent
+    // samples for every pass, including rounding filter radii on a reduced grid.
+    let budget = lumapaint_core::selection_raster::MAX_SELECTION_PIXELS;
+    let mut rect = crop(padding);
+    if f64::from(rect[2] - rect[0]) * f64::from(rect[3] - rect[1]) > budget as f64 {
+        let max_step = (f64::from(dimensions.0) * f64::from(dimensions.1) / budget as f64)
+            .sqrt()
+            .ceil() as f32;
+        rect = crop(padding + 8. * max_step);
+    }
+    let [left, top, right, bottom] = rect;
+    if right <= left || bottom <= top {
+        let mut result = Selection::from_raster(SelectionRaster::from_pixels(
+            [1, 1],
+            [1., 0., 0., 1., 0., 0.],
+            &[0],
+        )?)?;
+        if request.inverse.unwrap_or(false) {
+            result.invert(dimensions.0, dimensions.1)?;
+        }
+        return Ok(result);
+    }
+    let extent = [(right - left) as u32, (bottom - top) as u32];
+    let scale = (budget as f64 / (f64::from(extent[0]) * f64::from(extent[1])))
+        .sqrt()
+        .min(1.);
+    let mut size = extent.map(|v| (f64::from(v) * scale).floor().max(1.) as u32);
+    size[0] = size[0].min((budget / u64::from(size[1])) as u32);
+    let mut local_request = request.clone();
+    local_request.inverse = Some(false);
+    let mut result = analyze_at(
+        size,
+        &[],
+        (extent[0], extent[1]),
+        [left, top],
+        selection,
+        &local_request,
+    )?;
+    // Inversion covers the entire page, including the area outside the crop,
+    // without allocating a full-page mask or reducing the cropped edge detail.
+    if request.inverse.unwrap_or(false) {
+        result.invert(dimensions.0, dimensions.1)?;
+    }
+    Ok(result)
+}
+
 fn analyze(
     size: [u32; 2],
     pixels: &[u8],
     dimensions: (u32, u32),
+    selection: Option<&Selection>,
+    request: &PixelSelectionRequest,
+) -> Result<Selection, String> {
+    analyze_at(size, pixels, dimensions, [0., 0.], selection, request)
+}
+fn analyze_at(
+    size: [u32; 2],
+    pixels: &[u8],
+    dimensions: (u32, u32),
+    origin: [f32; 2],
     selection: Option<&Selection>,
     request: &PixelSelectionRequest,
 ) -> Result<Selection, String> {
@@ -63,8 +154,8 @@ fn analyze(
         .map(|i| {
             selection.map_or(0., |s| {
                 s.coverage(Point {
-                    x: (i % w) as f32 * sx + sx * 0.5,
-                    y: (i / w) as f32 * sy + sy * 0.5,
+                    x: origin[0] + (i % w) as f32 * sx + sx * 0.5,
+                    y: origin[1] + (i / w) as f32 * sy + sy * 0.5,
                 })
             })
         })
@@ -310,7 +401,7 @@ fn analyze(
         .collect::<Vec<_>>();
     Selection::from_raster(SelectionRaster::from_pixels(
         size,
-        [sx, 0., 0., sy, 0., 0.],
+        [sx, 0., 0., sy, origin[0], origin[1]],
         &bytes,
     )?)
 }
@@ -405,6 +496,197 @@ fn morph(input: &[f32], w: usize, h: usize, radius: usize, max: bool) -> Vec<f32
 mod tests {
     use super::*;
     use lumapaint_formats::native::NativeDocumentCodec;
+    fn selection_document(size: u32, selection: Selection) -> Document {
+        let mut state = Document::default().document_state();
+        state.width = size;
+        state.height = size;
+        let mut doc = Document::from_document_state(state).unwrap();
+        doc.set_tool_pixel_selection(Some(selection)).unwrap();
+        doc
+    }
+
+    #[test]
+    fn selection_refine_large_page_keeps_single_pixels_and_inverse_outside_crop() {
+        use lumapaint_core::selection::SelectionShape;
+        let source = Selection::new(SelectionShape::Rectangle, [3000., 2000., 1., 1.]);
+        let doc = selection_document(8192, source.clone());
+        let unchanged = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "refine".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(unchanged, source);
+        for action in ["modify", "refine"] {
+            for inverse in [false, true] {
+                let result = evaluate(
+                    &doc,
+                    &PixelSelectionRequest {
+                        action: action.into(),
+                        kind: Some("expand".into()),
+                        amount: Some(1.),
+                        shift: Some(1.),
+                        inverse: Some(inverse),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let raster = result.raster.as_ref().unwrap();
+                assert_eq!(&raster.transform[..4], &[1., 0., 0., 1.]);
+                assert!(raster.size[0] * raster.size[1] < 100);
+                for y in 1997..2004 {
+                    for x in 2997..3004 {
+                        let inside = (2999..3002).contains(&x) && (1999..2002).contains(&y);
+                        assert_eq!(
+                            result.coverage(Point {
+                                x: x as f32 + 0.5,
+                                y: y as f32 + 0.5
+                            }),
+                            f32::from(inside != inverse)
+                        );
+                    }
+                }
+                assert_eq!(
+                    result.coverage(Point {
+                        x: 7000.5,
+                        y: 7000.5
+                    }),
+                    f32::from(inverse)
+                );
+                assert_eq!(result.coverage(Point { x: -1., y: 0. }), 0.);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_refine_cropped_filters_match_full_resolution_at_page_edges_and_holes() {
+        use lumapaint_core::selection::{SelectionOperation, SelectionShape};
+        let mut source = Selection::new(SelectionShape::Rectangle, [0., 3., 110., 120.]);
+        let mut hole = Selection::new(SelectionShape::Rectangle, [70., 60., 1., 1.])
+            .regions
+            .remove(0);
+        hole.operation = SelectionOperation::Subtract;
+        source.regions.push(hole);
+        let doc = selection_document(256, source);
+        for kind in [
+            "expand", "contract", "smooth", "feather", "border", "refine",
+        ] {
+            let request = PixelSelectionRequest {
+                action: if kind == "refine" { "refine" } else { "modify" }.into(),
+                kind: Some(kind.into()),
+                amount: Some(3.),
+                smooth: Some(2.),
+                feather: Some(3.),
+                contrast: Some(17.),
+                shift: Some(-2.),
+                ..Default::default()
+            };
+            let cropped = evaluate(&doc, &request).unwrap();
+            let full = analyze([256, 256], &[], (256, 256), doc.selection(), &request).unwrap();
+            for y in 0..256 {
+                for x in 0..256 {
+                    let p = Point {
+                        x: x as f32 + 0.5,
+                        y: y as f32 + 0.5,
+                    };
+                    assert!(
+                        (cropped.coverage(p) - full.coverage(p)).abs() <= 1. / 255.,
+                        "{kind} at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_refine_preserves_gray_noop_and_bounds_large_footprints() {
+        use lumapaint_core::selection::SelectionShape;
+        let source = Selection::from_raster(
+            SelectionRaster::from_pixels([3, 1], [1., 0., 0., 1., 3000., 2000.], &[1, 127, 254])
+                .unwrap(),
+        )
+        .unwrap();
+        let doc = selection_document(8192, source.clone());
+        assert_eq!(
+            evaluate(
+                &doc,
+                &PixelSelectionRequest {
+                    action: "refine".into(),
+                    ..Default::default()
+                }
+            )
+            .unwrap(),
+            source
+        );
+        let result = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "modify".into(),
+                kind: Some("expand".into()),
+                amount: Some(1.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.coverage(Point {
+                x: 2999.5,
+                y: 2000.5
+            }),
+            1. / 255.
+        );
+        assert_eq!(
+            result.coverage(Point {
+                x: 3000.5,
+                y: 2000.5
+            }),
+            127. / 255.
+        );
+        let doc = selection_document(
+            8192,
+            Selection::new(SelectionShape::Rectangle, [0., 0., 8192., 8192.]),
+        );
+        let result = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "refine".into(),
+                contrast: Some(20.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.raster.as_ref().unwrap().size, [2048, 2048]);
+        assert_eq!(
+            result.coverage(Point {
+                x: 8000.5,
+                y: 8000.5
+            }),
+            1.
+        );
+        let doc = selection_document(
+            8192,
+            Selection::new(SelectionShape::Rectangle, [9000., 2000., 10., 10.]),
+        );
+        let result = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "modify".into(),
+                amount: Some(1.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.coverage(Point {
+                x: 8192.5,
+                y: 2000.5
+            }),
+            0.
+        );
+    }
+
     #[test]
     fn selection_refine_coverage_only_matches_sampled_path() {
         let mut state = Document::default().document_state();
@@ -435,7 +717,15 @@ mod tests {
                 &request,
             )
             .unwrap();
-            assert_eq!(direct, sampled);
+            for y in 0..48 {
+                for x in 0..64 {
+                    let point = Point {
+                        x: x as f32 + 0.5,
+                        y: y as f32 + 0.5,
+                    };
+                    assert!((direct.coverage(point) - sampled.coverage(point)).abs() <= 1. / 255.);
+                }
+            }
         }
         let invalid = PixelSelectionRequest {
             action: "refine".into(),

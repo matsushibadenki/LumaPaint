@@ -3986,3 +3986,64 @@ fn gpu_selection_transformed_mask_matches_cpu_at_fractional_edges() {
         );
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_cropped_refinement_and_inverse_match_cpu() {
+    let gpu = Gpu::new();
+    let mut state = Document::default().document_state();
+    state.width = 8192;
+    state.height = 8192;
+    let mut document = Document::from_document_state(state).unwrap();
+    document
+        .set_tool_pixel_selection(Some(Selection::new(
+            SelectionShape::Rectangle,
+            [3000., 2000., 10., 10.],
+        )))
+        .unwrap();
+    for inverse in [false, true] {
+        let result = crate::selection_menu::evaluate(
+            &document,
+            &lumapaint_core::document::PixelSelectionRequest {
+                action: "refine".into(),
+                feather: Some(2.),
+                shift: Some(1.),
+                inverse: Some(inverse),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .translated(-2600., -1740.);
+        let stroke = Stroke {
+            eraser: false,
+            clear: false,
+            brush: Brush {
+                size: 512.,
+                hardness: 1.,
+                color: [0, 0, 0],
+                ..Default::default()
+            },
+            points: vec![Point { x: 100., y: 300. }, Point { x: 880., y: 300. }],
+            pressures: vec![],
+            selection: Some(result),
+        };
+        let gpu_pixels = gpu.render(std::slice::from_ref(&stroke));
+        let cpu_pixels = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        let mut fractional = 0;
+        for y in 245..285 {
+            for x in 385..425 {
+                let at = (((y + 64) * W + x + 32) * 4) as usize;
+                if cpu_pixels[at] > 0 && cpu_pixels[at] < 255 {
+                    fractional += 1;
+                }
+                assert!(
+                    gpu_pixels[at].abs_diff(cpu_pixels[at]) <= 2,
+                    "inverse={inverse} at {x},{y}: GPU {} CPU {}",
+                    gpu_pixels[at],
+                    cpu_pixels[at]
+                );
+            }
+        }
+        assert!(fractional > 20);
+    }
+}

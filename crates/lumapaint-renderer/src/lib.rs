@@ -1500,6 +1500,8 @@ pub struct Renderer {
     gpu_timing: Option<gpu_timing::FrameTiming>,
     input_latency: Option<Box<input_latency::Tracker>>,
     presentation_serial: u64,
+    surface_retry_pending: bool,
+    diagnostic_surface_timeouts: u32,
     memory_sampler: Option<process_memory::Sampler>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -2413,6 +2415,27 @@ impl Renderer {
     /// Advances only after an acquired surface frame reaches the present API.
     pub fn presentation_serial(&self) -> u64 {
         self.presentation_serial
+    }
+
+    /// A transient acquisition failure did not present a frame. Hosts must wake
+    /// again instead of treating Ok(()) as successful presentation.
+    pub fn take_surface_retry(&mut self) -> bool {
+        std::mem::take(&mut self.surface_retry_pending)
+    }
+
+    fn defer_surface_frame(&mut self, reason: wgpu::CurrentSurfaceTexture) {
+        self.surface_retry_pending = true;
+        let reason = match reason {
+            wgpu::CurrentSurfaceTexture::Timeout => "surface_acquire_timeout",
+            _ => "surface_acquire_occluded",
+        };
+        performance::count(reason, 1);
+        if render_metrics_enabled() {
+            eprintln!(
+                "LumaPaint {reason} presentation_serial={}",
+                self.presentation_serial
+            );
+        }
     }
 
     /// Capture a host event only when it schedules rendering. Diagnostic builds
@@ -3758,6 +3781,16 @@ impl Renderer {
             memory_sampler: performance::enabled().then(process_memory::Sampler::default),
             gpu_timing,
             presentation_serial: 0,
+            surface_retry_pending: false,
+            diagnostic_surface_timeouts: if performance::enabled() {
+                std::env::var("LUMAPAINT_DIAGNOSTIC_SURFACE_TIMEOUTS")
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|value| *value <= 32)
+                    .unwrap_or(0)
+            } else {
+                0
+            },
             input_latency: performance::enabled()
                 .then(|| Box::new(input_latency::Tracker::default())),
             channel: 0,
@@ -3992,6 +4025,7 @@ impl Renderer {
         offset: [f32; 2],
         defer_svg: bool,
     ) -> Result<(), String> {
+        self.surface_retry_pending = false;
         // Direct release previews also present frames. Capture their current
         // input before preparing; deferred draws retain their queued marker.
         if let Some(input) = self.input_latency.as_mut() {
@@ -4112,6 +4146,14 @@ impl Renderer {
             .as_ref()
             .and_then(|input| input.stage("surface_acquire"));
         let surface_timer = performance::time("surface_acquire_host");
+        // Opt-in fault injection exercises the real host retry path without
+        // relying on nondeterministic Metal drawable exhaustion during QA.
+        if self.diagnostic_surface_timeouts > 0 {
+            self.diagnostic_surface_timeouts -= 1;
+            performance::count("surface_acquire_injected_timeout", 1);
+            self.defer_surface_frame(wgpu::CurrentSurfaceTexture::Timeout);
+            return Ok(());
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -4120,13 +4162,18 @@ impl Renderer {
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                    wgpu::CurrentSurfaceTexture::Timeout
-                    | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+                    reason @ (wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded) => {
+                        self.defer_surface_frame(reason);
+                        return Ok(());
+                    }
                     error => return Err(format!("Surface acquisition failed: {error:?}")),
                 }
             }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(())
+            reason @ (wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded) => {
+                self.defer_surface_frame(reason);
+                return Ok(());
             }
             error => return Err(format!("Surface acquisition failed: {error:?}")),
         };

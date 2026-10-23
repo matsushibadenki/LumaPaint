@@ -9,6 +9,8 @@ mod pdf_import;
 mod psd_import;
 mod resource_memory;
 mod shortcuts;
+#[cfg(any(target_os = "macos", test))]
+mod surface_retry;
 mod timeline;
 #[cfg(any(target_os = "macos", test))]
 mod workspace_notifications;

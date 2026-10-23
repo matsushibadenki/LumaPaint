@@ -4712,6 +4712,7 @@ fn emit_ruler_viewport(viewport: Viewport) {
 }
 
 fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
+    let presentation_before = canvas.renderer.presentation_serial();
     let _stage = input_timing::Stage::new("canvas_redraw");
     let started = Instant::now();
     let draft = GUIDE_DRAFT
@@ -4745,15 +4746,67 @@ fn render_canvas(canvas: &mut Canvas) -> Result<(), String> {
         "committed"
     };
     update_page_preview(canvas)?;
+    canvas.renderer.take_surface_retry();
     let result = render_canvas_inner(canvas);
+    if result.is_ok() && !canvas.view.isHidden() && canvas.renderer.take_surface_retry() {
+        schedule_surface_retry(canvas);
+    } else {
+        canvas.surface_retry.cancel();
+    }
     emit_ruler_viewport(canvas.viewport);
     if render_metrics_enabled() && !canvas.view.isHidden() {
         eprintln!(
-            "LumaPaint render mode={mode} main_ms={:.2}",
-            started.elapsed().as_secs_f64() * 1000.0
+            "LumaPaint render mode={mode} main_ms={:.2} presented={} serial={}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            canvas.renderer.presentation_serial() != presentation_before,
+            canvas.renderer.presentation_serial()
         );
     }
     result
+}
+
+// A missed drawable must not consume the final Undo/zoom/preview request.
+// Back off while occluded instead of spinning the display link at 60/120 Hz.
+fn schedule_surface_retry(canvas: &mut Canvas) {
+    let Some(app) = APP.get().cloned() else {
+        return;
+    };
+    let Some((generation, delay_ms)) = canvas.surface_retry.schedule() else {
+        return;
+    };
+    let label = current_label();
+    let token = canvas.token;
+    if render_metrics_enabled() {
+        eprintln!("LumaPaint surface_retry window={label} canvas={token} generation={generation} delay_ms={delay_ms}");
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        let _ = app.run_on_main_thread(move || {
+            let Ok(_session) = SessionGuard::enter_render(&label) else {
+                return;
+            };
+            let wake = CANVAS.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(canvas) = slot.as_mut() else {
+                    return false;
+                };
+                if canvas.token != token || !canvas.surface_retry.wake(generation) {
+                    return false;
+                }
+                if canvas.view.isHidden() {
+                    canvas.surface_retry.cancel();
+                    return false;
+                }
+                true
+            });
+            if wake {
+                lumapaint_core::performance::count("host.surface_retry_wake", 1);
+                if let Err(error) = request_redraw() {
+                    emit_error(error);
+                }
+            }
+        });
+    });
 }
 
 fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
@@ -5577,6 +5630,7 @@ struct Canvas {
     tile_cache: Option<TileCache>,
     active_tiled_key: Option<(u64, u64)>,
     page_preview_key: Option<String>,
+    surface_retry: crate::surface_retry::SurfaceRetry,
 }
 
 impl Drop for Canvas {
@@ -6237,6 +6291,7 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                         tile_cache: None,
                         active_tiled_key: None,
                         page_preview_key: None,
+                        surface_retry: Default::default(),
                     })
                 }
                 Err(error) => {

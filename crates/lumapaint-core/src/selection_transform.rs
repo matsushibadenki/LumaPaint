@@ -83,10 +83,10 @@ impl Selection {
         Ok(result)
     }
 
-    fn rasterized_for_transform(&self) -> Result<Self, String> {
-        use crate::selection_raster::{
-            SelectionInterpolation, SelectionRaster, MAX_SELECTION_PIXELS,
-        };
+    /// Conservative nonzero support in document coordinates, including soft fringes.
+    /// Ordered boolean operations can shrink or replace the support.
+    pub fn coverage_bounds(&self) -> Option<[f32; 4]> {
+        use crate::selection_raster::SelectionInterpolation;
         // Bounds follow boolean operations; subtraction cannot enlarge support.
         // Do not clip to the page: a selection can be moved off-page and back.
         let mut bounds = self
@@ -153,6 +153,12 @@ impl Selection {
                 }
             };
         }
+        bounds
+    }
+
+    fn rasterized_for_transform(&self) -> Result<Self, String> {
+        use crate::selection_raster::{SelectionRaster, MAX_SELECTION_PIXELS};
+        let bounds = self.coverage_bounds();
         let Some([left, top, right, bottom]) = bounds else {
             return Self::from_raster(SelectionRaster::from_pixels(
                 [1, 1],
@@ -235,6 +241,23 @@ mod tests {
             }],
         }
     }
+    #[test]
+    fn selection_coverage_bounds_preserve_previous_coverage_when_painting() {
+        let mut selection = Selection::new(SelectionShape::Rectangle, [10., 10., 2., 2.]);
+        let mut painted = stroke(100.5, 100.5, 2.).regions.remove(0);
+        painted.paint = Some([0.5, 0.2]);
+        painted.operation = SelectionOperation::Add;
+        selection.regions.push(painted);
+        let mut erased = stroke(500.5, 500.5, 2.).regions.remove(0);
+        erased.operation = SelectionOperation::Add;
+        erased.paint = Some([0., 0.2]);
+        selection.regions.push(erased);
+        assert_eq!(selection.coverage_bounds(), Some([10., 10., 103.5, 103.5]));
+        let moved = selection.transformed([1., 0., 0., 1., 1., 0.]).unwrap();
+        assert_eq!(moved.coverage(Point { x: 11.5, y: 10.5 }), 1.);
+        assert!((moved.coverage(Point { x: 101.5, y: 100.5 }) - 0.5).abs() < 1. / 255.);
+    }
+
     #[test]
     fn selection_transform_preserves_one_pixel_stroke_on_large_page_and_history() {
         let mut state = Document::default().document_state();
