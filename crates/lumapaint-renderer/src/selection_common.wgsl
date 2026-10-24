@@ -5,17 +5,34 @@ fn rectangle_distance(point: vec2<f32>, bounds: vec4<f32>) -> f32 {
 }
 fn selection_segment_distance(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>)->f32 {let v=b-a;let t=clamp(dot(p-a,v)/max(dot(v,v),0.000000000001),0.,1.);return length(p-a-t*v);}
 fn selection_edge_cross(p:vec2<f32>,a:vec2<f32>,b:vec2<f32>)->bool {if (a.y>p.y)==(b.y>p.y){return false;}return p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x;}
-fn selection_start()->u32 {if selection_regions[0].info.x==8.{return 1u;}return select(0u,2u,selection_regions[0].info.x==7.);}
-fn selection_end()->u32 {return select(arrayLength(&selection_regions),u32(selection_regions[0].info.y),selection_regions[0].info.x==7.);}
+fn selection_start()->u32 {if selection_regions[0].info.x==8.{return 1u;}return select(0u,2u,(selection_regions[0].info.x==7.||selection_regions[0].info.x==9.));}
+fn selection_end()->u32 {return select(arrayLength(&selection_regions),u32(selection_regions[0].info.y),(selection_regions[0].info.x==7.||selection_regions[0].info.x==9.));}
+fn selection_run_word(record:SelectionRegion, word:u32)->u32 {
+ if word<4u{return bitcast<vec4<u32>>(record.paint)[word];}
+ if word<8u{return bitcast<vec4<u32>>(record.bounds)[word-4u];}
+ return bitcast<vec4<u32>>(record.info)[word-8u];
+}
+fn selection_run(index:u32)->vec3<u32> {
+ let record=selection_regions[u32(selection_regions[1].bounds.z)+index/4u];
+ let word=(index%4u)*3u;
+ return vec3(selection_run_word(record,word),selection_run_word(record,word+1u),selection_run_word(record,word+2u));
+}
 fn selection_raster_sample(pixel:vec2<f32>)->f32 {
  let header=selection_regions[0];let second=selection_regions[1];
  if any(pixel<vec2(0.))||any(pixel>=header.bounds.xy){return 0.;}
- let i=u32(pixel.y)*u32(header.bounds.x)+u32(pixel.x);let r=selection_regions[u32(second.bounds.z)+i/32u];let word=(i%32u)/4u;
+ let i=u32(pixel.y)*u32(header.bounds.x)+u32(pixel.x);
+ if header.info.x==9. {
+  var lo=0u;var hi=u32(second.info.x);
+  while lo<hi {let mid=lo+(hi-lo)/2u;if selection_run(mid).x<=i {lo=mid+1u;}else{hi=mid;}}
+  if lo==0u{return 0.;}let run=selection_run(lo-1u);
+  return select(0.,f32(run.z)/255.,i-run.x<run.y);
+ }
+ let r=selection_regions[u32(second.bounds.z)+i/32u];let word=(i%32u)/4u;
  var bits=0u;if word<4u{bits=bitcast<u32>(r.bounds[word]);}else{bits=bitcast<u32>(r.info[word-4u]);}
  return f32((bits>>((i%4u)*8u))&255u)/255.;
 }
 fn selection_raster_coverage(point:vec2<f32>)->f32 {
- if selection_regions[0].info.x!=7. {return 0.;}
+ if selection_regions[0].info.x!=7.&&selection_regions[0].info.x!=9. {return 0.;}
  let header=selection_regions[0];let second=selection_regions[1];
  let pixel=vec2(header.bounds.z*point.x+header.info.z*point.y+second.bounds.x,header.bounds.w*point.x+header.info.w*point.y+second.bounds.y);
  if second.bounds.w<0.5 {return selection_raster_sample(floor(pixel));}
@@ -65,4 +82,4 @@ fn selection_coverage(point:vec2<f32>)->f32 {
 
 fn selection_contains(point:vec2<f32>)->bool {return selection_coverage(point)>=0.5;}
 
-fn quick_mask_mode()->bool {if selection_regions[0].info.x==8.{return true;}if selection_regions[0].info.x==7.{return selection_regions[1].info.w>0.5;}return false;}
+fn quick_mask_mode()->bool {if selection_regions[0].info.x==8.{return true;}if (selection_regions[0].info.x==7.||selection_regions[0].info.x==9.){return selection_regions[1].info.w>0.5;}return false;}

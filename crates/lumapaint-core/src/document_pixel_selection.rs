@@ -57,6 +57,28 @@ fn valid_name(name: &str) -> Result<(), String> {
     }
 }
 impl Document {
+    /// Share saved coverage with a worker without cloning the selection library.
+    pub fn saved_pixel_selection(&self, name: Option<&str>) -> Result<Arc<Selection>, String> {
+        self.saved_pixel_selections
+            .iter()
+            .find(|s| Some(s.name.as_str()) == name)
+            .map(|s| s.selection.clone())
+            .ok_or_else(|| {
+                "Saved selection not found / 保存選択が見つかりません / 找不到已保存的选区".into()
+            })
+    }
+    pub fn loaded_pixel_selection(
+        &self,
+        request: &PixelSelectionRequest,
+    ) -> Result<Selection, String> {
+        let saved = self.saved_pixel_selection(request.name.as_deref())?;
+        let mode = request.mode.unwrap_or(SelectionMode::Replace);
+        match (&self.selection, mode) {
+            (_, SelectionMode::Replace) | (None, SelectionMode::Add) => Ok(saved.as_ref().clone()),
+            (Some(base), mode) => base.combined(&saved, mode, self.dimensions()),
+            _ => Err("Select an area first / 範囲を選択してください / 请先选择区域".into()),
+        }
+    }
     pub fn pixel_selection_action(&mut self, request: PixelSelectionRequest) -> Result<(), String> {
         match request.action.as_str() {
             "quickMask" => {
@@ -85,57 +107,7 @@ impl Document {
                 self.commit_path_selection(Some(s))?;
             }
             "load" => {
-                let saved = self
-                    .saved_pixel_selections
-                    .iter()
-                    .find(|s| Some(s.name.as_str()) == request.name.as_deref())
-                    .ok_or(
-                        "Saved selection not found / 保存選択が見つかりません / 找不到已保存的选区",
-                    )?;
-                let mut result = saved.selection.as_ref().clone();
-                if !matches!(request.mode, None | Some(SelectionMode::Replace)) {
-                    if let Some(base) = &self.selection {
-                        let max = self.width.max(self.height) as f32;
-                        let scale = (1024. / max).min(1.);
-                        let size = [
-                            (self.width as f32 * scale).ceil() as u32,
-                            (self.height as f32 * scale).ceil() as u32,
-                        ];
-                        let sx = self.width as f32 / size[0] as f32;
-                        let sy = self.height as f32 / size[1] as f32;
-                        let pixels = (0..size[0] * size[1])
-                            .map(|i| {
-                                let point = Point {
-                                    x: (i % size[0]) as f32 * sx + sx * 0.5,
-                                    y: (i / size[0]) as f32 * sy + sy * 0.5,
-                                };
-                                let a = base.coverage(point);
-                                let b = result.coverage(point);
-                                let value = match request.mode.unwrap() {
-                                    SelectionMode::Add => a.max(b),
-                                    SelectionMode::Subtract => a * (1. - b),
-                                    SelectionMode::Intersect => a.min(b),
-                                    _ => b,
-                                };
-                                (value * 255.).round() as u8
-                            })
-                            .collect::<Vec<_>>();
-                        result = Selection::from_raster(
-                            crate::selection_raster::SelectionRaster::from_pixels(
-                                size,
-                                [sx, 0., 0., sy, 0., 0.],
-                                &pixels,
-                            )?,
-                        )?;
-                    } else if matches!(
-                        request.mode,
-                        Some(SelectionMode::Subtract | SelectionMode::Intersect)
-                    ) {
-                        return Err(
-                            "Select an area first / 範囲を選択してください / 请先选择区域".into(),
-                        );
-                    }
-                }
+                let result = self.loaded_pixel_selection(&request)?;
                 self.commit_path_selection(Some(result))?;
             }
             "transform" => {

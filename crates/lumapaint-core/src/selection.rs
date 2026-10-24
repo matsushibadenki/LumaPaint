@@ -281,8 +281,26 @@ impl Selection {
         self.raster.is_some() || self.regions.iter().any(|r| r.paint.is_some())
     }
     pub fn snapshot_summary(&self) -> Self {
-        if self.raster.is_none() {
+        let ordered_bounds = self.regions.iter().any(|region| {
+            region.paint.is_some()
+                || matches!(
+                    region.operation,
+                    SelectionOperation::Subtract
+                        | SelectionOperation::Intersect
+                        | SelectionOperation::Invert
+                )
+        });
+        if self.raster.is_none() && !ordered_bounds {
             return self.clone();
+        }
+        // Mixed raster/geometry selections must include appended boolean regions
+        // in UI bounds (not just the source raster's extent).
+        if !self.regions.is_empty() {
+            let [left, top, right, bottom] = self.coverage_bounds().unwrap_or([0., 0., 1., 1.]);
+            return Self::new(
+                SelectionShape::Rectangle,
+                [left, top, (right - left).max(1.), (bottom - top).max(1.)],
+            );
         }
         let mask = self.raster.as_ref().unwrap();
         let [a, b, c, d, e, f] = mask.transform;

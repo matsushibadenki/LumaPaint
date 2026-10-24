@@ -49,6 +49,7 @@ pub mod retouch;
 
 pub mod history_storage;
 
+mod selection_combine;
 pub mod selection_raster;
 mod selection_transform;
 

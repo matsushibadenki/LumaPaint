@@ -4047,3 +4047,124 @@ fn gpu_selection_cropped_refinement_and_inverse_match_cpu() {
         assert!(fractional > 20);
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_saved_combination_matches_cpu_for_gray_and_geometry() {
+    use lumapaint_core::{selection::SelectionMode, selection_raster::SelectionRaster};
+    let gpu = Gpu::new();
+    let base = Selection::from_raster(
+        SelectionRaster::from_pixels(
+            [3, 2],
+            [1., 0., 0., 1., 400., 260.],
+            &[1, 127, 254, 255, 80, 0],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let gray = Selection::from_raster(
+        SelectionRaster::from_pixels(
+            [3, 2],
+            [1., 0., 0., 1., 400., 260.],
+            &[128, 64, 200, 100, 230, 255],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let shape = Selection::new(SelectionShape::Rectangle, [401., 260., 1., 2.]);
+    for other in [&gray, &shape] {
+        for mode in [
+            SelectionMode::Add,
+            SelectionMode::Subtract,
+            SelectionMode::Intersect,
+        ] {
+            let selection = base.combined(other, mode, (8192, 8192)).unwrap();
+            let stroke = Stroke {
+                eraser: false,
+                clear: false,
+                brush: Brush {
+                    size: 512.,
+                    hardness: 1.,
+                    color: [0, 0, 0],
+                    ..Default::default()
+                },
+                points: vec![Point { x: 100., y: 300. }, Point { x: 880., y: 300. }],
+                pressures: vec![],
+                selection: Some(selection),
+            };
+            let actual = gpu.render(std::slice::from_ref(&stroke));
+            let expected = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+            let mut fractional = 0;
+            for y in 257..265 {
+                for x in 397..406 {
+                    let at = (((y + 64) * W + x + 32) * 4) as usize;
+                    if expected[at] > 0 && expected[at] < 255 {
+                        fractional += 1;
+                    }
+                    assert!(
+                        actual[at].abs_diff(expected[at]) <= 2,
+                        "mode={mode:?} at {x},{y}: GPU {} CPU {}",
+                        actual[at],
+                        expected[at]
+                    );
+                }
+            }
+            assert!(fractional > 0);
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_selection_large_compressed_mask_keeps_exact_indices_and_interpolation() {
+    use lumapaint_core::selection_raster::SelectionRaster;
+    let gpu = Gpu::new();
+    let mask =
+        SelectionRaster::from_coverage([8192, 4096], [1., 0., 0., 1., 0., 0.], |x, y| {
+            match (x, y) {
+                (400, 260) => 64,
+                (7000, 3000) => 127,
+                (7001, 3000) => 254,
+                _ => 0,
+            }
+        })
+        .unwrap();
+    assert!(mask.runs.iter().any(|r| r[0] > 16_777_216));
+    for (dx, dy) in [(0., 0.), (-6600., -2740.)] {
+        let selection = Selection::from_raster(mask.clone())
+            .unwrap()
+            .transformed([1., 0., 0., 1., dx + 0.25, dy + 0.25])
+            .unwrap();
+        let stroke = Stroke {
+            eraser: false,
+            clear: false,
+            brush: Brush {
+                size: 32.,
+                hardness: 1.,
+                color: [0, 0, 0],
+                ..Default::default()
+            },
+            points: vec![Point { x: 390., y: 261. }, Point { x: 415., y: 261. }],
+            pressures: vec![],
+            selection: Some(selection),
+        };
+        let actual = gpu.render(std::slice::from_ref(&stroke));
+        let expected = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        let mut fractional = 0;
+        for y in 257..265 {
+            for x in 397..406 {
+                let at = (((y + 64) * W + x + 32) * 4) as usize;
+                if expected[at] > 0 && expected[at] < 255 {
+                    fractional += 1;
+                }
+                assert!(
+                    actual[at].abs_diff(expected[at]) <= 2,
+                    "offset {dx},{dy} at {x},{y}: GPU {} CPU {}",
+                    actual[at],
+                    expected[at]
+                );
+            }
+        }
+        assert!(fractional > 0);
+    }
+}

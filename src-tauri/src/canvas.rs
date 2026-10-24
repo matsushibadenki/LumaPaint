@@ -2680,6 +2680,7 @@ pub async fn pixel_selection_action(
             "modify",
             "refine",
             "transform",
+            "load",
         ]
         .contains(&request.action.as_str())
         {

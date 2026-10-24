@@ -9,6 +9,7 @@ pub(crate) struct Job {
     selection: Option<lumapaint_core::selection::Selection>,
     target: String,
     request: PixelSelectionRequest,
+    saved: Option<std::sync::Arc<lumapaint_core::selection::Selection>>,
     document: Document,
 }
 pub(crate) struct ResultData {
@@ -56,14 +57,29 @@ pub(crate) fn prepare(mut request: PixelSelectionRequest) -> Result<Job, String>
             revision: document.revision(),
             selection: document.selection().cloned(),
             target: document.selected_layer_id().into(),
+            saved: if request.action == "load" {
+                Some(document.saved_pixel_selection(request.name.as_deref())?)
+            } else {
+                None
+            },
             request,
             document: document.clone_for_rendering(),
         })
     })
 }
 pub(crate) fn evaluate(job: Job) -> Result<ResultData, String> {
-    let result = lumapaint_renderer::selection_menu::evaluate(&job.document, &job.request)?;
-    let mask = if job.request.output_mask.unwrap_or(false) {
+    let result = if let Some(saved) = job.saved {
+        use lumapaint_core::selection::SelectionMode;
+        let mode = job.request.mode.unwrap_or(SelectionMode::Replace);
+        match (&job.selection, mode) {
+            (_, SelectionMode::Replace) | (None, SelectionMode::Add) => saved.as_ref().clone(),
+            (Some(base), mode) => base.combined(&saved, mode, job.document.dimensions())?,
+            _ => return Err("Select an area first / 範囲を選択してください / 请先选择区域".into()),
+        }
+    } else {
+        lumapaint_renderer::selection_menu::evaluate(&job.document, &job.request)?
+    };
+    let mask = if job.request.action != "load" && job.request.output_mask.unwrap_or(false) {
         Some(lumapaint_core::layer_mask::LayerMask::from_selection(
             lumapaint_core::layer_mask::MaskKind::Pixel,
             Some(&result),
@@ -228,6 +244,91 @@ mod tests {
     use super::*;
     use lumapaint_core::document::Point;
     use lumapaint_core::selection::{Selection, SelectionShape};
+    #[test]
+    fn selection_saved_load_worker_preserves_detail_history_and_rejects_library_edits() {
+        use lumapaint_core::selection::{Selection, SelectionMode, SelectionShape};
+        use lumapaint_core::selection_raster::SelectionRaster;
+        DOCUMENT_OPEN.with(|v| v.set(true));
+        ACTIVE_DOCUMENT_ID.with(|v| v.set(81));
+        DOCUMENT.with(|slot| {
+            let mut state = Document::default().document_state();
+            state.width = 8192;
+            state.height = 8192;
+            let mut doc = Document::from_document_state(state).unwrap();
+            doc.set_tool_pixel_selection(Some(
+                Selection::from_raster(
+                    SelectionRaster::from_pixels([1, 1], [1., 0., 0., 1., 3000., 2000.], &[127])
+                        .unwrap(),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+            doc.pixel_selection_action(PixelSelectionRequest {
+                action: "save".into(),
+                name: Some("Edge".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            doc.set_tool_pixel_selection(Some(Selection::new(
+                SelectionShape::Rectangle,
+                [3000., 2000., 1., 1.],
+            )))
+            .unwrap();
+            *slot.borrow_mut() = doc;
+        });
+        let request = PixelSelectionRequest {
+            action: "load".into(),
+            name: Some("Edge".into()),
+            mode: Some(SelectionMode::Subtract),
+            output_mask: Some(true),
+            ..Default::default()
+        };
+        let before = DOCUMENT.with(|d| d.borrow().selection().cloned());
+        let expected = DOCUMENT.with(|d| d.borrow().loaded_pixel_selection(&request).unwrap());
+        let job = prepare(request.clone()).unwrap();
+        assert!(job.saved.is_some());
+        let result = evaluate(job).unwrap();
+        assert_eq!(result.result, expected);
+        assert!(result.mask.is_none());
+        assert_eq!(DOCUMENT.with(|d| d.borrow().selection().cloned()), before);
+        commit(result).unwrap();
+        DOCUMENT.with(|slot| {
+            let mut doc = slot.borrow_mut();
+            assert_eq!(doc.selection(), Some(&expected));
+            assert_eq!(expected.raster.as_ref().unwrap().size, [3, 3]);
+            assert!(
+                (expected.coverage(Point {
+                    x: 3000.5,
+                    y: 2000.5
+                }) - 128. / 255.)
+                    .abs()
+                    < 1e-6
+            );
+            doc.undo();
+            assert_eq!(doc.selection(), before.as_ref());
+            doc.redo();
+            assert_eq!(doc.selection(), Some(&expected));
+        });
+        let pending = evaluate(prepare(request).unwrap()).unwrap();
+        DOCUMENT
+            .with(|d| {
+                d.borrow_mut()
+                    .pixel_selection_action(PixelSelectionRequest {
+                        action: "rename".into(),
+                        name: Some("Edge".into()),
+                        new_name: Some("Renamed".into()),
+                        ..Default::default()
+                    })
+            })
+            .unwrap();
+        let latest = DOCUMENT.with(|d| serde_json::to_vec(&d.borrow().document_state()).unwrap());
+        assert!(commit(pending).is_err());
+        assert_eq!(
+            DOCUMENT.with(|d| serde_json::to_vec(&d.borrow().document_state()).unwrap()),
+            latest
+        );
+    }
+
     #[test]
     fn selection_preview_is_transient_latest_only_and_cancel_rejects_workers() {
         DOCUMENT.with(|d| {

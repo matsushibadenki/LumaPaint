@@ -360,11 +360,13 @@ fn selection_bind_group_mode(
         let [a, b, c, d, e, f] =
             lumapaint_core::image_frame::inverse(mask.transform).expect("validated selection mask");
         let end = regions.len() + 2;
+        let sparse = u64::from(mask.size[0]) * u64::from(mask.size[1])
+            > lumapaint_core::selection_raster::MAX_SELECTION_PIXELS;
         let mut packed = vec![
             SelectionGpuRegion {
                 paint: [0.; 4],
                 bounds: [mask.size[0] as f32, mask.size[1] as f32, a, b],
-                info: [7., end as f32, c, d],
+                info: [if sparse { 9. } else { 7. }, end as f32, c, d],
             },
             SelectionGpuRegion {
                 paint: [0.; 4],
@@ -384,16 +386,33 @@ fn selection_bind_group_mode(
             },
         ];
         packed.extend(regions);
-        for bytes in mask.pixels().chunks(32) {
-            let mut words = [0u32; 8];
-            for (i, &byte) in bytes.iter().enumerate() {
-                words[i / 4] |= u32::from(byte) << ((i % 4) * 8);
+        if sparse {
+            packed[1].info[0] = mask.runs.len() as f32;
+            // Four runs occupy one 48-byte record. No dense expansion or float
+            // index rounding: start/length/alpha travel as exact u32 bit patterns.
+            for chunk in mask.runs.chunks(4) {
+                let mut words = [0u32; 12];
+                for (index, run) in chunk.iter().enumerate() {
+                    words[index * 3..index * 3 + 3].copy_from_slice(run);
+                }
+                packed.push(SelectionGpuRegion {
+                    paint: std::array::from_fn(|i| f32::from_bits(words[i])),
+                    bounds: std::array::from_fn(|i| f32::from_bits(words[i + 4])),
+                    info: std::array::from_fn(|i| f32::from_bits(words[i + 8])),
+                });
             }
-            packed.push(SelectionGpuRegion {
-                paint: [0.; 4],
-                bounds: std::array::from_fn(|i| f32::from_bits(words[i])),
-                info: std::array::from_fn(|i| f32::from_bits(words[i + 4])),
-            });
+        } else {
+            for bytes in mask.pixels().chunks(32) {
+                let mut words = [0u32; 8];
+                for (i, &byte) in bytes.iter().enumerate() {
+                    words[i / 4] |= u32::from(byte) << ((i % 4) * 8);
+                }
+                packed.push(SelectionGpuRegion {
+                    paint: [0.; 4],
+                    bounds: std::array::from_fn(|i| f32::from_bits(words[i])),
+                    info: std::array::from_fn(|i| f32::from_bits(words[i + 4])),
+                });
+            }
         }
         if quick {
             packed[1].info[3] = 1.;

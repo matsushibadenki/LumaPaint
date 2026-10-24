@@ -4,7 +4,10 @@ use crate::{document::Point, image_frame::inverse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+// Dense working buffers remain bounded; compressed native masks can cover a page.
 pub const MAX_SELECTION_PIXELS: u64 = 4 * 1024 * 1024;
+pub const MAX_SELECTION_AREA: u64 = (crate::document::MAX_DOCUMENT_DIMENSION as u64).pow(2);
+pub const MAX_SELECTION_RUNS: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,16 +61,57 @@ impl SelectionRaster {
         result.validate()?;
         Ok(result)
     }
+    /// Encode native coverage directly into runs without a full-area pixel buffer.
+    /// Stop before publishing if the compressed representation exceeds its budget.
+    pub fn from_coverage(
+        size: [u32; 2],
+        transform: [f32; 6],
+        mut sample: impl FnMut(u32, u32) -> u8,
+    ) -> Result<Self, String> {
+        let mut result = Self {
+            size,
+            transform,
+            runs: Arc::new(Vec::new()),
+            interpolation: SelectionInterpolation::Nearest,
+        };
+        result.validate()?;
+        let runs = Arc::get_mut(&mut result.runs).unwrap();
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                let value = u32::from(sample(x, y));
+                if value == 0 {
+                    continue;
+                }
+                let index = y * size[0] + x;
+                if let Some(last) = runs.last_mut() {
+                    if last[2] == value && last[0] + last[1] == index {
+                        last[1] += 1;
+                        continue;
+                    }
+                }
+                if runs.len() == MAX_SELECTION_RUNS {
+                    return Err("Selection mask complexity limit exceeded / 選択マスクが複雑すぎます / 选区蒙版过于复杂".into());
+                }
+                runs.push([index, 1, value]);
+            }
+        }
+        Ok(result)
+    }
     pub fn validate(&self) -> Result<(), String> {
         let count = u64::from(self.size[0]) * u64::from(self.size[1]);
         if self.size.contains(&0)
-            || count > MAX_SELECTION_PIXELS
+            || (count > MAX_SELECTION_PIXELS
+                && (count > MAX_SELECTION_AREA
+                    || self
+                        .size
+                        .iter()
+                        .any(|v| *v > crate::document::MAX_DOCUMENT_DIMENSION)))
             || self
                 .transform
                 .iter()
                 .any(|v| !v.is_finite() || v.abs() > 32768.)
             || inverse(self.transform).is_err()
-            || self.runs.len() > 1024 * 1024
+            || self.runs.len() > MAX_SELECTION_RUNS
         {
             return Err(
                 "Invalid selection mask / 選択マスクが不正か大きすぎます / 选区蒙版无效或过大"
@@ -145,6 +189,49 @@ impl SelectionRaster {
 mod tests {
     use super::*;
     use crate::selection::{Selection, SelectionOperation, SelectionRegion, SelectionShape};
+    #[test]
+    fn selection_raster_streams_large_native_area_and_bounds_compressed_complexity() {
+        let mask =
+            SelectionRaster::from_coverage([8192, 4096], [1., 0., 0., 1., 0., 0.], |x, y| {
+                if x == 7001 && y == 3000 {
+                    127
+                } else {
+                    0
+                }
+            })
+            .unwrap();
+        assert_eq!(mask.runs.as_ref(), &vec![[3000 * 8192 + 7001, 1, 127]]);
+        assert_eq!(
+            mask.coverage(Point {
+                x: 7001.5,
+                y: 3000.5
+            }),
+            127. / 255.
+        );
+        let decoded: SelectionRaster =
+            serde_json::from_slice(&serde_json::to_vec(&mask).unwrap()).unwrap();
+        assert_eq!(decoded, mask);
+        assert!(SelectionRaster::from_coverage(
+            [8193, 8192],
+            [1., 0., 0., 1., 0., 0.],
+            |_, _| panic!("invalid extent must not sample")
+        )
+        .is_err());
+        let mut count = 0;
+        assert!(
+            SelectionRaster::from_coverage([2048, 2048], [1., 0., 0., 1., 0., 0.], |x, _| {
+                count += 1;
+                if x % 2 == 0 {
+                    127
+                } else {
+                    255
+                }
+            })
+            .is_err()
+        );
+        assert!(count <= MAX_SELECTION_RUNS + 1);
+    }
+
     #[test]
     fn selection_raster_linear_sampling_keeps_source_and_legacy_coverage() {
         let mask: SelectionRaster = serde_json::from_str(
