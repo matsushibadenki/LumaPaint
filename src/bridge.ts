@@ -683,3 +683,7 @@ export async function rasterizeVectorLayer(id:string):Promise<DocumentSnapshot>{
 /** Rust-owned transient coverage; cancellation never changes document/history. */
 export const pixelSelectionPreview=(request:PixelSelectionRequest|null)=>
   invoke<boolean>('pixel_selection_preview',{request});
+
+export function applyFilter(documentId:number,revision:number,layer:string,category:import('./filter-presets').FilterCategory,preset:import('./filter-presets').FilterPreset):Promise<DocumentSnapshot>{
+ return textCommand('apply_filter',{documentId,revision,layer,category,preset});
+}

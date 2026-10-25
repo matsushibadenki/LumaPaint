@@ -561,6 +561,29 @@ pub async fn transform_layer_mask(
 }
 
 #[tauri::command]
+pub async fn apply_filter(
+    window: tauri::WebviewWindow,
+    document_id: u64,
+    revision: u64,
+    layer: String,
+    category: lumapaint_core::document::FilterCategory,
+    preset: lumapaint_core::document::FilterPreset,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::apply_filter(document_id, revision, layer, category, preset)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, document_id, revision, layer, category, preset);
+        Err("Native filters unavailable / この環境ではフィルターを使用できません / 此环境不支持原生滤镜".into())
+    }
+}
+
+#[tauri::command]
 pub async fn set_layer_effects(
     window: tauri::WebviewWindow,
     id: String,

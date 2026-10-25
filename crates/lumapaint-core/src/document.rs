@@ -1,3 +1,6 @@
+#[path = "document_filters.rs"]
+mod filters;
+pub use filters::{FilterCategory, FilterPreset};
 #[path = "document_pixel_selection.rs"]
 mod pixel_selection;
 pub use pixel_selection::{PixelSelectionRequest, SavedPixelSelection};

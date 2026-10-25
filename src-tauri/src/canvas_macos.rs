@@ -4164,6 +4164,37 @@ pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, 
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
 
+pub fn apply_filter(
+    document_id: u64,
+    revision: u64,
+    layer: String,
+    category: lumapaint_core::document::FilterCategory,
+    preset: lumapaint_core::document::FilterPreset,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if paint_gesture_active() {
+        return Err(
+            "Finish the current operation / 現在の操作を確定してください / 请先完成当前操作".into(),
+        );
+    }
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        || ACTIVE_DOCUMENT_ID.with(|d| d.get()) != document_id
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
+    {
+        return Err("Document changed or unsupported / ドキュメントが変更されたか未対応です / 文档已更改或不受支持".into());
+    }
+    if layer != DOCUMENT.with(|d| d.borrow().selected_layer_id().to_string()) {
+        return Err(
+            "Layer selection changed / 選択レイヤーが変更されました / 所选图层已更改".into(),
+        );
+    }
+    DOCUMENT.with(|d| d.borrow_mut().apply_filter(&layer, category, preset))?;
+    timeline::refresh_history_preview();
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn set_layer_effects(
     id: String,
     effects: lumapaint_core::layer_effects::LayerEffects,
@@ -11845,3 +11876,51 @@ pub fn set_paper_simulation(
 
 #[path = "rasterize_layer_macos.rs"]
 pub(crate) mod rasterize_layer;
+
+#[cfg(test)]
+mod filter_command_tests {
+    use super::*;
+    #[test]
+    fn filter_rejects_stale_document_revision_and_layer_without_history_changes() {
+        use lumapaint_core::document::{FilterCategory, FilterPreset};
+        let _session = SessionGuard::enter("editor-90981").unwrap();
+        DOCUMENT_OPEN.with(|v| v.set(true));
+        ACTIVE_DOCUMENT_ID.with(|v| v.set(90981));
+        DOCUMENT.with(|d| *d.borrow_mut() = Document::default());
+        assert!(apply_filter(
+            1,
+            0,
+            "layer-1".into(),
+            FilterCategory::Pixel,
+            FilterPreset::Invert
+        )
+        .is_err());
+        assert!(apply_filter(
+            90981,
+            1,
+            "layer-1".into(),
+            FilterCategory::Pixel,
+            FilterPreset::Invert
+        )
+        .is_err());
+        assert!(apply_filter(
+            90981,
+            0,
+            "unknown".into(),
+            FilterCategory::Pixel,
+            FilterPreset::Invert
+        )
+        .is_err());
+        assert!(!DOCUMENT.with(|d| d.borrow().snapshot().can_undo));
+        let result = apply_filter(
+            90981,
+            0,
+            "layer-1".into(),
+            FilterCategory::Pixel,
+            FilterPreset::Invert,
+        )
+        .unwrap();
+        assert!(result.can_undo);
+        assert_eq!(result.revision, 1);
+    }
+}

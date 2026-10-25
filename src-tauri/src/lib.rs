@@ -194,6 +194,7 @@ pub fn run() {
             canvas::toggle_layer,
             canvas::set_layer_settings,
             canvas::set_raster_blend_mode,
+            canvas::apply_filter,
             canvas::set_layer_effects,
             canvas::create_layer_mask,
             canvas::transform_layer_mask,

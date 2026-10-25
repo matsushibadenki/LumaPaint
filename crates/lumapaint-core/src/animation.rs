@@ -812,6 +812,35 @@ impl Document {
         track.assign_cel(frame, cel_id, next.duration)?;
         self.commit_animation(next)
     }
+    pub(super) fn filter_animation_keys(
+        &mut self,
+        id: &str,
+        interpolation: Interpolation,
+    ) -> Result<(), String> {
+        self.animation_layer(id, false)?;
+        let track=self.animation.tracks.get(id).filter(|t|t.channels.values().any(|keys|!keys.is_empty()))
+            .ok_or("No keyframes on this layer / このレイヤーにはキーフレームがありません / 此图层没有关键帧")?;
+        if track
+            .channels
+            .values()
+            .flatten()
+            .all(|k| k.interpolation == interpolation)
+        {
+            return Ok(());
+        }
+        let mut next = self.animation.as_ref().clone();
+        for key in next
+            .tracks
+            .get_mut(id)
+            .unwrap()
+            .channels
+            .values_mut()
+            .flatten()
+        {
+            key.interpolation = interpolation;
+        }
+        self.commit_animation(next)
+    }
     pub fn set_animation_key(
         &mut self,
         id: &str,

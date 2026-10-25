@@ -1,3 +1,4 @@
+import {filterLabels,filterPresets,filterAvailability,type FilterCategory,type FilterPreset} from '../filter-presets';
 import {pixelSelectionLabels,pixelModifyKinds} from '../pixel-selection-i18n';
 import {vectorAssetLabels} from '../vector-assets-i18n';
 import {featureIcons, featureLabels, commandFeature, type FeatureType} from '../feature-types';
@@ -27,6 +28,7 @@ type Entry = EntryItem | null;
 
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onFilter:(category:FilterCategory,preset:FilterPreset)=>void;
   onTimeline:()=>void;
   onShortcuts:()=>void;
   onPixelSelection:(action:string)=>void;
@@ -169,7 +171,7 @@ export function WorkspaceMenu(props: Props) {
       {id:'pixelSelection.load',label:ps.items[18],enabled:canEdit&&!!doc.savedPixelSelections?.length,action:()=>props.onPixelSelection('load')},
       {id:'pixelSelection.save',label:ps.items[19],enabled:canEdit&&!!doc.selection,action:()=>props.onPixelSelection('save')}
     ],
-    [future(t.blur), future(t.sharpen), future(t.adjustments)],
+    (['pixel','vector','animation'] as const).map(category=>({id:`filters.${category}`,feature:category,label:filterLabels[locale][category],enabled:filterAvailability(doc,canEdit)[category],children:filterPresets[category].map(preset=>({id:`filters.${category}.${preset}`,feature:category,label:filterLabels[locale][preset],action:()=>props.onFilter(category,preset)}))})),
     [{id:'command.preview',label: {ja:'プレビュー表示',en:'Preview','zh-CN':'预览'}[locale], checked: !props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(false) },
       {id:'command.outline',label: {ja:'アウトライン表示',en:'Outline','zh-CN':'轮廓'}[locale], checked: props.outlineDisplay, enabled: hasDocument, action: () => props.onOutlineDisplay(true) }, null,
       {id:'view.zoomIn',shortcut:'CmdOrCtrl+=', label: common.zoomIn, enabled: canEdit && zoom < MAX_ZOOM - 0.0001, action: () => onZoom(stepZoom(zoom, 1)) },

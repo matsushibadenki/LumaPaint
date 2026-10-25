@@ -1,3 +1,4 @@
+import {applyFilter} from './bridge';
 import {PixelSelectionDialog} from './components/PixelSelectionDialog';
 import {pixelSelectionAction} from './bridge';
 import {VectorAssetsDialog} from './components/VectorAssetsDialog';
@@ -631,7 +632,11 @@ export function Workspace() {
   return <div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{if(['selectAll','deselectAll','isolate'].includes(edit.action)){setPanels(true);setLayerPanelRequest(n=>n+1);}void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
+      <WorkspaceMenu onFilter={(category,preset)=>{
+          if(activeDocumentId===null||!documentEditable||!ready||busy||fileBusy)return;
+          setBusy(true);setError('');
+          void applyFilter(activeDocumentId,documentState.revision,documentState.layerId,category,preset).then(updateDocument).catch(cause=>setError(String(cause))).finally(()=>setBusy(false));
+        }} onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{if(['selectAll','deselectAll','isolate'].includes(edit.action)){setPanels(true);setLayerPanelRequest(n=>n+1);}void editLayerGroups(edit).then(updateDocument).catch(cause=>setError(String(cause)));}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
