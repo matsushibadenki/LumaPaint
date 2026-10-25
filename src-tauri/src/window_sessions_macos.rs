@@ -18,6 +18,8 @@ struct Runtime {
     document_open: bool,
     active_document_id: u64,
     inactive_documents: Vec<OpenDocument>,
+    document_views: HashMap<u64, DocumentView>,
+    applied_view_zoom: Option<u64>,
     pan: (f32, f32),
     last_pan_point: (f32, f32),
     panning: bool,
@@ -77,6 +79,8 @@ impl Default for Runtime {
             document_open: false,
             active_document_id: 1,
             inactive_documents: Vec::new(),
+            document_views: HashMap::new(),
+            applied_view_zoom: None,
             pan: (0.0, 0.0),
             last_pan_point: (0.0, 0.0),
             panning: false,
@@ -136,6 +140,9 @@ impl Runtime {
             .with(|slot| self.active_document_id = slot.replace(self.active_document_id));
         INACTIVE_DOCUMENTS
             .with(|slot| std::mem::swap(&mut self.inactive_documents, &mut *slot.borrow_mut()));
+        APPLIED_VIEW_ZOOM.with(|v| self.applied_view_zoom = v.replace(self.applied_view_zoom));
+        DOCUMENT_VIEWS
+            .with(|slot| std::mem::swap(&mut self.document_views, &mut *slot.borrow_mut()));
         PAN.with(|slot| self.pan = slot.replace(self.pan));
         LAST_PAN_POINT.with(|slot| self.last_pan_point = slot.replace(self.last_pan_point));
         PANNING.with(|slot| self.panning = slot.replace(self.panning));
@@ -237,6 +244,62 @@ struct SharedDocument {
 thread_local! {
     static SHARED: RefCell<HashMap<u64, SharedDocument>> = RefCell::new(HashMap::new());
 }
+pub(super) fn shared_project_path(id: u64) -> Option<std::path::PathBuf> {
+    SHARED
+        .with(|items| {
+            items
+                .borrow()
+                .get(&id)
+                .and_then(|r| r.parked.as_ref())
+                .and_then(|d| d.path.clone())
+        })
+        .or_else(|| {
+            PARKED.with(|items| {
+                items
+                    .borrow()
+                    .values()
+                    .find(|r| r.document_open && r.active_document_id == id)
+                    .and_then(|r| r.project_path.clone())
+            })
+        })
+}
+pub(super) fn shared_preview_document(id: u64) -> Option<super::super::ThumbnailDocument> {
+    let preview = |content: &OpenDocumentContent| match content {
+        OpenDocumentContent::Legacy(doc) => Some(super::super::ThumbnailDocument::Standard(
+            Box::new(doc.clone_for_rendering()),
+        )),
+        OpenDocumentContent::Tiled(doc) => Some(super::super::ThumbnailDocument::Tiled(Box::new(
+            doc.document.clone(),
+        ))),
+        OpenDocumentContent::Shared(_) => None,
+    };
+    SHARED
+        .with(|items| {
+            items
+                .borrow()
+                .get(&id)
+                .and_then(|r| r.parked.as_ref())
+                .and_then(|e| preview(&e.content))
+        })
+        .or_else(|| {
+            PARKED.with(|items| {
+                items
+                    .borrow()
+                    .values()
+                    .find(|r| r.document_open && r.active_document_id == id)
+                    .map(|r| {
+                        if let Some(tiled) = &r.active_tiled_document {
+                            super::super::ThumbnailDocument::Tiled(Box::new(tiled.document.clone()))
+                        } else {
+                            super::super::ThumbnailDocument::Standard(Box::new(
+                                r.document.clone_for_rendering(),
+                            ))
+                        }
+                    })
+            })
+        })
+}
+
 pub(super) fn shared_snapshot(id: u64) -> Option<DocumentSnapshot> {
     SHARED.with(|shared| {
         shared
@@ -943,6 +1006,7 @@ pub(in crate::canvas) fn close_window(label: &str) {
     close(label, true);
 }
 fn close(label: &str, discard: bool) {
+    super::pane_gpu::close_window(label);
     crate::workspace_notifications::forget(label);
     super::timeline::close(label);
     if CLOSED.with(|closed| closed.borrow().contains(label)) {
@@ -959,6 +1023,7 @@ fn close(label: &str, discard: bool) {
         let Ok(_session) = session else {
             return;
         };
+        crate::workspace_session::flush_current(label);
         if discard {
             discard_recovery();
         }
@@ -1354,6 +1419,78 @@ mod tests {
             assert!(shared_tab(id).is_none());
         }
         close_window("editor-90112");
+    }
+
+    #[test]
+    fn document_views_are_local_to_window_and_preserved_on_tab_switch() {
+        let _window = SessionGuard::enter("editor-90961").unwrap();
+        let id = new_document(preset("Remember view"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        let view = DocumentView {
+            zoom: 2.,
+            pan_x: 42.,
+            pan_y: -13.,
+            width: 640.,
+            height: 480.,
+        };
+        DOCUMENT_VIEWS.with(|v| v.borrow_mut().insert(id, view));
+        let other = new_document(preset("Other view"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        switch_document(id).unwrap();
+        assert_eq!(pane_document_view(id), Some(view));
+        assert_eq!(PAN.with(|v| v.get()), (42., -13.));
+        switch_document(other).unwrap();
+        assert_eq!(PAN.with(|v| v.get()), (0., 0.));
+        {
+            let _other = SessionGuard::enter("editor-90962").unwrap();
+            assert!(DOCUMENT_VIEWS.with(|v| v.borrow().is_empty()));
+        }
+        assert_eq!(pane_document_view(id), Some(view));
+        close_window("editor-90962");
+        close_window("editor-90961");
+    }
+
+    #[test]
+    fn pane_previews_keep_active_document_and_shared_history_untouched() {
+        let _source = SessionGuard::enter("editor-90951").unwrap();
+        let id = new_document(preset("Pane source"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        DOCUMENT.with(|doc| {
+            doc.borrow_mut().add_vector_layer().unwrap();
+        });
+        let before = DOCUMENT.with(|doc| doc.borrow().snapshot());
+        let other = new_document(preset("Other pane"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        let crate::canvas::ThumbnailDocument::Standard(preview) =
+            pane_preview_document(id).unwrap()
+        else {
+            panic!("standard preview");
+        };
+        assert_eq!(preview.snapshot().layers.len(), before.layers.len());
+        assert!(!preview.snapshot().can_undo);
+        assert_eq!(workspace_snapshot().active_id, Some(other));
+        assert!(pane_preview_document(u64::MAX).is_err());
+        switch_document(id).unwrap();
+        assert!(DOCUMENT.with(|doc| doc.borrow().snapshot().can_undo));
+        open_document_view(id, "editor-90952").unwrap();
+        {
+            let _target = SessionGuard::enter("editor-90952").unwrap();
+            let current = new_document(preset("Shared view neighbor"))
+                .unwrap()
+                .active_id;
+            assert!(pane_preview_document(id).is_ok());
+            assert_eq!(workspace_snapshot().active_id, current);
+        }
+        close_window("editor-90952");
+        close_window("editor-90951");
     }
 
     #[test]

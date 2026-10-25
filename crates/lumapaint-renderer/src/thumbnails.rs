@@ -302,10 +302,23 @@ fn channel_pngs(width: u32, height: u32, composite: Vec<u8>) -> Result<Vec<Vec<u
 }
 
 pub fn render_tiled(document: &TiledRasterDocument) -> Result<Thumbnails, String> {
+    render_tiled_sized(document, 64.)
+}
+pub fn tiled_page_preview(
+    document: &TiledRasterDocument,
+    max_side: u32,
+) -> Result<Vec<u8>, String> {
+    Ok(
+        render_tiled_sized(document, max_side.clamp(64, 1024) as f32)?
+            .channels
+            .remove(0),
+    )
+}
+fn render_tiled_sized(document: &TiledRasterDocument, max_side: f32) -> Result<Thumbnails, String> {
     use lumapaint_core::tiles::{TileCoord, TILE_SIZE};
     use std::collections::BTreeSet;
     let (dw, dh) = document.dimensions();
-    let scale = (64. / dw.max(dh) as f32).min(1.);
+    let scale = (max_side / dw.max(dh) as f32).min(1.);
     let (width, height) = (
         (dw as f32 * scale).round().max(1.) as u32,
         (dh as f32 * scale).round().max(1.) as u32,
@@ -573,6 +586,13 @@ mod tests {
             .unwrap();
         doc.set_layer_mask("a", true, false, 0.5).unwrap();
         let thumbs = render_tiled(&doc).unwrap();
+        let page = tiled_page_preview(&doc, 1024).unwrap();
+        let image = resvg::tiny_skia::Pixmap::decode_png(&page).unwrap();
+        assert_eq!((image.width(), image.height()), (128, 128));
+        // Composite preview honors the mask, while layer thumbnails remain ink-only.
+        assert_eq!(pixel(&page, 64, 64), pixel(&thumbs.channels[0], 32, 32));
+        let reduced = tiled_page_preview(&doc, 64).unwrap();
+        assert_eq!(reduced, thumbs.channels[0]);
         assert_eq!(pixel(&thumbs.layers[0].1, 32, 32), [255, 0, 0, 255]);
         assert_eq!(pixel(&thumbs.channels[4], 32, 32), [128, 128, 128, 255]);
         doc.set_layer_appearance("a", false, 1.).unwrap();

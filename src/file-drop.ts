@@ -10,6 +10,12 @@ export function fileDropTarget(x: number, y: number, activeId: number | null): n
   const element = document.elementFromPoint(x, y);
   if (!element) return undefined;
   if (element.closest('.document-tabs') && !element.closest('.document-tab-shell')) return null;
+  if (element.closest('.document-tab-list') && !element.closest('.document-tab-shell')) return null;
+  const pane = element.closest('.document-pane');
+  if (pane && (element.closest('.document-pane-body') || element.closest('.document-tab-shell'))) {
+    const id = element.closest('.document-tab-shell')?.getAttribute('data-document-id') ?? pane.getAttribute('data-pane-document');
+    return id ? Number(id) : null;
+  }
   const canvas = element.closest('.native-slot');
   if (canvas?.getAttribute('data-file-drop-enabled') === 'true') return activeId;
   if (element.closest('.canvas-stage')?.getAttribute('data-file-drop-enabled') === 'true') return null;
@@ -32,6 +38,7 @@ export function useFileDrop(activeId: number | null, onDrop: (drop: FileDrop) =>
     void view.onDragDropEvent(event => {
       if (!live || event.payload.type !== 'drop') return;
       const { paths, position } = event.payload;
+      if (!paths.length) return;
       const targetId = fileDropTarget(position.x / window.devicePixelRatio, position.y / window.devicePixelRatio, current.current.activeId);
       if (targetId !== undefined) current.current.onDrop({ paths, targetId });
     }).then(keep).catch(error => { if (live) current.current.onError(String(error)); });

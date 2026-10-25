@@ -1,5 +1,6 @@
 mod cel_previews;
 mod diagnostic_jobs;
+mod document_previews;
 mod font_viewer;
 mod image_frames;
 mod measurement_units;
@@ -14,6 +15,7 @@ mod surface_retry;
 mod timeline;
 #[cfg(any(target_os = "macos", test))]
 mod workspace_notifications;
+mod workspace_session;
 #[tauri::command]
 fn file_format_capabilities() -> &'static [lumapaint_formats::io::FileFormat] {
     lumapaint_formats::io::FILE_FORMATS
@@ -72,6 +74,10 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("lut-preview", |_context, request, responder| {
             lut_editor::serve(request, responder)
         })
+        .register_asynchronous_uri_scheme_protocol(
+            "document-preview",
+            |_context, request, responder| document_previews::serve(request, responder),
+        )
         .setup(|app| {
             if let Err(error) = media_browser::initialize(app.handle()) {
                 eprintln!("Media browser: {error}");
@@ -175,6 +181,7 @@ pub fn run() {
             editor_windows::editor_window_targets,
             tool_menu::icon_tool_menu,
             canvas::sync_canvas,
+            canvas::sync_document_pane_gpu,
             canvas::reset_canvas_pan,
             canvas::crop_action,
             canvas::finish_canvas_path,
@@ -231,6 +238,9 @@ pub fn run() {
             canvas::outline_text,
             canvas::saved_path_action,
             canvas::panel_thumbnails,
+            document_previews::document_pane_preview,
+            workspace_session::save_document_workspace_view,
+            workspace_session::restore_document_workspace,
             canvas::text_writing_mode,
             canvas::outline_view,
             canvas::transform_objects,

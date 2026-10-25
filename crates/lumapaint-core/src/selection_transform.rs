@@ -157,7 +157,7 @@ impl Selection {
     }
 
     fn rasterized_for_transform(&self) -> Result<Self, String> {
-        use crate::selection_raster::{SelectionRaster, MAX_SELECTION_PIXELS};
+        use crate::selection_raster::SelectionRaster;
         let bounds = self.coverage_bounds();
         let Some([left, top, right, bottom]) = bounds else {
             return Self::from_raster(SelectionRaster::from_pixels(
@@ -166,36 +166,32 @@ impl Selection {
                 &[0],
             )?);
         };
-        // Padding in document pixels retains the native-resolution bilinear fringe.
-        let (left, top) = (left.floor() - 1., top.floor() - 1.);
-        let (width, height) = (
-            (right.ceil() + 1. - left) as f64,
-            (bottom.ceil() + 1. - top) as f64,
-        );
-        let scale = (MAX_SELECTION_PIXELS as f64 / (width * height))
-            .sqrt()
-            .min(1.);
-        let mut size = [
-            (width * scale).floor().max(1.) as u32,
-            (height * scale).floor().max(1.) as u32,
-        ];
-        size[0] = size[0].min((MAX_SELECTION_PIXELS / u64::from(size[1])) as u32);
-        let sx = width as f32 / size[0] as f32;
-        let sy = height as f32 / size[1] as f32;
-        let pixels = (0..size[0] * size[1])
-            .map(|i| {
+        // Outside-mask samples are transparent, so a full-size mask does not
+        // need padding to retain its bilinear fringe. Keep the historical margin
+        // where it fits without exceeding the native document extent.
+        let extent = crate::document::MAX_DOCUMENT_DIMENSION as f32;
+        let axis = |start: f32, end: f32| {
+            let start = start.floor();
+            let length = end.ceil() - start;
+            if length + 2. <= extent {
+                (start - 1., length + 2.)
+            } else {
+                (start, length)
+            }
+        };
+        let (left, width) = axis(left, right);
+        let (top, height) = axis(top, bottom);
+        Self::from_raster(SelectionRaster::from_coverage(
+            [width as u32, height as u32],
+            [1., 0., 0., 1., left, top],
+            |x, y| {
                 (255.
                     * self.coverage(Point {
-                        x: left + (i % size[0]) as f32 * sx + 0.5 * sx,
-                        y: top + (i / size[0]) as f32 * sy + 0.5 * sy,
+                        x: left + x as f32 + 0.5,
+                        y: top + y as f32 + 0.5,
                     }))
                 .round() as u8
-            })
-            .collect::<Vec<_>>();
-        Self::from_raster(SelectionRaster::from_pixels(
-            size,
-            [sx, 0., 0., sy, left, top],
-            &pixels,
+            },
         )?)
     }
 }
@@ -226,7 +222,6 @@ mod tests {
     use crate::{
         document::{Document, PixelSelectionRequest},
         selection::{SelectionMode, SelectionRegion},
-        selection_raster::MAX_SELECTION_PIXELS,
     };
     fn stroke(x: f32, y: f32, radius: f32) -> Selection {
         Selection {
@@ -372,13 +367,62 @@ mod tests {
         assert_eq!(unchanged, selection);
     }
     #[test]
+    fn selection_transform_large_inverse_preserves_single_pixel_hole_and_shared_runs() {
+        let mut selection = Selection::new(SelectionShape::Rectangle, [3000., 1800., 1., 1.]);
+        selection.invert(4096, 2048).unwrap();
+        let moved = selection.transformed([1., 0., 0., 1., 7., 3.]).unwrap();
+        let mask = moved.raster.as_ref().unwrap();
+        assert_eq!(mask.size, [4098, 2050]);
+        assert_eq!(
+            moved.coverage(Point {
+                x: 3007.5,
+                y: 1803.5
+            }),
+            0.
+        );
+        assert_eq!(
+            moved.coverage(Point {
+                x: 3006.5,
+                y: 1803.5
+            }),
+            1.
+        );
+        assert_eq!(
+            moved.coverage(Point {
+                x: 3008.5,
+                y: 1803.5
+            }),
+            1.
+        );
+        let back = moved.transformed([1., 0., 0., 1., -7., -3.]).unwrap();
+        assert!(Arc::ptr_eq(&mask.runs, &back.raster.as_ref().unwrap().runs));
+        let restored: Selection =
+            serde_json::from_str(&serde_json::to_string(&back).unwrap()).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(
+            restored.coverage(Point {
+                x: 3000.5,
+                y: 1800.5
+            }),
+            0.
+        );
+        assert_eq!(
+            restored.coverage(Point {
+                x: 2999.5,
+                y: 1800.5
+            }),
+            1.
+        );
+    }
+
+    #[test]
     fn selection_transform_inverse_is_bounded_and_intersection_stays_local() {
         let mut selection = stroke(50.5, 50.5, 10.);
         selection.invert(8192, 8192).unwrap();
         let raster = selection.transformed([1., 0., 0., 1., 1., 0.]).unwrap();
         let mask = raster.raster.as_ref().unwrap();
-        assert!(u64::from(mask.size[0]) * u64::from(mask.size[1]) <= MAX_SELECTION_PIXELS);
-        assert!(mask.size[0] >= 2047);
+        assert_eq!(mask.size, [8192, 8192]);
+        assert_eq!(mask.transform, [1., 0., 0., 1., 1., 0.]);
         assert_eq!(raster.coverage(Point { x: 1001., y: 1000. }), 1.);
         assert_eq!(raster.coverage(Point { x: 51.5, y: 50.5 }), 0.);
         assert_eq!(raster.coverage(Point { x: -10., y: 1000. }), 0.);

@@ -5,6 +5,8 @@ mod crop_tool;
 mod gradient_tool;
 #[path = "input_timing_macos.rs"]
 mod input_timing;
+#[path = "pane_gpu_macos.rs"]
+pub(super) mod pane_gpu;
 #[path = "pixel_selection_menu_macos.rs"]
 pub(super) mod pixel_selection_menu;
 #[path = "timeline_macos.rs"]
@@ -437,6 +439,7 @@ fn synchronized_zoom(
 }
 
 struct FrameState {
+    passive: std::cell::Cell<bool>,
     menu_open: std::cell::Cell<bool>,
     label: String,
     display_link: RefCell<Option<Retained<AnyObject>>>,
@@ -465,6 +468,7 @@ impl PaintView {
         }
         #[unsafe(method(frameTick:))]
         fn frame_tick(&self, _link: &AnyObject) {
+            if self.ivars().passive.get() { return; }
             let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
                 if let Err(error) = redraw() { emit_error(error); }
@@ -479,6 +483,7 @@ impl PaintView {
         fn wants_update_layer(&self) -> bool { true }
         #[unsafe(method(updateLayer))]
         fn update_layer(&self) {
+            if self.ivars().passive.get() { return; }
             let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
             if self.ivars().display_link.borrow().is_some() { return; }
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
@@ -490,7 +495,7 @@ impl PaintView {
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             // A WebView menu consumes the first outside click without editing art.
-            if self.ivars().menu_open.get() { return std::ptr::null_mut(); }
+            if self.ivars().passive.get() || self.ivars().menu_open.get() { return std::ptr::null_mut(); }
             let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return std::ptr::null_mut(); };
             let local = NSPoint::new(point.x - self.frame().origin.x, point.y - self.frame().origin.y);
             if CANVAS_OVERLAY.with(|value| value.borrow().iter().any(|r| local.x >= r[0] && local.x <= r[2] && local.y >= r[1] && local.y <= r[3])) {
@@ -502,11 +507,12 @@ impl PaintView {
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool { true }
         #[unsafe(method(acceptsFirstResponder))]
-        fn accepts_first_responder(&self) -> bool { true }
+        fn accepts_first_responder(&self) -> bool { !self.ivars().passive.get() }
         #[unsafe(method(acceptsFirstMouse:))]
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool { true }
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
+            if self.ivars().passive.get() { return; }
             let Ok(_session) = SessionGuard::enter(&self.ivars().label) else { return; };
             let cursor = if PANNING.with(|value| value.get()) {
                 Some(NSCursor::closedHandCursor())
@@ -749,6 +755,7 @@ impl PaintView {
     fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let view = Self::alloc(mtm).set_ivars(FrameState {
             label: current_label(),
+            passive: std::cell::Cell::new(false),
             display_link: RefCell::new(None),
             menu_open: std::cell::Cell::new(false),
         });
@@ -5797,7 +5804,84 @@ fn next_document_id() -> u64 {
     })
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DocumentView {
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
+    width: f32,
+    height: f32,
+}
+thread_local! {
+    static APPLIED_VIEW_ZOOM: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static DOCUMENT_VIEWS: RefCell<std::collections::HashMap<u64, DocumentView>> = RefCell::new(std::collections::HashMap::new());
+}
+fn restore_document_view(viewport: Viewport, saved: Option<DocumentView>) -> Viewport {
+    let (zoom, pan) = saved.map_or((viewport.fit_zoom(), (0., 0.)), |v| {
+        (v.zoom, (v.pan_x, v.pan_y))
+    });
+    viewport
+        .with_screen_zoom(zoom)
+        .with_pan(pan.0, pan.1)
+        .expect("stored valid view")
+}
+#[cfg(test)]
+#[test]
+fn document_view_restores_absolute_zoom_and_pan_across_viewport_sizes() {
+    let saved = DocumentView {
+        zoom: 1.75,
+        pan_x: 91.,
+        pan_y: -37.,
+        width: 640.,
+        height: 480.,
+    };
+    for (w, h) in [(800., 600.), (260., 180.)] {
+        let viewport = Viewport::new(w, h, 1., 1., false)
+            .unwrap()
+            .with_document(640, 480, CanvasColor::White)
+            .unwrap();
+        let restored = restore_document_view(viewport, Some(saved));
+        assert!((restored.screen_zoom() - 1.75).abs() < 1e-6);
+        assert_eq!((restored.pan_x, restored.pan_y), (91., -37.));
+        let initial = restore_document_view(viewport, None);
+        assert_eq!(initial.screen_zoom(), viewport.fit_zoom());
+        assert_eq!((initial.pan_x, initial.pan_y), (0., 0.));
+    }
+}
+fn remember_document_view() {
+    if !DOCUMENT_OPEN.with(|v| v.get()) {
+        return;
+    }
+    let id = ACTIVE_DOCUMENT_ID.with(|v| v.get());
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow().as_ref() {
+            let (pan_x, pan_y) = PAN.with(|v| v.get());
+            let v = canvas.viewport;
+            DOCUMENT_VIEWS.with(|views| {
+                views.borrow_mut().insert(
+                    id,
+                    DocumentView {
+                        zoom: v.screen_zoom(),
+                        pan_x,
+                        pan_y,
+                        width: v.document_width,
+                        height: v.document_height,
+                    },
+                )
+            });
+        }
+    });
+}
+pub fn pane_document_view(id: u64) -> Option<DocumentView> {
+    if ACTIVE_DOCUMENT_ID.with(|v| v.get()) == id {
+        remember_document_view();
+    }
+    DOCUMENT_VIEWS.with(|v| v.borrow().get(&id).copied())
+}
+
 fn park_active_document() {
+    remember_document_view();
     if let Err(error) = timeline::flush_editing() {
         emit_error(error);
     }
@@ -5883,9 +5967,12 @@ fn activate_document(entry: OpenDocument) {
             ACTIVE_TILED_DOCUMENT.with(|slot| *slot.borrow_mut() = Some(*document));
         }
     }
+    let saved = DOCUMENT_VIEWS.with(|v| v.borrow().get(&entry.id).copied());
+    PAN.with(|v| v.set(saved.map_or((0., 0.), |v| (v.pan_x, v.pan_y))));
     CANVAS.with(|slot| {
         if let Some(canvas) = slot.borrow_mut().as_mut() {
             sync_viewport_document(&mut canvas.viewport, width, height, canvas_color);
+            canvas.viewport = restore_document_view(canvas.viewport, saved);
         }
     });
     PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
@@ -6012,6 +6099,7 @@ fn emit_workspace_snapshot(snapshot: DocumentWorkspaceSnapshot) {
 }
 
 pub fn destroy() {
+    remember_document_view();
     cancel_vector_drag();
     let _ = text_editor::finish(false);
     DOCUMENT.with(|doc| doc.borrow_mut().finish());
@@ -6200,9 +6288,23 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
         request.zoom * base.fit_zoom() as f64
     };
     let (zoom, explicit, previous_zoom) = CANVAS.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map_or((requested_zoom, true, requested_zoom), |canvas| {
+        slot.borrow().as_ref().map_or_else(
+            || {
+                let restored = DOCUMENT_VIEWS.with(|v| {
+                    v.borrow()
+                        .get(&ACTIVE_DOCUMENT_ID.with(|id| id.get()))
+                        .copied()
+                });
+                if request.zoom_revision.is_some()
+                    && request.zoom_revision <= APPLIED_VIEW_ZOOM.with(|v| v.get()).or(Some(0))
+                {
+                    if let Some(view) = restored {
+                        return (f64::from(view.zoom), false, f64::from(view.zoom));
+                    }
+                }
+                (requested_zoom, true, requested_zoom)
+            },
+            |canvas| {
                 (
                     synchronized_zoom(
                         canvas.viewport.screen_zoom(),
@@ -6213,8 +6315,12 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
                     request.zoom_revision.is_none() || request.zoom_revision > canvas.zoom_revision,
                     canvas.viewport.screen_zoom() as f64,
                 )
-            })
+            },
+        )
     });
+    if request.zoom_revision > APPLIED_VIEW_ZOOM.with(|v| v.get()) {
+        APPLIED_VIEW_ZOOM.with(|v| v.set(request.zoom_revision));
+    }
     let (pan_x, pan_y) = if explicit && request.absolute_zoom && request.zoom == 0.0 {
         let (_, x, y) = spread_fit(base);
         (x, y)
@@ -6374,7 +6480,9 @@ fn visible_canvas_regions(bounds: [f64; 4], holes: &[[f64; 4]]) -> Vec<[f64; 4]>
 // Punch a hole only in the native view's composition, leaving the GPU viewport fixed.
 // The WebView below receives pointer events in this same rectangle.
 fn update_canvas_mask(view: &PaintView, overlays: Vec<[f64; 4]>) {
-    CANVAS_OVERLAY.with(|value| *value.borrow_mut() = overlays.clone());
+    if !view.ivars().passive.get() {
+        CANVAS_OVERLAY.with(|value| *value.borrow_mut() = overlays.clone());
+    }
     // SAFETY: all Core Animation objects are retained and accessed on the main thread.
     unsafe {
         let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
@@ -8727,7 +8835,13 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
         })?;
         emit_workspace();
     }
-    Ok(workspace_snapshot())
+    let snapshot = workspace_snapshot();
+    DOCUMENT_VIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .retain(|id, _| snapshot.documents.iter().any(|d| d.id == *id))
+    });
+    Ok(snapshot)
 }
 
 pub fn open_psd(prepared: crate::psd_import::Prepared) -> Result<(), String> {
@@ -9494,6 +9608,163 @@ pub fn saved_path_action(
     redraw()?;
     emit_document();
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
+}
+
+pub fn capture_workspace_session(
+    layout: serde_json::Value,
+) -> Result<crate::workspace_session::Session, String> {
+    remember_document_view();
+    let workspace = workspace_snapshot();
+    let mut documents = INACTIVE_DOCUMENTS.with(|items| {
+        items
+            .borrow()
+            .iter()
+            .map(|e| crate::workspace_session::SavedDocument {
+                id: e.id,
+                path: e
+                    .path
+                    .clone()
+                    .or_else(|| window_sessions::shared_project_path(e.id)),
+                view: DOCUMENT_VIEWS.with(|v| {
+                    v.borrow()
+                        .get(&e.id)
+                        .and_then(|v| serde_json::to_value(v).ok())
+                }),
+            })
+            .collect::<Vec<_>>()
+    });
+    if let Some(id) = workspace.active_id {
+        documents.push(crate::workspace_session::SavedDocument {
+            id,
+            path: PROJECT_PATH.with(|p| p.borrow().clone()),
+            view: pane_document_view(id).and_then(|v| serde_json::to_value(v).ok()),
+        });
+    }
+    Ok(crate::workspace_session::Session {
+        version: 1,
+        layout,
+        documents,
+        active_id: workspace.active_id,
+    })
+}
+pub fn restore_workspace_session(
+    mut state: crate::workspace_session::Session,
+    projects: Vec<(
+        crate::workspace_session::SavedDocument,
+        (
+            crate::project_file::ProjectData,
+            crate::project_file::FileFingerprint,
+        ),
+    )>,
+) -> Result<Option<serde_json::Value>, String> {
+    if !workspace_snapshot().documents.is_empty() {
+        return Ok(None);
+    }
+    // Validate all loaded projects before changing the empty workspace.
+    let mut prepared = Vec::with_capacity(projects.len());
+    for (saved, (project, fingerprint)) in projects {
+        let name = saved
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let content = match project {
+            crate::project_file::ProjectData::Legacy(mut doc) => {
+                for layer in doc.svg_layers() {
+                    validate_svg(&layer.source)?;
+                }
+                doc.mark_saved(name);
+                OpenDocumentContent::Legacy(doc)
+            }
+            crate::project_file::ProjectData::Tiled(data) => {
+                OpenDocumentContent::Tiled(Box::new(TiledSession {
+                    selected_layer: None,
+                    document: TiledRasterDocument::from_state(data)?,
+                    file_name: Some(name.clone()),
+                    saved_revision: Some(0),
+                    name,
+                }))
+            }
+        };
+        prepared.push((saved, content, fingerprint));
+    }
+    let mut ids = std::collections::HashMap::new();
+    for (saved, content, fingerprint) in prepared {
+        let id = next_document_id();
+        ids.insert(saved.id, id);
+        if let Some(view) = saved
+            .view
+            .and_then(|v| serde_json::from_value::<DocumentView>(v).ok())
+        {
+            DOCUMENT_VIEWS.with(|v| v.borrow_mut().insert(id, view));
+        }
+        park_active_document();
+        activate_document(OpenDocument {
+            id,
+            content,
+            path: saved.path,
+            fingerprint: Some(fingerprint),
+        });
+    }
+    if let Some(id) = state.active_id.and_then(|id| ids.get(&id)).copied() {
+        switch_document(id)?;
+    }
+    if let Some(panes) = state.layout["panes"].as_array_mut() {
+        for pane in panes {
+            let tabs = pane["tabs"]
+                .as_array()
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|v| v.as_u64().and_then(|id| ids.get(&id)).copied())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let selected = pane["selected"]
+                .as_u64()
+                .and_then(|id| ids.get(&id))
+                .copied()
+                .or_else(|| tabs.first().copied());
+            pane["tabs"] = serde_json::json!(tabs);
+            pane["selected"] = serde_json::json!(selected);
+        }
+    }
+    emit_workspace();
+    Ok(Some(state.layout))
+}
+
+pub fn pane_preview_document(id: u64) -> Result<super::ThumbnailDocument, String> {
+    if DOCUMENT_OPEN.with(|v| v.get()) && ACTIVE_DOCUMENT_ID.with(|v| v.get()) == id {
+        if let Some(doc) =
+            ACTIVE_TILED_DOCUMENT.with(|v| v.borrow().as_ref().map(|d| d.document.clone()))
+        {
+            return Ok(super::ThumbnailDocument::Tiled(Box::new(doc)));
+        }
+        return DOCUMENT.with(|doc| {
+            Ok(super::ThumbnailDocument::Standard(Box::new(
+                doc.borrow().clone_for_rendering(),
+            )))
+        });
+    }
+    INACTIVE_DOCUMENTS.with(|items| {
+        let items = items.borrow();
+        let entry = items
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or("Document not found")?;
+        match &entry.content {
+            OpenDocumentContent::Legacy(doc) => Ok(super::ThumbnailDocument::Standard(Box::new(
+                doc.clone_for_rendering(),
+            ))),
+            OpenDocumentContent::Tiled(doc) => Ok(super::ThumbnailDocument::Tiled(Box::new(
+                doc.document.clone(),
+            ))),
+            OpenDocumentContent::Shared(id) => {
+                window_sessions::shared_preview_document(*id).ok_or("Document not found".into())
+            }
+        }
+    })
 }
 
 pub fn thumbnail_document() -> Result<super::ThumbnailDocument, String> {

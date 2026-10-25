@@ -1,0 +1,736 @@
+{
+  "date": "2026-10-25",
+  "environment": {
+    "os": "macOS",
+    "gpu": "Apple M4 / Metal",
+    "window": [
+      1200,
+      800
+    ],
+    "viewport": [
+      800,
+      574
+    ],
+    "backing_scale": 1,
+    "url": "tauri://localhost",
+    "build": "Release opt-level=3, thin LTO, codegen-units=1; embedded UI",
+    "binary_sha256": "6f9ec13be2fd1c0ec54a55ed431063d0a7c72c61b1f96c7d6077b5f46778e7ee",
+    "metrics": "LUMAPAINT_RENDER_METRICS=1",
+    "bundle_id": "app.lumapaint.refine-release-qa"
+  },
+  "scope": "Native handler start to present API call; excludes OS queue, GPU completion and physical display. Within-build representation comparison, not old/new implementation speedup.",
+  "workload": {
+    "document": [
+      4096,
+      2048
+    ],
+    "artwork": "owned blank background fixture",
+    "A": "full-page geometric selection minus 1×120px hole",
+    "B": "same selection after Refine Shift Edge=-1; native RLE, 3×122px hole",
+    "input": "10 cycles of native zoom-in/out clicks at window (490,440); Z/Option-Z switch tools; each tool and 100→125→100% state asserted through native AX",
+    "order": [
+      "B2",
+      "A3"
+    ],
+    "warmup_presentations_per_trial": 4,
+    "no_build_or_test_processes_during_capture": true
+  },
+  "trials": {
+    "A3": {
+      "condition": "A",
+      "summary": {
+        "scope": "handler start to present API call; excludes OS queue and physical display",
+        "samples_total": 20,
+        "warmup_discarded": 4,
+        "samples_measured": 16,
+        "first_handler": {
+          "p50_ms": 10.650958,
+          "p95_ms": 13.62225,
+          "p99_ms": 13.62225,
+          "max_ms": 13.62225
+        },
+        "latest_handler": {
+          "p50_ms": 10.650958,
+          "p95_ms": 13.62225,
+          "p99_ms": 13.62225,
+          "max_ms": 13.62225
+        },
+        "marked_events": 16,
+        "latest_over_16_67ms": 0,
+        "latest_over_8_33ms": 14,
+        "host_stages_scope": "input IDs in retained presentation ranges; inclusive host durations, not additive",
+        "host_stages": {
+          "encode_brush": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000333,
+              "p95_ms": 0.0005,
+              "p99_ms": 0.0005,
+              "max_ms": 0.0005
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.3235,
+              "p95_ms": 13.266542,
+              "p99_ms": 13.266542,
+              "max_ms": 13.266542
+            }
+          },
+          "encode_glyph": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 4.2e-05,
+              "p95_ms": 0.000209,
+              "p99_ms": 0.000209,
+              "max_ms": 0.000209
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.278625,
+              "p95_ms": 13.2115,
+              "p99_ms": 13.2115,
+              "max_ms": 13.2115
+            }
+          },
+          "encode_layers": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000208,
+              "p95_ms": 0.000333,
+              "p99_ms": 0.000333,
+              "max_ms": 0.000333
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.292958,
+              "p95_ms": 13.229667,
+              "p99_ms": 13.229667,
+              "max_ms": 13.229667
+            }
+          },
+          "encode_mesh": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000791,
+              "p95_ms": 0.001083,
+              "p99_ms": 0.001083,
+              "max_ms": 0.001083
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.264291,
+              "p95_ms": 13.192917,
+              "p99_ms": 13.192917,
+              "max_ms": 13.192917
+            }
+          },
+          "encode_native": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000541,
+              "p95_ms": 0.000959,
+              "p99_ms": 0.000959,
+              "max_ms": 0.000959
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.249125,
+              "p95_ms": 13.174209,
+              "p99_ms": 13.174209,
+              "max_ms": 13.174209
+            }
+          },
+          "encode_passes": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.011834,
+              "p95_ms": 0.0455,
+              "p99_ms": 0.0455,
+              "max_ms": 0.0455
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.402375,
+              "p95_ms": 13.353709,
+              "p99_ms": 13.353709,
+              "max_ms": 13.353709
+            }
+          },
+          "encode_setup": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.091458,
+              "p95_ms": 0.172834,
+              "p99_ms": 0.172834,
+              "max_ms": 0.172834
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.2305,
+              "p95_ms": 13.152042,
+              "p99_ms": 13.152042,
+              "max_ms": 13.152042
+            }
+          },
+          "encode_timing": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.042875,
+              "p95_ms": 0.10325,
+              "p99_ms": 0.10325,
+              "max_ms": 0.10325
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.377041,
+              "p95_ms": 13.324084,
+              "p99_ms": 13.324084,
+              "max_ms": 13.324084
+            }
+          },
+          "encode_workspace": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000958,
+              "p95_ms": 0.00175,
+              "p99_ms": 0.00175,
+              "max_ms": 0.00175
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.308458,
+              "p95_ms": 13.248334,
+              "p99_ms": 13.248334,
+              "max_ms": 13.248334
+            }
+          },
+          "pointer_down": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.084625,
+              "p95_ms": 0.186209,
+              "p99_ms": 0.186209,
+              "max_ms": 0.186209
+            },
+            "handler_elapsed": {
+              "p50_ms": 0.08475,
+              "p95_ms": 0.186334,
+              "p99_ms": 0.186334,
+              "max_ms": 0.186334
+            }
+          },
+          "queue_present": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.013834,
+              "p95_ms": 0.020458,
+              "p99_ms": 0.020458,
+              "max_ms": 0.020458
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.63525,
+              "p95_ms": 13.599125,
+              "p99_ms": 13.599125,
+              "max_ms": 13.599125
+            }
+          },
+          "queue_submit": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.171,
+              "p95_ms": 0.352542,
+              "p99_ms": 0.352542,
+              "max_ms": 0.352542
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.603083,
+              "p95_ms": 13.552959,
+              "p99_ms": 13.552959,
+              "max_ms": 13.552959
+            }
+          },
+          "render_encode": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.306292,
+              "p95_ms": 0.423666,
+              "p99_ms": 0.423666,
+              "max_ms": 0.423666
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.417666,
+              "p95_ms": 13.373417,
+              "p99_ms": 13.373417,
+              "max_ms": 13.373417
+            }
+          },
+          "render_prepare": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.002625,
+              "p95_ms": 0.012375,
+              "p99_ms": 0.012375,
+              "max_ms": 0.012375
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.01775,
+              "p95_ms": 12.905792,
+              "p99_ms": 12.905792,
+              "max_ms": 12.905792
+            }
+          },
+          "surface_acquire": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.040792,
+              "p95_ms": 0.061542,
+              "p99_ms": 0.061542,
+              "max_ms": 0.061542
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.119458,
+              "p95_ms": 13.040084,
+              "p99_ms": 13.040084,
+              "max_ms": 13.040084
+            }
+          }
+        }
+      },
+      "all_latest_handler_ms": [
+        8.259875,
+        8.527792,
+        7.964833,
+        7.542917,
+        10.9755,
+        10.650958,
+        10.043834,
+        10.928625,
+        10.581542,
+        5.72,
+        9.135792,
+        11.171584,
+        11.887417,
+        12.56975,
+        12.249875,
+        9.151291,
+        13.62225,
+        11.183458,
+        7.344875,
+        8.368084
+      ],
+      "zoom_state_proof": [
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ]
+      ],
+      "log_sha256": "6a598b7539606548b5581c4162bdf5ec4402df71fb7ab04132b0413099305713"
+    },
+    "B2": {
+      "condition": "B",
+      "summary": {
+        "scope": "handler start to present API call; excludes OS queue and physical display",
+        "samples_total": 20,
+        "warmup_discarded": 4,
+        "samples_measured": 16,
+        "first_handler": {
+          "p50_ms": 10.556,
+          "p95_ms": 17.151583,
+          "p99_ms": 17.151583,
+          "max_ms": 17.151583
+        },
+        "latest_handler": {
+          "p50_ms": 10.556,
+          "p95_ms": 17.151583,
+          "p99_ms": 17.151583,
+          "max_ms": 17.151583
+        },
+        "marked_events": 16,
+        "latest_over_16_67ms": 1,
+        "latest_over_8_33ms": 12,
+        "host_stages_scope": "input IDs in retained presentation ranges; inclusive host durations, not additive",
+        "host_stages": {
+          "encode_brush": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000375,
+              "p95_ms": 0.001958,
+              "p99_ms": 0.001958,
+              "max_ms": 0.001958
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.212458,
+              "p95_ms": 16.826291,
+              "p99_ms": 16.826291,
+              "max_ms": 16.826291
+            }
+          },
+          "encode_glyph": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 8.3e-05,
+              "p95_ms": 0.000208,
+              "p99_ms": 0.000208,
+              "max_ms": 0.000208
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.171667,
+              "p95_ms": 16.781791,
+              "p99_ms": 16.781791,
+              "max_ms": 16.781791
+            }
+          },
+          "encode_layers": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000167,
+              "p95_ms": 0.000541,
+              "p99_ms": 0.000541,
+              "max_ms": 0.000541
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.184875,
+              "p95_ms": 16.796458,
+              "p99_ms": 16.796458,
+              "max_ms": 16.796458
+            }
+          },
+          "encode_mesh": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000875,
+              "p95_ms": 0.004542,
+              "p99_ms": 0.004542,
+              "max_ms": 0.004542
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.158375,
+              "p95_ms": 16.766875,
+              "p99_ms": 16.766875,
+              "max_ms": 16.766875
+            }
+          },
+          "encode_native": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.000625,
+              "p95_ms": 0.000875,
+              "p99_ms": 0.000875,
+              "max_ms": 0.000875
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.144208,
+              "p95_ms": 16.7515,
+              "p99_ms": 16.7515,
+              "max_ms": 16.7515
+            }
+          },
+          "encode_passes": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.011042,
+              "p95_ms": 0.021292,
+              "p99_ms": 0.021292,
+              "max_ms": 0.021292
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.294542,
+              "p95_ms": 16.904,
+              "p99_ms": 16.904,
+              "max_ms": 16.904
+            }
+          },
+          "encode_setup": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.101458,
+              "p95_ms": 0.448958,
+              "p99_ms": 0.448958,
+              "max_ms": 0.448958
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.126417,
+              "p95_ms": 16.731041,
+              "p99_ms": 16.731041,
+              "max_ms": 16.731041
+            }
+          },
+          "encode_timing": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.038917,
+              "p95_ms": 0.089,
+              "p99_ms": 0.089,
+              "max_ms": 0.089
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.269167,
+              "p95_ms": 16.877833,
+              "p99_ms": 16.877833,
+              "max_ms": 16.877833
+            }
+          },
+          "encode_workspace": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.001,
+              "p95_ms": 0.004,
+              "p99_ms": 0.004,
+              "max_ms": 0.004
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.198958,
+              "p95_ms": 16.811625,
+              "p99_ms": 16.811625,
+              "max_ms": 16.811625
+            }
+          },
+          "pointer_down": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.0855,
+              "p95_ms": 0.210709,
+              "p99_ms": 0.210709,
+              "max_ms": 0.210709
+            },
+            "handler_elapsed": {
+              "p50_ms": 0.08575,
+              "p95_ms": 0.210792,
+              "p99_ms": 0.210792,
+              "max_ms": 0.210792
+            }
+          },
+          "queue_present": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.014583,
+              "p95_ms": 0.021,
+              "p99_ms": 0.021,
+              "max_ms": 0.021
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.54125,
+              "p95_ms": 17.1355,
+              "p99_ms": 17.1355,
+              "max_ms": 17.1355
+            }
+          },
+          "queue_submit": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.168792,
+              "p95_ms": 0.273875,
+              "p99_ms": 0.273875,
+              "max_ms": 0.273875
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.507708,
+              "p95_ms": 17.099208,
+              "p99_ms": 17.099208,
+              "max_ms": 17.099208
+            }
+          },
+          "render_encode": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.291208,
+              "p95_ms": 0.670083,
+              "p99_ms": 0.670083,
+              "max_ms": 0.670083
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.308125,
+              "p95_ms": 16.918875,
+              "p99_ms": 16.918875,
+              "max_ms": 16.918875
+            }
+          },
+          "render_prepare": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.0025,
+              "p95_ms": 0.0065,
+              "p99_ms": 0.0065,
+              "max_ms": 0.0065
+            },
+            "handler_elapsed": {
+              "p50_ms": 9.893417,
+              "p95_ms": 16.485208,
+              "p99_ms": 16.485208,
+              "max_ms": 16.485208
+            }
+          },
+          "surface_acquire": {
+            "samples": 16,
+            "duration": {
+              "p50_ms": 0.044541,
+              "p95_ms": 0.060125,
+              "p99_ms": 0.060125,
+              "max_ms": 0.060125
+            },
+            "handler_elapsed": {
+              "p50_ms": 10.002083,
+              "p95_ms": 16.614666,
+              "p99_ms": 16.614666,
+              "max_ms": 16.614666
+            }
+          }
+        }
+      },
+      "all_latest_handler_ms": [
+        17.129834,
+        7.147,
+        8.172083,
+        7.169875,
+        11.624375,
+        17.151583,
+        13.481292,
+        12.111291,
+        10.556,
+        8.230916,
+        12.151458,
+        12.049125,
+        10.512083,
+        11.749333,
+        5.627125,
+        11.165041,
+        7.9975,
+        8.361708,
+        9.425333,
+        7.939791
+      ],
+      "zoom_state_proof": [
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ],
+        [
+          100,
+          125,
+          100
+        ]
+      ],
+      "log_sha256": "2a56f0dea16100ce1a8c9ce6a5e4de0a6da812813e681765e09ad136a0f0395d"
+    }
+  },
+  "source_sha256": {
+    "Cargo.lock": "1b1b87b8918e2366169aef98141dd24ee644916bba72070841e6c83f0e505c8d",
+    "crates/lumapaint-renderer/src/selection_menu.rs": "fc03f24d144a12d029683eef04f5499136cf8d02ce6ce8cb8f645a6d3dab6c4f",
+    "crates/lumapaint-core/src/selection_transform.rs": "b557a504e80016c532f5fdc2ee7f252af58d314c8b775352e5b769d70e17227e",
+    "src/pixel-selection-i18n.ts": "d8551c4162208d0e59f63dc6bd6509afa0bdfa24d2aaaec89239ad4c62bd63b8"
+  },
+  "exclusions": [
+    "Earlier setup/exploratory runs and automation-interrupted runs are excluded.",
+    "A zoom-field focus initially consumed tool shortcuts; accepted trials restore native canvas focus and assert every transition.",
+    "Only accepted A3/B2 are summarized; each has 20 presentations, first four discarded."
+  ],
+  "limitations": [
+    "16 retained samples per condition; no statistical speedup or regression conclusion.",
+    "Not a production-art, continuous stylus, mixed-worker contention or physical-display latency measurement.",
+    "GPU timing instrumentation reported invalid timestamp samples; reported numbers use host timing."
+  ],
+  "native_acceptance": {
+    "mask_size": [
+      4096,
+      2048
+    ],
+    "mask_transform": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    "run_count": 123,
+    "hole_after_shift": [
+      1999,
+      999,
+      3,
+      122
+    ],
+    "undo_restored_geometry": true,
+    "redo_restored_native_mask": true,
+    "saved_project_sha256": "d5a9b3163965e70e54c277495ebf7d06041113d4892ab87a874ef30c0852a98b",
+    "screenshot": "/tmp/lumapaint-refine-release-result.png",
+    "app_exit_code": 0
+  }
+}

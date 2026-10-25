@@ -131,6 +131,8 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
     };
     const observer = new ResizeObserver(requestRender);
     observer.observe(element);
+    const ancestorScroll = (event: Event) => { if (event.target instanceof Element && event.target.contains(element)) requestRender(); };
+    window.addEventListener('scroll', ancestorScroll, true);
     window.addEventListener('resize', requestRender);
     window.addEventListener('panel-layout-change',requestRender);
     document.addEventListener('visibilitychange', requestRender);
@@ -147,6 +149,7 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
       cancelAnimationFrame(frame);
       observer.disconnect();
       unlisten();
+      window.removeEventListener('scroll', ancestorScroll, true);
       window.removeEventListener('resize', requestRender);
       window.removeEventListener('panel-layout-change',requestRender);
       document.removeEventListener('visibilitychange', requestRender);

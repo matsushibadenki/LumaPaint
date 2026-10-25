@@ -47,6 +47,7 @@ import { IconToolMenu, type IconToolChoice } from './components/IconToolMenu';
 import { arrangeSelectedVectors, setVectorStrokeStyle, setVectorStrokeWidth, reorderVectorObjects, selectVectorObjects, setVectorObjectVisibility, selectLayer, selectLayerTarget, selectChannel, addVectorLayer } from './bridge';
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { CanvasPreview } from './CanvasPreview';
+import { DocumentPanes } from './components/DocumentPanes';
 import { subscribeCanvasZoom, newEditorWindow } from './bridge';
 import { beginTextEdit, updateTextEdit, setTextEditColor, finishTextEdit, subscribeTextSession, defaultVectorText, type TextSettings, subscribeCanvasText, subscribeCanvasColorSwap, subscribeCanvasSampledColor, subscribeCanvasTool, type CanvasTool, type DocumentEditAction, addPaintLayer, changeBitDepth, changeColorMode, changeColorProfile, changeDocumentSettings, closeDocument, combineSelectedVectors, groupSelectedVectors, ungroupSelectedVectors, editSelectedPaths, createDocument, deleteLayer, editDocument, getDocumentWorkspace, importSvgLayer, projectAction, reorderLayers, switchDocument, toggleLayer, updateLayer, emptyDocument, subscribeCanvasError, subscribeDocuments, type BitDepth, type Brush, type ColorMode, type ColorProfile, type DocumentSettings, type DocumentSnapshot, type DocumentTabSnapshot, type DocumentWorkspaceSnapshot, type LayerSettings, type PathEditAction, type PathOperation } from './bridge';
 import { initialLocale, initialTheme, messages, readPreference, savePreference, type Locale, type Theme } from './i18n';
@@ -178,6 +179,7 @@ export function Workspace() {
   const [fileBusy, setFileBusy] = useState(false);
   const filePending = useRef(false);
   const [error, setError] = useState('');
+  const [draggingDocument,setDraggingDocument]=useState(false);
   const [tabMenu,setTabMenu]=useState<{id:number;x:number;y:number}|null>(null);
   const [zoom, setZoom] = useState(1);
   const [zoomCommand, setZoomCommand] = useState({ zoom: 0, revision: 0 });
@@ -712,18 +714,6 @@ export function Workspace() {
         </div>
       </nav>
       <div className="document-area">
-        <div className="document-tabs">
-          <div className="document-tab-list" role="tablist" aria-label={t.openDocuments}>
-            {documents.map((document, index) => <div key={document.id} className="document-tab-shell" aria-current={document.id === activeDocumentId}>
-              <button type="button" role="tab" aria-selected={document.id === activeDocumentId} className="document-tab" onContextMenu={event=>{if(isTauri()&&!fileBusy){event.preventDefault();setTabMenu({id:document.id,x:event.clientX,y:event.clientY});}}} title={document.format === 'tiled' ? t.recoveryTiled : t.recoveryLegacy} onClick={() => void documentAction('switch', document.id)}>
-                <span>{document.fileName ?? `${t.untitledBase}-${index + 1}`}</span>{document.format === 'tiled' && <span className="document-format" aria-label={t.recoveryTiled}>T</span>}{document.dirty && <span className="unsaved-dot" aria-label={t.sessionOnly} />}
-              </button>
-              <button type="button" className="document-close" aria-label={`${document.fileName ?? `${t.untitledBase}-${index + 1}`} · ${t.closeDocument}`} onClick={() => void documentAction('close', document.id)}>×</button>
-            </div>)}
-            {!documentAvailable && <span className="no-document">{t.noDocument}</span>}
-          </div>
-          {documentAvailable && <span className="document-dimensions">{Number((documentState.width/pixelsPerMeasurement(measurementUnit,horizontalResolution)).toFixed(3))} × {Number((documentState.height/pixelsPerMeasurement(measurementUnit,verticalResolution)).toFixed(3))} {unitSymbols[measurementUnit]} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>}
-        </div>
         {tabMenu&&<DocumentTabMenu key={tabMenu.id} locale={locale} x={tabMenu.x} y={tabMenu.y} onClose={()=>setTabMenu(null)} onMove={async target=>{
           if(filePending.current)throw new Error({ja:'他のファイル操作が進行中です',en:'Another file operation is in progress','zh-CN':'正在进行其他文件操作'}[locale]);
           filePending.current=true;setFileBusy(true);
@@ -733,13 +723,13 @@ export function Workspace() {
           filePending.current=true;setFileBusy(true);
           try{updateWorkspace(await openDocumentView(tabMenu.id,target));}finally{filePending.current=false;setFileBusy(false);}
         }}/>}
-        <DocumentDock locale={locale} timelineRequest={timelineRequest}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !toneStudioOpen && !lutStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
+        <DocumentDock locale={locale} timelineRequest={timelineRequest}><DocumentPanes theme={theme} visible={!toneStudioOpen&&!lutStudioOpen&&!mediaBrowserOpen} documents={documents} activeId={activeDocumentId} locale={locale} disabled={fileBusy||busy} onDragging={setDraggingDocument} onWorkspace={updateWorkspace} onSelect={id=>{if(id!==activeDocumentId){void documentAction('switch',id);}}} onClose={id=>void documentAction('close',id)} onContextMenu={(id,x,y)=>setTabMenu({id,x,y})} dimensions={documentAvailable?<span className="document-dimensions">{Number((documentState.width/pixelsPerMeasurement(measurementUnit,horizontalResolution)).toFixed(3))} × {Number((documentState.height/pixelsPerMeasurement(measurementUnit,verticalResolution)).toFixed(3))} {unitSymbols[measurementUnit]} · {documentState.colorMode.toUpperCase()} · {documentState.bitDepth} bits</span>:null}><CanvasPreview resolution={horizontalResolution} verticalResolution={verticalResolution} channel={channel} locale={locale} theme={theme} brush={brush} tool={canvasTool} zoom={zoom} onDisplayZoom={setZoom} hasDocument={documentAvailable} visible={documentAvailable && !draggingDocument && !toneStudioOpen && !lutStudioOpen && !mediaBrowserOpen && (isTauri() || (!settingsOpen && !colorSettingsOpen && !newDocumentOpen && !importImageOpen && !transformAction && !directControlOpen))} occlusion={colorPickerOcclusion}
           footerAccessory={placingImage ? <div className="image-placement-controls">
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
             <button disabled={placementBusy} onClick={() => void finishPlacement(true)}>{ {ja:'確定',en:'Confirm','zh-CN':'确认'}[locale] }</button>
           </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
-          zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentDock>
+          zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentPanes></DocumentDock>
       </div>
       {panels && <Inspector layerPanelRequest={layerPanelRequest} documentAvailable={documentAvailable} onOpenLayerMask={id=>setLayerMaskTarget(current=>current??{id,documentId:activeDocumentId})} onLayerEffects={(id, effects) => { if (!ready || busy || fileBusy) return; setBusy(true); setError(''); void setLayerEffects(id, effects).then(updateDocument).catch(cause => setError(String(cause))).finally(() => setBusy(false)); }} rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={value => {void selectChannel(value).then(updateDocument).catch(cause=>setError(String(cause)));}} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}
         textEnabled={documentEditable && ready && !busy && !fileBusy && (inlineText !== null || !selectedText || selectedText.editable)} onTextChange={changeText} onTextBegin={beginText} onTextFinish={endText} locale={locale} brush={brush} backgroundColor={backgroundColor} activeColor={activeColor} onSelectColor={setActiveColor} colorPanelRequest={colorPanelRequest} onBrush={setBrush} onForegroundChange={changePaintForeground} onBackgroundChange={changePaintBackground} foregroundNone={foregroundNone} backgroundNone={backgroundNone} onForegroundNone={changeForegroundNone} onBackgroundNone={changeBackgroundNone} onSwapColors={swapColors} document={documentState} enabled={documentEditable && ready && !busy}

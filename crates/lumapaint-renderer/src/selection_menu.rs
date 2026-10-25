@@ -39,7 +39,7 @@ pub fn evaluate(doc: &Document, request: &PixelSelectionRequest) -> Result<Selec
     analyze(size, pixels, dimensions, doc.selection(), request)
 }
 // Crop to coverage plus every filter's support. Small selections on large pages
-// retain document-pixel detail; very large footprints still have a bounded budget.
+// retain document-pixel detail; large footprints use bounded overlapping tiles.
 fn refine_selection(
     dimensions: (u32, u32),
     selection: Option<&Selection>,
@@ -81,14 +81,7 @@ fn refine_selection(
     // Match document-edge behavior; artificial crop edges need transparent
     // samples for every pass, including rounding filter radii on a reduced grid.
     let budget = lumapaint_core::selection_raster::MAX_SELECTION_PIXELS;
-    let mut rect = crop(padding);
-    if f64::from(rect[2] - rect[0]) * f64::from(rect[3] - rect[1]) > budget as f64 {
-        let max_step = (f64::from(dimensions.0) * f64::from(dimensions.1) / budget as f64)
-            .sqrt()
-            .ceil() as f32;
-        rect = crop(padding + 8. * max_step);
-    }
-    let [left, top, right, bottom] = rect;
+    let [left, top, right, bottom] = crop(padding);
     if right <= left || bottom <= top {
         let mut result = Selection::from_raster(SelectionRaster::from_pixels(
             [1, 1],
@@ -101,27 +94,93 @@ fn refine_selection(
         return Ok(result);
     }
     let extent = [(right - left) as u32, (bottom - top) as u32];
-    let scale = (budget as f64 / (f64::from(extent[0]) * f64::from(extent[1])))
-        .sqrt()
-        .min(1.);
-    let mut size = extent.map(|v| (f64::from(v) * scale).floor().max(1.) as u32);
-    size[0] = size[0].min((budget / u64::from(size[1])) as u32);
     let mut local_request = request.clone();
     local_request.inverse = Some(false);
-    let mut result = analyze_at(
-        size,
-        &[],
-        (extent[0], extent[1]),
-        [left, top],
-        selection,
-        &local_request,
-    )?;
+    let mut result = if u64::from(extent[0]) * u64::from(extent[1]) <= budget {
+        analyze_at(
+            extent,
+            &[],
+            (extent[0], extent[1]),
+            [left, top],
+            selection,
+            &local_request,
+        )?
+    } else {
+        refine_tiled(
+            extent,
+            [left, top],
+            source,
+            &local_request,
+            padding.ceil() as u32,
+        )?
+    };
     // Inversion covers the entire page, including the area outside the crop,
     // without allocating a full-page mask or reducing the cropped edge detail.
     if request.inverse.unwrap_or(false) {
         result.invert(dimensions.0, dimensions.1)?;
     }
     Ok(result)
+}
+
+// Keep each filter's complete support around the output tile. Bands are encoded
+// in row order so compressed runs can merge across tile and band boundaries.
+fn refine_tiled(
+    size: [u32; 2],
+    origin: [f32; 2],
+    source: &Selection,
+    request: &PixelSelectionRequest,
+    halo: u32,
+) -> Result<Selection, String> {
+    use lumapaint_core::selection_raster::MAX_SELECTION_RUNS;
+    let mut runs: Vec<[u32; 3]> = Vec::new();
+    for y in (0..size[1]).step_by(512) {
+        let rows = 512.min(size[1] - y);
+        let mut band = vec![0u8; (size[0] * rows) as usize];
+        for x in (0..size[0]).step_by(512) {
+            let columns = 512.min(size[0] - x);
+            let left = x.saturating_sub(halo);
+            let top = y.saturating_sub(halo);
+            let right = (x + columns + halo).min(size[0]);
+            let bottom = (y + rows + halo).min(size[1]);
+            let tile_size = [right - left, bottom - top];
+            let tile = analyze_at(
+                tile_size,
+                &[],
+                (tile_size[0], tile_size[1]),
+                [origin[0] + left as f32, origin[1] + top as f32],
+                Some(source),
+                request,
+            )?;
+            let pixels = tile.raster.as_ref().unwrap().pixels();
+            for row in 0..rows {
+                let start = ((y + row - top) * tile_size[0] + x - left) as usize;
+                let target = (row * size[0] + x) as usize;
+                band[target..target + columns as usize]
+                    .copy_from_slice(&pixels[start..start + columns as usize]);
+            }
+        }
+        let encoded =
+            SelectionRaster::from_pixels([size[0], rows], [1., 0., 0., 1., 0., 0.], &band)?;
+        for &[start, len, alpha] in encoded.runs.iter() {
+            let start = start + y * size[0];
+            if let Some(last) = runs.last_mut() {
+                if last[0] + last[1] == start && last[2] == alpha {
+                    last[1] += len;
+                    continue;
+                }
+            }
+            if runs.len() == MAX_SELECTION_RUNS {
+                return Err("Selection mask complexity limit exceeded / 選択マスクが複雑すぎます / 选区蒙版过于复杂".into());
+            }
+            runs.push([start, len, alpha]);
+        }
+    }
+    Selection::from_raster(SelectionRaster {
+        size,
+        transform: [1., 0., 0., 1., origin[0], origin[1]],
+        runs: std::sync::Arc::new(runs),
+        interpolation: Default::default(),
+    })
 }
 
 fn analyze(
@@ -506,6 +565,95 @@ mod tests {
     }
 
     #[test]
+    fn selection_refine_tiles_match_full_grid_across_seams() {
+        use lumapaint_core::selection::SelectionShape;
+        let mut source = Selection::new(SelectionShape::Rectangle, [12., 8., 1000., 530.]);
+        source.invert(1030, 550).unwrap();
+        let mut seam = Selection::new(SelectionShape::Rectangle, [510., 510., 5., 5.])
+            .regions
+            .remove(0);
+        seam.operation = lumapaint_core::selection::SelectionOperation::Add;
+        source.regions.push(seam);
+        let requests = ["expand", "contract", "border", "smooth", "feather"].map(|kind| {
+            PixelSelectionRequest {
+                action: "modify".into(),
+                kind: Some(kind.into()),
+                amount: Some(3.),
+                ..Default::default()
+            }
+        });
+        for request in requests.into_iter().chain([PixelSelectionRequest {
+            action: "refine".into(),
+            smooth: Some(2.),
+            shift: Some(-3.),
+            feather: Some(2.),
+            contrast: Some(15.),
+            ..Default::default()
+        }]) {
+            let full = analyze_at(
+                [1030, 550],
+                &[],
+                (1030, 550),
+                [0., 0.],
+                Some(&source),
+                &request,
+            )
+            .unwrap();
+            let tiled = refine_tiled([1030, 550], [0., 0.], &source, &request, 20).unwrap();
+            let tiled = tiled.raster.as_ref().unwrap().pixels();
+            let full = full.raster.as_ref().unwrap().pixels();
+            let error = tiled
+                .iter()
+                .zip(&full)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            let tolerance =
+                u8::from(request.action == "refine" || request.kind.as_deref() == Some("feather"));
+            assert!(
+                error <= tolerance,
+                "{} {:?}: max alpha difference {error}",
+                request.action,
+                request.kind
+            );
+        }
+    }
+
+    #[test]
+    fn selection_refine_large_native_grid_keeps_one_pixel_hole() {
+        use lumapaint_core::selection::SelectionShape;
+        let mut source = Selection::new(SelectionShape::Rectangle, [3000., 1800., 1., 1.]);
+        source.invert(4096, 4096).unwrap();
+        let doc = selection_document(4096, source);
+        let result = evaluate(
+            &doc,
+            &PixelSelectionRequest {
+                action: "refine".into(),
+                contrast: Some(20.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let raster = result.raster.as_ref().unwrap();
+        assert_eq!(raster.size, [4096, 4096]);
+        assert_eq!(raster.transform, [1., 0., 0., 1., 0., 0.]);
+        assert_eq!(
+            result.coverage(Point {
+                x: 3000.5,
+                y: 1800.5
+            }),
+            0.
+        );
+        assert_eq!(
+            result.coverage(Point {
+                x: 2999.5,
+                y: 1800.5
+            }),
+            1.
+        );
+    }
+
+    #[test]
     fn selection_refine_large_page_keeps_single_pixels_and_inverse_outside_crop() {
         use lumapaint_core::selection::SelectionShape;
         let source = Selection::new(SelectionShape::Rectangle, [3000., 2000., 1., 1.]);
@@ -657,7 +805,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(result.raster.as_ref().unwrap().size, [2048, 2048]);
+        assert_eq!(result.raster.as_ref().unwrap().size, [8192, 8192]);
         assert_eq!(
             result.coverage(Point {
                 x: 8000.5,

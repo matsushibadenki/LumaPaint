@@ -312,6 +312,41 @@ pub async fn sync_canvas(
 }
 
 #[tauri::command]
+pub async fn sync_document_pane_gpu(
+    window: tauri::WebviewWindow,
+    id: u64,
+    generation: u64,
+    request: CanvasRequest,
+) -> Result<bool, String> {
+    if !crate::editor_windows::is_editor(window.label()) {
+        return Err("Unknown editor window".into());
+    }
+    request.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        let label = crate::modal_windows::owner(&window)?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        window
+            .with_webview(move |webview| {
+                let result = (|| {
+                    let _session = platform::SessionGuard::enter(&label)?;
+                    platform::pane_gpu::sync(webview.inner(), id, generation, request)
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        crate::diagnostic_jobs::spawn_blocking(move || rx.recv().map_err(|e| e.to_string()))
+            .await
+            .map_err(|e| e.to_string())??
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, generation, request);
+        Err("GPU panes are unavailable on this platform".into())
+    }
+}
+
+#[tauri::command]
 pub async fn reset_canvas_pan(window: tauri::WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
