@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-25",
+  "status": "implementation_validated; native performance comparison deferred by user",
+  "accepted_performance_trials": [],
+  "excluded_incomplete_attempts": [
+    {
+      "tag": "source-A1",
+      "mode": "off",
+      "log": "/tmp/lumapaint-source-A1.log",
+      "kind": "draw",
+      "planTag": "source-A1-draw",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792917302057,
+      "offset": 8767525,
+      "end": 1792917353626.803,
+      "excluded_reason": "Native safety guard interrupted during warmup; complete comparison phase unavailable. Guard checks foreground, document identity and run ownership; detailed failed condition was not logged.",
+      "trialLog": "/tmp/lumapaint-source-A1-interrupted.log",
+      "raw_log_sha256": "c13f5c9f59dc48a608074669a8a19581c90026981f1be6d62cc6c9cf64c2f054",
+      "runtime_archive": "/tmp/lumapaint-source-A1.log.gz"
+    },
+    {
+      "tag": "source-A1retry",
+      "mode": "off",
+      "log": "/tmp/lumapaint-source-A1retry.log",
+      "kind": "draw",
+      "planTag": "source-A1retry-draw",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792917415648,
+      "offset": 8280876,
+      "end": 1792917547015.114,
+      "excluded_reason": "Native safety guard interrupted before a complete gesture; no comparison accepted",
+      "trialLog": "/tmp/lumapaint-source-A1retry-interrupted.log",
+      "raw_log_sha256": "c44e4f8538d4dc40853742d3ec05c23e9491b86ea781b2f5903fce09865566d3",
+      "runtime_archive": "/tmp/lumapaint-source-A1retry.log.gz"
+    }
+  ],
+  "final_qa_binary_sha256": "69b786b0ccfef9b9441316a9b2c076c5c5e2115a91dead7755b9f694e2e6c2b4",
+  "source_sha256": {
+    "src-tauri/src/pane_gpu_macos.rs": "bcc1fa3228054a07df2233731502d0994d8dd7330747c9acab7a95be798da012",
+    "src-tauri/src/window_sessions_macos.rs": "c59a137f619bc9523521bdbbb6ef904d88717de52f35a3c89c15b20aa0840a21",
+    "src-tauri/src/canvas_macos.rs": "24c7b21dfa2647deade715eb0cabfd1fcce5ddefbe47612ea24ffb10bb5dc493",
+    "src-tauri/src/native_gesture_qa_macos.rs": "8906416f7b988745fff58ac186d882b48d6de940ce82637ec3ed6c6fddd96ed7",
+    "crates/lumapaint-renderer/src/lib.rs": "5d751c71a5d814855877b3fbf7374b65db17e1903894f06fe369725ebb11d58f",
+    "scripts/analyze-input-stages.py": "6b4d717b5290f3c5b3cbdb23c094be1c1516eec11652c7f15887dc2e62a2a696",
+    "scripts/test-input-stages.py": "294be9ef0c0a0edea94ea5fafbf976e71eaec74533e91d38c77117ac924c6036"
+  },
+  "checks": {
+    "rust_library_passed": 223,
+    "rust_library_ignored": 2,
+    "final_release": "passed",
+    "final_qa_clippy_all_targets_warnings_denied": "passed",
+    "input_stage_parser_tests": 3,
+    "existing_latency_parser_tests": 5,
+    "layout_model": "passed",
+    "core_boundaries": "passed",
+    "formatter": "passed"
+  },
+  "baseline_stage_analysis": "drawing-latency-stages-2026-10-25.json",
+  "comparison_flags": {
+    "common": [
+      "LUMAPAINT_RENDER_METRICS=1",
+      "LUMAPAINT_PANE_INPUT_PRIORITY=1",
+      "LUMAPAINT_PANE_CONTINUOUS_PRIORITY=1",
+      "LUMAPAINT_QA_DISPATCH_TIMING=1"
+    ],
+    "control": "LUMAPAINT_PANE_SOURCE_REUSE=0",
+    "new": "LUMAPAINT_PANE_SOURCE_REUSE=1"
+  },
+  "limitations": [
+    "No accepted new-source-reuse performance trial; no new latency or FPS improvement claimed.",
+    "Baseline timings belong to the earlier final-policy binary, not this new binary.",
+    "Two QA attempts interrupted by safety guard. Exact failed guard predicate was not logged.",
+    "User requested native comparison later; do not resume automatically.",
+    "Shared borrowed access is covered by state/history tests, not a new shared-window GPU performance run.",
+    "Synthetic source/dispatch timing is not hardware input-to-photon latency."
+  ],
+  "fixture_hashes_unchanged": true,
+  "qa_exit_codes": [
+    0,
+    0
+  ],
+  "temporary_qa_bundle_removed": true
+}

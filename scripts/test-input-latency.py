@@ -54,6 +54,20 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(result["host_stages"]["pointer_up"]["duration"]["p95_ms"], 2.)
         self.assertEqual(result["host_stages"]["pointer_up"]["handler_elapsed"]["p95_ms"], 3.)
 
+    def test_queue_age_matches_latest_retained_event_not_unrelated_or_warmup(self):
+        lines = [
+            "lumapaint-input-queue event=1 age_ns=99000000",
+            "lumapaint-input-present first_event=1 latest_event=1 coalesced_events=1 first_handler_to_present_host_ns=100 latest_handler_to_present_host_ns=100",
+            "lumapaint-input-queue event=7 age_ns=3000000",
+            "lumapaint-input-queue event=999 age_ns=500000000",
+            "lumapaint-input-present first_event=6 latest_event=7 coalesced_events=2 first_handler_to_present_host_ns=200 latest_handler_to_present_host_ns=100",
+            "lumapaint-input-present first_event=8 latest_event=8 coalesced_events=1 first_handler_to_present_host_ns=200 latest_handler_to_present_host_ns=100",
+        ]
+        result = latency.summarize("\n".join(lines),1)["latest_event_age_at_probe"]
+        self.assertEqual(result["samples"],1)
+        self.assertEqual(result["unmatched_presentations"],1)
+        self.assertEqual(result["p95_ms"],3.)
+
 
 if __name__ == "__main__":
     unittest.main()

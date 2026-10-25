@@ -263,6 +263,35 @@ pub(super) fn shared_project_path(id: u64) -> Option<std::path::PathBuf> {
             })
         })
 }
+/// Read canonical standard content without a rendering fork or history change.
+/// The callback must not re-enter the window/document stores.
+pub(super) fn with_shared_standard_document<T>(
+    id: u64,
+    f: impl FnOnce(&Document) -> T,
+) -> Option<T> {
+    let mut f = Some(f);
+    let result = SHARED.with(|items| {
+        let items = items.borrow();
+        match &items.get(&id)?.parked.as_ref()?.content {
+            OpenDocumentContent::Legacy(doc) => Some(f.take().unwrap()(doc)),
+            _ => None,
+        }
+    });
+    if result.is_some() {
+        return result;
+    }
+    PARKED.with(|items| {
+        let items = items.borrow();
+        let session = items
+            .values()
+            .find(|r| r.document_open && r.active_document_id == id)?;
+        if session.active_tiled_document.is_some() {
+            return None;
+        }
+        Some(f.take().unwrap()(&session.document))
+    })
+}
+
 pub(super) fn shared_preview_document(id: u64) -> Option<super::super::ThumbnailDocument> {
     let preview = |content: &OpenDocumentContent| match content {
         OpenDocumentContent::Legacy(doc) => Some(super::super::ThumbnailDocument::Standard(
@@ -1452,6 +1481,56 @@ mod tests {
         assert_eq!(pane_document_view(id), Some(view));
         close_window("editor-90962");
         close_window("editor-90961");
+    }
+
+    #[test]
+    fn pane_scalar_reads_borrow_canonical_documents_and_preserve_history() {
+        let _session = SessionGuard::enter("editor-90953").unwrap();
+        let id = new_document(preset("Borrowed pane"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        DOCUMENT.with(|d| d.borrow_mut().add_vector_layer().unwrap());
+        let before = DOCUMENT.with(|d| (d.borrow().revision(), d.borrow().snapshot().can_undo));
+        let active_pointer = DOCUMENT.with(|d| &*d.borrow() as *const Document as usize);
+        assert_eq!(
+            with_pane_standard_document(id, |d| d as *const Document as usize).unwrap(),
+            Some(active_pointer)
+        );
+        let other = new_document(preset("Active neighbor"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        let inactive_pointer = INACTIVE_DOCUMENTS.with(|items| {
+            let items = items.borrow();
+            match &items.iter().find(|e| e.id == id).unwrap().content {
+                OpenDocumentContent::Legacy(d) => &**d as *const Document as usize,
+                _ => panic!("legacy content"),
+            }
+        });
+        assert_eq!(
+            with_pane_standard_document(id, |d| d as *const Document as usize).unwrap(),
+            Some(inactive_pointer)
+        );
+        assert_eq!(
+            with_pane_standard_document(id, |d| (d.revision(), d.snapshot().can_undo)).unwrap(),
+            Some(before)
+        );
+        assert_eq!(workspace_snapshot().active_id, Some(other));
+        assert!(with_pane_standard_document(u64::MAX, |d| d.revision()).is_err());
+        switch_document(id).unwrap();
+        open_document_view(id, "editor-90954").unwrap();
+        {
+            let _target = SessionGuard::enter("editor-90954").unwrap();
+            let neighbor = new_document(preset("Shared neighbor")).unwrap().active_id;
+            assert_eq!(
+                with_pane_standard_document(id, |d| (d.revision(), d.snapshot().can_undo)).unwrap(),
+                Some(before)
+            );
+            assert_eq!(workspace_snapshot().active_id, neighbor);
+        }
+        close_window("editor-90954");
+        close_window("editor-90953");
     }
 
     #[test]

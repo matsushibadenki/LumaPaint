@@ -1,0 +1,1165 @@
+{
+  "scope": "Matched retained latest input IDs; two warmup gestures excluded. Stage durations overlap and are not additive. Synthetic source\u2192dispatch includes producer scheduling/main dispatch/factory; dispatch\u2192probe includes logging/post/AppKit/pre-pointer work. First-handler presentation tails are reported separately by the continuous summarizer.",
+  "trials": [
+    {
+      "planTag": "final-A1-draw",
+      "kind": "draw",
+      "mode": "off",
+      "retained_presentations": 706,
+      "dispatch_unmatched_or_incompatible": 706,
+      "source_to_probe": {
+        "samples": 706,
+        "p50_ms": 19.322583,
+        "p95_ms": 19.444209,
+        "max_ms": 21.494833
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 706,
+        "p50_ms": 0.814959,
+        "p95_ms": 2.32425,
+        "max_ms": 13.3015
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "canvas_redraw": {
+          "samples": 14,
+          "p50_ms": 1.3075,
+          "p95_ms": 2.904583,
+          "max_ms": 2.904583
+        },
+        "document_checkpoint_prepare": {
+          "samples": 14,
+          "p50_ms": 0.001375,
+          "p95_ms": 0.303917,
+          "max_ms": 0.303917
+        },
+        "document_memory_policy": {
+          "samples": 14,
+          "p50_ms": 0.005417,
+          "p95_ms": 0.011833,
+          "max_ms": 0.011833
+        },
+        "document_notify": {
+          "samples": 14,
+          "p50_ms": 0.86575,
+          "p95_ms": 1.18725,
+          "max_ms": 1.18725
+        },
+        "document_shared_notify": {
+          "samples": 14,
+          "p50_ms": 0.000583,
+          "p95_ms": 0.001,
+          "max_ms": 0.001
+        },
+        "document_snapshot_emit": {
+          "samples": 14,
+          "p50_ms": 0.512667,
+          "p95_ms": 0.715709,
+          "max_ms": 0.715709
+        },
+        "document_workspace_delivery": {
+          "samples": 14,
+          "p50_ms": 0.098209,
+          "p95_ms": 0.170167,
+          "max_ms": 0.170167
+        },
+        "document_workspace_emit": {
+          "samples": 14,
+          "p50_ms": 0.135416,
+          "p95_ms": 0.213583,
+          "max_ms": 0.213583
+        },
+        "encode_brush": {
+          "samples": 706,
+          "p50_ms": 0.000208,
+          "p95_ms": 0.000458,
+          "max_ms": 0.00225
+        },
+        "encode_glyph": {
+          "samples": 706,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.000333,
+          "max_ms": 0.00075
+        },
+        "encode_layers": {
+          "samples": 706,
+          "p50_ms": 0.003583,
+          "p95_ms": 0.005875,
+          "max_ms": 0.018584
+        },
+        "encode_mesh": {
+          "samples": 706,
+          "p50_ms": 0.000583,
+          "p95_ms": 0.001208,
+          "max_ms": 0.00325
+        },
+        "encode_native": {
+          "samples": 706,
+          "p50_ms": 0.0015,
+          "p95_ms": 0.002875,
+          "max_ms": 0.027542
+        },
+        "encode_passes": {
+          "samples": 706,
+          "p50_ms": 0.008166,
+          "p95_ms": 0.013666,
+          "max_ms": 0.024542
+        },
+        "encode_setup": {
+          "samples": 706,
+          "p50_ms": 0.023709,
+          "p95_ms": 0.054584,
+          "max_ms": 0.123916
+        },
+        "encode_timing": {
+          "samples": 706,
+          "p50_ms": 0.037667,
+          "p95_ms": 0.063792,
+          "max_ms": 2.176833
+        },
+        "encode_workspace": {
+          "samples": 706,
+          "p50_ms": 0.001042,
+          "p95_ms": 0.005208,
+          "max_ms": 0.928125
+        },
+        "pointer_drag": {
+          "samples": 692,
+          "p50_ms": 0.009792,
+          "p95_ms": 0.015209,
+          "max_ms": 0.047083
+        },
+        "pointer_up": {
+          "samples": 14,
+          "p50_ms": 2.554833,
+          "p95_ms": 13.494125,
+          "max_ms": 13.494125
+        },
+        "queue_present": {
+          "samples": 706,
+          "p50_ms": 0.0115,
+          "p95_ms": 0.017167,
+          "max_ms": 0.049083
+        },
+        "queue_submit": {
+          "samples": 706,
+          "p50_ms": 0.129541,
+          "p95_ms": 0.192875,
+          "max_ms": 0.386334
+        },
+        "render_encode": {
+          "samples": 706,
+          "p50_ms": 0.22475,
+          "p95_ms": 0.324125,
+          "max_ms": 2.453917
+        },
+        "render_prepare": {
+          "samples": 706,
+          "p50_ms": 0.001,
+          "p95_ms": 0.001833,
+          "max_ms": 0.006125
+        },
+        "surface_acquire": {
+          "samples": 706,
+          "p50_ms": 0.020208,
+          "p95_ms": 0.051667,
+          "max_ms": 12.709459
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-A1-pan",
+      "kind": "pan",
+      "mode": "off",
+      "retained_presentations": 808,
+      "dispatch_unmatched_or_incompatible": 808,
+      "source_to_probe": {
+        "samples": 808,
+        "p50_ms": 6.503667,
+        "p95_ms": 6.611,
+        "max_ms": 13.648625
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 808,
+        "p50_ms": 0.12525,
+        "p95_ms": 0.227041,
+        "max_ms": 5.768125
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "encode_brush": {
+          "samples": 808,
+          "p50_ms": 0.000167,
+          "p95_ms": 0.000458,
+          "max_ms": 0.002875
+        },
+        "encode_glyph": {
+          "samples": 808,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 0.00025,
+          "max_ms": 0.003375
+        },
+        "encode_layers": {
+          "samples": 808,
+          "p50_ms": 0.009125,
+          "p95_ms": 0.013083,
+          "max_ms": 0.058333
+        },
+        "encode_mesh": {
+          "samples": 808,
+          "p50_ms": 0.0005,
+          "p95_ms": 0.001083,
+          "max_ms": 0.005292
+        },
+        "encode_native": {
+          "samples": 808,
+          "p50_ms": 0.001417,
+          "p95_ms": 0.002125,
+          "max_ms": 0.008042
+        },
+        "encode_passes": {
+          "samples": 808,
+          "p50_ms": 0.007458,
+          "p95_ms": 0.011291,
+          "max_ms": 0.038708
+        },
+        "encode_setup": {
+          "samples": 808,
+          "p50_ms": 0.026209,
+          "p95_ms": 0.046666,
+          "max_ms": 0.102792
+        },
+        "encode_timing": {
+          "samples": 808,
+          "p50_ms": 0.035917,
+          "p95_ms": 0.05175,
+          "max_ms": 0.181167
+        },
+        "encode_workspace": {
+          "samples": 808,
+          "p50_ms": 0.001666,
+          "p95_ms": 0.002291,
+          "max_ms": 0.011125
+        },
+        "pan_drag": {
+          "samples": 808,
+          "p50_ms": 0.025333,
+          "p95_ms": 0.036042,
+          "max_ms": 0.076417
+        },
+        "queue_present": {
+          "samples": 808,
+          "p50_ms": 0.011166,
+          "p95_ms": 0.019833,
+          "max_ms": 0.038042
+        },
+        "queue_submit": {
+          "samples": 808,
+          "p50_ms": 0.120167,
+          "p95_ms": 0.161,
+          "max_ms": 0.335792
+        },
+        "render_encode": {
+          "samples": 808,
+          "p50_ms": 0.233167,
+          "p95_ms": 0.300208,
+          "max_ms": 0.549125
+        },
+        "render_prepare": {
+          "samples": 808,
+          "p50_ms": 0.001292,
+          "p95_ms": 0.002125,
+          "max_ms": 0.005917
+        },
+        "surface_acquire": {
+          "samples": 808,
+          "p50_ms": 0.019459,
+          "p95_ms": 0.029125,
+          "max_ms": 0.071208
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-B1-draw",
+      "kind": "draw",
+      "mode": "on",
+      "retained_presentations": 834,
+      "dispatch_unmatched_or_incompatible": 834,
+      "source_to_probe": {
+        "samples": 834,
+        "p50_ms": 8.752959,
+        "p95_ms": 10.178542,
+        "max_ms": 15.874875
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 834,
+        "p50_ms": 0.765917,
+        "p95_ms": 2.588959,
+        "max_ms": 12.683417
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "canvas_redraw": {
+          "samples": 14,
+          "p50_ms": 1.497709,
+          "p95_ms": 2.809,
+          "max_ms": 2.809
+        },
+        "document_checkpoint_prepare": {
+          "samples": 14,
+          "p50_ms": 0.000666,
+          "p95_ms": 0.2835,
+          "max_ms": 0.2835
+        },
+        "document_memory_policy": {
+          "samples": 14,
+          "p50_ms": 0.0045,
+          "p95_ms": 0.005792,
+          "max_ms": 0.005792
+        },
+        "document_notify": {
+          "samples": 14,
+          "p50_ms": 0.64425,
+          "p95_ms": 1.977791,
+          "max_ms": 1.977791
+        },
+        "document_shared_notify": {
+          "samples": 14,
+          "p50_ms": 0.0005,
+          "p95_ms": 0.000958,
+          "max_ms": 0.000958
+        },
+        "document_snapshot_emit": {
+          "samples": 14,
+          "p50_ms": 0.410375,
+          "p95_ms": 0.477458,
+          "max_ms": 0.477458
+        },
+        "document_workspace_delivery": {
+          "samples": 14,
+          "p50_ms": 0.08025,
+          "p95_ms": 0.094375,
+          "max_ms": 0.094375
+        },
+        "document_workspace_emit": {
+          "samples": 14,
+          "p50_ms": 0.114042,
+          "p95_ms": 1.291458,
+          "max_ms": 1.291458
+        },
+        "encode_brush": {
+          "samples": 834,
+          "p50_ms": 0.000208,
+          "p95_ms": 0.000375,
+          "max_ms": 0.000625
+        },
+        "encode_glyph": {
+          "samples": 834,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.00025,
+          "max_ms": 0.0005
+        },
+        "encode_layers": {
+          "samples": 834,
+          "p50_ms": 0.003583,
+          "p95_ms": 0.004625,
+          "max_ms": 0.006334
+        },
+        "encode_mesh": {
+          "samples": 834,
+          "p50_ms": 0.000708,
+          "p95_ms": 0.001,
+          "max_ms": 0.001959
+        },
+        "encode_native": {
+          "samples": 834,
+          "p50_ms": 0.001708,
+          "p95_ms": 0.002375,
+          "max_ms": 0.019917
+        },
+        "encode_passes": {
+          "samples": 834,
+          "p50_ms": 0.008333,
+          "p95_ms": 0.01175,
+          "max_ms": 0.031291
+        },
+        "encode_setup": {
+          "samples": 834,
+          "p50_ms": 0.02425,
+          "p95_ms": 0.053584,
+          "max_ms": 0.08225
+        },
+        "encode_timing": {
+          "samples": 834,
+          "p50_ms": 0.03725,
+          "p95_ms": 0.05425,
+          "max_ms": 0.161541
+        },
+        "encode_workspace": {
+          "samples": 834,
+          "p50_ms": 0.001042,
+          "p95_ms": 0.004083,
+          "max_ms": 0.763333
+        },
+        "pointer_drag": {
+          "samples": 820,
+          "p50_ms": 0.01025,
+          "p95_ms": 0.013167,
+          "max_ms": 0.028792
+        },
+        "pointer_up": {
+          "samples": 14,
+          "p50_ms": 2.235917,
+          "p95_ms": 11.304208,
+          "max_ms": 11.304208
+        },
+        "queue_present": {
+          "samples": 834,
+          "p50_ms": 0.012834,
+          "p95_ms": 0.019667,
+          "max_ms": 0.051084
+        },
+        "queue_submit": {
+          "samples": 834,
+          "p50_ms": 0.136834,
+          "p95_ms": 0.177542,
+          "max_ms": 0.400458
+        },
+        "render_encode": {
+          "samples": 834,
+          "p50_ms": 0.210333,
+          "p95_ms": 0.292583,
+          "max_ms": 1.835292
+        },
+        "render_prepare": {
+          "samples": 834,
+          "p50_ms": 0.000959,
+          "p95_ms": 0.001459,
+          "max_ms": 0.01325
+        },
+        "surface_acquire": {
+          "samples": 834,
+          "p50_ms": 0.027625,
+          "p95_ms": 0.633875,
+          "max_ms": 0.847583
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-B1-pan",
+      "kind": "pan",
+      "mode": "on",
+      "retained_presentations": 840,
+      "dispatch_unmatched_or_incompatible": 840,
+      "source_to_probe": {
+        "samples": 840,
+        "p50_ms": 10.717334,
+        "p95_ms": 12.292167,
+        "max_ms": 18.098542
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 840,
+        "p50_ms": 0.11025,
+        "p95_ms": 0.156375,
+        "max_ms": 8.799708
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "encode_brush": {
+          "samples": 840,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.000375,
+          "max_ms": 0.001625
+        },
+        "encode_glyph": {
+          "samples": 840,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 0.000208,
+          "max_ms": 0.002042
+        },
+        "encode_layers": {
+          "samples": 840,
+          "p50_ms": 0.006125,
+          "p95_ms": 0.008458,
+          "max_ms": 0.047792
+        },
+        "encode_mesh": {
+          "samples": 840,
+          "p50_ms": 0.000542,
+          "p95_ms": 0.001042,
+          "max_ms": 0.003667
+        },
+        "encode_native": {
+          "samples": 840,
+          "p50_ms": 0.00125,
+          "p95_ms": 0.001917,
+          "max_ms": 0.006208
+        },
+        "encode_passes": {
+          "samples": 840,
+          "p50_ms": 0.006334,
+          "p95_ms": 0.009417,
+          "max_ms": 0.047875
+        },
+        "encode_setup": {
+          "samples": 840,
+          "p50_ms": 0.022958,
+          "p95_ms": 0.036791,
+          "max_ms": 0.134292
+        },
+        "encode_timing": {
+          "samples": 840,
+          "p50_ms": 0.028917,
+          "p95_ms": 0.039083,
+          "max_ms": 0.197667
+        },
+        "encode_workspace": {
+          "samples": 840,
+          "p50_ms": 0.001458,
+          "p95_ms": 0.001833,
+          "max_ms": 0.004833
+        },
+        "pan_drag": {
+          "samples": 840,
+          "p50_ms": 0.021625,
+          "p95_ms": 0.028875,
+          "max_ms": 0.069917
+        },
+        "queue_present": {
+          "samples": 840,
+          "p50_ms": 0.009458,
+          "p95_ms": 0.015042,
+          "max_ms": 0.052125
+        },
+        "queue_submit": {
+          "samples": 840,
+          "p50_ms": 0.105209,
+          "p95_ms": 0.139166,
+          "max_ms": 0.502625
+        },
+        "render_encode": {
+          "samples": 840,
+          "p50_ms": 0.211917,
+          "p95_ms": 0.274584,
+          "max_ms": 0.715792
+        },
+        "render_prepare": {
+          "samples": 840,
+          "p50_ms": 0.001208,
+          "p95_ms": 0.00175,
+          "max_ms": 0.003458
+        },
+        "surface_acquire": {
+          "samples": 840,
+          "p50_ms": 0.018167,
+          "p95_ms": 0.02525,
+          "max_ms": 0.102209
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-B2-draw",
+      "kind": "draw",
+      "mode": "on",
+      "retained_presentations": 839,
+      "dispatch_unmatched_or_incompatible": 839,
+      "source_to_probe": {
+        "samples": 839,
+        "p50_ms": 15.003542,
+        "p95_ms": 15.140791,
+        "max_ms": 16.619916
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 839,
+        "p50_ms": 0.822291,
+        "p95_ms": 2.502542,
+        "max_ms": 14.385292
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "canvas_redraw": {
+          "samples": 14,
+          "p50_ms": 1.514417,
+          "p95_ms": 3.917125,
+          "max_ms": 3.917125
+        },
+        "document_checkpoint_prepare": {
+          "samples": 14,
+          "p50_ms": 0.001542,
+          "p95_ms": 0.434791,
+          "max_ms": 0.434791
+        },
+        "document_memory_policy": {
+          "samples": 14,
+          "p50_ms": 0.00525,
+          "p95_ms": 0.014542,
+          "max_ms": 0.014542
+        },
+        "document_notify": {
+          "samples": 14,
+          "p50_ms": 0.850625,
+          "p95_ms": 1.224417,
+          "max_ms": 1.224417
+        },
+        "document_shared_notify": {
+          "samples": 14,
+          "p50_ms": 0.000542,
+          "p95_ms": 0.000792,
+          "max_ms": 0.000792
+        },
+        "document_snapshot_emit": {
+          "samples": 14,
+          "p50_ms": 0.51775,
+          "p95_ms": 0.694916,
+          "max_ms": 0.694916
+        },
+        "document_workspace_delivery": {
+          "samples": 14,
+          "p50_ms": 0.090167,
+          "p95_ms": 0.171334,
+          "max_ms": 0.171334
+        },
+        "document_workspace_emit": {
+          "samples": 14,
+          "p50_ms": 0.131417,
+          "p95_ms": 0.210542,
+          "max_ms": 0.210542
+        },
+        "encode_brush": {
+          "samples": 839,
+          "p50_ms": 0.000209,
+          "p95_ms": 0.000458,
+          "max_ms": 0.002375
+        },
+        "encode_glyph": {
+          "samples": 839,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.000292,
+          "max_ms": 0.002833
+        },
+        "encode_layers": {
+          "samples": 839,
+          "p50_ms": 0.003958,
+          "p95_ms": 0.00625,
+          "max_ms": 0.015708
+        },
+        "encode_mesh": {
+          "samples": 839,
+          "p50_ms": 0.000709,
+          "p95_ms": 0.001166,
+          "max_ms": 0.002209
+        },
+        "encode_native": {
+          "samples": 839,
+          "p50_ms": 0.001667,
+          "p95_ms": 0.002542,
+          "max_ms": 0.037334
+        },
+        "encode_passes": {
+          "samples": 839,
+          "p50_ms": 0.00975,
+          "p95_ms": 0.014875,
+          "max_ms": 0.042875
+        },
+        "encode_setup": {
+          "samples": 839,
+          "p50_ms": 0.03075,
+          "p95_ms": 0.06925,
+          "max_ms": 0.115292
+        },
+        "encode_timing": {
+          "samples": 839,
+          "p50_ms": 0.039625,
+          "p95_ms": 0.055833,
+          "max_ms": 2.229875
+        },
+        "encode_workspace": {
+          "samples": 839,
+          "p50_ms": 0.001125,
+          "p95_ms": 0.004792,
+          "max_ms": 1.065708
+        },
+        "pointer_drag": {
+          "samples": 825,
+          "p50_ms": 0.011042,
+          "p95_ms": 0.0175,
+          "max_ms": 0.051709
+        },
+        "pointer_up": {
+          "samples": 14,
+          "p50_ms": 4.830625,
+          "p95_ms": 9.86725,
+          "max_ms": 9.86725
+        },
+        "queue_present": {
+          "samples": 839,
+          "p50_ms": 0.012542,
+          "p95_ms": 0.019417,
+          "max_ms": 0.052459
+        },
+        "queue_submit": {
+          "samples": 839,
+          "p50_ms": 0.147458,
+          "p95_ms": 0.207417,
+          "max_ms": 0.454209
+        },
+        "render_encode": {
+          "samples": 839,
+          "p50_ms": 0.232125,
+          "p95_ms": 0.3375,
+          "max_ms": 2.497084
+        },
+        "render_prepare": {
+          "samples": 839,
+          "p50_ms": 0.001166,
+          "p95_ms": 0.002083,
+          "max_ms": 0.012875
+        },
+        "surface_acquire": {
+          "samples": 839,
+          "p50_ms": 0.02925,
+          "p95_ms": 0.751292,
+          "max_ms": 5.110916
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-B2-pan",
+      "kind": "pan",
+      "mode": "on",
+      "retained_presentations": 826,
+      "dispatch_unmatched_or_incompatible": 826,
+      "source_to_probe": {
+        "samples": 826,
+        "p50_ms": 5.752209,
+        "p95_ms": 5.800501,
+        "max_ms": 5.947833
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 826,
+        "p50_ms": 0.13875,
+        "p95_ms": 0.259333,
+        "max_ms": 5.824833
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "encode_brush": {
+          "samples": 826,
+          "p50_ms": 0.000208,
+          "p95_ms": 0.0005,
+          "max_ms": 0.003875
+        },
+        "encode_glyph": {
+          "samples": 826,
+          "p50_ms": 8.4e-05,
+          "p95_ms": 0.000333,
+          "max_ms": 0.005167
+        },
+        "encode_layers": {
+          "samples": 826,
+          "p50_ms": 0.008834,
+          "p95_ms": 0.012375,
+          "max_ms": 0.056083
+        },
+        "encode_mesh": {
+          "samples": 826,
+          "p50_ms": 0.00075,
+          "p95_ms": 0.001333,
+          "max_ms": 0.004042
+        },
+        "encode_native": {
+          "samples": 826,
+          "p50_ms": 0.001625,
+          "p95_ms": 0.0025,
+          "max_ms": 0.009917
+        },
+        "encode_passes": {
+          "samples": 826,
+          "p50_ms": 0.009459,
+          "p95_ms": 0.014792,
+          "max_ms": 0.04475
+        },
+        "encode_setup": {
+          "samples": 826,
+          "p50_ms": 0.041042,
+          "p95_ms": 0.077625,
+          "max_ms": 0.168958
+        },
+        "encode_timing": {
+          "samples": 826,
+          "p50_ms": 0.038666,
+          "p95_ms": 0.054375,
+          "max_ms": 0.220125
+        },
+        "encode_workspace": {
+          "samples": 826,
+          "p50_ms": 0.001584,
+          "p95_ms": 0.002167,
+          "max_ms": 0.011958
+        },
+        "pan_drag": {
+          "samples": 826,
+          "p50_ms": 0.023833,
+          "p95_ms": 0.034041,
+          "max_ms": 0.078
+        },
+        "queue_present": {
+          "samples": 826,
+          "p50_ms": 0.013083,
+          "p95_ms": 0.018708,
+          "max_ms": 0.052375
+        },
+        "queue_submit": {
+          "samples": 826,
+          "p50_ms": 0.145958,
+          "p95_ms": 0.209375,
+          "max_ms": 0.383041
+        },
+        "render_encode": {
+          "samples": 826,
+          "p50_ms": 0.251917,
+          "p95_ms": 0.33575,
+          "max_ms": 4.26275
+        },
+        "render_prepare": {
+          "samples": 826,
+          "p50_ms": 0.001583,
+          "p95_ms": 0.002291,
+          "max_ms": 0.013666
+        },
+        "surface_acquire": {
+          "samples": 826,
+          "p50_ms": 0.02425,
+          "p95_ms": 0.038209,
+          "max_ms": 0.085875
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-A2retry-draw",
+      "kind": "draw",
+      "mode": "off",
+      "retained_presentations": 838,
+      "dispatch_unmatched_or_incompatible": 838,
+      "source_to_probe": {
+        "samples": 838,
+        "p50_ms": 12.390708,
+        "p95_ms": 14.223625,
+        "max_ms": 19.227208
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 838,
+        "p50_ms": 0.627875,
+        "p95_ms": 1.878375,
+        "max_ms": 4.867333
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "canvas_redraw": {
+          "samples": 14,
+          "p50_ms": 1.175166,
+          "p95_ms": 3.103334,
+          "max_ms": 3.103334
+        },
+        "document_checkpoint_prepare": {
+          "samples": 14,
+          "p50_ms": 0.000625,
+          "p95_ms": 0.269458,
+          "max_ms": 0.269458
+        },
+        "document_memory_policy": {
+          "samples": 14,
+          "p50_ms": 0.004042,
+          "p95_ms": 0.007708,
+          "max_ms": 0.007708
+        },
+        "document_notify": {
+          "samples": 14,
+          "p50_ms": 0.730417,
+          "p95_ms": 1.343708,
+          "max_ms": 1.343708
+        },
+        "document_shared_notify": {
+          "samples": 14,
+          "p50_ms": 0.000541,
+          "p95_ms": 0.000709,
+          "max_ms": 0.000709
+        },
+        "document_snapshot_emit": {
+          "samples": 14,
+          "p50_ms": 0.406584,
+          "p95_ms": 0.468166,
+          "max_ms": 0.468166
+        },
+        "document_workspace_delivery": {
+          "samples": 14,
+          "p50_ms": 0.075125,
+          "p95_ms": 0.119625,
+          "max_ms": 0.119625
+        },
+        "document_workspace_emit": {
+          "samples": 14,
+          "p50_ms": 0.1125,
+          "p95_ms": 0.732125,
+          "max_ms": 0.732125
+        },
+        "encode_brush": {
+          "samples": 838,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.000375,
+          "max_ms": 0.002459
+        },
+        "encode_glyph": {
+          "samples": 838,
+          "p50_ms": 8.3e-05,
+          "p95_ms": 0.000209,
+          "max_ms": 0.000583
+        },
+        "encode_layers": {
+          "samples": 838,
+          "p50_ms": 0.00275,
+          "p95_ms": 0.005041,
+          "max_ms": 0.015042
+        },
+        "encode_mesh": {
+          "samples": 838,
+          "p50_ms": 0.000459,
+          "p95_ms": 0.001,
+          "max_ms": 0.005917
+        },
+        "encode_native": {
+          "samples": 838,
+          "p50_ms": 0.001125,
+          "p95_ms": 0.002417,
+          "max_ms": 0.016458
+        },
+        "encode_passes": {
+          "samples": 838,
+          "p50_ms": 0.006083,
+          "p95_ms": 0.011125,
+          "max_ms": 0.030334
+        },
+        "encode_setup": {
+          "samples": 838,
+          "p50_ms": 0.016916,
+          "p95_ms": 0.033667,
+          "max_ms": 0.063959
+        },
+        "encode_timing": {
+          "samples": 838,
+          "p50_ms": 0.029084,
+          "p95_ms": 0.054666,
+          "max_ms": 0.307667
+        },
+        "encode_workspace": {
+          "samples": 838,
+          "p50_ms": 0.000833,
+          "p95_ms": 0.003958,
+          "max_ms": 0.844041
+        },
+        "pointer_drag": {
+          "samples": 824,
+          "p50_ms": 0.0085,
+          "p95_ms": 0.014667,
+          "max_ms": 0.029083
+        },
+        "pointer_up": {
+          "samples": 14,
+          "p50_ms": 4.04725,
+          "p95_ms": 7.232,
+          "max_ms": 7.232
+        },
+        "queue_present": {
+          "samples": 838,
+          "p50_ms": 0.010041,
+          "p95_ms": 0.015125,
+          "max_ms": 0.045041
+        },
+        "queue_submit": {
+          "samples": 838,
+          "p50_ms": 0.10475,
+          "p95_ms": 0.147167,
+          "max_ms": 0.527542
+        },
+        "render_encode": {
+          "samples": 838,
+          "p50_ms": 0.182334,
+          "p95_ms": 0.331709,
+          "max_ms": 1.162791
+        },
+        "render_prepare": {
+          "samples": 838,
+          "p50_ms": 0.000709,
+          "p95_ms": 0.001292,
+          "max_ms": 0.010667
+        },
+        "surface_acquire": {
+          "samples": 838,
+          "p50_ms": 0.017625,
+          "p95_ms": 0.02725,
+          "max_ms": 0.055083
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    },
+    {
+      "planTag": "final-A2retry-pan",
+      "kind": "pan",
+      "mode": "off",
+      "retained_presentations": 836,
+      "dispatch_unmatched_or_incompatible": 836,
+      "source_to_probe": {
+        "samples": 836,
+        "p50_ms": 10.381209,
+        "p95_ms": 12.051541,
+        "max_ms": 16.593917
+      },
+      "synthetic_source_to_dispatch": null,
+      "dispatch_to_pointer_probe": null,
+      "handler_to_prepare_start": {
+        "samples": 836,
+        "p50_ms": 0.102,
+        "p95_ms": 0.185708,
+        "max_ms": 5.82525
+      },
+      "handler_to_display_callback": null,
+      "handler_end_to_display_callback": null,
+      "stage_host_durations": {
+        "encode_brush": {
+          "samples": 836,
+          "p50_ms": 0.000125,
+          "p95_ms": 0.000458,
+          "max_ms": 0.001166
+        },
+        "encode_glyph": {
+          "samples": 836,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 0.000208,
+          "max_ms": 0.000708
+        },
+        "encode_layers": {
+          "samples": 836,
+          "p50_ms": 0.00625,
+          "p95_ms": 0.009708,
+          "max_ms": 0.0345
+        },
+        "encode_mesh": {
+          "samples": 836,
+          "p50_ms": 0.000417,
+          "p95_ms": 0.001208,
+          "max_ms": 0.002667
+        },
+        "encode_native": {
+          "samples": 836,
+          "p50_ms": 0.001125,
+          "p95_ms": 0.003333,
+          "max_ms": 0.005792
+        },
+        "encode_passes": {
+          "samples": 836,
+          "p50_ms": 0.00575,
+          "p95_ms": 0.012541,
+          "max_ms": 0.0345
+        },
+        "encode_setup": {
+          "samples": 836,
+          "p50_ms": 0.021083,
+          "p95_ms": 0.039625,
+          "max_ms": 0.094875
+        },
+        "encode_timing": {
+          "samples": 836,
+          "p50_ms": 0.030291,
+          "p95_ms": 0.046583,
+          "max_ms": 0.186416
+        },
+        "encode_workspace": {
+          "samples": 836,
+          "p50_ms": 0.001459,
+          "p95_ms": 0.002125,
+          "max_ms": 0.007959
+        },
+        "pan_drag": {
+          "samples": 836,
+          "p50_ms": 0.020416,
+          "p95_ms": 0.04075,
+          "max_ms": 0.06025
+        },
+        "queue_present": {
+          "samples": 836,
+          "p50_ms": 0.011042,
+          "p95_ms": 0.017083,
+          "max_ms": 0.046
+        },
+        "queue_submit": {
+          "samples": 836,
+          "p50_ms": 0.109292,
+          "p95_ms": 0.165791,
+          "max_ms": 0.391916
+        },
+        "render_encode": {
+          "samples": 836,
+          "p50_ms": 0.216292,
+          "p95_ms": 0.288791,
+          "max_ms": 0.501
+        },
+        "render_prepare": {
+          "samples": 836,
+          "p50_ms": 0.001041,
+          "p95_ms": 0.001958,
+          "max_ms": 0.004625
+        },
+        "surface_acquire": {
+          "samples": 836,
+          "p50_ms": 0.018209,
+          "p95_ms": 0.031584,
+          "max_ms": 0.066208
+        }
+      },
+      "render_forks": 0,
+      "render_forks_avoided": 0,
+      "fork_host_duration": null
+    }
+  ]
+}

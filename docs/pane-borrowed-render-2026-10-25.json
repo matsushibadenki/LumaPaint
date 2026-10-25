@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-25",
+  "status": "implemented; native comparison remains deferred by user",
+  "source_sha256": {
+    "src-tauri/src/pane_gpu_macos.rs": "590d1ef21d13bc27f0be387fd4b866b5401f50890cc3316816914bee8944b7f7",
+    "src-tauri/src/native_gesture_qa_macos.rs": "64a9c9ace8c7d767f8c1a2fb6a16b59323f9728867372e02cf01b053349b785d"
+  },
+  "checks": {
+    "qa_feature_library_passed": 224,
+    "qa_feature_library_ignored": 2,
+    "qa_feature_clippy_all_targets_warnings_denied": "passed",
+    "stage_parser_tests": 3,
+    "latency_parser_tests": 5,
+    "layout_model": "passed",
+    "formatter": "passed",
+    "core_boundaries": "passed"
+  },
+  "changes": [
+    "Changed standard pane synchronization renders through a synchronous canonical borrow; eager diagnostic control preserved.",
+    "Borrowed/eager standard renders share animated-preview ownership logic; deferred animated acquisition does not fall back to the editing document.",
+    "Render/install errors hide surfaces and clear reuse stamps; stamps require advanced presentation serials.",
+    "QA guard logs distinct failure predicate and observed state; existing guards stay enabled."
+  ],
+  "counter_scope": {
+    "host.pane_borrowed_renders": "standard sync requests routed through borrowed rendering, not guaranteed GPU presentations",
+    "host.pane_render_forks_avoided": "both retained skips and borrowed changed renders; not a GPU skip counter",
+    "lumapaint-pane-sync-skip": "retained GPU presentation reuse signal"
+  },
+  "native_input_run_this_followup": false,
+  "release_build_this_followup": false,
+  "new_latency_or_fps_gain_claimed": false,
+  "pending": [
+    "New Release rebuild and same-binary native comparison, deferred by explicit user preference.",
+    "Native visual/animation/failure-path validation and shared-window GPU workload.",
+    "Physical mouse/pen, Windows/Linux and multiple displays."
+  ],
+  "previous_guard_failures": "remain unclassified; new logging does not retroactively prove foreground loss"
+}

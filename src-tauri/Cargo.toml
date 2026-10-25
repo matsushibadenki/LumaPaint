@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Non-destructive illustration, comics, and animation workspace"
 
 [features]
+native-input-qa = []
 heap-profile = ["lumapaint-core/heap-profile", "lumapaint-renderer/heap-profile"]
 
 [lib]
@@ -38,4 +39,4 @@ pollster = "=1.0.1"
 raw-window-handle = "=0.6.2"
 objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["objc2-core-graphics", "std", "NSView", "NSPasteboard", "NSPasteboardItem", "NSDragging", "NSWindow", "NSResponder", "NSEvent", "NSApplication", "NSColor", "NSCursor", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSButton", "NSButtonCell", "NSImage", "NSText", "NSTextView", "NSTextContainer", "NSTextStorage", "NSFont", "NSFontManager", "NSParagraphStyle", "NSAttributedString", "NSTextInputClient", "NSLayoutManager", "NSTextList"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSGeometry", "NSURL", "NSObject", "NSData", "NSDate", "NSRunLoop", "NSString", "NSRange", "NSArray", "NSDictionary", "NSAttributedString", "NSValue", "NSUndoManager"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSGeometry", "NSURL", "NSObject", "NSData", "NSDate", "NSTimer", "NSRunLoop", "NSString", "NSRange", "NSArray", "NSDictionary", "NSAttributedString", "NSValue", "NSUndoManager"] }

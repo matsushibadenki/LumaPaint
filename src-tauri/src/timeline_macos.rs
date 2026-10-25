@@ -37,6 +37,123 @@ fn next_onion_generation() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 thread_local! { static RUNTIMES: RefCell<std::collections::HashMap<String, Runtime>> = RefCell::new(std::collections::HashMap::new()); }
+thread_local! { static PARKED: RefCell<std::collections::HashMap<(String,u64), Runtime>> = RefCell::new(std::collections::HashMap::new()); }
+pub(super) fn park_document(id: u64) {
+    if let Some(runtime) = RUNTIMES.with(|r| r.borrow_mut().remove(&current_label())) {
+        if runtime.document_id == id {
+            PARKED.with(|p| p.borrow_mut().insert((current_label(), id), runtime));
+        }
+    }
+}
+pub(super) fn activate_document(id: u64) {
+    RUNTIMES.with(|r| r.borrow_mut().remove(&current_label()));
+    if let Some(mut runtime) = PARKED.with(|p| p.borrow_mut().remove(&(current_label(), id))) {
+        runtime.metadata_sent = false;
+        runtime.metadata_selection = None;
+        runtime.gpu_frame = None;
+        RUNTIMES.with(|r| r.borrow_mut().insert(current_label(), runtime));
+    }
+}
+pub(super) fn retain_documents(ids: &[u64]) {
+    let label = current_label();
+    PARKED.with(|p| {
+        p.borrow_mut()
+            .retain(|(owner, id), _| owner != &label || ids.contains(id))
+    });
+}
+pub(super) fn active_playing() -> bool {
+    RUNTIMES.with(|r| {
+        r.borrow()
+            .get(&current_label())
+            .is_some_and(|r| r.started.is_some())
+    })
+}
+pub(super) fn tick_active_native() -> Result<(), String> {
+    let changed = RUNTIMES.with(|r| {
+        let mut runtimes = r.borrow_mut();
+        let Some(runtime) = runtimes.get_mut(&current_label()) else {
+            return false;
+        };
+        reset_stale(runtime);
+        let Some((start, first)) = runtime.started else {
+            return false;
+        };
+        let (frame, playing) = DOCUMENT.with(|d| {
+            d.borrow()
+                .animation()
+                .playback_frame(first, start.elapsed())
+        });
+        if !playing {
+            runtime.started = None;
+        }
+        if frame == runtime.frame {
+            return false;
+        }
+        runtime.frame = frame;
+        evaluate(runtime)
+    });
+    if changed {
+        request_redraw()?;
+    }
+    Ok(())
+}
+pub(super) fn inactive_playing(id: u64) -> bool {
+    PARKED.with(|p| {
+        p.borrow()
+            .get(&(current_label(), id))
+            .is_some_and(|r| r.started.is_some())
+    })
+}
+pub(super) fn render_inactive(
+    id: u64,
+    renderer: &mut Renderer,
+    viewport: Viewport,
+    doc: &Document,
+    force: bool,
+) -> Result<bool, String> {
+    PARKED.with(|p| {
+        let mut parked = p.borrow_mut();
+        let Some(runtime) = parked.get_mut(&(current_label(), id)) else {
+            return Ok(false);
+        };
+        if runtime.revision != doc.revision() {
+            runtime.started = None;
+            runtime.preview = None;
+            return Ok(false);
+        }
+        let mut changed = force;
+        if let Some((start, first)) = runtime.started {
+            let (frame, playing) = doc.animation().playback_frame(first, start.elapsed());
+            if !playing {
+                runtime.started = None;
+            }
+            if runtime.frame != frame {
+                runtime.frame = frame;
+                changed |= evaluate_document(runtime, doc);
+            }
+        }
+        if !changed {
+            return Ok(false);
+        }
+        if let Some(preview) = runtime.preview.as_ref() {
+            renderer.clear_tiled_preview();
+            let before = renderer.presentation_serial();
+            renderer.render(viewport, preview)?;
+            if render_metrics_enabled() {
+                eprintln!(
+                    "lumapaint-pane-state document={id} frame={} playing={} presented={}",
+                    runtime.frame,
+                    runtime.started.is_some(),
+                    renderer.presentation_serial() > before
+                );
+            }
+            // A retained animation preview owns this surface even if acquisition
+            // timed out; never substitute the canonical editing picture.
+            return Ok(true);
+        }
+        Ok(false)
+    })
+}
 fn identity() -> (u64, u64) {
     (
         ACTIVE_DOCUMENT_ID.with(|id| id.get()),
@@ -62,6 +179,7 @@ fn reset_stale(runtime: &mut Runtime) {
     }
 }
 pub(super) fn close(label: &str) {
+    PARKED.with(|p| p.borrow_mut().retain(|(owner, _), _| owner != label));
     RUNTIMES.with(|r| {
         r.borrow_mut().remove(label);
     });
@@ -364,51 +482,51 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
     })
 }
 fn evaluate(runtime: &mut Runtime) -> bool {
-    DOCUMENT.with(|d| {
-        let doc = d.borrow();
-        if runtime.preview.is_some()
-            && runtime
-                .rendered_frame
-                .is_some_and(|frame| doc.animation().same_picture(frame, runtime.frame))
-        {
-            return false;
+    DOCUMENT.with(|d| evaluate_document(runtime, &d.borrow()))
+}
+fn evaluate_document(runtime: &mut Runtime, doc: &Document) -> bool {
+    if runtime.preview.is_some()
+        && runtime
+            .rendered_frame
+            .is_some_and(|frame| doc.animation().same_picture(frame, runtime.frame))
+    {
+        return false;
+    }
+    let previous_frame = runtime.rendered_frame.filter(|_| runtime.preview.is_some());
+    runtime.rendered_frame = Some(runtime.frame);
+    let preview = runtime
+        .preview
+        .get_or_insert_with(|| doc.clone_for_rendering());
+    let cache = &runtime.outlines;
+    let outline = |source: &str, object: &lumapaint_core::vector::VectorObject| {
+        if let Some((_, objects)) = cache.borrow().get(source) {
+            return Ok(objects.clone());
         }
-        let previous_frame = runtime.rendered_frame.filter(|_| runtime.preview.is_some());
-        runtime.rendered_frame = Some(runtime.frame);
-        let preview = runtime
-            .preview
-            .get_or_insert_with(|| doc.clone_for_rendering());
-        let cache = &runtime.outlines;
-        let outline = |source: &str, object: &lumapaint_core::vector::VectorObject| {
-            if let Some((_, objects)) = cache.borrow().get(source) {
-                return Ok(objects.clone());
+        let objects = lumapaint_renderer::text_outlines::outline(source, object)?;
+        let bytes = source.len()
+            + objects
+                .iter()
+                .map(|o| o.path.data.len() + o.control_points.len() * 8)
+                .sum::<usize>();
+        if bytes <= 8 * 1024 * 1024 {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 64
+                || cache.values().map(|(charge, _)| *charge).sum::<usize>() + bytes
+                    > 8 * 1024 * 1024
+            {
+                cache.clear();
             }
-            let objects = lumapaint_renderer::text_outlines::outline(source, object)?;
-            let bytes = source.len()
-                + objects
-                    .iter()
-                    .map(|o| o.path.data.len() + o.control_points.len() * 8)
-                    .sum::<usize>();
-            if bytes <= 8 * 1024 * 1024 {
-                let mut cache = cache.borrow_mut();
-                if cache.len() >= 64
-                    || cache.values().map(|(charge, _)| *charge).sum::<usize>() + bytes
-                        > 8 * 1024 * 1024
-                {
-                    cache.clear();
-                }
-                cache.insert(source.into(), (bytes, objects.clone()));
-            }
-            Ok::<_, String>(objects)
-        };
-        preview.evaluate_animation_incremental_with_outlines(
-            &doc,
-            runtime.frame,
-            previous_frame,
-            Some(&outline),
-        );
-        true
-    })
+            cache.insert(source.into(), (bytes, objects.clone()));
+        }
+        Ok::<_, String>(objects)
+    };
+    preview.evaluate_animation_incremental_with_outlines(
+        doc,
+        runtime.frame,
+        previous_frame,
+        Some(&outline),
+    );
+    true
 }
 /// A document pointer-down enters drawing without discarding the displayed cel.
 pub(super) fn begin_editing() -> Result<(), String> {
@@ -1141,6 +1259,9 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         // Coalesce transport ticks just like native canvas gestures.
         request_redraw()?;
     }
+    if transport_changed {
+        pane_gpu::refresh_clock();
+    }
     Ok(response)
 }
 
@@ -1166,6 +1287,34 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn parking_preserves_document_clock_preview_and_pause() {
+        let _restore = setup();
+        let id = identity().0;
+        command(Request::Play).unwrap();
+        RUNTIMES.with(|r| {
+            r.borrow_mut().get_mut(&current_label()).unwrap().started =
+                Some((Instant::now() - std::time::Duration::from_millis(500), 0))
+        });
+        let revision = identity().1;
+        park_document(id);
+        assert!(inactive_playing(id));
+        assert!(RUNTIMES.with(|r| !r.borrow().contains_key(&current_label())));
+        activate_document(id);
+        tick_active_native().unwrap();
+        let response = command(Request::Tick).unwrap();
+        assert!(response.playing && response.frame > 0 && response.preview);
+        assert_eq!(identity().1, revision);
+        command(Request::Pause).unwrap();
+        let frame = command(Request::Get).unwrap().frame;
+        park_document(id);
+        assert!(!inactive_playing(id));
+        activate_document(id);
+        assert_eq!(command(Request::Tick).unwrap().frame, frame);
+        park_document(id);
+        retain_documents(&[]);
+        assert!(PARKED.with(|p| !p.borrow().contains_key(&(current_label(), id))));
     }
     #[test]
     fn library_previews_include_unassigned_drawings_and_validate_requests() {

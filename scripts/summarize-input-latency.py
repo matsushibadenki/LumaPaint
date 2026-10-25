@@ -17,6 +17,8 @@ STAGE = re.compile(
 )
 
 
+QUEUE = re.compile(r"^lumapaint-input-queue event=(\d+) age_ns=(\d+)\b")
+
 def distribution(values):
     ordered = sorted(values)
     return {key: ordered[math.ceil(len(ordered) * p / 100) - 1] / 1e6
@@ -42,6 +44,10 @@ def summarize(text, warmup=0):
         "latest_over_16_67ms": sum(s[4] > 16_666_667 for s in measured),
         "latest_over_8_33ms": sum(s[4] > 8_333_333 for s in measured),
     }
+    ages = {int(m[1]):int(m[2]) for line in text.splitlines() if (m:=QUEUE.match(line))}
+    matched = [ages[s[1]] for s in measured if s[1] in ages]
+    if matched:
+        result["latest_event_age_at_probe"] = {"scope": "NSEvent timestamp to early pointer-handler probe; includes pre-pointer dispatch/work, not physical display", "samples":len(matched), "unmatched_presentations":len(measured)-len(matched), **distribution(matched)}
     stages = {}
     for line in text.splitlines():
         if (m := STAGE.match(line)):

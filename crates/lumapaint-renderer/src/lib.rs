@@ -2464,6 +2464,15 @@ impl Renderer {
             input.mark(marker);
         }
     }
+    /// Log a pending input checkpoint without consuming its marker. No-op unless
+    /// performance timing is enabled; this does not claim physical display time.
+    pub fn input_checkpoint(&self, name: &'static str) {
+        drop(
+            self.input_latency
+                .as_ref()
+                .and_then(|input| input.stage(name)),
+        );
+    }
     /// Install a generation-checked worker result. Independent text textures are retained
     /// across edits; unmodified frames keep their GPU resource and rectangle buffer.
     pub fn install_prepared_display(

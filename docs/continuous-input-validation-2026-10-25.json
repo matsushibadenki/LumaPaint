@@ -1,0 +1,347 @@
+{
+  "date": "2026-10-25",
+  "status": "timed_appkit_delivery_verified; candidate rejected; final conservative comparison complete",
+  "accepted_continuous_trials": [
+    "A1",
+    "B1",
+    "B2",
+    "A2"
+  ],
+  "production_changes": [
+    "oldest unpresented input deadline retained until foreground serial changes",
+    "Established 32ms pending/50ms service interval retained; idle budget restores after80ms without fresh input",
+    "unchanged standard-pane revision/viewport reuses retained presentation; masks and frames still update",
+    "native pan event/age instrumentation; zero-displacement pan redraw omitted"
+  ],
+  "checks": {
+    "rust_library_passed": 222,
+    "rust_library_ignored": 2,
+    "normal_release_build": "passed",
+    "qa_release_build": "passed",
+    "qa_clippy_all_targets_warnings_denied": "passed"
+  },
+  "qa_features": [
+    "tauri/custom-protocol",
+    "native-input-qa"
+  ],
+  "excluded_probe": [
+    {
+      "tag": "A1",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-prototype-runtime.log.gz",
+      "kind": "draw",
+      "start": 1792905170467,
+      "end": 1792905183038,
+      "offset": 23061328,
+      "gestures": [
+        {
+          "index": 0,
+          "from": [
+            130,
+            198
+          ],
+          "to": [
+            315,
+            206
+          ],
+          "start": 1792905170467,
+          "end": 1792905171798,
+          "byteStart": 23061328,
+          "byteEnd": 23671830
+        },
+        {
+          "index": 1,
+          "from": [
+            130,
+            210
+          ],
+          "to": [
+            315,
+            218
+          ],
+          "start": 1792905171798,
+          "end": 1792905172534,
+          "byteStart": 23671830,
+          "byteEnd": 23992890
+        },
+        {
+          "index": 2,
+          "from": [
+            130,
+            222
+          ],
+          "to": [
+            315,
+            230
+          ],
+          "start": 1792905172534,
+          "end": 1792905173301,
+          "byteStart": 23992890,
+          "byteEnd": 24349903
+        },
+        {
+          "index": 3,
+          "from": [
+            130,
+            234
+          ],
+          "to": [
+            315,
+            242
+          ],
+          "start": 1792905173301,
+          "end": 1792905174052,
+          "byteStart": 24349903,
+          "byteEnd": 24681476
+        },
+        {
+          "index": 4,
+          "from": [
+            130,
+            246
+          ],
+          "to": [
+            315,
+            254
+          ],
+          "start": 1792905174052,
+          "end": 1792905174819,
+          "byteStart": 24681476,
+          "byteEnd": 25034353
+        },
+        {
+          "index": 5,
+          "from": [
+            130,
+            198
+          ],
+          "to": [
+            315,
+            206
+          ],
+          "start": 1792905174819,
+          "end": 1792905175619,
+          "byteStart": 25034353,
+          "byteEnd": 25398924
+        },
+        {
+          "index": 6,
+          "from": [
+            130,
+            210
+          ],
+          "to": [
+            315,
+            218
+          ],
+          "start": 1792905175619,
+          "end": 1792905176435,
+          "byteStart": 25398924,
+          "byteEnd": 25777776
+        },
+        {
+          "index": 7,
+          "from": [
+            130,
+            222
+          ],
+          "to": [
+            315,
+            230
+          ],
+          "start": 1792905176435,
+          "end": 1792905177197,
+          "byteStart": 25777776,
+          "byteEnd": 26119160
+        },
+        {
+          "index": 8,
+          "from": [
+            130,
+            234
+          ],
+          "to": [
+            315,
+            242
+          ],
+          "start": 1792905177197,
+          "end": 1792905177969,
+          "byteStart": 26119160,
+          "byteEnd": 26454604
+        },
+        {
+          "index": 9,
+          "from": [
+            130,
+            246
+          ],
+          "to": [
+            315,
+            254
+          ],
+          "start": 1792905177969,
+          "end": 1792905178739,
+          "byteStart": 26454604,
+          "byteEnd": 26798539
+        },
+        {
+          "index": 10,
+          "from": [
+            130,
+            198
+          ],
+          "to": [
+            315,
+            206
+          ],
+          "start": 1792905178739,
+          "end": 1792905179409,
+          "byteStart": 26798539,
+          "byteEnd": 27110283
+        },
+        {
+          "index": 11,
+          "from": [
+            130,
+            210
+          ],
+          "to": [
+            315,
+            218
+          ],
+          "start": 1792905179409,
+          "end": 1792905180154,
+          "byteStart": 27110283,
+          "byteEnd": 27443589
+        },
+        {
+          "index": 12,
+          "from": [
+            130,
+            222
+          ],
+          "to": [
+            315,
+            230
+          ],
+          "start": 1792905180154,
+          "end": 1792905180878,
+          "byteStart": 27443589,
+          "byteEnd": 27768554
+        },
+        {
+          "index": 13,
+          "from": [
+            130,
+            234
+          ],
+          "to": [
+            315,
+            242
+          ],
+          "start": 1792905180878,
+          "end": 1792905181599,
+          "byteStart": 27768554,
+          "byteEnd": 28115683
+        },
+        {
+          "index": 14,
+          "from": [
+            130,
+            246
+          ],
+          "to": [
+            315,
+            254
+          ],
+          "start": 1792905181599,
+          "end": 1792905182318,
+          "byteStart": 28115683,
+          "byteEnd": 28442278
+        },
+        {
+          "index": 15,
+          "from": [
+            130,
+            198
+          ],
+          "to": [
+            315,
+            206
+          ],
+          "start": 1792905182318,
+          "end": 1792905183038,
+          "byteStart": 28442278,
+          "byteEnd": 28758577
+        }
+      ],
+      "trialLog": "/tmp/lumapaint-continuous-compressed-probe-draw.log",
+      "lastState": [
+        "\t\t\t\t\t74 text \u672a\u4fdd\u5b58\u306e\u5909\u66f4\u304c\u3042\u308a\u307e\u3059",
+        "\t\t\t\t\t\t\t104 tab (selected) Pane-1.lumapaint \u672a\u4fdd\u5b58",
+        "\t\t\t\t\t\t112 pop up button (collapsed) \u8868\u793a\u500d\u7387, Value: 100%, Secondary Actions: Expand",
+        "\t\t\t\t\t\t\t238 text 3 \u30ec\u30a4\u30e4\u30fc 0 \u30b9\u30c8\u30ed\u30fc\u30af"
+      ],
+      "excluded_reason": "CUA drag event sequence is compressed; not accepted as continuous input",
+      "native_event_spans_ms": [
+        0.240542,
+        0.267375,
+        0.21325,
+        0.214917,
+        0.2215,
+        0.198916,
+        0.164416,
+        0.231708,
+        0.187333,
+        0.220458,
+        0.843541,
+        0.190041,
+        0.209792,
+        0.20675,
+        0.209541,
+        0.2
+      ]
+    }
+  ],
+  "external_quartz_probe": {
+    "delivered_native_events": 0,
+    "security_settings_changed": false,
+    "accepted_as_performance_trial": false
+  },
+  "appkit_transport": {
+    "compiled": true,
+    "runtime_delivery_verified": true,
+    "source": "60Hz producer thread -> Tauri main-thread dispatch -> AppKit event queue; no direct document mutations",
+    "requested_seconds_per_gesture": 1,
+    "requested_gestures_per_phase": 16,
+    "intergesture_seconds": 0.15,
+    "target": "QA app main window and the owned Pane-1 fixture only",
+    "user_authorized_timed_native_driver": true
+  },
+  "limitations": [
+    "Concurrent system/other-project load and phase variability preclude a general improvement claim; aggressive scheduling candidate rejected.",
+    "The short CUA drags generated only 0.16\u20130.84ms event sequences; excluded from continuous acceptance.",
+    "App-queued synthetic input must be distinguished from physical mouse/tablet and OS input-to-photon timing."
+  ],
+  "idle_qa_process_stopped_while_locked": true,
+  "fixture_hashes_unchanged": true,
+  "accepted_trials_evidence": "continuous-input-rejected-policy-2026-10-25.json",
+  "pilot_evidence": "/tmp/lumapaint-native-pilot-evidence.json",
+  "initial_qa_binary_sha256": "f897c3e7ec3e368f66cfdd5b954154804e0e91c5452544e84180fd34fb082c26",
+  "initial_source_sha256": {
+    "src-tauri/src/pane_scheduling.rs": "8bc3ffe22fefaff7fd1ac2218e3e3b1b14c1512aadbbc4c7d9e22be9225d92a3",
+    "src-tauri/src/pane_gpu_macos.rs": "7aaa0c8e01253148d4b4611c6a8979a336a55442aa7b20d4cd39c5bb7563d150",
+    "src-tauri/src/input_timing_macos.rs": "66f2a5cf6d2bf49288eeae2e58b2162149b0760e06981f94dab04c3d4cdac4c3",
+    "src-tauri/src/canvas_macos.rs": "e2f172f5be229d29fb2578be1aea5297144bc9235ea038c931b544fa16e7131d",
+    "src-tauri/src/native_gesture_qa_macos.rs": "4775b498ab20602e4255f28e90876df7882c3b7128c05a508e4a4ce3bc3e9473",
+    "src-tauri/Cargo.toml": "6d7f258ec8048decee5c69c97ad1b0d45ffbba283aa64c528c7043c2c4bdd8d5"
+  },
+  "final_evidence": "continuous-input-release-2026-10-25.json",
+  "final_accepted_trials": [
+    "final-A1",
+    "final-B1",
+    "final-B2",
+    "final-A2retry"
+  ],
+  "final_comparison_manual_lock_blocker_resolved": true
+}

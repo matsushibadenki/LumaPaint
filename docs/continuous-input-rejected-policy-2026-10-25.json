@@ -1,0 +1,2105 @@
+{
+  "date": "2026-10-25",
+  "transport": "timed producer -> Tauri main dispatch -> AppKit queue, synthetic native input; no direct model edits; not physical mouse/pen/input-to-photon",
+  "protocol": "same Release binary, old/new/new/old; 16 x 1sec/60Hz gestures per draw/pan phase, 150ms gaps; discard first two gestures; idle recovery 5sec",
+  "binary_sha256": "f897c3e7ec3e368f66cfdd5b954154804e0e91c5452544e84180fd34fb082c26",
+  "source_sha256": {
+    "src-tauri/src/pane_scheduling.rs": "8bc3ffe22fefaff7fd1ac2218e3e3b1b14c1512aadbbc4c7d9e22be9225d92a3",
+    "src-tauri/src/pane_gpu_macos.rs": "7aaa0c8e01253148d4b4611c6a8979a336a55442aa7b20d4cd39c5bb7563d150",
+    "src-tauri/src/canvas_macos.rs": "e2f172f5be229d29fb2578be1aea5297144bc9235ea038c931b544fa16e7131d",
+    "src-tauri/src/input_timing_macos.rs": "66f2a5cf6d2bf49288eeae2e58b2162149b0760e06981f94dab04c3d4cdac4c3",
+    "src-tauri/src/native_gesture_qa_macos.rs": "4775b498ab20602e4255f28e90876df7882c3b7128c05a508e4a4ce3bc3e9473"
+  },
+  "trials": [
+    {
+      "tag": "A1",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A1.log",
+      "kind": "draw",
+      "planTag": "A1-draw",
+      "expectedGestures": 16,
+      "start": 1792911792062,
+      "offset": 10348171,
+      "end": 1792911810746.628,
+      "trialLog": "/tmp/lumapaint-continuous-A1-draw-timed.log",
+      "samples_total": 899,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 786,
+        "p50_ms": 1.250625,
+        "p95_ms": 2.874666,
+        "max_ms": 14.007334
+      },
+      "latest_handler": {
+        "samples": 786,
+        "p50_ms": 1.250209,
+        "p95_ms": 2.8745,
+        "max_ms": 14.007334
+      },
+      "event_age": {
+        "samples": 786,
+        "p50_ms": 3.861792,
+        "p95_ms": 5.116875,
+        "max_ms": 20.653041
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 786,
+        "p50_ms": 5.280417,
+        "p95_ms": 6.957667,
+        "max_ms": 26.700458
+      },
+      "policy_ticks": {
+        "Yield": 0,
+        "Limited": 1015
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "4": 184,
+        "3": 183,
+        "9": 182,
+        "7": 183,
+        "2": 184,
+        "6": 180,
+        "5": 182,
+        "8": 180
+      },
+      "background_advances": {
+        "4": 183,
+        "3": 182,
+        "9": 181,
+        "7": 183,
+        "2": 180,
+        "6": 178,
+        "5": 178,
+        "8": 179
+      },
+      "background_advance_fps": {
+        "4": 9.794147396921735,
+        "3": 9.740627465791016,
+        "9": 9.687107534660296,
+        "7": 9.794147396921735,
+        "2": 9.633587603529577,
+        "6": 9.526547741268136,
+        "5": 9.526547741268136,
+        "8": 9.580067672398856
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "2": 111,
+        "6": 110,
+        "5": 109,
+        "8": 107,
+        "4": 108,
+        "3": 112,
+        "9": 110,
+        "7": 105
+      },
+      "held_advance_fps": {
+        "2": 7.928571428571429,
+        "6": 7.857142857142857,
+        "5": 7.785714285714286,
+        "8": 7.642857142857143,
+        "4": 7.714285714285714,
+        "3": 8.0,
+        "9": 7.857142857142857,
+        "7": 7.5
+      },
+      "cpu_percent": 44.274009648669136,
+      "rss_max_bytes": 264650752,
+      "raw_log_sha256": "092d0b4ade7bf51a16f24ca9d267792c61eccc07de5b18ec25509a03ef8bef8d"
+    },
+    {
+      "tag": "A1",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A1.log",
+      "kind": "pan",
+      "planTag": "A1-pan",
+      "expectedGestures": 16,
+      "start": 1792911895491,
+      "offset": 55983828,
+      "end": 1792911914324.226,
+      "trialLog": "/tmp/lumapaint-continuous-A1-pan-timed.log",
+      "samples_total": 925,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 814,
+        "p50_ms": 0.601083,
+        "p95_ms": 1.061084,
+        "max_ms": 23.534458
+      },
+      "latest_handler": {
+        "samples": 814,
+        "p50_ms": 0.60025,
+        "p95_ms": 0.895,
+        "max_ms": 11.823
+      },
+      "event_age": {
+        "samples": 814,
+        "p50_ms": 4.762708,
+        "p95_ms": 5.519292,
+        "max_ms": 21.646916
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 814,
+        "p50_ms": 5.385666,
+        "p95_ms": 6.410791,
+        "max_ms": 22.953083
+      },
+      "policy_ticks": {
+        "Yield": 22,
+        "Limited": 998
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "2": 170,
+        "6": 168,
+        "5": 168,
+        "8": 166,
+        "7": 166,
+        "4": 167,
+        "3": 165,
+        "9": 165
+      },
+      "background_advances": {
+        "2": 170,
+        "6": 168,
+        "5": 168,
+        "8": 166,
+        "7": 166,
+        "4": 167,
+        "3": 165,
+        "9": 165
+      },
+      "background_advance_fps": {
+        "2": 9.026600080626496,
+        "6": 8.920404785560303,
+        "5": 8.920404785560303,
+        "8": 8.814209490494108,
+        "7": 8.814209490494108,
+        "4": 8.867307138027206,
+        "3": 8.76111184296101,
+        "9": 8.76111184296101
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "7": 108,
+        "4": 111,
+        "3": 107,
+        "9": 105,
+        "2": 106,
+        "6": 107,
+        "5": 106,
+        "8": 107
+      },
+      "held_advance_fps": {
+        "7": 7.714285714285714,
+        "4": 7.928571428571429,
+        "3": 7.642857142857143,
+        "9": 7.5,
+        "2": 7.571428571428571,
+        "6": 7.642857142857143,
+        "5": 7.571428571428571,
+        "8": 7.642857142857143
+      },
+      "cpu_percent": 38.876616327525156,
+      "rss_max_bytes": 263782400,
+      "raw_log_sha256": "85a6b9933a377a936ee6ef064b25ac955bbd5631cfcd8879839024bf5372a13a"
+    },
+    {
+      "tag": "A1",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A1.log",
+      "kind": "idle",
+      "planTag": "A1-idle",
+      "expectedGestures": 0,
+      "start": 1792912056266.228,
+      "offset": 126786066,
+      "end": 1792912061283.5278,
+      "trialLog": "/tmp/lumapaint-continuous-A1-idle.log",
+      "viewAfter": {
+        "height": 480.0,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640.0,
+        "zoom": 0.9999999403953552
+      },
+      "samples_total": 0,
+      "gesture_spans": [],
+      "first_handler": null,
+      "latest_handler": null,
+      "event_age": null,
+      "paired_event_to_present_upper_estimate": null,
+      "policy_ticks": {
+        "Yield": 0,
+        "Limited": 0
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "7": 119,
+        "4": 118,
+        "3": 117,
+        "9": 118,
+        "2": 118,
+        "5": 117,
+        "8": 117,
+        "6": 117
+      },
+      "background_advances": {
+        "7": 119,
+        "4": 118,
+        "3": 117,
+        "9": 118,
+        "2": 118,
+        "5": 117,
+        "8": 117,
+        "6": 117
+      },
+      "background_advance_fps": {
+        "7": 23.717936864929253,
+        "4": 23.51862647110632,
+        "3": 23.319316077283382,
+        "9": 23.51862647110632,
+        "2": 23.51862647110632,
+        "5": 23.319316077283382,
+        "8": 23.319316077283382,
+        "6": 23.319316077283382
+      },
+      "held_source_seconds": 0,
+      "held_advances": {},
+      "held_advance_fps": {},
+      "cpu_percent": 53.25396986864065,
+      "rss_max_bytes": 263667712,
+      "raw_log_sha256": "f74b8e98172928293806bc58f467459c6ffe5a339c4a45733c599a6dc1eab64a"
+    },
+    {
+      "tag": "B1",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B1.log",
+      "kind": "draw",
+      "planTag": "B1-draw",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792912270592,
+      "offset": 11390342,
+      "end": 1792912289350.8657,
+      "trialLog": "/tmp/lumapaint-continuous-B1-draw-timed.log",
+      "samples_total": 957,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 837,
+        "p50_ms": 1.185625,
+        "p95_ms": 2.62025,
+        "max_ms": 14.94075
+      },
+      "latest_handler": {
+        "samples": 837,
+        "p50_ms": 1.185625,
+        "p95_ms": 2.617375,
+        "max_ms": 9.130458
+      },
+      "event_age": {
+        "samples": 837,
+        "p50_ms": 7.07025,
+        "p95_ms": 8.661834,
+        "max_ms": 10.508291
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 837,
+        "p50_ms": 8.401334,
+        "p95_ms": 10.43475,
+        "max_ms": 16.36125
+      },
+      "policy_ticks": {
+        "Yield": 1,
+        "Limited": 1034
+      },
+      "unchanged_pane_skips": 128,
+      "background_presentations": {
+        "9": 169,
+        "3": 172,
+        "6": 168,
+        "2": 167,
+        "8": 163,
+        "5": 160,
+        "4": 158,
+        "7": 158
+      },
+      "background_advances": {
+        "9": 169,
+        "3": 172,
+        "6": 168,
+        "2": 167,
+        "8": 163,
+        "5": 160,
+        "4": 158,
+        "7": 158
+      },
+      "background_advance_fps": {
+        "9": 9.009073496159642,
+        "3": 9.168997877748275,
+        "6": 8.95576536896343,
+        "2": 8.90245724176722,
+        "8": 8.689224732982376,
+        "5": 8.529300351393744,
+        "4": 8.422684097001321,
+        "7": 8.422684097001321
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "9": 104,
+        "3": 105,
+        "6": 108,
+        "2": 108,
+        "8": 106,
+        "5": 104,
+        "4": 104,
+        "7": 103
+      },
+      "held_advance_fps": {
+        "9": 7.428571428571429,
+        "3": 7.5,
+        "6": 7.714285714285714,
+        "2": 7.714285714285714,
+        "8": 7.571428571428571,
+        "5": 7.428571428571429,
+        "4": 7.428571428571429,
+        "7": 7.357142857142857
+      },
+      "cpu_percent": 41.99941450878173,
+      "rss_max_bytes": 264388608,
+      "raw_log_sha256": "5635f5e0de2384aa0d6c95b953207fbf6b417bedbc8a8d4bfc62ffdb4734a3a1"
+    },
+    {
+      "tag": "B1",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B1.log",
+      "kind": "pan",
+      "planTag": "B1-pan",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792912532865,
+      "offset": 125650038,
+      "end": 1792912551706.321,
+      "trialLog": "/tmp/lumapaint-continuous-B1-pan-timed.log",
+      "samples_total": 803,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 696,
+        "p50_ms": 0.591834,
+        "p95_ms": 16.208334,
+        "max_ms": 37.11275
+      },
+      "latest_handler": {
+        "samples": 696,
+        "p50_ms": 0.578625,
+        "p95_ms": 0.970167,
+        "max_ms": 20.749
+      },
+      "event_age": {
+        "samples": 696,
+        "p50_ms": 18.723459,
+        "p95_ms": 20.145167,
+        "max_ms": 43.760543
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 696,
+        "p50_ms": 19.311583,
+        "p95_ms": 28.04654,
+        "max_ms": 44.772459
+      },
+      "policy_ticks": {
+        "Yield": 11,
+        "Limited": 999
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "4": 157,
+        "5": 156,
+        "7": 158,
+        "3": 158,
+        "6": 155,
+        "2": 156,
+        "8": 157,
+        "9": 157
+      },
+      "background_advances": {
+        "4": 157,
+        "5": 156,
+        "7": 158,
+        "3": 158,
+        "6": 155,
+        "2": 156,
+        "8": 157,
+        "9": 157
+      },
+      "background_advance_fps": {
+        "4": 8.332749047992827,
+        "5": 8.279674213292237,
+        "7": 8.385823882693419,
+        "3": 8.385823882693419,
+        "6": 8.226599378591645,
+        "2": 8.279674213292237,
+        "8": 8.332749047992827,
+        "9": 8.332749047992827
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "5": 101,
+        "7": 103,
+        "9": 103,
+        "3": 100,
+        "6": 101,
+        "2": 99,
+        "8": 101,
+        "4": 101
+      },
+      "held_advance_fps": {
+        "5": 7.214285714285714,
+        "7": 7.357142857142857,
+        "9": 7.357142857142857,
+        "3": 7.142857142857143,
+        "6": 7.214285714285714,
+        "2": 7.071428571428571,
+        "8": 7.214285714285714,
+        "4": 7.214285714285714
+      },
+      "cpu_percent": 36.221969201706614,
+      "rss_max_bytes": 265912320,
+      "raw_log_sha256": "527c67272ec8133e9cfbb59d979bb6de99d4b24c4830f661870ec4a938d49ec6"
+    },
+    {
+      "tag": "B1",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B1.log",
+      "kind": "idle",
+      "planTag": "B1-idle",
+      "expectedGestures": 0,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792912551780.126,
+      "offset": 131999946,
+      "end": 1792912556803.3508,
+      "trialLog": "/tmp/lumapaint-continuous-B1-idle.log",
+      "viewAfter": {
+        "height": 480.0,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640.0,
+        "zoom": 0.9999999403953552
+      },
+      "samples_total": 0,
+      "gesture_spans": [],
+      "first_handler": null,
+      "latest_handler": null,
+      "event_age": null,
+      "paired_event_to_present_upper_estimate": null,
+      "policy_ticks": {
+        "Yield": 0,
+        "Limited": 0
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "3": 118,
+        "6": 119,
+        "2": 119,
+        "7": 118,
+        "9": 118,
+        "8": 117,
+        "5": 116,
+        "4": 118
+      },
+      "background_advances": {
+        "3": 118,
+        "6": 119,
+        "2": 119,
+        "7": 118,
+        "9": 118,
+        "8": 117,
+        "5": 116,
+        "4": 118
+      },
+      "background_advance_fps": {
+        "3": 23.49088552494616,
+        "6": 23.689960826005027,
+        "2": 23.689960826005027,
+        "7": 23.49088552494616,
+        "9": 23.49088552494616,
+        "8": 23.291810223887296,
+        "5": 23.09273492282843,
+        "4": 23.49088552494616
+      },
+      "held_source_seconds": 0,
+      "held_advances": {},
+      "held_advance_fps": {},
+      "cpu_percent": 53.25761278083798,
+      "rss_max_bytes": 264175616,
+      "raw_log_sha256": "d58c9ad8b372962faf8c4ae6e8b37c0ca3f68f9e685424084058642861531537"
+    },
+    {
+      "tag": "B2",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B2.log",
+      "kind": "draw",
+      "planTag": "B2-draw",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792912835644,
+      "offset": 16391062,
+      "end": 1792912854492.378,
+      "trialLog": "/tmp/lumapaint-continuous-B2-draw-timed.log",
+      "samples_total": 621,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 521,
+        "p50_ms": 1.45425,
+        "p95_ms": 6.660375,
+        "max_ms": 975.80325
+      },
+      "latest_handler": {
+        "samples": 521,
+        "p50_ms": 1.449666,
+        "p95_ms": 6.593208,
+        "max_ms": 382.14325
+      },
+      "event_age": {
+        "samples": 521,
+        "p50_ms": 18.3705,
+        "p95_ms": 18.444291,
+        "max_ms": 763.029708
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 521,
+        "p50_ms": 19.453042,
+        "p95_ms": 23.978792,
+        "max_ms": 795.483833
+      },
+      "policy_ticks": {
+        "Yield": 19,
+        "Limited": 771
+      },
+      "unchanged_pane_skips": 128,
+      "background_presentations": {
+        "6": 124,
+        "3": 122,
+        "7": 123,
+        "5": 137,
+        "2": 138,
+        "8": 134,
+        "4": 125,
+        "9": 127
+      },
+      "background_advances": {
+        "6": 124,
+        "3": 122,
+        "7": 123,
+        "5": 137,
+        "2": 138,
+        "8": 134,
+        "4": 125,
+        "9": 127
+      },
+      "background_advance_fps": {
+        "6": 6.578815453646619,
+        "3": 6.4727055269749,
+        "7": 6.525760490310759,
+        "5": 7.268529977012797,
+        "2": 7.321584940348656,
+        "8": 7.109365087005218,
+        "4": 6.631870416982479,
+        "9": 6.737980343654199
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "5": 75,
+        "2": 79,
+        "8": 75,
+        "4": 75,
+        "9": 72,
+        "6": 71,
+        "3": 72,
+        "7": 73
+      },
+      "held_advance_fps": {
+        "5": 5.357142857142857,
+        "2": 5.642857142857143,
+        "8": 5.357142857142857,
+        "4": 5.357142857142857,
+        "9": 5.142857142857143,
+        "6": 5.071428571428571,
+        "3": 5.142857142857143,
+        "7": 5.214285714285714
+      },
+      "cpu_percent": 32.099057385061144,
+      "rss_max_bytes": 264273920,
+      "raw_log_sha256": "eebd16ab3fc6990e003b6e2d84b2eb157b7fb6e73cffed849319b702c3e63ef4"
+    },
+    {
+      "tag": "B2",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B2.log",
+      "kind": "pan",
+      "planTag": "B2-pan",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792913100743,
+      "offset": 106220293,
+      "end": 1792913119577.606,
+      "trialLog": "/tmp/lumapaint-continuous-B2-pan-timed.log",
+      "samples_total": 858,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 740,
+        "p50_ms": 1.430375,
+        "p95_ms": 17.908417,
+        "max_ms": 39.192084
+      },
+      "latest_handler": {
+        "samples": 740,
+        "p50_ms": 1.419583,
+        "p95_ms": 2.467208,
+        "max_ms": 39.192084
+      },
+      "event_age": {
+        "samples": 740,
+        "p50_ms": 15.847708,
+        "p95_ms": 15.933083,
+        "max_ms": 49.196166
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 740,
+        "p50_ms": 17.273874,
+        "p95_ms": 18.513583,
+        "max_ms": 55.081125
+      },
+      "policy_ticks": {
+        "Yield": 28,
+        "Limited": 932
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "2": 133,
+        "7": 133,
+        "8": 133,
+        "4": 133,
+        "9": 131,
+        "6": 132,
+        "3": 132,
+        "5": 132
+      },
+      "background_advances": {
+        "2": 133,
+        "7": 133,
+        "8": 133,
+        "4": 133,
+        "9": 131,
+        "6": 132,
+        "3": 132,
+        "5": 132
+      },
+      "background_advance_fps": {
+        "2": 7.061469738385954,
+        "7": 7.061469738385954,
+        "8": 7.061469738385954,
+        "4": 7.061469738385954,
+        "9": 6.955282223523008,
+        "6": 7.008375980954481,
+        "3": 7.008375980954481,
+        "5": 7.008375980954481
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "4": 92,
+        "9": 91,
+        "6": 91,
+        "3": 92,
+        "5": 95,
+        "2": 94,
+        "7": 92,
+        "8": 92
+      },
+      "held_advance_fps": {
+        "4": 6.571428571428571,
+        "9": 6.5,
+        "6": 6.5,
+        "3": 6.571428571428571,
+        "5": 6.785714285714286,
+        "2": 6.714285714285714,
+        "7": 6.571428571428571,
+        "8": 6.571428571428571
+      },
+      "cpu_percent": 70.1700137851598,
+      "rss_max_bytes": 262963200,
+      "raw_log_sha256": "3d16191a15533918659b3fa654151dfb50156c31a6b562d56182cf0148ed4c73"
+    },
+    {
+      "tag": "B2",
+      "mode": "on",
+      "log": "/tmp/lumapaint-continuous-timed-B2.log",
+      "kind": "idle",
+      "planTag": "B2-idle",
+      "expectedGestures": 0,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792913119770.1912,
+      "offset": 112373362,
+      "end": 1792913124804.039,
+      "trialLog": "/tmp/lumapaint-continuous-B2-idle.log",
+      "viewAfter": {
+        "height": 480.0,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640.0,
+        "zoom": 0.9999999403953552
+      },
+      "samples_total": 0,
+      "gesture_spans": [],
+      "first_handler": null,
+      "latest_handler": null,
+      "event_age": null,
+      "paired_event_to_present_upper_estimate": null,
+      "policy_ticks": {
+        "Yield": 0,
+        "Limited": 0
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "3": 72,
+        "5": 71,
+        "2": 71,
+        "7": 70,
+        "8": 69,
+        "4": 70,
+        "9": 71,
+        "6": 71
+      },
+      "background_advances": {
+        "3": 72,
+        "5": 71,
+        "2": 71,
+        "7": 70,
+        "8": 69,
+        "4": 70,
+        "9": 71,
+        "6": 71
+      },
+      "background_advance_fps": {
+        "3": 14.303173521475058,
+        "5": 14.104518333676793,
+        "2": 14.104518333676793,
+        "7": 13.905863145878529,
+        "8": 13.707207958080264,
+        "4": 13.905863145878529,
+        "9": 14.104518333676793,
+        "6": 14.104518333676793
+      },
+      "held_source_seconds": 0,
+      "held_advances": {},
+      "held_advance_fps": {},
+      "cpu_percent": 84.51553817175542,
+      "rss_max_bytes": 262127616,
+      "raw_log_sha256": "110cf3580397984dc110917d1511e50d5f0d425b09240b3a99db21b9132e9279"
+    },
+    {
+      "tag": "A2",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A2.log",
+      "kind": "draw",
+      "planTag": "A2-draw",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792913185493,
+      "offset": 10070035,
+      "end": 1792913204325.922,
+      "trialLog": "/tmp/lumapaint-continuous-A2-draw-timed.log",
+      "samples_total": 959,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 839,
+        "p50_ms": 1.835708,
+        "p95_ms": 6.210958,
+        "max_ms": 18.440459
+      },
+      "latest_handler": {
+        "samples": 839,
+        "p50_ms": 1.835334,
+        "p95_ms": 6.2095,
+        "max_ms": 15.158458
+      },
+      "event_age": {
+        "samples": 839,
+        "p50_ms": 14.943959,
+        "p95_ms": 15.030375,
+        "max_ms": 21.08575
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 839,
+        "p50_ms": 16.772708,
+        "p95_ms": 21.217292,
+        "max_ms": 30.159917
+      },
+      "policy_ticks": {
+        "Yield": 397,
+        "Limited": 616
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "7": 142,
+        "3": 141,
+        "9": 141,
+        "4": 137,
+        "2": 135,
+        "5": 132,
+        "6": 133,
+        "8": 138
+      },
+      "background_advances": {
+        "7": 141,
+        "3": 140,
+        "9": 138,
+        "4": 137,
+        "2": 134,
+        "5": 131,
+        "6": 133,
+        "8": 137
+      },
+      "background_advance_fps": {
+        "7": 7.48688913531354,
+        "3": 7.43379063080777,
+        "9": 7.327593621796231,
+        "4": 7.274495117290461,
+        "2": 7.115199603773151,
+        "5": 6.955904090255842,
+        "6": 7.062101099267381,
+        "8": 7.274495117290461
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "2": 69,
+        "6": 65,
+        "9": 67,
+        "4": 68,
+        "5": 63,
+        "8": 62,
+        "7": 63,
+        "3": 66
+      },
+      "held_advance_fps": {
+        "2": 4.928571428571429,
+        "6": 4.642857142857143,
+        "9": 4.785714285714286,
+        "4": 4.857142857142857,
+        "5": 4.5,
+        "8": 4.428571428571429,
+        "7": 4.5,
+        "3": 4.714285714285714
+      },
+      "cpu_percent": 40.786915509643364,
+      "rss_max_bytes": 263979008,
+      "raw_log_sha256": "7460f907736d2da818e0c2ab8a814c7de0299c5ec4cd96a314e8504ca3bca85b"
+    },
+    {
+      "tag": "A2",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A2.log",
+      "kind": "pan",
+      "planTag": "A2-pan",
+      "expectedGestures": 16,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792913236565,
+      "offset": 27667539,
+      "end": 1792913255445.7322,
+      "trialLog": "/tmp/lumapaint-continuous-A2-pan-timed.log",
+      "samples_total": 939,
+      "gesture_spans": [
+        {
+          "index": 0,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 1,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 2,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 3,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 4,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 5,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 6,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 7,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 8,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 9,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 10,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 11,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 12,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 13,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 14,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        },
+        {
+          "index": 15,
+          "source_ms": 1000.0,
+          "down_received": 1,
+          "up_received": 1,
+          "moves": 60
+        }
+      ],
+      "first_handler": {
+        "samples": 822,
+        "p50_ms": 1.056542,
+        "p95_ms": 1.79375,
+        "max_ms": 18.433667
+      },
+      "latest_handler": {
+        "samples": 822,
+        "p50_ms": 1.050042,
+        "p95_ms": 1.659417,
+        "max_ms": 14.640041
+      },
+      "event_age": {
+        "samples": 822,
+        "p50_ms": 6.819709,
+        "p95_ms": 6.914167,
+        "max_ms": 13.183375
+      },
+      "paired_event_to_present_upper_estimate": {
+        "samples": 822,
+        "p50_ms": 7.886751,
+        "p95_ms": 8.544542,
+        "max_ms": 21.430916
+      },
+      "policy_ticks": {
+        "Yield": 14,
+        "Limited": 1003
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "7": 156,
+        "3": 155,
+        "9": 156,
+        "4": 156,
+        "2": 157,
+        "5": 155,
+        "6": 154,
+        "8": 154
+      },
+      "background_advances": {
+        "7": 156,
+        "3": 155,
+        "9": 156,
+        "4": 156,
+        "2": 157,
+        "5": 155,
+        "6": 154,
+        "8": 154
+      },
+      "background_advance_fps": {
+        "7": 8.26239144390636,
+        "3": 8.20942739618901,
+        "9": 8.26239144390636,
+        "4": 8.26239144390636,
+        "2": 8.315355491623707,
+        "5": 8.20942739618901,
+        "6": 8.156463348471663,
+        "8": 8.156463348471663
+      },
+      "held_source_seconds": 14.0,
+      "held_advances": {
+        "8": 106,
+        "7": 107,
+        "3": 106,
+        "9": 107,
+        "4": 105,
+        "2": 106,
+        "5": 104,
+        "6": 103
+      },
+      "held_advance_fps": {
+        "8": 7.571428571428571,
+        "7": 7.642857142857143,
+        "3": 7.571428571428571,
+        "9": 7.642857142857143,
+        "4": 7.5,
+        "2": 7.571428571428571,
+        "5": 7.428571428571429,
+        "6": 7.357142857142857
+      },
+      "cpu_percent": 55.46587796893847,
+      "rss_max_bytes": 265977856,
+      "raw_log_sha256": "25ac220f23342f7636beff5ee45c0799fd8c566fd19208fd74aa7ce2e8bb40ad"
+    },
+    {
+      "tag": "A2",
+      "mode": "off",
+      "log": "/tmp/lumapaint-continuous-timed-A2.log",
+      "kind": "idle",
+      "planTag": "A2-idle",
+      "expectedGestures": 0,
+      "viewBefore": {
+        "height": 480,
+        "panX": -75.49993133544922,
+        "panY": -59.24993133544922,
+        "width": 640,
+        "zoom": 0.9999999403953552
+      },
+      "start": 1792913255557.534,
+      "offset": 34469732,
+      "end": 1792913260570.496,
+      "trialLog": "/tmp/lumapaint-continuous-A2-idle.log",
+      "samples_total": 0,
+      "gesture_spans": [],
+      "first_handler": null,
+      "latest_handler": null,
+      "event_age": null,
+      "paired_event_to_present_upper_estimate": null,
+      "policy_ticks": {
+        "Yield": 0,
+        "Limited": 0
+      },
+      "unchanged_pane_skips": 0,
+      "background_presentations": {
+        "9": 70,
+        "4": 72,
+        "2": 72,
+        "5": 73,
+        "6": 72,
+        "8": 72,
+        "7": 71,
+        "3": 72
+      },
+      "background_advances": {
+        "9": 70,
+        "4": 72,
+        "2": 72,
+        "5": 73,
+        "6": 72,
+        "8": 72,
+        "7": 71,
+        "3": 72
+      },
+      "background_advance_fps": {
+        "9": 13.963799803565882,
+        "4": 14.362765512239193,
+        "2": 14.362765512239193,
+        "5": 14.562248366575849,
+        "6": 14.362765512239193,
+        "8": 14.362765512239193,
+        "7": 14.163282657902538,
+        "3": 14.362765512239193
+      },
+      "held_source_seconds": 0,
+      "held_advances": {},
+      "held_advance_fps": {},
+      "cpu_percent": 84.97917416934328,
+      "rss_max_bytes": 265486336,
+      "raw_log_sha256": "c4c2bd2dadd6a7aad15ed6414b2c6142a91b87dd9311a80c436227a397dd232a"
+    }
+  ],
+  "pooled": {
+    "draw-off": {
+      "gestures": 28,
+      "first_handler": {
+        "samples": 1625,
+        "p50_ms": 1.588584,
+        "p95_ms": 5.345375,
+        "max_ms": 18.440459
+      },
+      "latest_handler": {
+        "samples": 1625,
+        "p50_ms": 1.585583,
+        "p95_ms": 5.293334,
+        "max_ms": 15.158458
+      },
+      "paired_upper_estimate": {
+        "samples": 1625,
+        "p50_ms": 15.770916,
+        "p95_ms": 20.233625,
+        "max_ms": 30.159917
+      }
+    },
+    "draw-on": {
+      "gestures": 28,
+      "first_handler": {
+        "samples": 1358,
+        "p50_ms": 1.277458,
+        "p95_ms": 4.108083,
+        "max_ms": 975.80325
+      },
+      "latest_handler": {
+        "samples": 1358,
+        "p50_ms": 1.2715,
+        "p95_ms": 3.954166,
+        "max_ms": 382.14325
+      },
+      "paired_upper_estimate": {
+        "samples": 1358,
+        "p50_ms": 8.940541,
+        "p95_ms": 20.966749,
+        "max_ms": 795.483833
+      }
+    },
+    "pan-off": {
+      "gestures": 28,
+      "first_handler": {
+        "samples": 1636,
+        "p50_ms": 0.701958,
+        "p95_ms": 1.625959,
+        "max_ms": 23.534458
+      },
+      "latest_handler": {
+        "samples": 1636,
+        "p50_ms": 0.698292,
+        "p95_ms": 1.440375,
+        "max_ms": 14.640041
+      },
+      "paired_upper_estimate": {
+        "samples": 1636,
+        "p50_ms": 7.385959,
+        "p95_ms": 8.36,
+        "max_ms": 22.953083
+      }
+    },
+    "pan-on": {
+      "gestures": 28,
+      "first_handler": {
+        "samples": 1436,
+        "p50_ms": 1.227167,
+        "p95_ms": 17.67025,
+        "max_ms": 39.192084
+      },
+      "latest_handler": {
+        "samples": 1436,
+        "p50_ms": 1.201458,
+        "p95_ms": 2.316792,
+        "max_ms": 39.192084
+      },
+      "paired_upper_estimate": {
+        "samples": 1436,
+        "p50_ms": 17.455291,
+        "p95_ms": 20.606124,
+        "max_ms": 55.081125
+      }
+    }
+  },
+  "status": "rejected: held-gesture 8ms/16ms policy increased pan first-input latency; not final production policy",
+  "confounders": [
+    "Uncontrolled concurrent system/other-project workload; no general latency or CPU gain inferred."
+  ]
+}

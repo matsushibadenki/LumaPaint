@@ -5,8 +5,13 @@ mod crop_tool;
 mod gradient_tool;
 #[path = "input_timing_macos.rs"]
 mod input_timing;
+#[cfg(feature = "native-input-qa")]
+#[path = "native_gesture_qa_macos.rs"]
+mod native_gesture_qa;
 #[path = "pane_gpu_macos.rs"]
 pub(super) mod pane_gpu;
+#[path = "pane_scheduling.rs"]
+mod pane_scheduling;
 #[path = "pixel_selection_menu_macos.rs"]
 pub(super) mod pixel_selection_menu;
 #[path = "timeline_macos.rs"]
@@ -466,11 +471,16 @@ impl PaintView {
         fn perform_file_drop(&self, sender: &objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSDraggingInfo>) -> bool {
             file_drop::perform(self, sender)
         }
+        #[unsafe(method(paneTick:))]
+        fn pane_tick(&self, _timer: &AnyObject) {
+            pane_gpu::tick(&self.ivars().label);
+        }
         #[unsafe(method(frameTick:))]
         fn frame_tick(&self, _link: &AnyObject) {
             if self.ivars().passive.get() { return; }
             let Ok(_session) = SessionGuard::enter_render(&self.ivars().label) else { return; };
             if FRAME_REQUESTED.with(|requested| requested.replace(false)) {
+                CANVAS.with(|c| {if let Some(c)=c.borrow().as_ref(){c.renderer.input_checkpoint("native_display_callback");}});
                 if let Err(error) = redraw() { emit_error(error); }
             }
             if !FRAME_REQUESTED.with(|requested| requested.get()) {
@@ -671,6 +681,10 @@ impl PaintView {
                 }
                 return;
             }
+            #[cfg(feature = "native-input-qa")]
+            if event.keyCode()==109 && event.modifierFlags().contains(NSEventModifierFlags::Command|NSEventModifierFlags::Shift) {
+                if let Err(error)=native_gesture_qa::start(){emit_error(error);}return;
+            }
             if APP.get().is_some_and(|app|crate::shortcuts::dispatch(app,&current_label(),event)){return;}
             if mask_tools::key(event) || channel_tools::key(event) { return; }
             if event.keyCode() == 49 { SPACE_DOWN.with(|space| space.set(true)); }
@@ -812,6 +826,7 @@ impl PaintView {
     }
 
     fn apply_zoom(&self, viewport: Viewport, location: NSPoint, zoom: f32) {
+        let _interaction = input_timing::Interaction::new();
         if zoom == viewport.zoom || !location.x.is_finite() || !location.y.is_finite() {
             return;
         }
@@ -837,7 +852,11 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
+        let _interaction = (phase != 3).then(input_timing::Interaction::new);
         let _input = (phase != 3).then(lumapaint_core::performance::input_event);
+        if phase != 3 {
+            input_timing::event_age(event);
+        }
         let _handler = input_timing::Stage::new(match phase {
             0 => "pointer_down",
             1 => "pointer_drag",
@@ -1359,6 +1378,9 @@ impl PaintView {
     }
 
     fn begin_pan(&self, event: &NSEvent) {
+        let _input = lumapaint_core::performance::input_event();
+        input_timing::event_age(event);
+        let _stage = input_timing::Stage::new("pan_down");
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         LAST_PAN_POINT.with(|last| last.set((point.x as f32, point.y as f32)));
         PANNING.with(|value| value.set(true));
@@ -1369,6 +1391,18 @@ impl PaintView {
         if !PANNING.with(|value| value.get()) {
             return;
         }
+        let _input = lumapaint_core::performance::input_event();
+        input_timing::event_age(event);
+        let _stage = input_timing::Stage::new(
+            if matches!(
+                event.r#type(),
+                objc2_app_kit::NSEventType::LeftMouseUp | objc2_app_kit::NSEventType::OtherMouseUp
+            ) {
+                "pan_up"
+            } else {
+                "pan_drag"
+            },
+        );
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         let current = (point.x as f32, point.y as f32);
         let previous = LAST_PAN_POINT.with(|last| last.replace(current));
@@ -1376,6 +1410,10 @@ impl PaintView {
     }
 
     fn pan_by(&self, dx: f32, dy: f32) {
+        if !dx.is_finite() || !dy.is_finite() || (dx == 0. && dy == 0.) {
+            return;
+        }
+        let _interaction = input_timing::Interaction::new();
         PAN.with(|pan| pan.set(pan_offset(pan.get(), (dx, dy))));
         CANVAS.with(|slot| {
             if let Some(canvas) = slot.borrow_mut().as_mut() {
@@ -4660,6 +4698,9 @@ thread_local! {
     static FRAME_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn request_redraw() -> Result<(), String> {
+    if input_timing::Interaction::active() {
+        pane_gpu::note_input();
+    }
     if let Some(marker) = lumapaint_core::performance::input_started() {
         CANVAS.with(|slot| {
             if let Some(canvas) = slot.borrow_mut().as_mut() {
@@ -4679,6 +4720,11 @@ fn request_redraw() -> Result<(), String> {
 }
 
 fn redraw() -> Result<(), String> {
+    CANVAS.with(|slot| {
+        if let Some(canvas) = slot.borrow().as_ref() {
+            canvas.renderer.input_checkpoint("native_redraw_entry");
+        }
+    });
     FRAME_REQUESTED.with(|requested| requested.set(false));
     text_editor::prepare_frame();
     CANVAS.with(|slot| {
@@ -5890,6 +5936,7 @@ fn park_active_document() {
         return;
     }
     let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    timeline::park_document(id);
     if window_sessions::park_shared_active(id) {
         INACTIVE_DOCUMENTS.with(|documents| {
             documents.borrow_mut().push(OpenDocument {
@@ -5978,6 +6025,7 @@ fn activate_document(entry: OpenDocument) {
     PROJECT_PATH.with(|slot| *slot.borrow_mut() = entry.path);
     PROJECT_FINGERPRINT.with(|slot| *slot.borrow_mut() = entry.fingerprint);
     ACTIVE_DOCUMENT_ID.with(|active| active.set(entry.id));
+    timeline::activate_document(entry.id);
     DOCUMENT_OPEN.with(|open| open.set(true));
     CHECKPOINT_REVISION.with(|last| last.set(None));
 }
@@ -8836,6 +8884,7 @@ pub fn close_document(id: u64) -> Result<DocumentWorkspaceSnapshot, String> {
         emit_workspace();
     }
     let snapshot = workspace_snapshot();
+    timeline::retain_documents(&snapshot.documents.iter().map(|d| d.id).collect::<Vec<_>>());
     DOCUMENT_VIEWS.with(|views| {
         views
             .borrow_mut()
@@ -9732,6 +9781,34 @@ pub fn restore_workspace_session(
     }
     emit_workspace();
     Ok(Some(state.layout))
+}
+
+/// Borrow standard pane content synchronously. No session switch, fork or snapshot.
+/// Callbacks must not re-enter the window/document stores.
+fn with_pane_standard_document<T>(
+    id: u64,
+    f: impl FnOnce(&Document) -> T,
+) -> Result<Option<T>, String> {
+    if DOCUMENT_OPEN.with(|v| v.get()) && ACTIVE_DOCUMENT_ID.with(|v| v.get()) == id {
+        if ACTIVE_TILED_DOCUMENT.with(|v| v.borrow().is_some()) {
+            return Ok(None);
+        }
+        return Ok(Some(DOCUMENT.with(|d| f(&d.borrow()))));
+    }
+    INACTIVE_DOCUMENTS.with(|items| {
+        let items = items.borrow();
+        let entry = items
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or("Document not found")?;
+        Ok(match &entry.content {
+            OpenDocumentContent::Legacy(doc) => Some(f(doc)),
+            OpenDocumentContent::Tiled(_) => None,
+            OpenDocumentContent::Shared(id) => {
+                window_sessions::with_shared_standard_document(*id, f)
+            }
+        })
+    })
 }
 
 pub fn pane_preview_document(id: u64) -> Result<super::ThumbnailDocument, String> {
