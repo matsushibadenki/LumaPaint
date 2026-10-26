@@ -10,12 +10,19 @@ use std::rc::Rc;
 mod wire;
 
 const MAX_CACHED_OBJECTS: usize = 4096;
+const MAX_SUMMARY_WIRE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CACHE_WIRE_BYTES: usize = 8 * 1024 * 1024;
+#[path = "workspace_notification_budget.rs"]
+pub(crate) mod budget;
 #[derive(Default)]
 struct Cache {
     sequence: u64,
     active_id: Option<u64>,
     previous: Option<Rc<DocumentSnapshot>>,
     ready: bool,
+    retained_bytes: usize,
+    delivery_failed: bool,
+    attempted_id: Option<u64>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,10 +71,12 @@ impl Cache {
         force_full: bool,
         send: impl FnOnce(String) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.attempted_id = active_id;
         let count = active
             .as_ref()
             .map_or(0, |d| d.layers.iter().map(|l| l.objects.len()).sum());
-        let cacheable = count <= MAX_CACHED_OBJECTS;
+        let retained_bytes = active.as_ref().map_or(Ok(0), budget::summary_bytes)?;
+        let cacheable = count <= MAX_CACHED_OBJECTS && retained_bytes <= MAX_SUMMARY_WIRE_BYTES;
         let delta = !force_full && cacheable && self.ready && self.active_id == active_id;
         let sequence = self
             .sequence
@@ -129,7 +138,11 @@ impl Cache {
         })
         .map_err(|e| e.to_string())?;
         let bytes = json.len() as u64;
-        send(json)?;
+        if let Err(error) = send(json) {
+            self.delivery_failed = true;
+            return Err(error);
+        }
+        self.delivery_failed = false;
         lumapaint_core::performance::count("host.workspace_notification_bytes", bytes);
         lumapaint_core::performance::count(
             if delta {
@@ -144,6 +157,7 @@ impl Cache {
         self.sequence = sequence;
         self.active_id = active_id;
         self.ready = cacheable;
+        self.retained_bytes = if cacheable { retained_bytes } else { 0 };
         self.previous = if cacheable { active } else { None };
         Ok(())
     }
@@ -173,10 +187,13 @@ pub(crate) fn publish_shared(
     let full =
         *FULL.get_or_init(|| std::env::var_os("LUMAPAINT_WORKSPACE_FULL_NOTIFICATIONS").is_some());
     CACHES.with(|c| {
-        c.borrow_mut()
-            .entry(label.into())
-            .or_default()
-            .publish_shared(active_id, active, documents, full, send)
+        let mut caches = c.borrow_mut();
+        budget::observe(active_id, active.as_ref());
+        let cache = caches.entry(label.into()).or_default();
+        let result = cache.publish_shared(active_id, active, documents, full, send);
+        cache.delivery_failed = result.is_err();
+        budget::enforce_and_report(&mut caches);
+        result
     })
 }
 pub(crate) fn reset(label: &str) {
@@ -184,19 +201,22 @@ pub(crate) fn reset(label: &str) {
         if let Some(cache) = c.borrow_mut().get_mut(label) {
             cache.ready = false;
             cache.previous = None;
+            cache.retained_bytes = 0;
         }
+        budget::enforce_and_report(&mut c.borrow_mut());
     });
 }
 pub(crate) fn forget(label: &str) {
     CACHES.with(|c| {
         c.borrow_mut().remove(label);
+        budget::enforce_and_report(&mut c.borrow_mut());
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> DocumentWorkspaceSnapshot {
+    pub(super) fn fixture() -> DocumentWorkspaceSnapshot {
         let mut document = lumapaint_core::document::Document::default();
         document.add_vector_layer().unwrap();
         let mut active = document.snapshot();

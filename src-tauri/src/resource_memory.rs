@@ -64,6 +64,7 @@ pub struct Snapshot {
     allocated_ram: u64,
     scratch_bytes: u64,
     resident_history: u64,
+    notification_cache: crate::workspace_notifications::budget::Report,
     drives: Vec<Drive>,
 }
 impl Resources {
@@ -196,6 +197,7 @@ impl Memory {
             preferences,
             scratch_bytes: self.scratch_bytes.load(Ordering::Relaxed),
             resident_history: self.resident_history.load(Ordering::Relaxed),
+            notification_cache: crate::workspace_notifications::budget::report(),
             drives,
         }
     }

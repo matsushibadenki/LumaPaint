@@ -1,0 +1,40 @@
+{
+  "metric": "serialized full-summary JSON bytes; not heap/RSS",
+  "limits": {
+    "per_summary_wire_bytes": 2097152,
+    "unique_cache_wire_bytes": 8388608,
+    "objects": 4096
+  },
+  "fixture": {
+    "old_name_bytes": 65536,
+    "new_name_bytes": 131072
+  },
+  "after_one_failed_delivery": {
+    "uniqueSummaryWireBytes": 202956,
+    "logicalWindowWireBytes": 202956,
+    "uniqueSummaries": 2,
+    "evictions": 0,
+    "windows": [
+      {
+        "label": "a",
+        "documentId": 300001,
+        "attemptedDocumentId": 300001,
+        "sequence": 1,
+        "summaryWireBytes": 68710,
+        "staleVersion": true,
+        "deliveryFailed": true,
+        "ready": true
+      },
+      {
+        "label": "b",
+        "documentId": 300001,
+        "attemptedDocumentId": 300001,
+        "sequence": 2,
+        "summaryWireBytes": 134246,
+        "staleVersion": false,
+        "deliveryFailed": false,
+        "ready": true
+      }
+    ]
+  }
+}
