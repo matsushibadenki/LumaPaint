@@ -191,6 +191,14 @@ impl Recovery {
         state.status.pending = true;
         wake.notify_one();
     }
+    /// Prepare only serializable artwork, without copying the live Undo/Redo graph.
+    pub fn checkpoint_document(&self, document: &Document) {
+        if document.is_dirty() {
+            self.checkpoint(document.clone_for_recovery());
+        } else {
+            self.clear();
+        }
+    }
     pub fn checkpoint(&self, document: Document) {
         let revision = document.revision();
         let dirty = document.is_dirty();
@@ -349,6 +357,44 @@ mod tests {
         drop(restarted);
         assert!(Recovery::start(directory.path().into()).is_ok());
     }
+    #[test]
+    fn borrowed_checkpoint_retains_pending_artwork_and_source_undo() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut source = drawing();
+        source
+            .begin(Point { x: 80., y: 90. }, Brush::default())
+            .unwrap();
+        let expected = source.clone().encode().unwrap();
+        let mut writer = Recovery::start(directory.path().into()).unwrap();
+        writer.checkpoint_document(&source);
+        writer.stop();
+        drop(writer);
+        assert!(source.has_active_stroke());
+        assert!(source.snapshot().can_undo);
+        let reader = Recovery::start(directory.path().into()).unwrap();
+        let info = reader.info().unwrap();
+        assert_eq!(info.candidates.len(), 1);
+        let mut restored = reader.read_candidate(&info.candidates[0].id).unwrap();
+        assert_eq!(restored.encode().unwrap(), expected);
+        source.finish();
+        source.undo();
+        assert_eq!(source.snapshot().stroke_count, 1);
+        source.redo();
+        assert_eq!(source.snapshot().stroke_count, 2);
+    }
+
+    #[test]
+    fn borrowed_clean_checkpoint_removes_a_stale_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = Recovery::start(directory.path().into()).unwrap();
+        writer.checkpoint_document(&drawing());
+        writer.checkpoint_document(&Document::default());
+        writer.stop();
+        drop(writer);
+        let reader = Recovery::start(directory.path().into()).unwrap();
+        assert!(reader.info().unwrap().candidates.is_empty());
+    }
+
     #[test]
     fn restart_discovers_checkpoint_and_restores_unsaved_work() {
         let directory = tempfile::tempdir().unwrap();

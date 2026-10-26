@@ -66,12 +66,13 @@ impl ContentExt for Content {
 
 /// Extension trait to turn a [`usvg` BlendMode](usvg::BlendMode) into a [PDF Blendmode](BlendMode)
 pub trait BlendModeExt {
-    fn to_pdf_blend_mode(&self) -> BlendMode;
+    fn to_pdf_blend_mode(&self) -> Result<BlendMode>;
 }
 
 impl BlendModeExt for usvg::BlendMode {
-    fn to_pdf_blend_mode(&self) -> BlendMode {
-        match self {
+    fn to_pdf_blend_mode(&self) -> Result<BlendMode> {
+        Ok(match self {
+            usvg::BlendMode::PlusLighter => return Err(ConversionError::UnsupportedBlendMode),
             usvg::BlendMode::Normal => BlendMode::Normal,
             usvg::BlendMode::Multiply => BlendMode::Multiply,
             usvg::BlendMode::Screen => BlendMode::Screen,
@@ -88,7 +89,7 @@ impl BlendModeExt for usvg::BlendMode {
             usvg::BlendMode::Saturation => BlendMode::Saturation,
             usvg::BlendMode::Color => BlendMode::Color,
             usvg::BlendMode::Luminosity => BlendMode::Luminosity,
-        }
+        })
     }
 }
 

@@ -43,7 +43,7 @@ pub fn render(
         let mut gs = chunk.ext_graphics(gs_ref);
         gs.non_stroking_alpha(group.opacity().mul(initial_opacity).get())
             .stroking_alpha(group.opacity().mul(initial_opacity).get())
-            .blend_mode(group.blend_mode().to_pdf_blend_mode());
+            .blend_mode(group.blend_mode().to_pdf_blend_mode()?);
 
         gs.finish();
         content.set_parameters(rc.add_graphics_state(gs_ref).to_pdf_name());

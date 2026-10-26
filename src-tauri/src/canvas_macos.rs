@@ -1430,7 +1430,14 @@ impl PaintView {
 }
 
 #[derive(Clone)]
+struct PenClosing {
+    start: [f32; 2],
+    dragged: bool,
+}
+
+#[derive(Clone)]
 struct PenDraft {
+    closing: Option<PenClosing>,
     layer: String,
     // Anchor and symmetric outgoing handle; incoming is its reflection.
     nodes: Vec<([f32; 2], [f32; 2])>,
@@ -1525,8 +1532,11 @@ impl PenDraft {
     fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
         use std::fmt::Write;
         let mut preview = document.clone_for_rendering();
-        preview.upsert_vector_object(&self.layer, self.object(false, "pen-draft")?)?;
-        let mut guide = self.object(false, "pen-guides")?;
+        preview.upsert_vector_object(
+            &self.layer,
+            self.object(self.closing.is_some(), "pen-draft")?,
+        )?;
+        let mut guide = self.object(self.closing.is_some(), "pen-guides")?;
         guide.kind = VectorObjectKind::Compound;
         guide.stroke = Some(VectorPaint {
             registration: false,
@@ -1590,7 +1600,11 @@ fn finish_pen(document: &mut Document, closed: bool) -> Result<(), String> {
         });
         document.upsert_vector_object(
             &draft.layer,
-            draft.committed_object(closed, &format!("vector-object-{serial}"), snap_distance)?,
+            draft.committed_object(
+                closed || draft.closing.is_some(),
+                &format!("vector-object-{serial}"),
+                snap_distance,
+            )?,
         )?;
     }
     PEN_DRAFT.with(|draft| draft.borrow_mut().take());
@@ -1717,24 +1731,56 @@ fn bezier_pointer(
                 .is_some_and(|draft| pen_should_close(draft, position, tolerance))
         });
         if close {
-            return finish_pen(document, true);
+            PEN_DRAFT.with(|slot| {
+                if let Some(draft) = slot.borrow_mut().as_mut() {
+                    draft.closing = Some(PenClosing {
+                        start: position,
+                        dragged: false,
+                    });
+                }
+            });
+            return Ok(());
         }
         PEN_DRAFT.with(|draft| -> Result<(), String> {
             let mut draft = draft.borrow_mut();
-            let draft = draft.get_or_insert_with(|| PenDraft { layer: layer.clone(), nodes: vec![], brush: BRUSH.with(|brush| *brush.borrow()) });
+            let draft = draft.get_or_insert_with(|| PenDraft { closing: None, layer: layer.clone(), nodes: vec![], brush: BRUSH.with(|brush| *brush.borrow()) });
             if draft.layer != layer { return Err("Finish or cancel the current path first / 現在のパスを確定または取り消してください / 请先完成或取消当前路径".into()); }
             if draft.nodes.len() >= 4096 { return Err("Too many pen anchors".into()); }
             draft.nodes.push((position, position));
             Ok(())
         })?;
     } else {
-        PEN_DRAFT.with(|draft| {
-            if let Some(draft) = draft.borrow_mut().as_mut() {
+        let tolerance = CANVAS
+            .with(|slot| pen_close_tolerance(slot.borrow().as_ref().map(|canvas| canvas.viewport)))
+            * 0.25;
+        let closing = PEN_DRAFT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(draft) = slot.as_mut() else {
+                return false;
+            };
+            if let Some(closing) = draft.closing.as_mut() {
+                // Ignore click jitter; a drag pulls the outgoing handle from the
+                // existing first anchor, with a reflected incoming closing handle.
+                let delta = [
+                    position[0] - closing.start[0],
+                    position[1] - closing.start[1],
+                ];
+                closing.dragged |= delta[0].hypot(delta[1]) > tolerance;
+                if closing.dragged {
+                    let node = &mut draft.nodes[0];
+                    node.1 = [node.0[0] + delta[0], node.0[1] + delta[1]];
+                }
+                true
+            } else {
                 if let Some(node) = draft.nodes.last_mut() {
                     node.1 = position;
                 }
+                false
             }
         });
+        if closing && phase == 2 {
+            finish_pen(document, true)?;
+        }
     }
     Ok(())
 }
@@ -2504,7 +2550,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
             );
         }
         marker.path.fill_rule = lumapaint_core::vector::FillRule::EvenOdd;
-        for handle in lumapaint_core::bezier::corner_handles(&object, box_tolerance() * 2.) {
+        for handle in lumapaint_core::bezier::corner_handles(&object, 14. / zoom) {
             let [x, y] = handle.point;
             for r in [4.5 / zoom, 2.5 / zoom] {
                 let _ = write!(
@@ -3680,6 +3726,10 @@ fn emit_document() {
         workspace_snapshot()
     });
     drop(snapshot_stage);
+    {
+        let _shared = input_timing::Stage::new("document_shared_snapshot");
+        window_sessions::refresh_shared_snapshot_from(workspace.as_ref());
+    }
     let workspace_stage = input_timing::Stage::new("document_workspace_emit");
     if let Some(workspace) = workspace {
         emit_workspace_snapshot(workspace);
@@ -6986,6 +7036,7 @@ mod tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let object = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![
@@ -7195,6 +7246,7 @@ mod tests {
     #[test]
     fn pen_closure_uses_screen_distance_at_all_zoom_and_backing_scales() {
         let draft = PenDraft {
+            closing: None,
             layer: "path".into(),
             brush: Brush::default(),
             nodes: vec![([100., 100.], [100., 100.]), ([300., 200.], [300., 200.])],
@@ -7232,6 +7284,7 @@ mod tests {
             ));
         }
         let single = PenDraft {
+            closing: None,
             nodes: vec![draft.nodes[0]],
             ..draft
         };
@@ -7243,6 +7296,7 @@ mod tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let draft = PenDraft {
+            closing: None,
             layer,
             brush: Brush {
                 size: 24.,
@@ -7270,6 +7324,7 @@ mod tests {
     #[test]
     fn pen_commit_snaps_existing_near_endpoints_without_a_tiny_closing_segment() {
         let draft = PenDraft {
+            closing: None,
             layer: "path".into(),
             brush: Brush::default(),
             nodes: vec![
@@ -7317,6 +7372,7 @@ mod tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let draft = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![([20., 20.], [40., 0.]), ([100., 80.], [120., 60.])],
@@ -7351,6 +7407,7 @@ mod tests {
         let mut doc = Document::default();
         let layer = doc.add_vector_layer().unwrap();
         let draft = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![([20., 20.], [40., 0.]), ([100., 80.], [120., 60.])],
@@ -7945,6 +8002,7 @@ mod tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let draft = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
@@ -8002,6 +8060,7 @@ mod tests {
         let layer = document.add_vector_layer().unwrap();
         document.select_layer(layer.clone()).unwrap();
         let pen = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
@@ -8125,6 +8184,7 @@ mod tests {
             TOOL.with(|tool| tool.set(CanvasTool::VectorPen));
             PEN_DRAFT.with(|draft| {
                 *draft.borrow_mut() = Some(PenDraft {
+                    closing: None,
                     layer,
                     brush: Brush::default(),
                     nodes: vec![([10., 10.], [10., 60.]), ([110., 10.], [110., -40.])],
@@ -8162,6 +8222,7 @@ mod tests {
         let layer = document.add_vector_layer().unwrap();
         PEN_DRAFT.with(|draft| {
             *draft.borrow_mut() = Some(PenDraft {
+                closing: None,
                 layer: layer.clone(),
                 brush: Brush::default(),
                 nodes: vec![([10., 10.], [10., 10.]), ([100., 100.], [100., 100.])],
@@ -8292,6 +8353,7 @@ mod tests {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
         let pen = PenDraft {
+            closing: None,
             layer: layer.clone(),
             brush: Brush::default(),
             nodes: vec![
@@ -8358,6 +8420,73 @@ mod tests {
     }
 
     #[test]
+    fn pen_closing_drag_previews_symmetric_handles_and_commits_once() {
+        PEN_DRAFT.with(|slot| slot.borrow_mut().take());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        doc.select_layer(layer).unwrap();
+        let point = |x, y| lumapaint_core::document::Point { x, y };
+        for (x, y) in [(100., 100.), (200., 100.), (200., 200.)] {
+            bezier_pointer(&mut doc, point(x, y), 0).unwrap();
+            bezier_pointer(&mut doc, point(x, y), 2).unwrap();
+        }
+        bezier_pointer(&mut doc, point(104., 102.), 0).unwrap();
+        bezier_pointer(&mut doc, point(124., 132.), 1).unwrap();
+        assert!(doc.svg_layers().next().unwrap().vector_objects.is_empty());
+        PEN_DRAFT.with(|slot| {
+            let slot = slot.borrow();
+            let draft = slot.as_ref().unwrap();
+            assert_eq!(draft.nodes.len(), 3);
+            assert_eq!(draft.nodes[0], ([100., 100.], [120., 130.]));
+            let preview = draft.preview(&doc, 1.).unwrap();
+            let object = &preview.svg_layers().next().unwrap().vector_objects[0];
+            assert!(object.path.data.ends_with('Z'));
+            assert_eq!(object.control_points[1], [120., 130.]);
+            assert_eq!(object.control_points[8], [80., 70.]);
+        });
+        bezier_pointer(&mut doc, point(124., 132.), 2).unwrap();
+        assert!(PEN_DRAFT.with(|slot| slot.borrow().is_none()));
+        let object = &doc.svg_layers().next().unwrap().vector_objects[0];
+        assert_eq!(object.control_points.len(), 10);
+        assert_eq!(object.control_points[8], [80., 70.]);
+        doc.undo();
+        assert!(doc.svg_layers().next().unwrap().vector_objects.is_empty());
+        doc.redo();
+        assert_eq!(doc.svg_layers().next().unwrap().vector_objects.len(), 1);
+        let id = doc.svg_layers().next().unwrap().vector_objects[0]
+            .id
+            .clone();
+        doc.select_vector_objects(vec![id]).unwrap();
+        CANVAS.with(|canvas| {
+            // Rendering already owns the canvas mutably; overlay geometry must
+            // use the supplied screen scale rather than borrowing it again.
+            let _render_borrow = canvas.borrow_mut();
+            direct_preview(&doc, 0.5).unwrap();
+        });
+    }
+
+    #[test]
+    fn pen_closing_drag_can_return_to_start_and_cancel() {
+        PEN_DRAFT.with(|slot| slot.borrow_mut().take());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        doc.select_layer(layer).unwrap();
+        let point = |x, y| lumapaint_core::document::Point { x, y };
+        for (x, y) in [(100., 100.), (200., 100.), (200., 200.)] {
+            bezier_pointer(&mut doc, point(x, y), 0).unwrap();
+            bezier_pointer(&mut doc, point(x, y), 2).unwrap();
+        }
+        bezier_pointer(&mut doc, point(100., 100.), 0).unwrap();
+        bezier_pointer(&mut doc, point(130., 140.), 1).unwrap();
+        bezier_pointer(&mut doc, point(101., 100.), 1).unwrap();
+        PEN_DRAFT.with(|slot| {
+            assert_eq!(slot.borrow().as_ref().unwrap().nodes[0].1, [101., 100.]);
+        });
+        assert!(cancel_vector_drag());
+        assert!(doc.svg_layers().next().unwrap().vector_objects.is_empty());
+    }
+
+    #[test]
     fn pen_click_drag_close_and_cancel() {
         let mut document = Document::default();
         let layer = document.add_vector_layer().unwrap();
@@ -8375,11 +8504,15 @@ mod tests {
             .vector_objects
             .is_empty());
         bezier_pointer(&mut document, point(10., 10.), 0).unwrap();
+        bezier_pointer(&mut document, point(10., 10.), 2).unwrap();
         assert!(PEN_DRAFT.with(|draft| draft.borrow().is_none()));
         assert!(document.svg_layers().next().unwrap().vector_objects[0]
             .path
             .data
             .ends_with(" Z"));
+        let closed = &document.svg_layers().next().unwrap().vector_objects[0];
+        assert_eq!(closed.control_points[1], [10., 50.]);
+        assert_eq!(closed.control_points[5], [10., -30.]);
         bezier_pointer(&mut document, point(50., 50.), 0).unwrap();
         assert!(cancel_vector_drag());
         assert_eq!(
@@ -9390,7 +9523,7 @@ fn checkpoint() {
     }
     RECOVERY.with(|slot| {
         if let Some(recovery) = slot.borrow().as_ref() {
-            recovery.checkpoint(DOCUMENT.with(|doc| doc.borrow().clone()));
+            DOCUMENT.with(|doc| recovery.checkpoint_document(&doc.borrow()));
             CHECKPOINT_REVISION.with(|last| last.set(Some(key)));
         }
     });

@@ -233,18 +233,6 @@
     },
     {
       "name": "base64",
-      "version": "0.22.1",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/marshallpierce/rust-base64"
-    },
-    {
-      "name": "base64",
       "version": "0.23.1",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
@@ -394,7 +382,7 @@
     },
     {
       "name": "brotli",
-      "version": "9.0.0",
+      "version": "9.1.0",
       "license": "BSD-3-Clause AND MIT",
       "license_file": null,
       "source_notices": [
@@ -417,7 +405,7 @@
     },
     {
       "name": "brotli-decompressor",
-      "version": "6.0.1",
+      "version": "6.2.0",
       "license": "BSD-3-Clause/MIT",
       "license_file": null,
       "source_notices": [
@@ -592,7 +580,7 @@
     },
     {
       "name": "cc",
-      "version": "1.8.0",
+      "version": "1.10.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -906,7 +894,7 @@
     },
     {
       "name": "crc32fast",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1402,7 +1390,7 @@
     },
     {
       "name": "erased-serde",
-      "version": "0.4.10",
+      "version": "0.4.11",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1486,7 +1474,7 @@
     },
     {
       "name": "find-msvc-tools",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2333,7 +2321,7 @@
     },
     {
       "name": "ico",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -2344,7 +2332,7 @@
     },
     {
       "name": "icu_collections",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2355,7 +2343,7 @@
     },
     {
       "name": "icu_locale_core",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2366,7 +2354,7 @@
     },
     {
       "name": "icu_normalizer",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2377,7 +2365,7 @@
     },
     {
       "name": "icu_normalizer_data",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2388,7 +2376,7 @@
     },
     {
       "name": "icu_properties",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2399,7 +2387,7 @@
     },
     {
       "name": "icu_properties_data",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2410,7 +2398,7 @@
     },
     {
       "name": "icu_provider",
-      "version": "2.3.1",
+      "version": "2.4.0",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -2526,7 +2514,7 @@
     },
     {
       "name": "inout",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2973,7 +2961,7 @@
     },
     {
       "name": "lopdf",
-      "version": "0.45.0",
+      "version": "0.46.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3042,7 +3030,7 @@
     },
     {
       "name": "memmap2",
-      "version": "0.9.11",
+      "version": "0.9.12",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -3531,7 +3519,7 @@
     },
     {
       "name": "ordered-float",
-      "version": "5.5.0",
+      "version": "5.5.1",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3714,24 +3702,12 @@
     },
     {
       "name": "plist",
-      "version": "1.10.1",
+      "version": "1.10.3",
       "license": "MIT",
       "license_file": null,
       "source_notices": [],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/ebarnard/rust-plist/"
-    },
-    {
-      "name": "png",
-      "version": "0.17.16",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/image-rs/image-png"
     },
     {
       "name": "png",
@@ -4261,7 +4237,7 @@
     },
     {
       "name": "resvg",
-      "version": "0.48.1",
+      "version": "0.49.0",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -4320,7 +4296,7 @@
     },
     {
       "name": "roxmltree",
-      "version": "0.21.1",
+      "version": "0.21.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4441,7 +4417,7 @@
     },
     {
       "name": "rustls-webpki",
-      "version": "0.103.15",
+      "version": "0.103.16",
       "license": "ISC",
       "license_file": null,
       "source_notices": [
@@ -4960,7 +4936,7 @@
     },
     {
       "name": "smallvec",
-      "version": "1.16.3",
+      "version": "1.16.4",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5265,7 +5241,7 @@
     },
     {
       "name": "tao",
-      "version": "0.37.1",
+      "version": "0.37.2",
       "license": "Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5313,7 +5289,7 @@
     },
     {
       "name": "tauri",
-      "version": "2.12.4",
+      "version": "2.12.5",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5325,7 +5301,7 @@
     },
     {
       "name": "tauri-build",
-      "version": "2.7.3",
+      "version": "2.7.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5337,7 +5313,7 @@
     },
     {
       "name": "tauri-codegen",
-      "version": "2.7.3",
+      "version": "2.7.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5349,7 +5325,7 @@
     },
     {
       "name": "tauri-macros",
-      "version": "2.7.3",
+      "version": "2.7.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5373,7 +5349,7 @@
     },
     {
       "name": "tauri-runtime-wry",
-      "version": "2.12.2",
+      "version": "2.12.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5397,7 +5373,7 @@
     },
     {
       "name": "tauri-winres",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -5550,7 +5526,7 @@
     },
     {
       "name": "tinystr",
-      "version": "0.8.4",
+      "version": "0.8.5",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -5574,7 +5550,7 @@
     },
     {
       "name": "tokio",
-      "version": "1.53.3",
+      "version": "1.54.1",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -6011,7 +5987,7 @@
     },
     {
       "name": "usvg",
-      "version": "0.48.1",
+      "version": "0.49.0",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -6035,7 +6011,7 @@
     },
     {
       "name": "uuid",
-      "version": "1.28.0",
+      "version": "1.29.0",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -6338,7 +6314,7 @@
     },
     {
       "name": "webpki-root-certs",
-      "version": "1.0.9",
+      "version": "1.0.11",
       "license": "CDLA-Permissive-2.0",
       "license_file": null,
       "source_notices": [
@@ -7004,7 +6980,7 @@
     },
     {
       "name": "wry",
-      "version": "0.57.0",
+      "version": "0.57.1",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7073,7 +7049,7 @@
     },
     {
       "name": "yoke",
-      "version": "0.8.3",
+      "version": "0.8.4",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -7166,7 +7142,7 @@
     },
     {
       "name": "zerovec",
-      "version": "0.11.8",
+      "version": "0.11.9",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [
@@ -7177,7 +7153,7 @@
     },
     {
       "name": "zerovec-derive",
-      "version": "0.11.6",
+      "version": "0.11.7",
       "license": "Unicode-3.0",
       "license_file": null,
       "source_notices": [

@@ -20,9 +20,9 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-10-19)
+## Dependency inventory (2026-10-26)
 
-`cargo-license-inventory.json` inventories 627 locked Cargo packages across
+`cargo-license-inventory.json` inventories 625 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:
@@ -74,3 +74,11 @@ CC BY-SA 3.0. KanjiVG-attribution.md describes the source revision and
 normalization; KanjiVG-CC-BY-SA-3.0.txt includes the license. Stroke-path
 data and adaptations retain that license; the application source is separate.
 Generated stroke SVG includes attribution metadata.
+
+## SVG/PDF stable refresh (2026-10-26)
+
+usvg/resvg are updated to 0.49.0 and lopdf to 0.46.0. The usvg vendor tree
+retains upstream MIT/Apache-2.0 notices and the documented LumaPaint patches.
+svg2pdf remains 0.13.0 with its existing notices and a compatibility adapter
+for the shared 0.49 SVG tree. No new license metadata is missing from the
+625-package Cargo inventory. See docs/dependency-update-2026-10-26.md.

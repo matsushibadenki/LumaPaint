@@ -96,6 +96,8 @@ impl Default for PageOptions {
 pub enum ConversionError {
     /// The SVG image contains an unrecognized type of image.
     InvalidImage,
+    /// SVG plus-lighter has no equivalent PDF blend mode.
+    UnsupportedBlendMode,
     /// Text shaping resulted in a .notdef glyph. Can only occur if PDF/A
     /// processing is enabled.
     MissingGlyphs,
@@ -116,6 +118,7 @@ impl Display for ConversionError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::InvalidImage => f.write_str("An unknown type of image appears in the SVG."),
+            Self::UnsupportedBlendMode => f.write_str("The SVG plus-lighter blend mode cannot be represented in PDF."),
             Self::MissingGlyphs => f.write_str("A piece of text could not be displayed with any font."),
             Self::TooMuchNesting => f.write_str("The SVG's nesting depth is too high."),
             Self::UnknownError => f.write_str("An unknown error occurred during the conversion. This could indicate a bug in svg2pdf"),

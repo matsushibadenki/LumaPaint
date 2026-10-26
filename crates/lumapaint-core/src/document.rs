@@ -1,5 +1,7 @@
 #[path = "document_filters.rs"]
 mod filters;
+#[path = "document_recovery.rs"]
+mod recovery;
 pub use filters::{FilterCategory, FilterPreset};
 #[path = "document_pixel_selection.rs"]
 mod pixel_selection;

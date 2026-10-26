@@ -6,9 +6,9 @@ edition.workspace = true
 [dependencies]
 lumapaint-fonts = { path = "../lumapaint-fonts" }
 lumapaint-core = { path = "../lumapaint-core" }
-usvg = { version = "=0.48.1", features = ["text", "system-fonts"] }
+usvg = { version = "=0.49.0", features = ["text", "system-fonts"] }
 tiny-skia-path = "=0.12.0"
-roxmltree = "=0.21.1"
+roxmltree = "=0.21.2"
 serde_json = "=1.0.154"
 
 [dev-dependencies]

@@ -1,6 +1,6 @@
 # LumaPaint vertical typography patch
 
-Vendored usvg 0.45.1 (resvg project), retaining its MIT/Apache licenses.
+Originally based on usvg 0.45.1 (resvg project), now rebased onto usvg 0.49.0, retaining its MIT/Apache licenses.
 
 Pass writing mode through shaping including fallback fonts, enable OpenType vert/vrt2 for vertical text, and distinguish Unicode U/Tu/Tr orientation. Tr stays upright when the font supplies a vertical alternate; otherwise it retains the rotated fallback. Horizontal shaping is unchanged.
 

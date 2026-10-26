@@ -236,7 +236,7 @@ struct SharedDocument {
     owner: Option<String>,
     parked: Option<OpenDocument>,
     views: HashSet<String>,
-    snapshot: DocumentSnapshot,
+    snapshot: std::rc::Rc<DocumentSnapshot>,
     tiled: bool,
     recovery: Option<crate::recovery::Recovery>,
     checkpoint: Option<(u64, bool)>,
@@ -329,12 +329,12 @@ pub(super) fn shared_preview_document(id: u64) -> Option<super::super::Thumbnail
         })
 }
 
-pub(super) fn shared_snapshot(id: u64) -> Option<DocumentSnapshot> {
+fn shared_snapshot(id: u64) -> Option<std::rc::Rc<DocumentSnapshot>> {
     SHARED.with(|shared| {
         shared
             .borrow()
             .get(&id)
-            .map(|record| record.snapshot.clone())
+            .map(|record| std::rc::Rc::clone(&record.snapshot))
     })
 }
 pub(super) fn shared_checkpoint() -> bool {
@@ -369,7 +369,7 @@ pub(super) fn shared_checkpoint() -> bool {
                     key.1,
                 );
             } else {
-                recovery.checkpoint(DOCUMENT.with(|doc| doc.borrow().clone()));
+                DOCUMENT.with(|doc| recovery.checkpoint_document(&doc.borrow()));
             }
         });
         record.checkpoint = Some(key);
@@ -513,6 +513,9 @@ fn load_shared_active() {
     }
 }
 pub(super) fn refresh_shared_snapshot() {
+    refresh_shared_snapshot_from(None);
+}
+pub(super) fn refresh_shared_snapshot_from(workspace: Option<&DocumentWorkspaceSnapshot>) {
     if !DOCUMENT_OPEN.with(|open| open.get()) {
         return;
     }
@@ -520,24 +523,37 @@ pub(super) fn refresh_shared_snapshot() {
     if !SHARED.with(|shared| shared.borrow().contains_key(&id)) {
         return;
     }
-    let snapshot = ACTIVE_TILED_DOCUMENT.with(|slot| {
-        slot.borrow().as_ref().map_or_else(
-            || DOCUMENT.with(|doc| doc.borrow().snapshot()),
-            TiledSession::snapshot,
-        )
+    // Reuse the exact notification summary, including UI-only changes that do
+    // not advance the document revision. Parking still builds a fresh summary.
+    let snapshot = workspace
+        .filter(|workspace| workspace.active_id == Some(id))
+        .and_then(|workspace| workspace.active.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            ACTIVE_TILED_DOCUMENT.with(|slot| {
+                slot.borrow().as_ref().map_or_else(
+                    || DOCUMENT.with(|doc| doc.borrow().snapshot()),
+                    TiledSession::snapshot,
+                )
+            })
+        });
+    SHARED.with(|shared| {
+        shared.borrow_mut().get_mut(&id).unwrap().snapshot = std::rc::Rc::new(snapshot)
     });
-    SHARED.with(|shared| shared.borrow_mut().get_mut(&id).unwrap().snapshot = snapshot);
 }
-pub(super) fn shared_changed() {
-    refresh_shared_snapshot();
-    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
-    let current = current_label();
-    let Some((snapshot, labels)) = SHARED.with(|shared| {
+fn shared_notification_source(id: u64) -> Option<(std::rc::Rc<DocumentSnapshot>, HashSet<String>)> {
+    SHARED.with(|shared| {
         shared
             .borrow()
             .get(&id)
-            .map(|record| (record.snapshot.clone(), record.views.clone()))
-    }) else {
+            .map(|record| (std::rc::Rc::clone(&record.snapshot), record.views.clone()))
+    })
+}
+// emit_document refreshes the immutable mirror before delivering the source view.
+pub(super) fn shared_changed() {
+    let id = ACTIVE_DOCUMENT_ID.with(|active| active.get());
+    let current = current_label();
+    let Some((snapshot, labels)) = shared_notification_source(id) else {
         return;
     };
     if let Some(app) = APP.get() {
@@ -551,13 +567,15 @@ pub(super) fn shared_changed() {
                         .map(|entry| document_tab(entry.id, &entry.content))
                         .collect();
                     let active = if is_active {
-                        Some(snapshot.clone())
+                        Some(std::rc::Rc::clone(&snapshot))
                     } else if runtime.document_open {
                         Some(
                             shared_snapshot(runtime.active_document_id).unwrap_or_else(|| {
-                                runtime.active_tiled_document.as_ref().map_or_else(
-                                    || runtime.document.snapshot(),
-                                    TiledSession::snapshot,
+                                std::rc::Rc::new(
+                                    runtime.active_tiled_document.as_ref().map_or_else(
+                                        || runtime.document.snapshot(),
+                                        TiledSession::snapshot,
+                                    ),
                                 )
                             }),
                         )
@@ -580,13 +598,11 @@ pub(super) fn shared_changed() {
                         });
                     }
                     tabs.sort_by_key(|tab| tab.id);
-                    let _ = crate::workspace_notifications::publish(
+                    let _ = crate::workspace_notifications::publish_shared(
                         label,
-                        DocumentWorkspaceSnapshot {
-                            active_id: runtime.document_open.then_some(runtime.active_document_id),
-                            active,
-                            documents: tabs,
-                        },
+                        runtime.document_open.then_some(runtime.active_document_id),
+                        active,
+                        &tabs,
                         |json| {
                             app.emit_str_to(label, "documents-changed", json)
                                 .map_err(|e| e.to_string())
@@ -694,7 +710,7 @@ pub(in crate::canvas) fn open_document_view(
                     owner: Some(source.clone()),
                     parked: None,
                     views: HashSet::from([source.clone()]),
-                    snapshot,
+                    snapshot: std::rc::Rc::new(snapshot),
                     tiled,
                     recovery,
                     checkpoint: None,
@@ -1246,6 +1262,57 @@ pub(super) fn manage_memory(memory: &crate::resource_memory::Memory) -> Result<(
 mod tests {
     use super::*;
     use lumapaint_core::document::Point;
+
+    #[test]
+    fn shared_notification_reuses_summary_and_keeps_old_sources_immutable() {
+        let _session = SessionGuard::enter("editor-90973").unwrap();
+        let id = new_document(preset("Shared summary"))
+            .unwrap()
+            .active_id
+            .unwrap();
+        let mut workspace = workspace_snapshot();
+        SHARED.with(|items| {
+            items.borrow_mut().insert(
+                id,
+                SharedDocument {
+                    owner: Some(current_label()),
+                    parked: None,
+                    views: HashSet::from([current_label(), "editor-90974".into()]),
+                    snapshot: std::rc::Rc::new(workspace.active.as_ref().unwrap().clone()),
+                    tiled: false,
+                    recovery: None,
+                    checkpoint: None,
+                },
+            );
+        });
+        // Distinct UI-only summary content proves the supplied summary is reused
+        // instead of consulting the authoritative document a second time.
+        workspace.active.as_mut().unwrap().name = "Summary 日本語 简体中文".into();
+        refresh_shared_snapshot_from(Some(&workspace));
+        let (first, labels) = shared_notification_source(id).unwrap();
+        let (same, _) = shared_notification_source(id).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &same));
+        assert_eq!(labels.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&*first).unwrap(),
+            serde_json::to_value(workspace.active.as_ref().unwrap()).unwrap()
+        );
+        // A mismatched workspace must never replace this document's mirror.
+        workspace.active_id = Some(id + 1);
+        refresh_shared_snapshot_from(Some(&workspace));
+        let (fresh, _) = shared_notification_source(id).unwrap();
+        assert_eq!(fresh.name, "Shared summary");
+        assert_eq!(first.name, "Summary 日本語 简体中文");
+        assert!(!std::rc::Rc::ptr_eq(&first, &fresh));
+        DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer().unwrap());
+        refresh_shared_snapshot();
+        assert!(shared_notification_source(id).unwrap().0.can_undo);
+        assert!(DOCUMENT.with(|doc| doc.borrow().snapshot().can_undo));
+        SHARED.with(|items| {
+            items.borrow_mut().remove(&id);
+        });
+        close_window("editor-90973");
+    }
 
     #[test]
     fn shutdown_drains_owned_sessions_without_registered_windows() {
