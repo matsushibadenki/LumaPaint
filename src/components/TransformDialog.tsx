@@ -3,6 +3,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import type { Locale } from '../i18n';
 import type { TransformAction } from '../bridge';
+const signedNumber = (text:string):number|null => {
+  if (!/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return null;
+  const value=Number(text);
+  return Number.isFinite(value)?value:null;
+};
 export const transformLabels = {
   ja: { title:'変形', move:'移動', rotate:'回転', reflect:'リフレクト', scale:'拡大・縮小', shear:'シアー', individual:'個別に変形', reset:'バウンディングボックスのリセット', x:'水平方向 (px)', y:'垂直方向 (px)', width:'横倍率 (%)', height:'縦倍率 (%)', angle:'角度 (°)', axis:'反射軸 (°)：0=水平、90=垂直', apply:'適用', cancel:'キャンセル' },
   en: { title:'Transform', move:'Move', rotate:'Rotate', reflect:'Reflect', scale:'Scale', shear:'Shear', individual:'Transform Each', reset:'Reset Bounding Box', x:'Horizontal (px)', y:'Vertical (px)', width:'Horizontal (%)', height:'Vertical (%)', angle:'Angle (°)', axis:'Reflection axis (°): 0=horizontal, 90=vertical', apply:'Apply', cancel:'Cancel' },
@@ -12,9 +17,12 @@ export function TransformDialog({action,locale,onApply,onClose,resolution=72}: {
   const unit=useMeasurementUnit(),factor=pixelsPerMeasurement(unit,resolution),symbol=unitSymbols[unit];
   const t=transformLabels[locale]; const ref=useRef<HTMLDialogElement>(null);
   const [values,setValues]=useState(action==='scale'||action==='individual'?[100,100,0,0]:[0,0,0,0]);
+  const [drafts,setDrafts]=useState<(string|null)[]>([null,null,null,null]);
   const [preview,setPreview]=useState(false);const queue=useRef<Promise<unknown>>(Promise.resolve());
   const [busy,setBusy]=useState(false);const [error,setError]=useState('');
   useEffect(()=>{if(!isTauri())ref.current?.show();},[]);
+  // A changed measurement unit must not reinterpret an in-progress value.
+  useEffect(()=>{setDrafts([null,null,null,null]);},[unit]);
   useEffect(()=>{
     if(!isTauri())return;
     let cancelled=false;
@@ -26,9 +34,10 @@ export function TransformDialog({action,locale,onApply,onClose,resolution=72}: {
     return()=>{cancelled=true;clearTimeout(timer);};
   },[preview,values,action]);
   const labels=action==='move'?[t.x,t.y]:action==='scale'?[t.width,t.height]:action==='individual'?[t.width,t.height,t.angle]:action==='reset'?[]:[action==='reflect'?t.axis:t.angle];
-  return <dialog open={isTauri()} ref={ref} className="transform-dialog" onCancel={event=>{event.preventDefault();if(!busy)onClose();}}><form onSubmit={async event=>{event.preventDefault();setBusy(true);setError('');try{const v=[...values];if(action==='scale'||action==='individual'){v[0]/=100;v[1]/=100;}await queue.current;await onApply(v);onClose();}catch(e){setError(String(e));}finally{setBusy(false);}}}>
-    <h3>{t[action]}</h3>{labels.map((label,i)=><label key={`${label}-${symbol}`} style={{display:'grid',gap:6,marginBottom:12}}>{label.replace("(px)",`(${symbol})`)}<input type="number" required step="any" value={Number.isNaN(values[i])?'':Number((values[i]/(action==='move'?factor:1)).toFixed(5))} onChange={e=>setValues(v=>v.map((n,j)=>i===j?e.target.valueAsNumber*(action==='move'?factor:1):n))} disabled={busy}/></label>)}
+  const valid=labels.every((_,i)=>{if(drafts[i]===null)return true;const n=signedNumber(drafts[i]!);return n!==null&&Number.isFinite(n*(action==='move'?factor:1));});
+  return <dialog open={isTauri()} ref={ref} className="transform-dialog" onCancel={event=>{event.preventDefault();if(!busy)onClose();}}><form onSubmit={async event=>{event.preventDefault();if(!valid||busy)return;setBusy(true);setError('');try{const v=[...values];if(action==='scale'||action==='individual'){v[0]/=100;v[1]/=100;}await queue.current;await onApply(v);onClose();}catch(e){setError(String(e));}finally{setBusy(false);}}}>
+    <h3>{t[action]}</h3>{labels.map((label,i)=>{const multiplier=action==='move'?factor:1,display=String(Number((values[i]/multiplier).toPrecision(12))),text=drafts[i]??display,number=signedNumber(text),parsed=number!==null&&Number.isFinite(number*multiplier)?number:null;return <label key={`${label}-${symbol}`} style={{display:'grid',gap:6,marginBottom:12}}>{label.replace("(px)",`(${symbol})`)}<input type="text" inputMode="decimal" role="spinbutton" aria-valuenow={parsed??undefined} aria-invalid={parsed===null} required value={text} onChange={e=>{const text=e.target.value,n=signedNumber(text);setDrafts(d=>d.map((value,j)=>i===j?text:value));if(n!==null&&Number.isFinite(n*multiplier))setValues(v=>v.map((value,j)=>i===j?n*multiplier:value));}} onBlur={()=>setDrafts(d=>d.map((value,j)=>i===j?null:value))} onKeyDown={e=>{if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();const next=(parsed??values[i]/multiplier)+(e.key==='ArrowUp'?1:-1);if(Number.isFinite(next*multiplier)){setDrafts(d=>d.map((value,j)=>i===j?String(next):value));setValues(v=>v.map((value,j)=>i===j?next*multiplier:value));}}}} disabled={busy}/></label>;})}
     <label className="tool-preview"><input type="checkbox" checked={preview} onChange={e=>setPreview(e.target.checked)} disabled={!isTauri()||busy}/>{locale==='ja'?'プレビュー':locale==='en'?'Preview':'预览'}</label>
-    {error&&<p role="alert">{error}</p>}<div style={{display:'flex',gap:8,justifyContent:'flex-end'}}><button type="button" disabled={busy} onClick={onClose}>{t.cancel}</button><button disabled={busy||values.some(v=>!Number.isFinite(v))}>{t.apply}</button></div>
+    {error&&<p role="alert">{error}</p>}<div style={{display:'flex',gap:8,justifyContent:'flex-end'}}><button type="button" disabled={busy} onClick={onClose}>{t.cancel}</button><button disabled={busy||!valid||values.some(v=>!Number.isFinite(v))}>{t.apply}</button></div>
   </form></dialog>;
 }

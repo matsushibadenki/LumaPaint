@@ -160,3 +160,41 @@ Release measurement is scoped to native handler-start → present API submission
 Final Rust checks passed: renderer selection subset 29 tests with 11 GPU-only cases ignored; explicit `gpu_selection_cropped_refinement_and_inverse_match_cpu` passed on Metal. Renderer all-target Clippy with warnings denied, frontend production build, formatting, dependency boundaries, diff checks and the four latency-summary script tests passed. Logs use the `/tmp/lumapaint-tiled-refine-` prefix.
 
 Native Release acceptance completed: 4096×2048 Shift Edge=−1 retained an identity native raster with 123 runs and an exact 3×122px hole; Undo/save restored geometry and Redo/save restored RLE. Quick Mask at 100% showed the protected strip. The fully verified zoom trials retained 16 samples per condition after four warmup presentations; median/p95 were 10.651/13.622ms for geometry and 10.556/17.152ms for the refined mask. These are host handler→present-submission timings, not a prior-build speedup. [Evidence and limitations](input-latency-selection-refine-2026-10-25.md). Automation-interrupted and unverified captures were excluded. The separate QA app exited normally and its bundle was removed.
+
+
+## Signed edge shift input — 2026-10-27
+
+The Select and Mask edge-shift field keeps its editable text separately from the last valid numeric request. Empty, a lone minus, malformed numbers and values outside -100…100 never enter the preview or commit request; the last valid preview remains in place while typing. Apply and form submission are blocked for invalid text, and leaving the field restores the last valid value. Arrow Up/Down changes the value by one and clamps it to the supported range. The field exposes spinbutton semantics and range to assistive technology.
+
+A Playwright fixture rendered the actual React dialog in installed headless Chrome; the native invocation boundary was mocked, so this checks UI-to-command values, not a real GPU preview. Japanese, English and Simplified Chinese each passed: typed minus then digits, preview request -12, keyboard stepping and both limits, out-of-range recovery, rejection of Enter on an incomplete minus, preview and final apply of -42, and no page errors. Browser plugin was unavailable; ordinary Playwright was used. The screenshot `/tmp/lumapaint-selection-input-qa.png` documents the fixture, not a native app session.
+
+Physical mouse/tablet and native WebView checks remain pending. Other signed fields, including selection transform values, are not changed in this step.
+
+
+## Signed selection transform input — 2026-10-27
+
+The selection transform dialog retains the intermediate text for X, Y, rotation, width and height. Signed decimal values are accepted for movement and rotation; percentages retain their existing positive range. Incomplete or out-of-range entries block Apply and form submission and revert to the last valid value on blur. Arrow keys adjust by one within the existing bounds. Numeric values, rather than text or image data, enter the affine transform request.
+
+The actual React dialog was exercised in a headless Chrome fixture with mocked native commands. Japanese, English and Simplified Chinese passed negative sign and decimal entry, incomplete Enter rejection, out-of-range recovery, arrow stepping and the resulting affine matrix for X=-12.5, Y=-2.25 and rotation=-90.5°. The production UI build passed. This fixture is not a native application or GPU test.
+
+Native acceptance used an isolated macOS debug bundle `app.lumapaint.transform-input-qa` with production WebView assets and Apple M4/Metal. In a new 800×600 document at 84.33% zoom, a rectangle was selected with the native canvas. In the real Select > Transform Selection dialog, a lone minus remained visible and disabled Apply. Entering X=-40.5 px, Y=-20.25 px and rotation=-15° enabled Apply; the selection visibly moved left/up and rotated. Undo restored the original rectangle and Redo restored the transformed outline. The disposable test document was discarded and the app exited normally. The startup attachment took several minutes; it is not an input-latency measurement.
+
+Physical tablet input and Windows/Linux native checks remain pending.
+
+
+## Signed vector transform input — 2026-10-27
+
+The vector transform dialog retains text being edited separately from its last valid numeric values. A lone sign, empty string or incomplete exponent blocks Apply and Enter while retaining the last valid preview; valid decimal/exponent values update it. Blur restores the last valid value, keyboard arrows step by one displayed unit, and changing measurement units discards the transient text rather than reinterpreting it. Values are converted to document pixels only after parsing; negative scale remains supported. A precision-preserving display avoids turning a small entered value into zero on blur.
+
+The actual React dialog was exercised in headless Chrome with mocked Tauri commands. Japanese, English and Simplified Chinese passed negative sign and decimal entry, invalid Enter, preview requests, arrow keys and apply. Move, rotate, reflect, scale, shear and individual transform passed; changing from pixels to millimeters and applying -1.5 mm at 254 dpi produced -15 px. A -0.000001 value survived blur. Production UI build passed.
+
+In the isolated macOS debug app `app.lumapaint.vector-input-qa` (WKWebView and M4 Metal), a vector rectangle was created in an 800×600 document at 84.33% display. A lone `-` in the move field remained visible and disabled Apply. Entering X=-40.5 px and Y=-20.25 px and enabling Preview then applying moved its displayed position from (172.332,113.834) to (131.832,93.584). Undo and Redo restored the two respective positions. The rotation field retained a lone minus and accepted -15.5°, rotating the object; Undo restored its unrotated form. The disposable document was discarded and the app exited normally. A final rebuilt app additionally retained -0.000001 after focus moved away from the field. Both disposable sessions exited normally. No startup or input latency conclusion is drawn.
+
+
+## Signed direct, guide and mask input — 2026-10-27
+
+Direct control coordinates and corner radius, selection position and size, guide position and offsets, and layer-mask transforms retain intermediate signed decimal input separately from valid numeric state. Incomplete input cannot be committed; direct-control previews keep the last valid value. Arrow stepping and existing bounds remain available. Unit changes discard intermediate guide/direct-control text rather than interpreting it in the new unit.
+
+A headless Chrome fixture exercised the actual React components with mocked native commands in Japanese, English and Simplified Chinese. Direct control rejected an incomplete minus on Enter and previewed/applied -12.5; guide movement blocked an incomplete value and submitted -2.5/-3; mask transform rejected incomplete input and zero scale and submitted X=-1.5. The production frontend build and TypeScript check passed. These fixture checks do not verify native rendering.
+
+In an isolated macOS debug app on Apple M4/Metal, a rectangle anchor's X field retained a lone minus and disabled Apply; -20.5 previewed and applied the moved anchor, and Undo restored it. A selected horizontal guide retained a lone minus and disabled Move; entering -20.5 moved its position from 184.9802 to 164.4802 px. In the native layer-mask dialog, a lone minus in X disabled Apply; entering -15.5 enabled Apply, and applying reset the field to zero without an error. This confirms the input and command flow; the full-white test mask does not establish a visual pixel-level result. No input-latency claim is made.

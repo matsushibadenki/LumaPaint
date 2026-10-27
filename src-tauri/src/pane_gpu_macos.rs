@@ -471,8 +471,9 @@ pub(in crate::canvas) fn sync(
                 render_standard_pane(id,&mut pane.renderer,viewport,doc)
             }
             Some(super::super::ThumbnailDocument::Tiled(doc)) => {
-                pane.renderer.install_tiled_preview(doc)
-                    .and_then(|_|pane.renderer.render(viewport,&Document::default()))
+                super::install_color_managed_tiled_preview(&mut pane.renderer, doc)
+                    .and_then(|_| super::tiled_display_document(doc.dimensions()))
+                    .and_then(|display| pane.renderer.render(viewport, &display))
             }
         };
         if result.is_err() { pane.view.setHidden(true); }

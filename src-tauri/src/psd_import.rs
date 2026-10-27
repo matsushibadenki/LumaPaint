@@ -100,6 +100,8 @@ pub(crate) fn report_text(report: &ConversionReport) -> String {
         "psd.layersFlattened" => "Layers are flattened to the merged image. / レイヤーは統合画像になります。 / 图层将合并为一张图像。",
         "psd.resolutionQuantized" => "Resolution is rounded to the PSD fixed-point precision. / 解像度をPSDの固定小数点精度へ丸めます。 / 分辨率按PSD定点精度进行舍入。",
         "psd.resolutionNotPreserved" => "Original resolution metadata is not retained. / 元の解像度情報は保持されません。 / 原始分辨率元数据不会保留。",
+        "psd.iccDisplayNotManaged" if cfg!(target_os = "macos") => "The ICC profile is retained. Supported profiles use wide-gamut display where available and within the memory budget, otherwise sRGB; unsupported profiles use unconverted colors. macOS matches the display to the monitor profile. / ICCプロファイルは保持します。対応環境でメモリ上限内の場合は広色域、それ以外はsRGB、未対応プロファイルは元の色で表示します。モニターへの色変換はmacOSが行います。 / ICC配置文件已保留。支持且不超出内存上限时以广色域显示，否则使用sRGB；不支持的配置文件显示原色。macOS会根据显示器配置文件转换颜色。",
+        "psd.iccDisplayNotManaged" => "The ICC profile is retained. Display is converted to sRGB when supported; unsupported profiles use unconverted colors. Monitor profiles are not applied. / ICCプロファイルは保持します。対応時はsRGBへ表示変換し、未対応プロファイルでは元の色を表示します。モニタープロファイルは未適用です。 / ICC配置文件已保留。支持时转换为sRGB显示；不支持时显示原色。尚未应用显示器配置文件。",
         "psd.iccProfileNotPreserved" => "ICC profiles are not retained; colors may differ. / ICCプロファイルは保持されず、色が異なる場合があります。 / ICC配置文件不会保留，颜色可能不同。",
         _ => "Additional PSD metadata is not retained. / PSDの追加情報は保持されません。 / 其他PSD元数据不会保留。",
     }).collect::<Vec<_>>().join("\n\n")

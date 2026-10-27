@@ -1,3 +1,4 @@
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { maskLinkLabels } from './MaskLinkButton';
 import { useEffect, useRef, useState } from 'react';
 import { createLayerMask, transformLayerMask, type LayerEffects, type LayerSnapshot, type MaskKind } from '../bridge';
@@ -24,7 +25,7 @@ export function LayerMaskControls({locale,layer,enabled,onCommit,onSnapshot,onBu
  const editable=enabled&&!layer.locked&&!busy;
  async function create(){await run(async()=>onSnapshot(await createLayerMask(layer.id,kind)));}
  const linked=mask?.linked??true;
- const validTransform=values.every(v=>v.trim()!==''&&Number.isFinite(Number(v)))&&Number(values[2])>=1&&Number(values[2])<=10000;
+ const validTransform=values.every(v=>parseSignedNumber(v)!==null)&&Number(values[2])>=1&&Number(values[2])<=10000;
  async function transform(){
   if(!editable||!validTransform)return;
   const [x,y,scale,angle]=values.map(Number),r=angle*Math.PI/180,k=scale/100,c=Math.cos(r)*k,s=Math.sin(r)*k;
@@ -37,7 +38,7 @@ export function LayerMaskControls({locale,layer,enabled,onCommit,onSnapshot,onBu
   <button type="button" onClick={()=>void create()}>{mask?t.replace:t.add}</button>
   {mask&&<><label className="mask-enabled-toggle" title={maskLinkLabels[locale][linked?'unlink':'link']}><input type="checkbox" checked={linked} onChange={e=>patch({linked:e.currentTarget.checked})}/>{t.linked}</label><p>{linked?t.linkedHint:t.unlinkedHint}</p><strong>{mask.kind==='pixel'?t.pixel:t.vector}</strong><label className="mask-enabled-toggle"><input type="checkbox" checked={mask.enabled} onChange={e=>patch({enabled:e.currentTarget.checked})}/>{t.enabled}</label><label className="mask-enabled-toggle"><input type="checkbox" checked={mask.inverted} onChange={e=>patch({inverted:e.currentTarget.checked})}/>{t.invert}</label><label><span>{t.density} (%)</span><input type="number" aria-label={t.density} min={0} max={100} value={Math.round(mask.density*100)} onChange={e=>{const value=e.currentTarget.valueAsNumber;if(Number.isFinite(value)&&value>=0&&value<=100)patch({density:value/100});}}/></label><button type="button" onClick={()=>layer.effects&&void run(()=>onCommit(layer.id,{...layer.effects!,mask:null}))}>{t.remove}</button></>}
   {mask&&<details className="mask-transform-controls"><summary>{t.apply}</summary>
-    {[t.moveX,t.moveY,t.scale,t.angle].map((label,index)=><label key={index}><span>{label}</span><input type="number" aria-label={label} step="any" min={index===2?1:undefined} max={index===2?10000:undefined} value={values[index]} onChange={e=>{const value=e.currentTarget.value;setValues(current=>current.map((v,i)=>i===index?value:v));}}/></label>)}
+    {[t.moveX,t.moveY,t.scale,t.angle].map((label,index)=><label key={index}><span>{label}</span><SignedNumberInput label={label} min={index===2?1:undefined} max={index===2?10000:undefined} value={values[index]} stepBase={index===2?100:0} onChange={value=>setValues(current=>current.map((v,i)=>i===index?value:v))}/></label>)}
     <p>{layer.rasterBlendMode&&linked?t.tiledTransform:t.origin}</p><button type="button" disabled={!validTransform||!!layer.rasterBlendMode&&linked} onClick={()=>void transform()}>{t.apply}</button>
   </details>}
   <p>{layer.rasterBlendMode?t.tiled:t.hint}</p>{error&&<p role="alert">{error}</p>}

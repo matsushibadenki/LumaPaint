@@ -25,7 +25,25 @@ pub struct TiledRasterState {
     /// Physical pixel density, independent from canvas pixels and renderer scale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<RasterResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icc_profile: Option<Vec<u8>>,
     pub layers: Vec<RasterLayerState>,
+}
+
+/// Conservative bounds and header validation for retained RGB ICC profiles.
+pub fn validate_rgb_icc(profile: &[u8]) -> Result<(), String> {
+    if profile.len() < 132
+        || profile.len() > 128 * 1024
+        || &profile[36..40] != b"acsp"
+        || &profile[16..20] != b"RGB "
+    {
+        return Err("Invalid or oversized RGB ICC profile".into());
+    }
+    let length = u32::from_be_bytes(profile[..4].try_into().expect("ICC header")) as usize;
+    if length != profile.len() {
+        return Err("Invalid ICC profile length".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -79,6 +97,8 @@ pub enum RasterBlendMode {
     Normal,
     Multiply,
     Screen,
+    Overlay,
+    HardLight,
     Darken,
     Lighten,
     Difference,
@@ -90,6 +110,20 @@ impl RasterBlendMode {
             Self::Normal => source,
             Self::Multiply => back * source,
             Self::Screen => back + source - back * source,
+            Self::Overlay => {
+                if back <= 0.5 {
+                    2. * back * source
+                } else {
+                    1. - 2. * (1. - back) * (1. - source)
+                }
+            }
+            Self::HardLight => {
+                if source <= 0.5 {
+                    2. * back * source
+                } else {
+                    1. - 2. * (1. - back) * (1. - source)
+                }
+            }
             Self::Darken => back.min(source),
             Self::Lighten => back.max(source),
             Self::Difference => (back - source).abs(),
@@ -160,8 +194,84 @@ fn composite_sources<'a>(
     coord: TileCoord,
     sources: impl Iterator<Item = CompositeSource<'a>>,
 ) -> Option<Vec<u8>> {
-    let mut sources = sources.peekable();
-    sources.peek()?;
+    let sources: Vec<_> = sources.collect();
+    if sources.is_empty() {
+        return None;
+    }
+    // Overlay depends on the unassociated backdrop color. Quantizing each
+    // intermediate premultiplied layer can shift that color by multiple steps
+    // when its alpha is low, so retain precision until the final tile output.
+    // Keep the existing integer path for documents without overlay.
+    if sources
+        .iter()
+        .any(|s| s.blend_mode == RasterBlendMode::Overlay)
+    {
+        let prepared: Vec<_> = sources
+            .iter()
+            .map(|s| s.effects.active().then(|| s.effects.prepare()))
+            .collect();
+        let mut result = vec![0u8; TILE_BYTES];
+        for (index, target) in result.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let mut dst = [0f64; 3];
+            let mut da = 0f64;
+            for (source, effects) in sources.iter().zip(&prepared) {
+                let px: [u8; 4] = source.pixels[index * 4..index * 4 + 4].try_into().unwrap();
+                let px = effects.as_ref().map_or(px, |e| {
+                    e.apply_at(
+                        px,
+                        [
+                            (coord.x * TILE_SIZE + index as u32 % TILE_SIZE) as f32 + 0.5,
+                            (coord.y * TILE_SIZE + index as u32 / TILE_SIZE) as f32 + 0.5,
+                        ],
+                    )
+                });
+                let mask_value = source.mask.map_or(255, |tile| tile[index]);
+                let coverage = source.mask_density * f32::from(mask_value) / 255.;
+                let mask = if !source.mask_enabled {
+                    1.
+                } else if source.mask_inverted {
+                    1. - coverage
+                } else {
+                    coverage
+                };
+                let a = f64::from((f32::from(px[3]) * (source.opacity * mask)).round()) / 255.;
+                if a == 0. {
+                    continue;
+                }
+                if a == 1. && da == 1. {
+                    for c in 0..3 {
+                        dst[c] = source.blend_mode.blend(dst[c], f64::from(px[c]) / 255.);
+                    }
+                    continue;
+                }
+                if da == 0. {
+                    for c in 0..3 {
+                        dst[c] = if a == 1. {
+                            f64::from(px[c]) / 255.
+                        } else {
+                            a * (f64::from(px[c]) / 255.)
+                        };
+                    }
+                    da = a;
+                    continue;
+                }
+                let inv_da = 1. / da;
+                let remaining = 1. - a;
+                for c in 0..3 {
+                    let cs = f64::from(px[c]) / 255.;
+                    let cb = dst[c] * inv_da;
+                    dst[c] = remaining * dst[c]
+                        + a * ((1. - da) * cs + da * source.blend_mode.blend(cb, cs));
+                }
+                da = a + da * remaining;
+            }
+            for c in 0..3 {
+                target[c] = (dst[c] * 255.).round().clamp(0., 255.) as u8;
+            }
+            target[3] = (da * 255.).round().clamp(0., 255.) as u8;
+        }
+        return result.iter().any(|b| *b != 0).then_some(result);
+    }
     let mut result = vec![0u8; TILE_BYTES];
     for source in sources {
         let effects = source.effects.active().then(|| source.effects.prepare());
@@ -1029,6 +1139,7 @@ fn dab_density_on_tiles(
 pub struct TiledRasterDocument {
     layer_edit_selection: Option<(String, crate::layer_mask::LayerEditTarget)>,
     resolution: Option<RasterResolution>,
+    icc_profile: Option<Vec<u8>>,
     width: u32,
     height: u32,
     layers: Vec<RasterLayer>,
@@ -1078,6 +1189,7 @@ impl TiledRasterDocument {
         Ok(Self {
             layer_edit_selection: None,
             resolution: None,
+            icc_profile: None,
             width,
             height,
             layers: Vec::new(),
@@ -1090,6 +1202,7 @@ impl TiledRasterDocument {
     pub fn state(&self) -> TiledRasterState {
         TiledRasterState {
             resolution: self.resolution,
+            icc_profile: self.icc_profile.clone(),
             width: self.width,
             height: self.height,
             layers: self
@@ -1139,6 +1252,10 @@ impl TiledRasterDocument {
             resolution.validate()?;
         }
         document.resolution = state.resolution;
+        if let Some(profile) = &state.icc_profile {
+            validate_rgb_icc(profile)?;
+        }
+        document.icc_profile = state.icc_profile;
         if state.layers.len() > 16 {
             return Err("Too many raster layers".into());
         }
@@ -1200,6 +1317,10 @@ impl TiledRasterDocument {
 
     pub fn resolution(&self) -> Option<RasterResolution> {
         self.resolution
+    }
+
+    pub fn icc_profile(&self) -> Option<&[u8]> {
+        self.icc_profile.as_deref()
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -2526,6 +2647,8 @@ mod tests {
         for (mode, expected) in [
             (RasterBlendMode::Multiply, [32, 32, 96, 255]),
             (RasterBlendMode::Screen, [160, 160, 224, 255]),
+            (RasterBlendMode::Overlay, [64, 65, 192, 255]),
+            (RasterBlendMode::HardLight, [65, 64, 192, 255]),
             (RasterBlendMode::Darken, [64, 64, 128, 255]),
             (RasterBlendMode::Lighten, [128, 128, 192, 255]),
             (RasterBlendMode::Difference, [64, 64, 64, 255]),

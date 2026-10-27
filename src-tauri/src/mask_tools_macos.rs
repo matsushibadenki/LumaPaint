@@ -425,10 +425,11 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
                     mask.transform_by(d.matrix())?;
                 }
                 preview.set_layer_effects(&d.layer, e.clone())?;
-                canvas.renderer.install_tiled_preview(&preview)?;
+                install_color_managed_tiled_preview(&mut canvas.renderer, &preview)?;
                 canvas.active_tiled_key = None;
                 canvas.renderer.set_frame_overlay(overlay(&e));
-                DOCUMENT.with(|doc| canvas.renderer.render(canvas.viewport, &doc.borrow()))
+                let display = tiled_display_document(preview.dimensions())?;
+                canvas.renderer.render(canvas.viewport, &display)
             })());
         }
         Some((|| {

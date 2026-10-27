@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { editGuides, type DocumentSnapshot, type GuideEdit } from '../bridge';
 import type { Locale } from '../i18n';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
@@ -9,7 +10,7 @@ const labels = {
 };
 function IncrementField({label,value,disabled,onCommit}:{label:string;value:number;disabled:boolean;onCommit:(text:string)=>void}) {
   const [draft,setDraft]=useState<string|null>(null);
-  return <label>{label}<input type="number" step="any" aria-label={label} disabled={disabled} value={draft??String(Number(value.toFixed(4)))} onChange={e=>setDraft(e.target.value)} onBlur={()=>{if(draft!==null){onCommit(draft);setDraft(null);}}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.preventDefault();setDraft(null);}}}/></label>;
+  return <label>{label}<SignedNumberInput label={label} disabled={disabled} value={draft??String(Number(value.toPrecision(12)))} stepBase={value} min={0} onChange={setDraft} onBlur={()=>{if(draft!==null){if(parseSignedNumber(draft)!==null)onCommit(draft);setDraft(null);}}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.preventDefault();setDraft(null);}}}/></label>;
 }
 export function GuideOptions({document,locale,enabled,onUpdate,onError}:{document:DocumentSnapshot;locale:Locale;enabled:boolean;onUpdate:(d:DocumentSnapshot)=>void;onError:(e:string)=>void}) {
   const t=labels[locale],unit=useMeasurementUnit(),symbol=unitSymbols[unit],factor=pixelsPerMeasurement(unit,document.resolution);
@@ -19,16 +20,17 @@ export function GuideOptions({document,locale,enabled,onUpdate,onError}:{documen
   const origin=document.guides.origin[axis==='vertical'?0:1];
   const mixed=selected.some(g=>g.position!==first?.position);
   const [draft,setDraft]=useState<string|null>(null),[dx,setDx]=useState('0'),[dy,setDy]=useState('0'),[busy,setBusy]=useState(false);
+  useEffect(()=>{setDraft(null);setDx('0');setDy('0');},[unit]);
   const pending=useRef(false);
   const disabled=!enabled||busy||document.guides.locked;
   const run=async (edit:GuideEdit)=>{if(disabled||pending.current)return;pending.current=true;setBusy(true);try{onUpdate(await editGuides(edit));setDraft(null);setDx('0');setDy('0');}catch(e){onError(String(e));}finally{pending.current=false;setBusy(false);}};
-  const commit=()=>{if(draft===null)return;const value=Number(draft);if(!draft.trim()||!Number.isFinite(value)){onError(t.invalid);return;}if(axis)void run({action:'position',axis,position:value*factor+origin});};
+  const commit=()=>{if(draft===null)return;const value=parseSignedNumber(draft);if(value===null||!Number.isFinite(value*factor+origin)){setDraft(null);return;}if(axis)void run({action:'position',axis,position:value*factor+origin});};
   return <div className="selection-options" role="group" aria-label={t.title} title={t.hint}>
     <span className="selection-kind">{t.title}<small>{selected.length} · {axis?t[axis]:t.mixed}</small></span>
-    {axis && <label>{t.position} ({symbol})<input type="number" step="any" aria-label={`${t.position} (${symbol})`} disabled={disabled} placeholder={mixed?t.mixed:undefined} value={draft??(mixed?'':String(Number(((first.position-origin)/factor).toFixed(3))))} onChange={e=>setDraft(e.target.value)} onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.preventDefault();setDraft(null);}}}/></label>}
-    <label>{t.dx} ({symbol})<input type="number" step="any" disabled={disabled} value={dx} onChange={e=>setDx(e.target.value)}/></label>
-    <label>{t.dy} ({symbol})<input type="number" step="any" disabled={disabled} value={dy} onChange={e=>setDy(e.target.value)}/></label>
-    <button disabled={disabled} onClick={()=>{const delta:[number,number]=[Number(dx)*factor,Number(dy)*factor];if(!dx.trim()||!dy.trim()||delta.some(v=>!Number.isFinite(v))){onError(t.invalid);return;}if(delta.some(v=>v!==0))void run({action:'moveSelected',delta});}}>{t.apply}</button>
+    {axis && <label>{t.position} ({symbol})<SignedNumberInput label={`${t.position} (${symbol})`} disabled={disabled} placeholder={mixed?t.mixed:undefined} allowEmpty={mixed&&draft===null} value={draft??(mixed?'':String(Number(((first.position-origin)/factor).toPrecision(12))))} stepBase={(first.position-origin)/factor} onChange={setDraft} onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.preventDefault();setDraft(null);}}}/></label>}
+    <label>{t.dx} ({symbol})<SignedNumberInput label={`${t.dx} (${symbol})`} disabled={disabled} value={dx} onChange={setDx}/></label>
+    <label>{t.dy} ({symbol})<SignedNumberInput label={`${t.dy} (${symbol})`} disabled={disabled} value={dy} onChange={setDy}/></label>
+    <button disabled={disabled||parseSignedNumber(dx)===null||parseSignedNumber(dy)===null} onClick={()=>{const delta:[number,number]=[Number(dx)*factor,Number(dy)*factor];if(parseSignedNumber(dx)===null||parseSignedNumber(dy)===null||delta.some(v=>!Number.isFinite(v))){onError(t.invalid);return;}if(delta.some(v=>v!==0))void run({action:'moveSelected',delta});}}>{t.apply}</button>
     {[t.step,t.largeStep].map((label,index)=><IncrementField key={label+unit} label={`${label} (${symbol})`} value={document.guides.nudge[index]/factor} disabled={disabled} onCommit={text=>{const value=Number(text)*factor;if(!text.trim()||!Number.isFinite(value)||value<=0||value>1_000_000){onError(t.invalid);return;}if(value===document.guides.nudge[index])return;const delta:[number,number]=[...document.guides.nudge];delta[index]=value;void run({action:'increments',delta});}}/>)}
   </div>;
 }

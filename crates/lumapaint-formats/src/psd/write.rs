@@ -245,10 +245,20 @@ pub fn write(
     out.bytes(&8u16.to_be_bytes())?;
     out.bytes(&3u16.to_be_bytes())?;
     out.length(0, false)?;
-    let resources = state
+    let mut resources = state
         .resolution
         .map(resolution_resource)
         .unwrap_or_default();
+    if let Some(profile) = &state.icc_profile {
+        resources.extend(b"8BIM");
+        resources.extend(1039u16.to_be_bytes());
+        resources.extend([0, 0]);
+        resources.extend((profile.len() as u32).to_be_bytes());
+        resources.extend(profile);
+        if profile.len() % 2 != 0 {
+            resources.push(0);
+        }
+    }
     out.length(resources.len(), false)?;
     out.bytes(&resources)?;
     let section = out.0.len();
@@ -461,6 +471,8 @@ mod tests {
         for mode in [
             RasterBlendMode::Multiply,
             RasterBlendMode::Screen,
+            RasterBlendMode::Overlay,
+            RasterBlendMode::HardLight,
             RasterBlendMode::Darken,
             RasterBlendMode::Lighten,
             RasterBlendMode::Difference,

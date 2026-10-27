@@ -10,12 +10,524 @@ const H: u32 = 768;
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_vector_srgb_red_reaches_display_p3_without_color_shift() {
+    let gpu = Gpu::new();
+    let (layout, vector_pipeline) = create_svg_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        wgpu::TextureFormat::Rgba16Float,
+    );
+    let final_pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("channel_p3.wgsl"),
+        "P3 vector test",
+    );
+    let tex = gpu.device.create_texture_with_data(
+        &gpu.queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[255, 0, 0, 255],
+    );
+    let sample = gpu.device.create_sampler(&Default::default());
+    let group = |view: &wgpu::TextureView| {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sample),
+                },
+            ],
+        })
+    };
+    let image = tex.create_view(&Default::default());
+    let vector_group = group(&image);
+    let target = || {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    };
+    let linear = target();
+    let p3 = target();
+    let linear_view = linear.create_view(&Default::default());
+    let p3_view = p3.create_view(&Default::default());
+    let final_group = group(&linear_view);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    for (view, pipeline, bind, vertices) in [
+        (&linear_view, &vector_pipeline, &vector_group, 6),
+        (&p3_view, &final_pipeline, &final_group, 3),
+    ] {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &gpu.uniforms, &[]);
+        pass.set_bind_group(1, bind, &[]);
+        pass.draw(0..vertices, 0..1);
+    }
+    let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &p3,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: W / 2,
+                y: H / 2,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = readback.slice(..).get_mapped_range().unwrap();
+    for (c, expected) in [0.82259287f32, 0.03319951, 0.01708535, 1.0]
+        .iter()
+        .enumerate()
+    {
+        let actual =
+            half::f16::from_bits(u16::from_le_bytes([bytes[c * 2], bytes[c * 2 + 1]])).to_f32();
+        assert!(
+            (actual - expected).abs() < 0.002,
+            "vector P3 channel {c}: {actual} != {expected}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_extended_tile_upload_preserves_out_of_gamut_and_alpha() {
+    use crate::extended_tile::{ExtendedTileTexture, LinearTileUpload};
+    use lumapaint_formats::{DocumentImporter, ImportOptions};
+    let psd = include_bytes!(
+        "../../lumapaint-formats/tests/fixtures/lp-photoshop-2026-multi-icc-three-visible.psd"
+    );
+    let imported = lumapaint_formats::psd::PsdImporter
+        .import(psd, ImportOptions { allow_lossy: true })
+        .unwrap();
+    let transform = lumapaint_formats::color::IccToExtendedLinearSrgb::new(
+        imported.raster.icc_profile.as_deref().unwrap(),
+    )
+    .unwrap();
+    let mut converted = vec![0.0; 8];
+    transform
+        .convert_premultiplied(&[0, 255, 0, 255, 0, 128, 0, 128], &mut converted)
+        .unwrap();
+    let gpu = Gpu::new();
+    let paint_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&gpu.uniform_layout), Some(&gpu.selection_layout)],
+            immediate_size: 0,
+        });
+    let frame_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&gpu.uniform_layout)],
+            immediate_size: 0,
+        });
+    let _selection_p3 = create_selection_pipeline_with_source(
+        &gpu.device,
+        &paint_layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("selection_p3.wgsl"),
+    );
+    let _frame_p3 = frame_overlay::pipeline_with_source(
+        &gpu.device,
+        &frame_layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("frame_overlay_p3.wgsl"),
+    );
+    let _onion_p3 = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &gpu.texture_layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("onion_skin_p3.wgsl"),
+        "P3 onion test",
+    );
+    let texture = ExtendedTileTexture::new(&gpu.device, &gpu.queue, 2, 1).unwrap();
+    texture
+        .upload(
+            &gpu.queue,
+            &[LinearTileUpload {
+                origin: [0, 0],
+                extent: [2, 1],
+                row_pixels: 2,
+                pixels: converted.clone(),
+            }],
+        )
+        .unwrap();
+    assert!(texture
+        .upload(
+            &gpu.queue,
+            &[LinearTileUpload {
+                origin: [0, 0],
+                extent: [1, 1],
+                row_pixels: 1,
+                pixels: vec![f32::NAN, 0.0, 0.0, 1.0],
+            }]
+        )
+        .is_err());
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: texture.texture(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 2,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = buffer.slice(..).get_mapped_range().unwrap();
+    let expected = converted;
+    for (i, want) in expected.iter().enumerate() {
+        let actual =
+            half::f16::from_bits(u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]])).to_f32();
+        assert!(
+            (actual - want).abs() < 0.001,
+            "component {i}: {actual} != {want}"
+        );
+    }
+    drop(bytes);
+    buffer.unmap();
+    let pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &gpu.texture_layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("tile_linear.wgsl"),
+        "extended tile composition test",
+    );
+    let view = texture.texture().create_view(&Default::default());
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &gpu.texture_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let output = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let target = output.create_view(&Default::default());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.1,
+                        b: 0.1,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &gpu.uniforms, &[]);
+        pass.set_bind_group(1, &group, &[]);
+        pass.draw(0..6, 0..1);
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &output,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: W / 2 + 200,
+                y: H / 2,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = buffer.slice(..).get_mapped_range().unwrap();
+    for c in 0..3 {
+        let actual =
+            half::f16::from_bits(u16::from_le_bytes([bytes[c * 2], bytes[c * 2 + 1]])).to_f32();
+        let want = expected[c + 4] + 0.1 * (1.0 - expected[7]);
+        assert!(
+            (actual - want).abs() < 0.003,
+            "linear blend component {c}: {actual} != {want}"
+        );
+    }
+    drop(bytes);
+    buffer.unmap();
+    let wide_pipeline = create_textured_layer_pipeline(
+        &gpu.device,
+        &gpu.uniform_layout,
+        &gpu.texture_layout,
+        wgpu::TextureFormat::Rgba16Float,
+        include_str!("channel_p3.wgsl"),
+        "P3 presentation test",
+    );
+    let source = output.create_view(&Default::default());
+    let wide_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &gpu.texture_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let p3 = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: W,
+            height: H,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let p3_view = p3.create_view(&Default::default());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &p3_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&wide_pipeline);
+        pass.set_bind_group(0, &gpu.uniforms, &[]);
+        pass.set_bind_group(1, &wide_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &p3,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: W / 2 + 200,
+                y: H / 2,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = buffer.slice(..).get_mapped_range().unwrap();
+    let rgb = [
+        expected[4] + 0.1 * (1.0 - expected[7]),
+        expected[5] + 0.1 * (1.0 - expected[7]),
+        expected[6] + 0.1 * (1.0 - expected[7]),
+    ];
+    let want = [
+        0.82259287 * rgb[0] + 0.17753395 * rgb[1],
+        0.03319951 * rgb[0] + 0.96678350 * rgb[1],
+        0.01708535 * rgb[0] + 0.07239572 * rgb[1] + 0.91030148 * rgb[2],
+    ];
+    for c in 0..3 {
+        let actual =
+            half::f16::from_bits(u16::from_le_bytes([bytes[c * 2], bytes[c * 2 + 1]])).to_f32();
+        assert!(
+            (actual - want[c]).abs() < 0.003,
+            "P3 component {c}: {actual} != {}",
+            want[c]
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
     let gpu = Gpu::new();
-    for format in [
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        wgpu::TextureFormat::Bgra8UnormSrgb,
-        wgpu::TextureFormat::Rgba16Float,
+    for (format, wide) in [
+        (wgpu::TextureFormat::Rgba8UnormSrgb, false),
+        (wgpu::TextureFormat::Bgra8UnormSrgb, false),
+        (wgpu::TextureFormat::Rgba16Float, false),
+        (wgpu::TextureFormat::Rgba16Float, true),
     ] {
         let (layout, _) = create_svg_pipeline(&gpu.device, &gpu.uniform_layout, format);
         let pipeline = create_textured_layer_pipeline(
@@ -23,7 +535,11 @@ fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
             &gpu.uniform_layout,
             &layout,
             format,
-            include_str!("onion_skin.wgsl"),
+            if wide {
+                include_str!("onion_skin_p3.wgsl")
+            } else {
+                include_str!("onion_skin.wgsl")
+            },
             "Onion surface test",
         );
         let texture = gpu.device.create_texture_with_data(
@@ -43,7 +559,11 @@ fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            &[0, 0, 128, 128],
+            if wide {
+                &[128, 0, 0, 128]
+            } else {
+                &[0, 0, 128, 128]
+            },
         );
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -139,7 +659,23 @@ fn gpu_onion_overlay_matches_surface_formats_and_keeps_half_alpha() {
             .unwrap();
         rx.recv().unwrap().unwrap();
         let pixels = readback.slice(..).get_mapped_range().unwrap();
-        if format == wgpu::TextureFormat::Rgba16Float {
+        if wide {
+            let expected = [
+                0.82259287 * (128.0 / 255.0),
+                0.03319951 * (128.0 / 255.0),
+                0.01708535 * (128.0 / 255.0),
+                128.0 / 255.0,
+            ];
+            for (c, want) in expected.iter().enumerate() {
+                let actual =
+                    half::f16::from_bits(u16::from_le_bytes([pixels[c * 2], pixels[c * 2 + 1]]))
+                        .to_f32();
+                assert!(
+                    (actual - want).abs() < 0.004,
+                    "P3 onion component {c}: {actual} != {want}"
+                );
+            }
+        } else if format == wgpu::TextureFormat::Rgba16Float {
             let blue = u16::from_le_bytes([pixels[4], pixels[5]]);
             let alpha = u16::from_le_bytes([pixels[6], pixels[7]]);
             assert!(blue.abs_diff(0x3804) <= 4, "linear half-blue: {blue:x}");

@@ -4,6 +4,7 @@ import type { Brush, DocumentSnapshot, TransformAction, PathOperation } from '..
 import type { Locale } from '../i18n';
 import { transformLabels } from './TransformDialog';
 import { ColorPickerPopover } from './ColorPickerPopover';
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 
 const labels = {
   ja: { selection: '選択内容', count: '個選択', fill: '塗り', stroke: '線', width: '線幅', none: 'なし', mixed: '混在', swap: '塗りと線を交換', path: 'パス', rectangle: '長方形', ellipse: '楕円', text: 'テキスト', compound: '複合パス', position: '位置・サイズ', invalid: '有効な数値を入力してください。' },
@@ -19,8 +20,8 @@ const appearanceLabels = {
 function NumberField({ label, value, placeholder, disabled, onCommit }: { label: string; value: number | null; placeholder?: string; disabled: boolean; onCommit: (value: number) => void }) {
   const formatted = value === null ? '' : String(Number(value.toFixed(3)));
   const [draft, setDraft] = useState<string | null>(null);
-  return <label>{label}<input type="number" step="any" disabled={disabled} value={draft ?? formatted} placeholder={placeholder}
-    onChange={e => setDraft(e.target.value)} onBlur={() => { const text = draft; setDraft(null); if (text !== null && text.trim() !== '' && Number.isFinite(Number(text)) && Number(text) !== value) onCommit(Number(text)); }}
+  return <label>{label}<SignedNumberInput label={label} disabled={disabled} value={draft ?? formatted} placeholder={placeholder} allowEmpty={value===null&&draft===null} stepBase={value??0}
+    onChange={setDraft} onBlur={() => { const text = draft; setDraft(null); const number=text===null?null:parseSignedNumber(text);if(number!==null&&number!==value)onCommit(number); }}
     onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.preventDefault(); setDraft(null); } }} /></label>;
 }
 export function SelectionOptions({ document, locale, enabled, onAppearance, onPaint, onWidth, onTransform, onTransformMenu, onCombine, onError }: {

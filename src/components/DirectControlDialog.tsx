@@ -1,5 +1,6 @@
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useEffect, useRef, useState } from 'react';
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { directControlInfo, editDirectControls, type DirectControlInfo, type DocumentSnapshot } from '../bridge';
 import type { Locale } from '../i18n';
 const labels = {
@@ -12,7 +13,8 @@ export function DirectControlDialog({locale,doc,onApply,onClose,onBusyChange}: {
   const t=labels[locale];const ref=useRef<HTMLDialogElement>(null);
   const [points,setPoints]=useState<DirectControlInfo[]|null>(null);
   const [mode,setMode]=useState<'position'|'move'|'corner'>('position');
-  const [values,setValues]=useState<number[]>([0,0]);const [svg,setSvg]=useState('');
+  const [values,setValues]=useState<number[]>([0,0]);const [drafts,setDrafts]=useState<(string|null)[]>([null,null]);const [svg,setSvg]=useState('');
+  useEffect(()=>{setDrafts([null,null]);},[unit]);
   const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [previewing,setPreviewing]=useState(false);
   const generation=useRef(0);
   useEffect(()=> {ref.current?.showModal();let active=true;void directControlInfo().then(p=>{if(!active)return;setPoints(p);setMode(p.length===1?'position':'move');setValues(p.length===1?[p[0].x,p[0].y]:[0,0]);}).catch(e=>{if(active)setError(String(e));});return()=>{active=false;generation.current++;};},[]);
@@ -23,14 +25,15 @@ export function DirectControlDialog({locale,doc,onApply,onClose,onBusyChange}: {
     const timer=window.setTimeout(()=> {void editDirectControls(mode,values,true,points,doc.revision).then(result=>{if(generation.current===serial)setSvg(result.preview);}).catch(e=>{if(generation.current===serial){setError(String(e));setSvg('');}}).finally(()=>{if(generation.current===serial)setPreviewing(false);});},120);
     return()=>window.clearTimeout(timer);
   },[mode,values,points,doc.revision]);
-  const changeMode=(next:typeof mode)=>{setMode(next);setValues(next==='corner'?[points?.[0]?.radius??0]:next==='position'&&points?.length===1?[points[0].x,points[0].y]:[0,0]);};
-  return <dialog ref={ref} className="transform-dialog direct-control-dialog" onCancel={e=>{e.preventDefault();if(!busy)onClose();}}><form onSubmit={async e=>{e.preventDefault();if(!points?.length)return;setBusy(true);setError('');try{await onBusyChange?.(true);const result=await editDirectControls(mode,values,false,points,doc.revision);onApply(result.snapshot);await onBusyChange?.(false);onClose();}catch(cause){setError(String(cause));}finally{await onBusyChange?.(false).catch(()=>{});setBusy(false);}}}>
+  const changeMode=(next:typeof mode)=>{setDrafts([null,null]);setMode(next);setValues(next==='corner'?[points?.[0]?.radius??0]:next==='position'&&points?.length===1?[points[0].x,points[0].y]:[0,0]);};
+  const valid=values.every((_,i)=>{const text=drafts[i];if(text===null||text===undefined)return true;const n=parseSignedNumber(text);return n!==null&&Number.isFinite(n*factor)&&(mode!=='corner'||n>=0&&n<=4096/factor);});
+  return <dialog ref={ref} className="transform-dialog direct-control-dialog" onCancel={e=>{e.preventDefault();if(!busy)onClose();}}><form onSubmit={async e=>{e.preventDefault();if(!points?.length||!valid||busy)return;setBusy(true);setError('');try{await onBusyChange?.(true);const result=await editDirectControls(mode,values,false,points,doc.revision);onApply(result.snapshot);await onBusyChange?.(false);onClose();}catch(cause){setError(String(cause));}finally{await onBusyChange?.(false).catch(()=>{});setBusy(false);}}}>
     <h3>{t.title}</h3>{points===null?<p>{t.loading}</p>:points.length===0?<p>{t.empty}</p>:<>
       <select aria-label={t.title} value={mode} disabled={busy} onChange={e=>changeMode(e.target.value as typeof mode)}><option value="position" disabled={points.length!==1}>{t.position}</option><option value="move">{t.move}</option><option value="corner" disabled={points.some(p=>!p.anchor)}>{t.corner}</option></select>
-      {(mode==='corner'?[t.radius]:[t.x,t.y]).map((label,i)=><label className="direct-number" key={label}>{label.replace("(px)",`(${symbol})`)}<input type="number" required step="any" min={mode==='corner'?0:undefined} max={mode==='corner'?4096/factor:undefined} value={Number.isNaN(values[i])?'':Number((values[i]/factor).toFixed(5))} onChange={e=>setValues(v=>v.map((n,j)=>i===j?e.target.valueAsNumber*factor:n))} disabled={busy}/></label>)}
-      {mode==='corner'&&<><input type="range" aria-label={t.radius} min="0" max="256" step="0.5" value={Math.min(256,values[0]||0)} disabled={busy} onChange={e=>setValues([e.target.valueAsNumber])}/><p className="direct-corner-hint">{t.hint}</p></>}
+      {(mode==='corner'?[t.radius]:[t.x,t.y]).map((label,i)=>{const shown=label.replace("(px)",`(${symbol})`),text=drafts[i]??String(Number((values[i]/factor).toPrecision(12)));return <label className="direct-number" key={label}>{shown}<SignedNumberInput label={shown} value={text} disabled={busy} min={mode==='corner'?0:undefined} max={mode==='corner'?4096/factor:undefined} stepBase={values[i]/factor} onChange={text=>{const n=parseSignedNumber(text);setDrafts(old=>old.map((v,j)=>i===j?text:v));if(n!==null&&Number.isFinite(n*factor)&&(mode!=='corner'||n>=0&&n<=4096/factor))setValues(old=>old.map((v,j)=>i===j?n*factor:v));}} onBlur={()=>setDrafts(old=>old.map((v,j)=>i===j?null:v))}/></label>;})}
+      {mode==='corner'&&<><input type="range" aria-label={t.radius} min="0" max="256" step="0.5" value={Math.min(256,values[0]||0)} disabled={busy} onChange={e=>{setDrafts([null,null]);setValues([e.target.valueAsNumber]);}}/><p className="direct-corner-hint">{t.hint}</p></>}
       {svg&&<img className="direct-shape-preview" alt={t.preview} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`}/>}</>}
-    {error&&<p role="alert">{error}</p>}<div className="direct-actions"><button type="button" disabled={busy} onClick={onClose}>{t.cancel}</button><button disabled={busy||previewing||!points?.length||values.some(v=>!Number.isFinite(v))||!!error}>{t.apply}</button></div>
+    {error&&<p role="alert">{error}</p>}<div className="direct-actions"><button type="button" disabled={busy} onClick={onClose}>{t.cancel}</button><button disabled={busy||previewing||!points?.length||!valid||values.some(v=>!Number.isFinite(v))||!!error}>{t.apply}</button></div>
   </form></dialog>;
 }
 export const directControlLabels=labels;

@@ -28,6 +28,8 @@ pub fn is_container(bytes: &[u8]) -> bool {
 struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<lumapaint_core::tiles::RasterResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icc_profile: Option<Vec<u8>>,
     width: u32,
     height: u32,
     layers: Vec<LayerManifest>,
@@ -91,6 +93,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
     }
     let manifest = serde_json::to_vec(&Manifest {
         resolution: state.resolution,
+        icc_profile: state.icc_profile.clone(),
         width: state.width,
         height: state.height,
         layers,
@@ -172,6 +175,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
     }
     let state = TiledRasterState {
         resolution: manifest.resolution,
+        icc_profile: manifest.icc_profile,
         width: manifest.width,
         height: manifest.height,
         layers,

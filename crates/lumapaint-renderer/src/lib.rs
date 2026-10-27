@@ -37,11 +37,39 @@ pub use frame_overlay::FrameOverlay;
 pub mod channel_paint;
 pub mod clone_stamp;
 pub mod color_sampler;
+pub mod extended_tile;
 mod paint_cache;
 pub mod pixel_paint;
 mod root_paint;
 pub use wgpu;
 use wgpu::util::DeviceExt;
+
+// wgpu 30 clears CAMetalLayer.colorspace for its sRGB surface mode. Explicitly
+// tag the encoded output so Core Animation can match it to the current display.
+// Reapply after every configure, which can reset the layer's color space.
+fn configure_surface_color_management(surface: &wgpu::Surface<'_>, wide: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{kCGColorSpaceDisplayP3, kCGColorSpaceSRGB, CGColorSpace};
+        // SAFETY: the surface remains alive while its backend guard and layer lock
+        // are held; the layer is neither replaced nor destroyed here.
+        let metal = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }
+            .ok_or("Unable to access the Metal display surface")?;
+        let layer = metal.render_layer().lock();
+        // SAFETY: kCGColorSpaceSRGB is a constant provided by Core Graphics.
+        let name = unsafe { if wide { kCGColorSpaceDisplayP3 } else { kCGColorSpaceSRGB } };
+        let space = CGColorSpace::with_name(Some(name))
+            .ok_or("Unable to create the display color space")?;
+        layer.setColorspace(Some(&space));
+        if layer.colorspace().is_none() {
+            return Err("Unable to set the Metal display color space".into());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (surface, wide);
+    Ok(())
+}
+
 
 fn render_metrics_enabled() -> bool {
     performance::enabled()
@@ -1374,13 +1402,22 @@ fn create_selection_pipeline(
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    create_selection_pipeline_with_source(device, layout, format, include_str!("selection.wgsl"))
+}
+
+fn create_selection_pipeline_with_source(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    source: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Selection outline"),
         source: wgpu::ShaderSource::Wgsl(
             format!(
                 "{}\n{}",
                 include_str!("selection_common.wgsl"),
-                include_str!("selection.wgsl")
+                source
             )
             .into(),
         ),
@@ -1515,6 +1552,7 @@ pub struct Renderer {
     channel_pipeline: wgpu::RenderPipeline,
     channel_target: Option<(wgpu::Texture, wgpu::BindGroup)>,
     composite_format: wgpu::TextureFormat,
+    wide_presentation: bool,
     surface: wgpu::Surface<'static>,
     gpu_timing: Option<gpu_timing::FrameTiming>,
     input_latency: Option<Box<input_latency::Tracker>>,
@@ -1558,6 +1596,7 @@ pub struct Renderer {
     page_workspace_cache: workspace::WorkspaceCache,
     page_workspace_image: Option<Vec<CachedSvg>>,
     tile_pipeline: wgpu::RenderPipeline,
+    linear_tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
     tile_nearest_sampler: wgpu::Sampler,
@@ -1588,11 +1627,16 @@ struct CachedBrushGpu {
 }
 
 struct TileGpuPreview {
-    texture: TileTexture,
+    texture: PreviewTileTexture,
     document_dimensions: (u32, u32),
     linear_bind_group: wgpu::BindGroup,
     nearest_bind_group: wgpu::BindGroup,
     visible: bool,
+}
+
+enum PreviewTileTexture {
+    Encoded(TileTexture),
+    Extended(extended_tile::ExtendedTileTexture),
 }
 
 fn create_svg_pipeline(
@@ -2956,13 +3000,51 @@ impl Renderer {
             })
         };
         self.tile_preview = Some(TileGpuPreview {
-            texture,
+            texture: PreviewTileTexture::Encoded(texture),
             document_dimensions,
             linear_bind_group: make_bind_group(&self.svg_sampler),
             nearest_bind_group: make_bind_group(&self.tile_nearest_sampler),
             visible: true,
         });
         Ok(())
+    }
+
+    /// Install premultiplied extended-linear pixels into the float compositing
+    /// path. The host must also select a wide-gamut presentation transform.
+    pub fn install_extended_tiled_preview(
+        &mut self,
+        dimensions: (u32, u32),
+        uploads: &[extended_tile::LinearTileUpload],
+    ) -> Result<(), String> {
+        if self.composite_format != wgpu::TextureFormat::Rgba16Float {
+            return Err("Extended tiles require a floating-point compositing target".into());
+        }
+        let texture = extended_tile::ExtendedTileTexture::new(&self.device, &self.queue, dimensions.0, dimensions.1)?;
+        texture.upload(&self.queue, uploads)?;
+        let view = texture.texture().create_view(&Default::default());
+        let make_group = |sampler: &wgpu::Sampler| self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Extended linear tile preview"),
+            layout: &self.svg_bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        let linear_bind_group = make_group(&self.svg_sampler);
+        let nearest_bind_group = make_group(&self.tile_nearest_sampler);
+        self.paint_cache_installed = false;
+        self.tile_preview = Some(TileGpuPreview {
+            texture: PreviewTileTexture::Extended(texture),
+            document_dimensions: dimensions,
+            linear_bind_group,
+            nearest_bind_group,
+            visible: true,
+        });
+        Ok(())
+    }
+
+    pub fn supports_wide_presentation(&self) -> bool {
+        self.wide_presentation
     }
 
     pub fn update_tiled_preview(
@@ -2984,10 +3066,13 @@ impl Renderer {
             .tile_preview
             .as_ref()
             .ok_or("No tile preview installed")?;
-        if tile_dimensions != (preview.texture.width, preview.texture.height) {
+        let PreviewTileTexture::Encoded(texture) = &preview.texture else {
+            return Err("Encoded updates cannot target an extended tile preview".into());
+        };
+        if tile_dimensions != (texture.width, texture.height) {
             return Err("Tile preview dimensions changed".into());
         }
-        preview.texture.upload(&self.queue, uploads)
+        texture.upload(&self.queue, uploads)
     }
 
     pub fn update_tiled_preview_batch(
@@ -2999,7 +3084,10 @@ impl Renderer {
             .tile_preview
             .as_ref()
             .ok_or("No tile preview installed")?;
-        preview.texture.upload_validated(&self.queue, batch)
+        let PreviewTileTexture::Encoded(texture) = &preview.texture else {
+            return Err("Encoded updates cannot target an extended tile preview".into());
+        };
+        texture.upload_validated(&self.queue, batch)
     }
 
     pub fn clear_tiled_preview(&mut self) {
@@ -3596,6 +3684,10 @@ impl Renderer {
             .get_default_config(&adapter, viewport.width, viewport.height)
             .ok_or("No compatible surface configuration")?;
         config.format = format;
+        #[cfg(target_os = "macos")]
+        {
+            config.color_space = wgpu::SurfaceColorSpace::Srgb;
+        }
         config.present_mode = wgpu::PresentMode::Fifo;
         // Diagnostic comparison only: retain FIFO display synchronization.
         // wgpu clamps the requested latency to the backend's supported range.
@@ -3625,6 +3717,12 @@ impl Renderer {
         } else {
             surface_format
         };
+        let wide_presentation = cfg!(target_os = "macos")
+            && format == wgpu::TextureFormat::Rgba16Float
+            && capabilities.color_spaces(surface_format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3);
+        if wide_presentation {
+            config.color_space = wgpu::SurfaceColorSpace::DisplayP3;
+        }
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shared viewport layout"),
@@ -3644,7 +3742,11 @@ impl Renderer {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let frame_overlay_pipeline = frame_overlay::pipeline(&device, &layout, surface_format);
+        let frame_overlay_pipeline = if wide_presentation {
+            frame_overlay::pipeline_with_source(&device, &layout, surface_format, include_str!("frame_overlay_p3.wgsl"))
+        } else {
+            frame_overlay::pipeline(&device, &layout, surface_format)
+        };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GPU preview pattern"),
             source: wgpu::ShaderSource::Wgsl(
@@ -3688,7 +3790,11 @@ impl Renderer {
             immediate_size: 0,
         });
         let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
-        let selection_pipeline = create_selection_pipeline(&device, &paint_layout, surface_format);
+        let selection_pipeline = if wide_presentation {
+            create_selection_pipeline_with_source(&device, &paint_layout, surface_format, include_str!("selection_p3.wgsl"))
+        } else {
+            create_selection_pipeline(&device, &paint_layout, surface_format)
+        };
         let (brush_bind_layout, brush_composite_pipeline) =
             create_brush_composite(&device, format, &selection_layout, &bind_layout);
         let brush_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -3702,7 +3808,7 @@ impl Renderer {
             &bind_layout,
             &svg_bind_layout,
             surface_format,
-            include_str!("onion_skin.wgsl"),
+            if wide_presentation { include_str!("onion_skin_p3.wgsl") } else { include_str!("onion_skin.wgsl") },
             "Onion reference overlay",
         );
         let onion_underlay_pipeline = create_textured_layer_pipeline(
@@ -3757,12 +3863,20 @@ impl Renderer {
             include_str!("tile.wgsl"),
             "Tile paint layer",
         );
+        let linear_tile_pipeline = create_textured_layer_pipeline(
+            &device,
+            &bind_layout,
+            &svg_bind_layout,
+            format,
+            include_str!("tile_linear.wgsl"),
+            "Extended linear tile paint layer",
+        );
         let channel_pipeline = create_textured_layer_pipeline(
             &device,
             &bind_layout,
             &svg_bind_layout,
             surface_format,
-            include_str!("channel.wgsl"),
+            if wide_presentation { include_str!("channel_p3.wgsl") } else { include_str!("channel.wgsl") },
             "Channel inspection",
         );
         let svg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -3795,6 +3909,7 @@ impl Renderer {
             }],
         });
         surface.configure(&device, &config);
+        configure_surface_color_management(&surface, wide_presentation)?;
         #[cfg(feature = "skia")]
         let native_geometry = native_bezier::Cache::new(&device, format);
         let gpu_timing = performance::enabled()
@@ -3825,6 +3940,7 @@ impl Renderer {
             channel_pipeline,
             channel_target: None,
             composite_format: format,
+            wide_presentation,
             surface,
             device,
             queue,
@@ -3862,6 +3978,7 @@ impl Renderer {
             page_workspace_cache: Default::default(),
             page_workspace_image: None,
             tile_pipeline,
+            linear_tile_pipeline,
             svg_bind_layout,
             svg_sampler,
             tile_nearest_sampler,
@@ -4166,6 +4283,7 @@ impl Renderer {
             self.config.width = viewport.width;
             self.config.height = viewport.height;
             self.surface.configure(&self.device, &self.config);
+            configure_surface_color_management(&self.surface, self.wide_presentation)?;
         }
         drop(prepare_timer);
         drop(prepare_stage);
@@ -4187,6 +4305,7 @@ impl Renderer {
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
+                configure_surface_color_management(&self.surface, self.wide_presentation)?;
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -5028,7 +5147,13 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.tile_pipeline);
+            pass.set_pipeline(match &preview.texture {
+                PreviewTileTexture::Encoded(_) => &self.tile_pipeline,
+                PreviewTileTexture::Extended(texture) => {
+                    let _ = texture;
+                    &self.linear_tile_pipeline
+                }
+            });
             pass.set_bind_group(0, &self.bind_group, &[]);
             let tile_bind_group = if viewport.tile_filter_nearest() {
                 &preview.nearest_bind_group
@@ -6697,6 +6822,7 @@ mod motion_raster_tests {
         motion::{self, Clip},
         vector::{VectorObject, VectorText},
     };
+
 
     fn artwork() -> (Document, String, String) {
         let mut doc = Document::default();

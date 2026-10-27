@@ -92,7 +92,7 @@ export interface ImageFrameSummary {fitting:FrameFit;sourcePath:string|null;name
 // Native snapshots omit strokeStyle when it equals defaultStrokeStyle.
 // Missing gradients/imageFrame mean no gradient/frame; custom settings are complete.
 export interface LayerObjectSnapshot { imageFrame?:ImageFrameSummary|null; fillGradient?: Gradient | null; strokeGradient?: Gradient | null; locked: boolean; strokeContours: boolean[]; opacity: number; blendMode: string; fillColor: [number,number,number,number] | null; strokeColor: [number,number,number,number] | null; strokeWidth: number; strokeStyle?: StrokeStyle; id: string; name: string; groupPath: string[]; clippingMask: boolean; kind: 'path' | 'bezier' | 'compound' | 'rectangle' | 'ellipse' | 'text'; visible: boolean }
-export type RasterBlendMode = 'normal' | 'multiply' | 'screen' | 'darken' | 'lighten' | 'difference' | 'exclusion';
+export type RasterBlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'hardLight' | 'darken' | 'lighten' | 'difference' | 'exclusion';
 export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<DocumentSnapshot> {
   const result = canvasQueue.then(() => invoke<DocumentSnapshot>('set_raster_blend_mode', { id, mode }));
   canvasQueue = result.then(() => undefined, () => undefined);

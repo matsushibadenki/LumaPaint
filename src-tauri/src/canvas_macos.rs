@@ -5181,7 +5181,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
             ACTIVE_TILED_DOCUMENT.with(|document| -> Result<(), String> {
                 let document = document.borrow();
                 let document = &document.as_ref().ok_or("Missing tiled document")?.document;
-                canvas.renderer.install_tiled_preview(document)
+                install_color_managed_tiled_preview(&mut canvas.renderer, document)
             })?;
             canvas.active_tiled_key = Some(key);
             canvas.tile_cache = None;
@@ -5189,8 +5189,9 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         }
         canvas.viewport.document_width = width as f32;
         canvas.viewport.document_height = height as f32;
-        return DOCUMENT
-            .with(|document| canvas.renderer.render(canvas.viewport, &document.borrow()));
+        canvas.viewport.canvas_color = CanvasColor::Transparent;
+        let display = tiled_display_document((width, height))?;
+        return canvas.renderer.render(canvas.viewport, &display);
     }
     if canvas.active_tiled_key.take().is_some() {
         canvas.renderer.clear_tiled_preview();
@@ -5827,6 +5828,128 @@ enum OpenDocumentContent {
     Tiled(Box<TiledSession>),
 }
 
+/// Render tiled content against a lightweight document with matching dimensions.
+/// Renderer invalidates tile previews whose logical size differs from its document.
+fn tiled_display_document(dimensions: (u32, u32)) -> Result<Document, String> {
+    let mut document = Document::default();
+    document.set_document_settings(DocumentSettings {
+        name: "Tiled preview".into(),
+        width: dimensions.0,
+        height: dimensions.1,
+        unit: DocumentUnit::Pixels,
+        resolution: 72,
+        artboards: false,
+        canvas_color: CanvasColor::Transparent,
+        pixel_aspect_ratio: 1.,
+    })?;
+    Ok(document)
+}
+
+#[cfg(test)]
+#[test]
+fn tiled_display_document_uses_tiled_dimensions() {
+    for size in [(128, 128), (257, 3), (800, 600)] {
+        let document = tiled_display_document(size).unwrap();
+        assert_eq!(document.dimensions(), size);
+        assert_eq!(document.snapshot().canvas_color, CanvasColor::Transparent);
+    }
+}
+
+thread_local! {
+    // Reuse the parsed transform across revisions without moving ICC bytes into the WebView.
+    static TILED_DISPLAY_ICC: RefCell<Option<(Vec<u8>, Option<lumapaint_formats::color::IccToSrgb>)>> = const { RefCell::new(None) };
+    static TILED_EXTENDED_ICC: RefCell<Option<(Vec<u8>, Option<lumapaint_formats::color::IccToExtendedLinearSrgb>)>> = const { RefCell::new(None) };
+}
+
+/// Prepare float uploads without changing the source document. The host must
+/// enable wide-gamut presentation before installing these in the renderer.
+fn prepare_extended_tiled_uploads(
+    document: &TiledRasterDocument,
+) -> Result<Vec<lumapaint_renderer::extended_tile::LinearTileUpload>, String> {
+    let profile = document.icc_profile().ok_or("Document has no ICC profile")?;
+    let uploads = document.prepare_full_uploads();
+    let bytes = uploads.iter().try_fold(0usize, |total, tile| {
+        let length = (tile.bytes_per_row as usize).checked_mul(tile.extent[1] as usize)?;
+        total.checked_add(length.checked_mul(std::mem::size_of::<f32>())?)
+    }).ok_or("Extended tile size overflow")?;
+    if bytes > 256 * 1024 * 1024 {
+        return Err("Extended tile preview exceeds memory budget".into());
+    }
+    TILED_EXTENDED_ICC.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(bytes, _)| bytes != profile) {
+            *cache = Some((profile.to_vec(), lumapaint_formats::color::IccToExtendedLinearSrgb::new(profile).ok()));
+        }
+        let transform = cache.as_ref().and_then(|(_, transform)| transform.as_ref()).ok_or("Unsupported ICC profile")?;
+        uploads.into_iter().map(|upload| {
+            let row_pixels = upload.bytes_per_row / 4;
+            if !upload.bytes_per_row.is_multiple_of(4) || row_pixels < upload.extent[0] {
+                return Err("Invalid tile stride".to_string());
+            }
+            let length = (upload.bytes_per_row as usize).checked_mul(upload.extent[1] as usize).ok_or("Tile size overflow")?;
+            let input = upload.pixels.get(..length).ok_or("Invalid tile payload")?;
+            let mut pixels = vec![0.0; length];
+            transform.convert_premultiplied(input, &mut pixels)?;
+            Ok(lumapaint_renderer::extended_tile::LinearTileUpload { origin: upload.origin, extent: upload.extent, row_pixels, pixels })
+        }).collect()
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn extended_tiled_uploads_keep_wide_color_and_source_document() {
+    use lumapaint_formats::{DocumentImporter, ImportOptions};
+    let bytes = include_bytes!("../../crates/lumapaint-formats/tests/fixtures/lp-photoshop-2026-multi-icc-three-visible.psd");
+    let state = lumapaint_formats::psd::PsdImporter.import(bytes, ImportOptions { allow_lossy: true }).unwrap().raster;
+    let document = TiledRasterDocument::from_state(state).unwrap();
+    let before = document.state();
+    let uploads = prepare_extended_tiled_uploads(&document).unwrap();
+    assert!(!uploads.is_empty());
+    assert!(uploads.iter().flat_map(|u| u.pixels.chunks_exact(4)).any(|p| p[..3].iter().any(|c| *c < -0.001 || *c > 1.001)));
+    for upload in &uploads {
+        assert_eq!(upload.pixels.len(), upload.row_pixels as usize * upload.extent[1] as usize * 4);
+        assert!(upload.pixels.chunks_exact(4).all(|p| (0.0..=1.0).contains(&p[3])));
+    }
+    assert_eq!(document.state().icc_profile, before.icc_profile);
+    assert_eq!(document.state().layers, before.layers);
+}
+
+fn install_color_managed_tiled_preview(
+    renderer: &mut Renderer,
+    document: &TiledRasterDocument,
+) -> Result<(), String> {
+    let Some(profile) = document.icc_profile() else {
+        return renderer.install_tiled_preview(document);
+    };
+    if renderer.supports_wide_presentation() {
+        if let Ok(uploads) = prepare_extended_tiled_uploads(document) {
+            return renderer.install_extended_tiled_preview(document.dimensions(), &uploads);
+        }
+    }
+    let mut uploads = document.prepare_full_uploads();
+    TILED_DISPLAY_ICC.with(|cache| -> Result<(), String> {
+        let mut cache = cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(bytes, _)| bytes != profile) {
+            *cache = Some((
+                profile.to_vec(),
+                lumapaint_formats::color::IccToSrgb::new(profile).ok(),
+            ));
+        }
+        if let Some((_, Some(transform))) = cache.as_ref() {
+            for upload in &mut uploads {
+                transform.convert_premultiplied(&mut upload.pixels)?;
+            }
+        }
+        Ok(())
+    })?;
+    renderer.install_tiled_preview_uploads_at_scale(
+        document.dimensions(),
+        document.dimensions(),
+        1,
+        &uploads,
+    )
+}
+
 struct TiledSession {
     selected_layer: Option<String>,
     document: TiledRasterDocument,
@@ -6078,7 +6201,7 @@ fn activate_document(entry: OpenDocument) {
         }
         OpenDocumentContent::Tiled(document) => {
             let (width, height) = document.document.dimensions();
-            (width, height, CanvasColor::White)
+            (width, height, CanvasColor::Transparent)
         }
     };
     match entry.content {

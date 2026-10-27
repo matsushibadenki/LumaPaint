@@ -388,8 +388,15 @@ pub(super) fn decode_with_metadata(
     if info.is_empty() {
         return Ok(None);
     }
-    if !outer.section()?.is_empty() {
-        return Err(unsupported());
+    let global_mask = outer.section()?;
+    if !global_mask.is_empty() {
+        // Photoshop emits this default per-layer mask display setting for
+        // raster masks. It is editor metadata, not the layer mask pixels.
+        // Accept only the observed default and require merged-preview checks.
+        if global_mask != [0, 0, 255, 255, 0, 0, 0, 0, 0, 0, 0, 50, 128, 0, 0, 0] {
+            return Err(unsupported());
+        }
+        *discarded = true;
     }
     while outer.at < data.len() {
         let (key, bytes) = tag(&mut outer, h.version == 2, 4)?;
@@ -916,6 +923,7 @@ mod tests {
                     assert_eq!(baked, density != 255);
                     let state = TiledRasterState {
                         resolution: None,
+                        icc_profile: None,
                         width: 2,
                         height: 1,
                         layers,
@@ -991,6 +999,7 @@ mod tests {
                 let doc =
                     lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
                         resolution: None,
+                        icc_profile: None,
                         width: 4,
                         height: 2,
                         layers,
@@ -1047,6 +1056,7 @@ mod tests {
                     .unwrap();
                     let state = TiledRasterState {
                         resolution: None,
+                        icc_profile: None,
                         width: 4,
                         height: 2,
                         layers,
@@ -1089,6 +1099,7 @@ mod tests {
         .unwrap();
         let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
             resolution: None,
+            icc_profile: None,
             width: 4,
             height: 2,
             layers,
@@ -1156,6 +1167,7 @@ mod tests {
             .unwrap();
             let state = TiledRasterState {
                 resolution: None,
+                icc_profile: None,
                 width: 258,
                 height: 1,
                 layers,
@@ -1232,6 +1244,7 @@ mod tests {
                 assert_eq!(imported.raster.layers, layers);
                 let state = TiledRasterState {
                     resolution: None,
+                    icc_profile: None,
                     width: 2,
                     height: 1,
                     layers,
@@ -1250,6 +1263,7 @@ mod tests {
             assert!(layers[0].mask_tiles.is_empty());
             lumapaint_core::tiles::TiledRasterDocument::from_state(TiledRasterState {
                 resolution: None,
+                icc_profile: None,
                 width: 2,
                 height: 1,
                 layers,

@@ -14,6 +14,8 @@ fn read_blend_mode(key: &[u8]) -> Option<RasterBlendMode> {
         b"norm" => RasterBlendMode::Normal,
         b"mul " => RasterBlendMode::Multiply,
         b"scrn" => RasterBlendMode::Screen,
+        b"over" => RasterBlendMode::Overlay,
+        b"hLit" => RasterBlendMode::HardLight,
         b"dark" => RasterBlendMode::Darken,
         b"lite" => RasterBlendMode::Lighten,
         b"diff" => RasterBlendMode::Difference,
@@ -26,6 +28,8 @@ fn blend_key(mode: RasterBlendMode) -> &'static [u8; 4] {
         RasterBlendMode::Normal => b"norm",
         RasterBlendMode::Multiply => b"mul ",
         RasterBlendMode::Screen => b"scrn",
+        RasterBlendMode::Overlay => b"over",
+        RasterBlendMode::HardLight => b"hLit",
         RasterBlendMode::Darken => b"dark",
         RasterBlendMode::Lighten => b"lite",
         RasterBlendMode::Difference => b"diff",
@@ -163,8 +167,9 @@ fn packbits(data: &[u8], width: usize) -> Result<Vec<u8>, ImportError> {
 fn resources(
     data: &[u8],
     report: &mut ConversionReport,
-) -> Result<Option<RasterResolution>, ImportError> {
+) -> Result<(Option<RasterResolution>, Option<Vec<u8>>), ImportError> {
     let mut resolution = None;
+    let mut profile = None;
     let mut r = Reader { bytes: data, at: 0 };
     while r.at < data.len() {
         if r.take(4)? != b"8BIM" {
@@ -188,6 +193,23 @@ fn resources(
             resolution = Some(read_resolution(payload)?);
             continue;
         }
+        if id == 1039 && lumapaint_core::tiles::validate_rgb_icc(payload).is_ok() {
+            if profile.is_some() {
+                return Err(ImportError::Malformed("duplicate ICC resource"));
+            }
+            profile = Some(payload.to_vec());
+            if !report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.iccDisplayNotManaged")
+            {
+                report.issues.push(ConversionIssue {
+                    code: "psd.iccDisplayNotManaged",
+                    tier: CompatibilityTier::B,
+                });
+            }
+            continue;
+        }
         let code = match id {
             1039 => "psd.iccProfileNotPreserved",
             _ => "psd.resourceNotPreserved",
@@ -199,7 +221,7 @@ fn resources(
             });
         }
     }
-    Ok(resolution)
+    Ok((resolution, profile))
 }
 fn read_resolution(data: &[u8]) -> Result<RasterResolution, ImportError> {
     if data.len() != 16 {
@@ -267,7 +289,13 @@ fn merged_transparency(data: &[u8], large: bool) -> Result<bool, ImportError> {
             r.section()?; // Bounded layer extra data, discarded with the layer report.
         }
         r.take(payload)?;
-        if r.at != info.len() && !(r.at + 1 == info.len() && info[r.at] == 0) {
+        // Photoshop may pad layer info to a four-byte boundary (the PSD
+        // specification also permits even-byte padding). Never accept data as padding.
+        let padding = &info[r.at..];
+        let valid_padding = padding.is_empty()
+            || (padding.len() == 1 && info.len() % 2 == 0 && padding[0] == 0)
+            || (padding.len() <= 3 && info.len() % 4 == 0 && padding.iter().all(|byte| *byte == 0));
+        if !valid_padding {
             return Err(ImportError::Malformed("layer info payload length"));
         }
     }
@@ -308,7 +336,7 @@ impl DocumentImporter for PsdImporter {
             ));
         }
         let mut report = ConversionReport::default();
-        let resolution = resources(r.section()?, &mut report)?;
+        let (resolution, icc_profile) = resources(r.section()?, &mut report)?;
         let layer_data = r.sized_section(h.version == 2)?;
         let transparency = merged_transparency(layer_data, h.version == 2)?;
         if transparency && h.channels < 4 {
@@ -409,6 +437,7 @@ impl DocumentImporter for PsdImporter {
                 return finish(
                     TiledRasterState {
                         resolution,
+                        icc_profile,
                         width: h.width,
                         height: h.height,
                         layers,
@@ -501,6 +530,7 @@ impl DocumentImporter for PsdImporter {
                 return finish(
                     TiledRasterState {
                         resolution,
+                        icc_profile,
                         width: h.width,
                         height: h.height,
                         layers,
@@ -520,6 +550,7 @@ impl DocumentImporter for PsdImporter {
         }
         let raster = TiledRasterState {
             resolution,
+            icc_profile,
             width: h.width,
             height: h.height,
             layers: vec![RasterLayerState {
@@ -554,6 +585,394 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adobe_rgb_profile_survives_psd_psb_and_native_roundtrips() {
+        use super::*;
+        let input =
+            include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc-three-visible.psd");
+        let options = ImportOptions { allow_lossy: true };
+        let imported = PsdImporter.import(input, options).unwrap();
+        let profile = imported
+            .raster
+            .icc_profile
+            .clone()
+            .expect("Adobe RGB profile");
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.iccDisplayNotManaged"));
+        assert!(!imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.iccProfileNotPreserved"));
+        let native = crate::tile_container::encode(&imported.raster).unwrap();
+        let decoded = crate::tile_container::decode(&native).unwrap();
+        assert_eq!(decoded.icc_profile.as_deref(), Some(profile.as_slice()));
+        for large in [false, true] {
+            let output = super::write(
+                &decoded,
+                large,
+                crate::export::ExportOptions { allow_lossy: true },
+            )
+            .unwrap();
+            let reread = PsdImporter.import(&output.bytes, options).unwrap();
+            assert_eq!(
+                reread.raster.icc_profile.as_deref(),
+                Some(profile.as_slice())
+            );
+        }
+        let mut bad = imported.raster.clone();
+        bad.icc_profile.as_mut().unwrap()[36] = 0;
+        assert!(crate::tile_container::encode(&bad).is_err());
+    }
+
+    #[test]
+    fn photoshop_half_transparent_composite_is_checked_before_retaining_layers() {
+        let input = include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc-half.psd");
+        let header = read_header(input).unwrap();
+        let mut reader = Reader {
+            bytes: input,
+            at: 26,
+        };
+        reader.section().unwrap();
+        reader.section().unwrap();
+        let layer_data = reader.sized_section(false).unwrap();
+        let mut density_baked = false;
+        let mut discarded = false;
+        let layers =
+            layers::decode_with_metadata(layer_data, header, &mut density_baked, &mut discarded)
+                .unwrap()
+                .expect("raster layers");
+        let result = PsdImporter
+            .import(input, ImportOptions { allow_lossy: true })
+            .unwrap();
+        let mismatch = result
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch");
+        assert!(
+            mismatch,
+            "update this comparison when layer retention supports this Photoshop preview"
+        );
+        assert_eq!(
+            result.raster.layers.len(),
+            1,
+            "mismatched layers must be flattened"
+        );
+        let merged = &result.raster.layers[0].tiles[0].pixels;
+        let rendered =
+            lumapaint_core::tiles::composite_raster_layers_tile(&layers, TileCoord { x: 0, y: 0 })
+                .unwrap();
+        let mut max_alpha = 0u8;
+        let mut max_color = 0u8;
+        let mut color_sum = 0u64;
+        let mut alpha_sum = 0u64;
+        for y in 0..header.height as usize {
+            for x in 0..header.width as usize {
+                let i = (y * TILE_SIZE as usize + x) * 4;
+                let alpha = u32::from(merged[i + 3]);
+                let delta = rendered[i + 3].abs_diff(merged[i + 3]);
+                max_alpha = max_alpha.max(delta);
+                alpha_sum += u64::from(delta);
+                for c in 0..3 {
+                    let expected = ((u32::from(merged[i + c]) * alpha + 127) / 255) as u8;
+                    let delta = rendered[i + c].abs_diff(expected);
+                    max_color = max_color.max(delta);
+                    color_sum += u64::from(delta);
+                }
+            }
+        }
+        let count = u64::from(header.width) * u64::from(header.height);
+        assert!(max_alpha <= 1);
+        assert!(max_color <= 2);
+        eprintln!("half-alpha Photoshop comparison pixels={count} alpha_mean={} alpha_max={max_alpha} premult_rgb_mean={} premult_rgb_max={max_color}", alpha_sum as f64/count as f64, color_sum as f64/(count*3) as f64);
+
+        // Compare lossless Photoshop merged pixels and native composition in the
+        // same Display P3 space; this is not a screen-capture comparison.
+        let mut reference_p3 = merged.clone();
+        for pixel in reference_p3.chunks_exact_mut(4) {
+            let alpha = u32::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;
+            }
+        }
+        let mut rendered_p3 = rendered.clone();
+        let transform = crate::color::IccToDisplayP3::new(
+            result
+                .raster
+                .icc_profile
+                .as_deref()
+                .expect("embedded profile"),
+        )
+        .unwrap();
+        transform.convert_premultiplied(&mut reference_p3).unwrap();
+        transform.convert_premultiplied(&mut rendered_p3).unwrap();
+        let mut sum = 0u64;
+        let mut max = 0u8;
+        let mut max_alpha_p3 = 0u8;
+        for y in 0..header.height as usize {
+            for x in 0..header.width as usize {
+                let i = (y * TILE_SIZE as usize + x) * 4;
+                max_alpha_p3 = max_alpha_p3.max(reference_p3[i + 3].abs_diff(rendered_p3[i + 3]));
+                for c in 0..3 {
+                    let delta = reference_p3[i + c].abs_diff(rendered_p3[i + c]);
+                    sum += u64::from(delta);
+                    max = max.max(delta);
+                }
+            }
+        }
+        assert!(max_alpha_p3 <= 1);
+        eprintln!("half-alpha Display P3 comparison pixels={count} premult_rgb_mean={} premult_rgb_max={max} alpha_max={max_alpha_p3}", sum as f64/(count*3) as f64);
+        assert!(max <= 9);
+    }
+
+    #[test]
+    fn photoshop_visibility_isolates_multilayer_difference() {
+        use super::*;
+        let options = ImportOptions { allow_lossy: true };
+        let four = PsdImporter
+            .import(
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc-four-visible.psd"),
+                options,
+            )
+            .unwrap();
+        assert_eq!(four.raster.layers.len(), 1);
+        assert!(four
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+        let three = PsdImporter
+            .import(
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc-three-no-mask.psd"),
+                options,
+            )
+            .unwrap();
+        assert_eq!(three.raster.layers.len(), 8);
+        assert_eq!(three.raster.layers.iter().filter(|l| l.visible).count(), 3);
+        assert!(!three
+            .raster
+            .layers
+            .iter()
+            .any(|l| l.visible && l.mask_enabled));
+        assert!(!three
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+    }
+
+    #[test]
+    fn photoshop_three_visible_layers_with_mask_keep_all_layers_and_report_unmanaged_display() {
+        use super::*;
+        let bytes =
+            include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc-three-visible.psd");
+        let doc = PsdImporter
+            .import(bytes, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert_eq!(doc.raster.layers.len(), 8);
+        assert_eq!(
+            doc.raster
+                .layers
+                .iter()
+                .filter(|layer| layer.visible)
+                .count(),
+            3
+        );
+        assert_eq!(
+            doc.raster
+                .layers
+                .iter()
+                .filter(|layer| layer.mask_enabled)
+                .count(),
+            3
+        );
+        assert!(doc
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.iccDisplayNotManaged"));
+        assert!(!doc
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.previewMismatch"));
+    }
+
+    #[test]
+    fn photoshop_many_layers_masks_and_icc_report_mismatch_and_metadata_loss() {
+        use super::*;
+        for bytes in [
+            include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc.psd").as_slice(),
+            include_bytes!("../tests/fixtures/lp-photoshop-2026-multi-icc.psb").as_slice(),
+        ] {
+            let result = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(result.raster.layers.len(), 1);
+            for code in [
+                "psd.iccDisplayNotManaged",
+                "psd.editingMetadataNotPreserved",
+                "psd.previewMismatch",
+                "psd.layersFlattened",
+            ] {
+                assert!(
+                    result.report.issues.iter().any(|i| i.code == code),
+                    "missing {code}"
+                );
+            }
+            assert!(matches!(
+                PsdImporter.import(bytes, ImportOptions::default()),
+                Err(ImportError::LossyConversionRequiresConsent(_))
+            ));
+            let mut changed = bytes.to_vec();
+            let pattern = [0, 0, 255, 255, 0, 0, 0, 0, 0, 0, 0, 50, 128, 0, 0, 0];
+            let at = changed
+                .windows(pattern.len())
+                .position(|x| x == pattern)
+                .unwrap();
+            changed[at + 12] = 1; // Unsupported global mask kind must still fall back.
+            let result = PsdImporter
+                .import(&changed, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(result.raster.layers.len(), 1);
+            assert!(!result
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.editingMetadataNotPreserved"));
+        }
+    }
+
+    #[test]
+    fn white_matte_roundtrip_preserves_every_valid_premultiplied_byte() {
+        use super::remove_white_matte;
+        for alpha in 1..=255u32 {
+            for premult in 0..=alpha {
+                let stored = (premult + 255 - alpha) as u8;
+                let straight = u32::from(remove_white_matte(stored, alpha as u8));
+                assert_eq!((straight * alpha + 127) / 255, premult);
+            }
+        }
+    }
+
+    #[test]
+    fn photoshop_2026_four_byte_layer_padding_and_blend_preview_are_checked() {
+        use super::*;
+        let overlay = include_bytes!("../tests/fixtures/lp-photoshop-2026-overlay.psd");
+        let hardlight = include_bytes!("../tests/fixtures/lp-photoshop-2026-hardlight.psd");
+        let options = ImportOptions { allow_lossy: true };
+        let overlay_result = PsdImporter.import(overlay, options).unwrap();
+        assert_eq!(overlay_result.raster.layers.len(), 2);
+        assert_eq!(
+            overlay_result.raster.layers[1].blend_mode,
+            RasterBlendMode::Overlay
+        );
+        assert!(!overlay_result
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+        let hardlight_result = PsdImporter.import(hardlight, options).unwrap();
+        assert_eq!(hardlight_result.raster.layers.len(), 2);
+        assert_eq!(
+            hardlight_result.raster.layers[1].blend_mode,
+            RasterBlendMode::HardLight
+        );
+        assert!(!hardlight_result
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.previewMismatch"));
+
+        for (bytes, expected_layers, mismatch) in [
+            (
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-overlay.psb").as_slice(),
+                2,
+                false,
+            ),
+            (
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-hardlight.psb").as_slice(),
+                2,
+                false,
+            ),
+        ] {
+            let loaded = PsdImporter.import(bytes, options).unwrap();
+            assert_eq!(loaded.raster.layers.len(), expected_layers);
+            assert_eq!(
+                loaded
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.previewMismatch"),
+                mismatch
+            );
+            if !mismatch {
+                assert!(matches!(
+                    loaded.raster.layers[1].blend_mode,
+                    RasterBlendMode::Overlay | RasterBlendMode::HardLight
+                ));
+                let exported = super::write(
+                    &loaded.raster,
+                    true,
+                    crate::export::ExportOptions::default(),
+                )
+                .unwrap();
+                let roundtrip = PsdImporter.import(&exported.bytes, options).unwrap();
+                assert_eq!(roundtrip.raster, loaded.raster);
+            }
+        }
+
+        // Decode Photoshop's merged previews independently of editable layer
+        // reconstruction and compare the PSD and PSB outputs pixel-for-pixel.
+        for (psd, psb, key) in [
+            (
+                overlay.as_slice(),
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-overlay.psb").as_slice(),
+                b"over",
+            ),
+            (
+                hardlight.as_slice(),
+                include_bytes!("../tests/fixtures/lp-photoshop-2026-hardlight.psb").as_slice(),
+                b"hLit",
+            ),
+        ] {
+            let merged = |bytes: &[u8]| {
+                let mut bytes = bytes.to_vec();
+                let at = bytes
+                    .windows(8)
+                    .position(|w| &w[..4] == b"8BIM" && &w[4..] == key)
+                    .unwrap();
+                bytes[at + 4..at + 8].copy_from_slice(b"zzzz");
+                PsdImporter.import(&bytes, options).unwrap().raster.layers[0]
+                    .tiles
+                    .clone()
+            };
+            assert_eq!(merged(psd), merged(psb));
+        }
+
+        // Corrupt only the Photoshop layer-info padding; never interpret nonzero
+        // or extra bytes as harmless alignment.
+        let mut corrupt = overlay.to_vec();
+        let mut p = 26;
+        for _ in 0..2 {
+            let size = u32::from_be_bytes(corrupt[p..p + 4].try_into().unwrap()) as usize;
+            p += 4 + size;
+        }
+        p += 4; // outer length
+        let length = u32::from_be_bytes(corrupt[p..p + 4].try_into().unwrap()) as usize;
+        let end = p + 4 + length;
+        assert_eq!(&corrupt[end - 2..end], &[0, 0]);
+        corrupt[end - 1] = 1;
+        assert!(matches!(
+            PsdImporter.import(&corrupt, options),
+            Err(ImportError::Malformed("layer info payload length"))
+        ));
+    }
+
     use super::*;
     fn fixture(width: u32, height: u32, rle: bool) -> Vec<u8> {
         let mut bytes = b"8BPS".to_vec();

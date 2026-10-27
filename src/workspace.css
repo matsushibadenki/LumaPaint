@@ -531,7 +531,7 @@ button.channel-row:hover:not(:disabled) { background: var(--color-hover, #454545
 .selection-options label { font-size: 11px; }
 .selection-kind { display: flex; flex-direction: column; min-width: 70px; padding-right: 10px; border-right: 1px solid var(--color-rule); font-size: 12px; }
 .selection-kind small, .selection-paint small { font-size: 10px; color: var(--color-muted); }
-.selection-options input[type='number'] { width: 66px; height: 26px; padding: 2px 4px; min-width: 0; }
+.selection-options input[type='number'], .selection-options input[role='spinbutton'] { width: 66px; height: 26px; padding: 2px 4px; min-width: 0; }
 .selection-options .color-picker-trigger { width: 27px; min-width: 27px; height: 27px; min-height: 27px; padding: 2px; border-color: transparent; }
 .selection-options .color-picker-chip { border: 0; box-shadow: none; }
 .selection-options button, .selection-options select { height: 27px; padding: 2px 6px; }
@@ -892,7 +892,7 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .layer-mask-controls legend { font-size: 11px; padding-inline: 4px; }
 .layer-mask-controls p { text-wrap: pretty; margin: 0; font-size: 10px; line-height: 1.6; }
 .layer-mask-controls label { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); font-size: 11px; }
-.layer-mask-controls select, .layer-mask-controls input[type=number] { width: 100%; min-width: 0; }
+.layer-mask-controls select, .layer-mask-controls input[type=number], .layer-mask-controls input[role=spinbutton] { width: 100%; min-width: 0; }
 .layer-mask-controls button { white-space: normal; line-height: 1.5; }
 .layer-mask-controls .mask-enabled-toggle { display: flex; align-items: center; gap: 6px; }
 .layer-mask-controls input[type=checkbox] { width: 13px; height: 13px; margin: 0; min-height: 0; }
@@ -1060,7 +1060,7 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .pixel-selection-dialog h3 {display:flex;align-items:center;justify-content:space-between;}
 .pixel-selection-dialog fieldset {display:grid;gap:8px;min-width:0;}
 .pixel-selection-dialog fieldset>label {display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.pixel-selection-dialog input[type=number] {width:96px;}
+.pixel-selection-dialog input[type=number], .pixel-selection-dialog input[role=spinbutton] {width:96px;}
 .pixel-selection-dialog .saved-selection-actions {display:flex;flex-wrap:wrap;gap:4px;}
 
 .natural-media { min-width:0; margin:8px 0; padding:6px; border:1px solid var(--color-rule); border-radius:4px; }

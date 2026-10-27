@@ -194,9 +194,18 @@ pub(crate) fn pipeline(
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    pipeline_with_source(device, layout, format, include_str!("frame_overlay.wgsl"))
+}
+
+pub(crate) fn pipeline_with_source(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    source: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Text frame guides"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("frame_overlay.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Text frame guide pipeline"),
