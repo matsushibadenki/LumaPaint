@@ -2012,6 +2012,7 @@ pub enum ThumbnailDocument {
 #[derive(Serialize)]
 pub struct ThumbnailSet {
     layers: Vec<(String, String)>,
+    masks: Vec<(String, String)>,
     channels: Vec<String>,
 }
 #[tauri::command]
@@ -2038,6 +2039,11 @@ pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailS
             Ok(ThumbnailSet {
                 layers: previews
                     .layers
+                    .into_iter()
+                    .map(|(id, png)| (id, encode(png)))
+                    .collect(),
+                masks: previews
+                    .masks
                     .into_iter()
                     .map(|(id, png)| (id, encode(png)))
                     .collect(),

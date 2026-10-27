@@ -144,6 +144,8 @@ pub struct RasterLayerState {
     pub opacity: f32,
     pub locked: bool,
     pub alpha_locked: bool,
+    #[serde(default)]
+    pub mask_present: bool,
     pub mask_enabled: bool,
     pub mask_inverted: bool,
     pub mask_density: f32,
@@ -396,6 +398,38 @@ impl SparseMask {
         Some(self.tiles.get(&coord).map_or(255, |tile| tile[index]))
     }
 
+    /// Translate allocated mask pixels; uncovered areas remain fully visible.
+    pub fn translated(&self, dx: i32, dy: i32) -> Self {
+        let mut result = Self::new(self.width, self.height);
+        for (coord, tile) in &self.tiles {
+            for (index, &value) in tile.iter().enumerate() {
+                if value == 255 {
+                    continue;
+                }
+                let x = i64::from(coord.x * TILE_SIZE) + (index as i64 % i64::from(TILE_SIZE));
+                let y = i64::from(coord.y * TILE_SIZE) + (index as i64 / i64::from(TILE_SIZE));
+                if x >= i64::from(self.width) || y >= i64::from(self.height) {
+                    continue;
+                }
+                let (x, y) = (x + i64::from(dx), y + i64::from(dy));
+                if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
+                    continue;
+                }
+                let (x, y) = (x as u32, y as u32);
+                let dest = TileCoord {
+                    x: x / TILE_SIZE,
+                    y: y / TILE_SIZE,
+                };
+                let offset = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                result
+                    .tiles
+                    .entry(dest)
+                    .or_insert_with(|| vec![255; (TILE_SIZE * TILE_SIZE) as usize])[offset] = value;
+            }
+        }
+        result
+    }
+
     fn write_rect(&mut self, rect: [u32; 4], values: &[u8]) -> Result<Vec<MaskChange>, String> {
         let [x, y, width, height] = rect;
         let end_x = x.checked_add(width).ok_or("Mask rectangle overflow")?;
@@ -588,6 +622,166 @@ impl SparseTiles {
         };
         let index = (((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) * 4) as usize;
         Some(tile[index..index + 4].try_into().unwrap())
+    }
+
+    /// Translate allocated pixels, clipping to the canvas and preserving sparsity.
+    pub fn translated(&self, dx: i32, dy: i32) -> Self {
+        let mut result = Self {
+            width: self.width,
+            height: self.height,
+            tiles: BTreeMap::new(),
+        };
+        for (coord, tile) in &self.tiles {
+            for (index, pixel) in tile.chunks_exact(4).enumerate() {
+                if pixel == [0, 0, 0, 0] {
+                    continue;
+                }
+                let x = i64::from(coord.x * TILE_SIZE) + (index as i64 % i64::from(TILE_SIZE));
+                let y = i64::from(coord.y * TILE_SIZE) + (index as i64 / i64::from(TILE_SIZE));
+                if x >= i64::from(self.width) || y >= i64::from(self.height) {
+                    continue;
+                }
+                let (x, y) = (x + i64::from(dx), y + i64::from(dy));
+                if x < 0 || y < 0 || x >= i64::from(self.width) || y >= i64::from(self.height) {
+                    continue;
+                }
+                let (x, y) = (x as u32, y as u32);
+                let dest = TileCoord {
+                    x: x / TILE_SIZE,
+                    y: y / TILE_SIZE,
+                };
+                let offset = (((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) * 4) as usize;
+                result
+                    .tiles
+                    .entry(dest)
+                    .or_insert_with(|| vec![0; TILE_BYTES])[offset..offset + 4]
+                    .copy_from_slice(pixel);
+            }
+        }
+        result
+    }
+
+    /// Affine resampling in straight-alpha storage, interpolating premultiplied colors.
+    pub fn transformed(&self, matrix: [f32; 6]) -> Result<Self, String> {
+        crate::layer_mask::validate_transform(matrix)?;
+        if matrix == [1., 0., 0., 1., 0., 0.] {
+            return Ok(self.clone());
+        }
+        if matrix[..4] == [1., 0., 0., 1.]
+            && matrix[4].fract() == 0.
+            && matrix[5].fract() == 0.
+            && matrix[4] >= i32::MIN as f32
+            && matrix[4] < 2147483648.
+            && matrix[5] >= i32::MIN as f32
+            && matrix[5] < 2147483648.
+        {
+            return Ok(self.translated(matrix[4] as i32, matrix[5] as i32));
+        }
+        let inv = crate::image_frame::inverse(matrix)?;
+        let mut candidates = BTreeSet::new();
+        for coord in self.allocated_coords() {
+            let x0 = coord.x * TILE_SIZE;
+            let y0 = coord.y * TILE_SIZE;
+            let x1 = (x0 + TILE_SIZE).min(self.width);
+            let y1 = (y0 + TILE_SIZE).min(self.height);
+            let points = [
+                (x0 as f64 - 1., y0 as f64 - 1.),
+                (x1 as f64 + 1., y0 as f64 - 1.),
+                (x0 as f64 - 1., y1 as f64 + 1.),
+                (x1 as f64 + 1., y1 as f64 + 1.),
+            ];
+            let mapped = points.map(|(x, y)| {
+                (
+                    f64::from(matrix[0]) * x + f64::from(matrix[2]) * y + f64::from(matrix[4]),
+                    f64::from(matrix[1]) * x + f64::from(matrix[3]) * y + f64::from(matrix[5]),
+                )
+            });
+            let min_x = mapped
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min)
+                .floor()
+                .clamp(0., self.width as f64) as u32;
+            let max_x = mapped
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil()
+                .clamp(0., self.width as f64) as u32;
+            let min_y = mapped
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::INFINITY, f64::min)
+                .floor()
+                .clamp(0., self.height as f64) as u32;
+            let max_y = mapped
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil()
+                .clamp(0., self.height as f64) as u32;
+            if min_x >= max_x || min_y >= max_y {
+                continue;
+            }
+            for y in min_y / TILE_SIZE..=(max_y - 1) / TILE_SIZE {
+                for x in min_x / TILE_SIZE..=(max_x - 1) / TILE_SIZE {
+                    candidates.insert(TileCoord { x, y });
+                }
+            }
+        }
+        let mut result = Self::new(self.width, self.height)?;
+        for coord in candidates {
+            let mut tile = vec![0; TILE_BYTES];
+            for y in coord.y * TILE_SIZE..((coord.y + 1) * TILE_SIZE).min(self.height) {
+                for x in coord.x * TILE_SIZE..((coord.x + 1) * TILE_SIZE).min(self.width) {
+                    let px = x as f64 + 0.5;
+                    let py = y as f64 + 0.5;
+                    let sx =
+                        f64::from(inv[0]) * px + f64::from(inv[2]) * py + f64::from(inv[4]) - 0.5;
+                    let sy =
+                        f64::from(inv[1]) * px + f64::from(inv[3]) * py + f64::from(inv[5]) - 0.5;
+                    let ix = sx.floor() as i64;
+                    let iy = sy.floor() as i64;
+                    let fx = sx - sx.floor();
+                    let fy = sy - sy.floor();
+                    let mut alpha = 0.;
+                    let mut rgb = [0.; 3];
+                    for (ox, oy, w) in [
+                        (0, 0, (1. - fx) * (1. - fy)),
+                        (1, 0, fx * (1. - fy)),
+                        (0, 1, (1. - fx) * fy),
+                        (1, 1, fx * fy),
+                    ] {
+                        let (xx, yy) = (ix + ox, iy + oy);
+                        if xx < 0
+                            || yy < 0
+                            || xx >= i64::from(self.width)
+                            || yy >= i64::from(self.height)
+                        {
+                            continue;
+                        }
+                        let sample = self.pixel(xx as u32, yy as u32).unwrap();
+                        let a = f64::from(sample[3]) * w;
+                        alpha += a;
+                        for c in 0..3 {
+                            rgb[c] += f64::from(sample[c]) * a;
+                        }
+                    }
+                    let offset = (((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) * 4) as usize;
+                    let out_alpha = alpha.round().clamp(0., 255.) as u8;
+                    if out_alpha != 0 {
+                        for c in 0..3 {
+                            tile[offset + c] = (rgb[c] / alpha).round().clamp(0., 255.) as u8;
+                        }
+                        tile[offset + 3] = out_alpha;
+                    }
+                }
+            }
+            if tile.iter().any(|v| *v != 0) {
+                result.tiles.insert(coord, tile);
+            }
+        }
+        Ok(result)
     }
 
     /// Replace a rectangle of straight-alpha RGBA8 pixels; return only changed tiles.
@@ -828,6 +1022,8 @@ pub struct RasterLayer {
     pub opacity: f32,
     pub locked: bool,
     pub alpha_locked: bool,
+    #[serde(default)]
+    pub mask_present: bool,
     pub mask_enabled: bool,
     pub mask_inverted: bool,
     pub mask_density: f32,
@@ -890,10 +1086,18 @@ enum RasterEdit {
     Settings {
         before: LayerSettings,
         after: LayerSettings,
+        before_mask_present: bool,
+        after_mask_present: bool,
     },
     Pixels {
         layer_id: String,
         changes: Vec<TileChange>,
+    },
+    LinkedMaskMove {
+        layer_id: String,
+        changes: Vec<TileChange>,
+        before: Box<crate::layer_effects::LayerEffects>,
+        after: Box<crate::layer_effects::LayerEffects>,
     },
     Appearance {
         layer_id: String,
@@ -907,12 +1111,13 @@ enum RasterEdit {
     },
     Mask {
         layer_id: String,
-        before: (bool, bool, f32),
-        after: (bool, bool, f32),
+        before: (bool, bool, f32, bool),
+        after: (bool, bool, f32, bool),
     },
     MaskPixels {
         layer_id: String,
         changes: Vec<MaskChange>,
+        before_mask_present: bool,
     },
     Reorder {
         layer_id: String,
@@ -1217,6 +1422,7 @@ impl TiledRasterDocument {
                     opacity: layer.opacity,
                     locked: layer.locked,
                     alpha_locked: layer.alpha_locked,
+                    mask_present: layer.mask_present || layer.mask.allocated_tile_count() > 0,
                     mask_enabled: layer.mask_enabled,
                     mask_inverted: layer.mask_inverted,
                     mask_density: layer.mask_density,
@@ -1276,6 +1482,8 @@ impl TiledRasterDocument {
             layer.opacity = saved.opacity;
             layer.locked = saved.locked;
             layer.alpha_locked = saved.alpha_locked;
+            layer.mask_present =
+                saved.mask_present || saved.mask_enabled || !saved.mask_tiles.is_empty();
             layer.mask_enabled = saved.mask_enabled;
             layer.mask_inverted = saved.mask_inverted;
             layer.mask_density = saved.mask_density;
@@ -1484,6 +1692,7 @@ impl TiledRasterDocument {
             opacity: 1.0,
             locked: false,
             alpha_locked: false,
+            mask_present: false,
             mask_enabled: false,
             mask_inverted: false,
             mask_density: 1.0,
@@ -1549,11 +1758,16 @@ impl TiledRasterDocument {
         } else {
             Vec::new()
         };
+        let before_mask_present = layer.mask_present;
+        let after_mask_present = before_mask_present || settings.mask_enabled;
         layer.apply_settings(&settings);
+        layer.mask_present = after_mask_present;
         let layer_id = settings.id.clone();
         self.record_edit(RasterEdit::Settings {
             before,
             after: settings,
+            before_mask_present,
+            after_mask_present,
         });
         Ok(Some(TileInvalidation { layer_id, coords }))
     }
@@ -1697,13 +1911,23 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|layer| layer.id == layer_id)
             .ok_or("Unknown raster layer")?;
-        let before = (layer.mask_enabled, layer.mask_inverted, layer.mask_density);
-        let after = (enabled, inverted, density);
+        let before = (
+            layer.mask_enabled,
+            layer.mask_inverted,
+            layer.mask_density,
+            layer.mask_present,
+        );
+        let after = (enabled, inverted, density, layer.mask_present || enabled);
         if before == after {
             return Ok(None);
         }
         let coords = layer.tiles.allocated_coords().collect();
-        (layer.mask_enabled, layer.mask_inverted, layer.mask_density) = after;
+        (
+            layer.mask_enabled,
+            layer.mask_inverted,
+            layer.mask_density,
+            layer.mask_present,
+        ) = after;
         self.record_edit(RasterEdit::Mask {
             layer_id: layer_id.into(),
             before,
@@ -1734,9 +1958,12 @@ impl TiledRasterDocument {
             return Ok(None);
         }
         let coords = changes.iter().map(|change| change.coord).collect();
+        let before_mask_present = layer.mask_present;
+        layer.mask_present = true;
         self.record_edit(RasterEdit::MaskPixels {
             layer_id: layer_id.into(),
             changes,
+            before_mask_present,
         });
         Ok(Some(TileInvalidation {
             layer_id: layer_id.into(),
@@ -1783,9 +2010,12 @@ impl TiledRasterDocument {
             return Ok(None);
         }
         let coords = changes.iter().map(|change| change.coord).collect();
+        let before_mask_present = layer.mask_present;
+        layer.mask_present = true;
         self.record_edit(RasterEdit::MaskPixels {
             layer_id: layer_id.into(),
             changes,
+            before_mask_present,
         });
         Ok(Some(TileInvalidation {
             layer_id: layer_id.into(),
@@ -1864,6 +2094,75 @@ impl TiledRasterDocument {
         Ok(Some(TileInvalidation {
             layer_id: layer_id.into(),
             coords,
+        }))
+    }
+
+    /// Move linked raster content and its effect mask as a single history edit.
+    pub fn transform_linked_effect_mask(
+        &mut self,
+        id: &str,
+        matrix: [f32; 6],
+        moved: SparseTiles,
+    ) -> Result<Option<TileInvalidation>, String> {
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|l| l.id == id)
+            .ok_or("Unknown raster layer")?;
+        if layer.locked || layer.alpha_locked {
+            return Err("Raster layer is locked".into());
+        }
+        if layer.mask_present {
+            return Err("Combined sparse and effect masks cannot yet be moved together".into());
+        }
+        let before = layer.effects.clone();
+        let mut after = before.clone();
+        let mask = after.mask.as_mut().ok_or("Layer mask not found")?;
+        if !mask.linked {
+            return Err("Layer mask is not linked".into());
+        }
+        if moved.dimensions() != layer.tiles.dimensions() {
+            return Err("Transformed raster dimensions differ".into());
+        }
+        if matrix == [1., 0., 0., 1., 0., 0.] {
+            return Ok(None);
+        }
+        mask.transform_by(matrix)?;
+        let coords = layer
+            .tiles
+            .allocated_coords()
+            .chain(moved.allocated_coords())
+            .collect::<BTreeSet<_>>();
+        let changes = coords
+            .into_iter()
+            .filter_map(|coord| {
+                let before = layer.tiles.tiles.get(&coord).cloned();
+                let after = moved.tiles.get(&coord).cloned();
+                (before != after).then_some(TileChange {
+                    coord,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        let invalidated = layer
+            .tiles
+            .allocated_coords()
+            .chain(moved.allocated_coords())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        layer.tiles = moved;
+        layer.effects = after.clone();
+        self.record_edit(RasterEdit::LinkedMaskMove {
+            layer_id: id.into(),
+            changes,
+            before: Box::new(before),
+            after: Box::new(after),
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: id.into(),
+            coords: invalidated,
         }))
     }
 
@@ -2129,13 +2428,15 @@ impl TiledRasterDocument {
         self.redo.drain(..excess - old_undo);
         let size = |entry: &RasterEdit| match entry {
             RasterEdit::Stored(_) => 0,
-            RasterEdit::Pixels { changes, .. } => changes
-                .iter()
-                .map(|change| {
-                    change.before.as_ref().map_or(0, Vec::len)
-                        + change.after.as_ref().map_or(0, Vec::len)
-                })
-                .sum(),
+            RasterEdit::LinkedMaskMove { changes, .. } | RasterEdit::Pixels { changes, .. } => {
+                changes
+                    .iter()
+                    .map(|change| {
+                        change.before.as_ref().map_or(0, Vec::len)
+                            + change.after.as_ref().map_or(0, Vec::len)
+                    })
+                    .sum()
+            }
             RasterEdit::MaskPixels { changes, .. } => changes
                 .iter()
                 .map(|change| {
@@ -2264,7 +2565,12 @@ impl TiledRasterDocument {
                     coords,
                 }
             }
-            RasterEdit::Settings { before, after } => {
+            RasterEdit::Settings {
+                before,
+                after,
+                before_mask_present,
+                after_mask_present,
+            } => {
                 let layer = self
                     .layers
                     .iter_mut()
@@ -2275,7 +2581,14 @@ impl TiledRasterDocument {
                 } else {
                     (before, after)
                 };
-                if layer.settings() != *expected {
+                if layer.settings() != *expected
+                    || layer.mask_present
+                        != if undo {
+                            *after_mask_present
+                        } else {
+                            *before_mask_present
+                        }
+                {
                     return Err("Raster settings changed outside history".into());
                 }
                 let affects_pixels = before.opacity != after.opacity
@@ -2288,6 +2601,11 @@ impl TiledRasterDocument {
                     Vec::new()
                 };
                 layer.apply_settings(next);
+                layer.mask_present = if undo {
+                    *before_mask_present
+                } else {
+                    *after_mask_present
+                };
                 TileInvalidation {
                     layer_id: before.id.clone(),
                     coords,
@@ -2303,6 +2621,34 @@ impl TiledRasterDocument {
                 TileInvalidation {
                     layer_id: layer_id.clone(),
                     coords: changes.iter().map(|change| change.coord).collect(),
+                }
+            }
+            RasterEdit::LinkedMaskMove {
+                layer_id,
+                changes,
+                before,
+                after,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?;
+                if layer.effects != **if undo { after } else { before } {
+                    return Err("Layer effects changed outside history".into());
+                }
+                layer.tiles.apply_changes(changes, undo)?;
+                layer.effects = (**if undo { before } else { after }).clone();
+                let coords = changes
+                    .iter()
+                    .map(|c| c.coord)
+                    .chain(layer.tiles.allocated_coords())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords,
                 }
             }
             RasterEdit::Appearance {
@@ -2354,26 +2700,42 @@ impl TiledRasterDocument {
                     .iter_mut()
                     .find(|layer| layer.id == *layer_id)
                     .ok_or("Raster history layer is missing")?;
-                if (layer.mask_enabled, layer.mask_inverted, layer.mask_density)
-                    != if undo { *after } else { *before }
+                if (
+                    layer.mask_enabled,
+                    layer.mask_inverted,
+                    layer.mask_density,
+                    layer.mask_present,
+                ) != if undo { *after } else { *before }
                 {
                     return Err("Raster mask changed outside history".into());
                 }
                 let coords = layer.tiles.allocated_coords().collect();
-                (layer.mask_enabled, layer.mask_inverted, layer.mask_density) =
-                    if undo { *before } else { *after };
+                (
+                    layer.mask_enabled,
+                    layer.mask_inverted,
+                    layer.mask_density,
+                    layer.mask_present,
+                ) = if undo { *before } else { *after };
                 TileInvalidation {
                     layer_id: layer_id.clone(),
                     coords,
                 }
             }
-            RasterEdit::MaskPixels { layer_id, changes } => {
-                self.layers
+            RasterEdit::MaskPixels {
+                layer_id,
+                changes,
+                before_mask_present,
+            } => {
+                let layer = self
+                    .layers
                     .iter_mut()
                     .find(|layer| layer.id == *layer_id)
-                    .ok_or("Raster history layer is missing")?
-                    .mask
-                    .apply_changes(changes, undo)?;
+                    .ok_or("Raster history layer is missing")?;
+                if layer.mask_present != if undo { true } else { *before_mask_present } {
+                    return Err("Raster mask presence changed outside history".into());
+                }
+                layer.mask.apply_changes(changes, undo)?;
+                layer.mask_present = if undo { *before_mask_present } else { true };
                 TileInvalidation {
                     layer_id: layer_id.clone(),
                     coords: changes.iter().map(|change| change.coord).collect(),
@@ -2731,6 +3093,117 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn affine_linked_mask_resamples_and_undoes_as_one_edit() {
+        let mut doc = TiledRasterDocument::new(8, 8).unwrap();
+        doc.add_layer("a".into(), "A".into()).unwrap();
+        doc.write_rect("a", [1, 1, 1, 1], &[200, 10, 20, 255])
+            .unwrap();
+        let mut effects = crate::layer_effects::LayerEffects::default();
+        effects.mask = Some(
+            crate::layer_mask::LayerMask::from_selection(
+                crate::layer_mask::MaskKind::Pixel,
+                None,
+                8,
+                8,
+            )
+            .unwrap(),
+        );
+        doc.set_layer_effects("a", effects).unwrap();
+        doc.discard_history();
+        let before = doc.state();
+        let matrix = [1., 0., 0., 1., 0.5, 0.];
+        let moved = doc.layers()[0].tiles.transformed(matrix).unwrap();
+        assert_eq!(moved.pixel(1, 1), Some([200, 10, 20, 128]));
+        assert_eq!(moved.pixel(2, 1), Some([200, 10, 20, 128]));
+        doc.transform_linked_effect_mask("a", matrix, moved)
+            .unwrap();
+        assert_eq!(
+            doc.layers()[0].effects.mask.as_ref().unwrap().transform,
+            matrix
+        );
+        let after = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), before);
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+        let rotation = [0., 1., -1., 0., 4., 0.];
+        let rotated = TiledRasterDocument::from_state(before).unwrap().layers()[0]
+            .tiles
+            .transformed(rotation)
+            .unwrap();
+        assert_eq!(rotated.pixel(2, 1), Some([200, 10, 20, 255]));
+        let scaled = TiledRasterDocument::from_state(after).unwrap().layers()[0]
+            .tiles
+            .transformed([2., 0., 0., 2., 0., 0.])
+            .unwrap();
+        assert!(scaled.pixel(3, 3).unwrap()[3] > 0);
+        assert!(scaled.transformed([0., 0., 0., 0., 0., 0.]).is_err());
+    }
+
+    #[test]
+    fn linked_effect_mask_move_is_one_undo_and_respects_locks() {
+        let mut doc = TiledRasterDocument::new(300, 2).unwrap();
+        doc.add_layer("a".into(), "A".into()).unwrap();
+        doc.write_rect("a", [255, 0, 1, 1], &[1, 2, 3, 255])
+            .unwrap();
+        let mut effects = crate::layer_effects::LayerEffects::default();
+        effects.mask = Some(
+            crate::layer_mask::LayerMask::from_selection(
+                crate::layer_mask::MaskKind::Pixel,
+                None,
+                300,
+                2,
+            )
+            .unwrap(),
+        );
+        doc.set_layer_effects("a", effects).unwrap();
+        doc.discard_history();
+        let before = doc.state();
+        let moved = doc.layers()[0].tiles.translated(1, 1);
+        doc.transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 1.], moved)
+            .unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(256, 1), Some([1, 2, 3, 255]));
+        assert_eq!(
+            doc.layers()[0].effects.mask.as_ref().unwrap().transform,
+            [1., 0., 0., 1., 1., 1.]
+        );
+        let after = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), before);
+        assert!(!doc.can_undo());
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+        let mut effects = doc.layers()[0].effects.clone();
+        effects.mask.as_mut().unwrap().linked = false;
+        doc.set_layer_effects("a", effects).unwrap();
+        let moved = doc.layers()[0].tiles.translated(1, 0);
+        assert!(doc
+            .transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 0.], moved)
+            .is_err());
+    }
+
+    #[test]
+    fn sparse_translation_moves_pixels_and_mask_across_tiles_and_clips() {
+        let mut pixels = SparseTiles::new(300, 2).unwrap();
+        pixels
+            .write_rect(255, 0, 2, 1, &[10, 20, 30, 255, 1, 2, 3, 128])
+            .unwrap();
+        let mut mask = SparseMask::new(300, 2);
+        mask.write_rect([255, 0, 2, 1], &[0, 127]).unwrap();
+        let moved = pixels.translated(1, 1);
+        let moved_mask = mask.translated(1, 1);
+        assert_eq!(moved.pixel(256, 1), Some([10, 20, 30, 255]));
+        assert_eq!(moved.pixel(257, 1), Some([1, 2, 3, 128]));
+        assert_eq!(moved_mask.pixel(256, 1), Some(0));
+        assert_eq!(moved_mask.pixel(257, 1), Some(127));
+        assert_eq!(moved_mask.pixel(255, 0), Some(255));
+        assert_eq!(pixels.translated(i32::MAX, 0).allocated_tile_count(), 0);
+        assert_eq!(mask.translated(i32::MIN, 0).allocated_tile_count(), 0);
+        assert_eq!(pixels.translated(0, 0), pixels);
+        assert_eq!(mask.translated(0, 0), mask);
     }
 
     #[test]
@@ -3205,6 +3678,59 @@ mod tests {
         assert!(document.layers()[0].alpha_locked);
     }
 
+    #[test]
+    fn white_disabled_mask_presence_follows_settings_and_undo() {
+        let mut doc = TiledRasterDocument::new(32, 32).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        assert!(!doc.layers()[0].mask_present);
+        doc.set_layer_mask("paint", true, false, 1.).unwrap();
+        doc.set_layer_mask("paint", false, false, 1.).unwrap();
+        assert!(doc.layers()[0].mask_present);
+        assert!(!doc.layers()[0].mask_enabled);
+        assert_eq!(doc.layers()[0].mask.allocated_tile_count(), 0);
+        assert!(
+            TiledRasterDocument::from_state(doc.state())
+                .unwrap()
+                .layers()[0]
+                .mask_present
+        );
+        doc.undo().unwrap();
+        assert!(doc.layers()[0].mask_enabled);
+        doc.undo().unwrap();
+        assert!(!doc.layers()[0].mask_present);
+        doc.redo().unwrap();
+        doc.redo().unwrap();
+        assert!(doc.layers()[0].mask_present);
+        assert!(!doc.layers()[0].mask_enabled);
+
+        let mut second = TiledRasterDocument::new(32, 32).unwrap();
+        second.add_layer("paint".into(), "Paint".into()).unwrap();
+        let mut settings = second.layers()[0].settings();
+        settings.mask_enabled = true;
+        second.set_layer_settings(settings).unwrap();
+        assert!(second.layers()[0].mask_present);
+        second.undo().unwrap();
+        assert!(!second.layers()[0].mask_present);
+        second.redo().unwrap();
+        assert!(second.layers()[0].mask_present);
+
+        let mut painted = TiledRasterDocument::new(32, 32).unwrap();
+        painted.add_layer("paint".into(), "Paint".into()).unwrap();
+        painted
+            .write_mask_rect("paint", [0, 0, 1, 1], &[0])
+            .unwrap();
+        painted
+            .write_mask_rect("paint", [0, 0, 1, 1], &[255])
+            .unwrap();
+        assert!(painted.layers()[0].mask_present);
+        assert_eq!(painted.layers()[0].mask.allocated_tile_count(), 0);
+        painted.undo().unwrap();
+        painted.undo().unwrap();
+        assert!(!painted.layers()[0].mask_present);
+        painted.redo().unwrap();
+        painted.redo().unwrap();
+        assert!(painted.layers()[0].mask_present);
+    }
     #[test]
     fn uniform_mask_changes_composite_without_editing_source_tiles() {
         let mut document = TiledRasterDocument::new(32, 32).unwrap();

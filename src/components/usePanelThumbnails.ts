@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-type Thumbnails = { layers: [string,string][]; channels: string[] };
-const empty: Thumbnails = { layers: [], channels: [] };
+type Thumbnails = { layers: [string,string][]; masks: [string,string][]; channels: string[] };
+const empty: Thumbnails = { layers: [], masks: [], channels: [] };
 export function usePanelThumbnails(documentKey: string, revision: number, target = '') {
   const cacheKey = `${documentKey}:${target}`;
   const [result, setResult] = useState<{key:string; data:Thumbnails}>({key:'',data:empty});

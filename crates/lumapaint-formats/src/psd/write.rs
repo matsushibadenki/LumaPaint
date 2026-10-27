@@ -200,7 +200,8 @@ pub fn write(
     let estimated_pixels = state.layers.iter().fold(canvas_area * 4, |sum, layer| {
         let rect = bounds(layer, state.width, state.height);
         let area = u64::from(rect[2] - rect[0]) * u64::from(rect[3] - rect[1]);
-        let mask = !layer.mask_tiles.is_empty()
+        let mask = layer.mask_present
+            || !layer.mask_tiles.is_empty()
             || layer.mask_enabled
             || layer.mask_inverted
             || layer.mask_density != 1.;
@@ -271,7 +272,8 @@ pub fn write(
         .layers
         .iter()
         .map(|layer| {
-            let mask = !layer.mask_tiles.is_empty()
+            let mask = layer.mask_present
+                || !layer.mask_tiles.is_empty()
                 || layer.mask_enabled
                 || layer.mask_inverted
                 || layer.mask_density != 1.;
@@ -460,6 +462,28 @@ mod tests {
         }
     }
     #[test]
+    fn white_disabled_mask_survives_native_psd_and_psb() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(8, 8).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [0, 0, 1, 1], &[50, 100, 150, 255])
+            .unwrap();
+        doc.set_layer_mask("paint", true, false, 1.).unwrap();
+        doc.set_layer_mask("paint", false, false, 1.).unwrap();
+        let state = doc.state();
+        let native = crate::tile_container::encode(&state).unwrap();
+        assert_eq!(crate::tile_container::decode(&native).unwrap(), state);
+        for large in [false, true] {
+            let saved = write(&state, large, ExportOptions::default()).unwrap();
+            let imported = PsdImporter
+                .import(&saved.bytes, ImportOptions::default())
+                .unwrap();
+            let layer = &imported.raster.layers[0];
+            assert!(layer.mask_present);
+            assert!(!layer.mask_enabled);
+            assert!(layer.mask_tiles.is_empty());
+        }
+    }
+    #[test]
     fn supported_blends_round_trip_with_native_pixels_and_psd_preview_guard() {
         let mut state = PsdImporter
             .import(
@@ -480,6 +504,7 @@ mod tests {
         ] {
             state.layers[1].blend_mode = mode;
             state.layers[1].opacity = 128. / 255.;
+            state.layers[1].mask_present = true;
             state.layers[1].mask_enabled = true;
             let mut values = vec![255; (TILE_SIZE * TILE_SIZE) as usize];
             for y in 0..state.height as usize {
@@ -625,6 +650,7 @@ mod tests {
             .raster;
         let layer = &mut source.layers[1];
         layer.opacity = 0.5;
+        layer.mask_present = true;
         layer.mask_enabled = true;
         layer.mask_inverted = true;
         layer.mask_density = 0.73;

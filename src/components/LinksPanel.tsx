@@ -2,6 +2,7 @@ import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measur
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {imageFrameAction,imageLinks,manageImageLinks,placeImage,type DocumentSnapshot,type ImageLink,type FrameFit} from '../bridge';
 import type {Locale} from '../i18n';
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import './links-panel.css';
 
 export const linkLabels={
@@ -31,6 +32,7 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
  const [search,setSearch]=useState(''),[filter,setFilter]=useState('all'),[sort,setSort]=useState<Sort>(preferences.sort),[descending,setDescending]=useState(preferences.descending);
  const [group,setGroup]=useState(preferences.group),[expanded,setExpanded]=useState<string[]>([]),[columns,setColumns]=useState<Sort[]>(preferences.columns);
  const [offset,setOffset]=useState<[string,string]>(['0','0']);
+ const validOffset=offset.every(value=>{const n=parseSignedNumber(value);return n!==null&&Math.abs(n*factor)<=100000;});
  useEffect(()=>setOffset(['0','0']),[unit]);
  const live=useRef(true),request=useRef(0);
  useEffect(()=>{live.current=true;return()=>{live.current=false;request.current++;};},[]);
@@ -77,7 +79,7 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
    catch(e){if(live.current)setError(String(e));}finally{if(live.current)setBusy(false);}
  }
  async function single(action:'place'|FrameFit|'offset'|'go'){
-   const row=selected[0];if(!row)return;setBusy(true);setError('');
+   const row=selected[0];if(!row||(action==='offset'&&!validOffset))return;setBusy(true);setError('');
    try{const next=action==='place'?await placeImage(row.object.id):await imageFrameAction(row.object.id,action,action==='offset'?offset.map(n=>Number(n)*factor):undefined);if(live.current){onUpdate(next);await refresh();}}
    catch(e){if(live.current)setError(String(e));}finally{if(live.current)setBusy(false);}
  }
@@ -117,7 +119,7 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
    <dt>{t.modifiedAt}</dt><dd>{singleRow.link?.modifiedAt?new Date(singleRow.link.modifiedAt*1000).toLocaleString(locale):'—'}</dd>
   </dl></details>}
   {singleRow?.object.imageFrame?.name&&<fieldset disabled={!editable(singleRow)}><legend>{t.fitting}</legend>{(['contain','cover','stretch'] as const).map(fit=><button key={fit} aria-pressed={singleRow.object.imageFrame?.fitting===fit} onClick={()=>void single(fit)}>{t[fit]}</button>)}
-   <form onSubmit={e=>{e.preventDefault();void single('offset');}}><span>{t.offset}</span>{(['X','Y'] as const).map((axis,i)=><label key={axis}>{axis} ({symbol})<input type="number" min={-100000/factor} max={100000/factor} value={offset[i]} onChange={e=>setOffset(v=>v.map((x,j)=>j===i?e.target.value:x) as [string,string])}/></label>)}<button disabled={offset.some(v=>v===''||!Number.isFinite(Number(v)))}>{t.apply}</button></form>
+   <form onSubmit={e=>{e.preventDefault();void single('offset');}}><span>{t.offset}</span>{(['X','Y'] as const).map((axis,i)=><label key={axis}>{axis} ({symbol})<SignedNumberInput label={`${t.offset} ${axis} (${symbol})`} min={-100000/factor} max={100000/factor} value={offset[i]} onChange={value=>setOffset(v=>v.map((x,j)=>j===i?value:x) as [string,string])}/></label>)}<button disabled={!validOffset}>{t.apply}</button></form>
   </fieldset>}
   {error&&<p role="alert">{error}</p>}
  </div>;

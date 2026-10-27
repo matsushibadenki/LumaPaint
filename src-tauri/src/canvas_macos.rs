@@ -4132,6 +4132,7 @@ pub struct MaskTransformJob {
     matrix: [f32; 6],
     document: Option<Document>,
     root_source: Option<String>,
+    tiled_pixels: Option<lumapaint_core::tiles::SparseTiles>,
 }
 pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransformJob, String> {
     lumapaint_core::layer_mask::validate_transform(matrix)?;
@@ -4158,7 +4159,18 @@ pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransf
             Ok((d.revision(), document))
         })?
     };
+    let tiled_pixels = if tiled {
+        ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<_, String> {
+            let slot = slot.borrow();
+            let layer = slot.as_ref().ok_or("Missing tiled document")?.document.layers().iter().find(|l| l.id == id).ok_or("Layer not found")?;
+            if layer.mask_present && layer.effects.mask.as_ref().is_some_and(|m| m.linked) {
+                return Err("Combined sparse and effect masks cannot yet be transformed together. / PSD由来のマスクを含むレイヤーの同時変形は未対応です。 / 暂不支持同时变换含PSD蒙版的图层。".into());
+            }
+            Ok(layer.effects.mask.as_ref().filter(|m| m.linked).map(|_| layer.tiles.clone()))
+        })?
+    } else { None };
     Ok(MaskTransformJob {
+        tiled_pixels,
         document_id: ACTIVE_DOCUMENT_ID.with(|d| d.get()),
         revision,
         tiled,
@@ -4169,6 +4181,9 @@ pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransf
     })
 }
 pub fn render_mask_transform(mut job: MaskTransformJob) -> Result<MaskTransformJob, String> {
+    if let Some(pixels) = job.tiled_pixels.take() {
+        job.tiled_pixels = Some(pixels.transformed(job.matrix)?);
+    }
     if let Some(document) = job.document.take() {
         let (w, h, pixels) = clipboard::raw_selected_pixels(&document)?;
         let png = lumapaint_renderer::vector::document_png(w, h, pixels)?;
@@ -4199,7 +4214,15 @@ pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, 
             .ok_or("Layer not found")?;
         let mask = effects.mask.as_mut().ok_or("Layer mask not found")?;
         if mask.linked {
-            return Err("Unlink the mask to transform it in tiled documents. / タイル文書ではリンクを解除してマスクを変形してください。 / 瓦片文档请先取消链接再变换蒙版。".into());
+            let moved = job.tiled_pixels.ok_or("Missing transformed raster")?;
+            ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+                d.borrow_mut().as_mut().ok_or("Missing tiled document")?.document
+                    .transform_linked_effect_mask(&job.id, job.matrix, moved)?;
+                Ok(())
+            })?;
+            redraw()?;
+            emit_document();
+            return tiled_snapshot();
         }
         mask.transform_by(job.matrix)?;
         return set_layer_effects(job.id, effects);
@@ -5900,15 +5923,27 @@ fn prepare_extended_tiled_uploads(
 fn extended_tiled_uploads_keep_wide_color_and_source_document() {
     use lumapaint_formats::{DocumentImporter, ImportOptions};
     let bytes = include_bytes!("../../crates/lumapaint-formats/tests/fixtures/lp-photoshop-2026-multi-icc-three-visible.psd");
-    let state = lumapaint_formats::psd::PsdImporter.import(bytes, ImportOptions { allow_lossy: true }).unwrap().raster;
+    let state = lumapaint_formats::psd::PsdImporter
+        .import(bytes, ImportOptions { allow_lossy: true })
+        .unwrap()
+        .raster;
     let document = TiledRasterDocument::from_state(state).unwrap();
     let before = document.state();
     let uploads = prepare_extended_tiled_uploads(&document).unwrap();
     assert!(!uploads.is_empty());
-    assert!(uploads.iter().flat_map(|u| u.pixels.chunks_exact(4)).any(|p| p[..3].iter().any(|c| *c < -0.001 || *c > 1.001)));
+    assert!(uploads
+        .iter()
+        .flat_map(|u| u.pixels.chunks_exact(4))
+        .any(|p| p[..3].iter().any(|c| *c < -0.001 || *c > 1.001)));
     for upload in &uploads {
-        assert_eq!(upload.pixels.len(), upload.row_pixels as usize * upload.extent[1] as usize * 4);
-        assert!(upload.pixels.chunks_exact(4).all(|p| (0.0..=1.0).contains(&p[3])));
+        assert_eq!(
+            upload.pixels.len(),
+            upload.row_pixels as usize * upload.extent[1] as usize * 4
+        );
+        assert!(upload
+            .pixels
+            .chunks_exact(4)
+            .all(|p| (0.0..=1.0).contains(&p[3])));
     }
     assert_eq!(document.state().icc_profile, before.icc_profile);
     assert_eq!(document.state().layers, before.layers);

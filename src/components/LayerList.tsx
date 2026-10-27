@@ -9,11 +9,11 @@ import { Icon } from './Icon';
 
 type Gesture = { id: string; pointerId: number; startX: number; startY: number; x: number; y: number; dragging: boolean };
 
-export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onToggleMaskLink, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder, onRasterize }: {
+export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thumbnails = {}, maskThumbnails = {}, thumbnailError, layers, textObjects, selectedId, enabled, selectable = enabled, appearanceEnabled = enabled, reorderEnabled = enabled, locale, onSelect, onToggle, onToggleLock, onToggleMaskLink, onSelectObject, onToggleObject, onReorderObjects, selectedObjects, onRename, onReorder, onRasterize }: {
   onRasterize?: (id:string)=>Promise<void>;
   editTarget: LayerEditTarget; onSelectTarget: (id: string, target: LayerEditTarget) => void;
   groups:LayerGroupsState; onGroupEdit:(edit:LayerGroupEdit)=>void;
-  thumbnails?: Record<string,string>; thumbnailError?: string;
+  thumbnails?: Record<string,string>; maskThumbnails?: Record<string,string>; thumbnailError?: string;
   layers: LayerSnapshot[]; textObjects: TextObjectSnapshot[]; selectedId: string; enabled: boolean; locale: Locale;
   selectable?: boolean;
   appearanceEnabled?: boolean;
@@ -342,7 +342,7 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
       <div className="layer-row-content" style={{marginLeft:Math.min(layer.depth,4)*24}}>
       <button type="button" className={`layer-thumb layer-edit-thumb ${layer.kind}`} disabled={!selectable} aria-pressed={targetSelected(layer.id,'content')} aria-label={targetLabel(layer.id,'content',displayName)} title={thumbnailError || targetLabel(layer.id,'content',displayName)} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();toggleTarget(layer.id,'content');}}>{thumbnails[layer.id] && <img src={thumbnails[layer.id]} alt="" draggable={false} />}</button>
       {layer.effects?.mask && <MaskLinkButton locale={locale} linked={layer.effects.mask.linked??true} disabled={!appearanceEnabled||layer.locked} onToggle={()=>onToggleMaskLink(layer)}/>}
-      {layer.effects?.mask ? <button type="button" className={`mask-thumb layer-edit-thumb${layer.effects.mask.inverted ? ' inverted' : ''}${layer.effects.mask.enabled===false?' disabled':''}`} disabled={!selectable} aria-pressed={targetSelected(layer.id,'mask')} aria-label={targetLabel(layer.id,'mask',displayName)} title={targetLabel(layer.id,'mask',displayName)} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();toggleTarget(layer.id,'mask');}}><span aria-hidden="true">{layer.effects.mask.kind==='vector'?'◇':'▦'}</span></button> : layer.maskEnabled && <span className={`mask-thumb${layer.maskInverted?' inverted':''}`} aria-hidden="true"/>}
+      {layer.effects?.mask ? <button type="button" className={`mask-thumb layer-edit-thumb${layer.effects.mask.inverted ? ' inverted' : ''}${layer.effects.mask.enabled===false?' disabled':''}`} disabled={!selectable} aria-pressed={targetSelected(layer.id,'mask')} aria-label={targetLabel(layer.id,'mask',displayName)} title={targetLabel(layer.id,'mask',displayName)} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();toggleTarget(layer.id,'mask');}}>{maskThumbnails[layer.id]?<img src={maskThumbnails[layer.id]} alt="" draggable={false}/>:<span aria-hidden="true">{layer.effects.mask.kind==='vector'?'◇':'▦'}</span>}</button> : (layer.maskEnabled || maskThumbnails[layer.id]) && <span className={`mask-thumb${layer.maskInverted?' inverted':''}${!layer.maskEnabled?' disabled':''}`} aria-hidden="true">{maskThumbnails[layer.id] && <img src={maskThumbnails[layer.id]} alt="" draggable={false}/>}</span>}
       <div className="layer-description">
       {editingId === layer.id ? <input className="layer-name" autoFocus maxLength={120} aria-label={t.renameLayer} value={name}
         onFocus={event => event.currentTarget.select()} onChange={event => setName(event.target.value)}

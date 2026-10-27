@@ -48,6 +48,8 @@ struct LayerManifest {
     opacity: f32,
     locked: bool,
     alpha_locked: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    mask_present: bool,
     mask_enabled: bool,
     mask_inverted: bool,
     mask_density: f32,
@@ -84,6 +86,10 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
             opacity: layer.opacity,
             locked: layer.locked,
             alpha_locked: layer.alpha_locked,
+            // Older readers reject unknown manifest keys. Emit this marker only
+            // when neither enabled state nor sparse pixels already prove that
+            // a mask exists; all other documents keep their previous encoding.
+            mask_present: layer.mask_present && !layer.mask_enabled && layer.mask_tiles.is_empty(),
             mask_enabled: layer.mask_enabled,
             mask_inverted: layer.mask_inverted,
             mask_density: layer.mask_density,
@@ -163,6 +169,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
             opacity: layer.opacity,
             locked: layer.locked,
             alpha_locked: layer.alpha_locked,
+            mask_present: layer.mask_present || layer.mask_enabled || !mask_tiles.is_empty(),
             mask_enabled: layer.mask_enabled,
             mask_inverted: layer.mask_inverted,
             mask_density: layer.mask_density,
@@ -286,6 +293,27 @@ mod tests {
     }
 
     #[test]
+    fn effect_mask_link_state_survives_native_round_trip() {
+        let mut document = TiledRasterDocument::new(4, 4).unwrap();
+        document.add_layer("paint".into(), "Paint".into()).unwrap();
+        let mut effects = lumapaint_core::layer_effects::LayerEffects::default();
+        let mut mask = lumapaint_core::layer_mask::LayerMask::from_selection(
+            lumapaint_core::layer_mask::MaskKind::Pixel,
+            None,
+            4,
+            4,
+        )
+        .unwrap();
+        mask.linked = false;
+        effects.mask = Some(mask);
+        document.set_layer_effects("paint", effects).unwrap();
+        let saved = decode(&encode(&document.state()).unwrap()).unwrap();
+        assert!(!saved.layers[0].effects.mask.as_ref().unwrap().linked);
+        let restored = TiledRasterDocument::from_state(saved).unwrap();
+        assert!(!restored.layers()[0].effects.mask.as_ref().unwrap().linked);
+    }
+
+    #[test]
     fn legacy_manifest_without_resolution_remains_readable() {
         let state = sample_state();
         let bytes = encode(&state).unwrap();
@@ -300,6 +328,40 @@ mod tests {
         let encoded = encode(&state).unwrap();
         assert_eq!(&encoded[..8], MAGIC);
         assert_eq!(decode(&encoded).unwrap(), state);
+    }
+
+    #[test]
+    fn old_manifest_infers_mask_presence_from_existing_mask_data() {
+        let mut old = sample_state();
+        old.layers[0].mask_present = false;
+        let encoded = encode(&old).unwrap();
+        let decoded = decode(&encoded).unwrap();
+        assert!(decoded.layers[0].mask_present);
+        assert_eq!(decoded.layers[0].mask_tiles, old.layers[0].mask_tiles);
+    }
+
+    #[test]
+    fn mask_presence_marker_is_only_written_when_legacy_fields_cannot_preserve_it() {
+        fn has_marker(state: &TiledRasterState) -> bool {
+            let bytes = encode(state).unwrap();
+            let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&bytes[HEADER_BYTES..HEADER_BYTES + length]).unwrap();
+            manifest["layers"][0].get("maskPresent").is_some()
+        }
+        let mut state = sample_state();
+        assert!(!has_marker(&state)); // enabled, with sparse pixels
+        state.layers[0].mask_enabled = false;
+        assert!(!has_marker(&state)); // disabled, with sparse pixels
+        state.layers[0].mask_tiles.clear();
+        state.layers[0].mask_enabled = true;
+        assert!(!has_marker(&state)); // enabled and entirely white
+        assert!(decode(&encode(&state).unwrap()).unwrap().layers[0].mask_present);
+        state.layers[0].mask_enabled = false;
+        assert!(has_marker(&state)); // disabled and entirely white
+        assert!(decode(&encode(&state).unwrap()).unwrap().layers[0].mask_present);
+        state.layers[0].mask_present = false;
+        assert!(!has_marker(&state)); // no mask
     }
 
     #[test]

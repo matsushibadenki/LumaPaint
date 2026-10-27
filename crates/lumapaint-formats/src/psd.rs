@@ -397,7 +397,22 @@ impl DocumentImporter for PsdImporter {
         let mut retained =
             match layers::decode_with_metadata(layer_data, h, &mut density_baked, &mut discarded) {
                 Ok(layers) => layers,
-                Err(ImportError::Unsupported(_)) => None,
+                Err(ImportError::Unsupported("PSD editable text layer")) => {
+                    report.issues.push(ConversionIssue {
+                        code: "psd.textNotEditable",
+                        tier: CompatibilityTier::C,
+                    });
+                    None
+                }
+                Err(ImportError::Unsupported(_)) => {
+                    if layers::contains_text_metadata(layer_data, h.version == 2).unwrap_or(false) {
+                        report.issues.push(ConversionIssue {
+                            code: "psd.textNotEditable",
+                            tier: CompatibilityTier::C,
+                        });
+                    }
+                    None
+                }
                 Err(error) => return Err(error),
             };
         let verify_composite = discarded
@@ -562,6 +577,7 @@ impl DocumentImporter for PsdImporter {
                 opacity: 1.,
                 locked: false,
                 alpha_locked: false,
+                mask_present: false,
                 mask_enabled: false,
                 mask_inverted: false,
                 mask_density: 1.,

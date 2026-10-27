@@ -12,6 +12,7 @@ use lumapaint_formats::native::NativeDocumentCodec;
 
 pub struct Thumbnails {
     pub layers: Vec<(String, Vec<u8>)>,
+    pub masks: Vec<(String, Vec<u8>)>,
     pub channels: Vec<Vec<u8>>,
 }
 fn over(dst: &mut [u8], src: &[u8], opacity: f32) {
@@ -31,6 +32,32 @@ fn over(dst: &mut [u8], src: &[u8], opacity: f32) {
 }
 pub fn render(document: &Document) -> Result<Thumbnails, String> {
     let mut result = render_sized(document, 64., false)?;
+    let (doc_width, doc_height) = document.dimensions();
+    let scale = (64. / doc_width.max(doc_height) as f32).min(1.);
+    let width = (doc_width as f32 * scale).round().max(1.) as u32;
+    let height = (doc_height as f32 * scale).round().max(1.) as u32;
+    for layer in &document.snapshot().layers {
+        if let Some(mut mask) = document.layer_effects(&layer.id).mask {
+            // Show mask content independently of application enablement and
+            // density, so its pixels remain recognizable while editing.
+            mask.enabled = true;
+            mask.density = 1.;
+            let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    let v = (mask.coverage([
+                        (x as f32 + 0.5) * doc_width as f32 / width as f32,
+                        (y as f32 + 0.5) * doc_height as f32 / height as f32,
+                    ]) * 255.)
+                        .round() as u8;
+                    pixels.extend_from_slice(&[v, v, v, 255]);
+                }
+            }
+            result
+                .masks
+                .push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+        }
+    }
     let view = document.channel_view();
     let selected = render_sized_inner(&view, 64., true, true)?
         .channels
@@ -265,6 +292,7 @@ fn render_sized_ink(
     }
     Ok(Thumbnails {
         layers,
+        masks: Vec::new(),
         channels: if raw {
             vec![composite]
         } else if page_only {
@@ -302,19 +330,23 @@ fn channel_pngs(width: u32, height: u32, composite: Vec<u8>) -> Result<Vec<Vec<u
 }
 
 pub fn render_tiled(document: &TiledRasterDocument) -> Result<Thumbnails, String> {
-    render_tiled_sized(document, 64.)
+    render_tiled_sized(document, 64., true)
 }
 pub fn tiled_page_preview(
     document: &TiledRasterDocument,
     max_side: u32,
 ) -> Result<Vec<u8>, String> {
     Ok(
-        render_tiled_sized(document, max_side.clamp(64, 1024) as f32)?
+        render_tiled_sized(document, max_side.clamp(64, 1024) as f32, false)?
             .channels
             .remove(0),
     )
 }
-fn render_tiled_sized(document: &TiledRasterDocument, max_side: f32) -> Result<Thumbnails, String> {
+fn render_tiled_sized(
+    document: &TiledRasterDocument,
+    max_side: f32,
+    include_masks: bool,
+) -> Result<Thumbnails, String> {
     use lumapaint_core::tiles::{TileCoord, TILE_SIZE};
     use std::collections::BTreeSet;
     let (dw, dh) = document.dimensions();
@@ -362,6 +394,7 @@ fn render_tiled_sized(document: &TiledRasterDocument, max_side: f32) -> Result<T
         result
     };
     let mut layers = Vec::new();
+    let mut masks = Vec::new();
     let mut coords = BTreeSet::new();
     for layer in document.layers() {
         let allocated: Vec<_> = layer.tiles.allocated_coords().collect();
@@ -372,6 +405,35 @@ fn render_tiled_sized(document: &TiledRasterDocument, max_side: f32) -> Result<T
             true,
         );
         layers.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+        if include_masks
+            && (layer.mask_present || layer.mask_enabled || layer.mask.allocated_tile_count() > 0)
+        {
+            // Four stratified samples reduce loss of small masked features while
+            // keeping work independent of the source document's dimensions.
+            let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    let mut sum = 0u32;
+                    for sample_y in [1u64, 3] {
+                        for sample_x in [1u64, 3] {
+                            let sx = (((4 * x as u64 + sample_x) * dw as u64) / (4 * width as u64))
+                                as u32;
+                            let sy = (((4 * y as u64 + sample_y) * dh as u64) / (4 * height as u64))
+                                as u32;
+                            sum += u32::from(layer.mask.pixel(sx, sy).unwrap_or(255));
+                        }
+                    }
+                    let value = ((sum + 2) / 4) as u8;
+                    let value = if layer.mask_inverted {
+                        255 - value
+                    } else {
+                        value
+                    };
+                    pixels.extend_from_slice(&[value, value, value, 255]);
+                }
+            }
+            masks.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+        }
     }
     let composite = sample(
         coords.into_iter().collect(),
@@ -380,6 +442,7 @@ fn render_tiled_sized(document: &TiledRasterDocument, max_side: f32) -> Result<T
     );
     Ok(Thumbnails {
         layers,
+        masks,
         channels: channel_pngs(width, height, composite)?,
     })
 }
@@ -557,6 +620,42 @@ mod tests {
         doc.select_layer_target("layer-1".into(), LayerEditTarget::Mask)
             .unwrap();
         let before = render(&doc).unwrap();
+        let mask_png = &before
+            .masks
+            .iter()
+            .find(|(id, _)| id == "layer-1")
+            .unwrap()
+            .1;
+        assert_eq!(pixel(mask_png, 8, 8), [255; 4]);
+        assert_eq!(pixel(mask_png, 24, 8), [0, 0, 0, 255]);
+        let mut disabled = doc.clone_for_rendering();
+        let mut disabled_effects = disabled.layer_effects("layer-1");
+        disabled_effects.mask.as_mut().unwrap().enabled = false;
+        disabled
+            .set_layer_effects("layer-1", disabled_effects)
+            .unwrap();
+        let disabled_thumbnails = render(&disabled).unwrap();
+        let disabled_mask = &disabled_thumbnails
+            .masks
+            .iter()
+            .find(|(id, _)| id == "layer-1")
+            .unwrap()
+            .1;
+        assert_eq!(pixel(disabled_mask, 24, 8), [0, 0, 0, 255]);
+        disabled_effects = disabled.layer_effects("layer-1");
+        disabled_effects.mask.as_mut().unwrap().density = 0.25;
+        disabled_effects.mask.as_mut().unwrap().enabled = true;
+        disabled
+            .set_layer_effects("layer-1", disabled_effects)
+            .unwrap();
+        let reduced_density = render(&disabled).unwrap();
+        let mask = &reduced_density
+            .masks
+            .iter()
+            .find(|(id, _)| id == "layer-1")
+            .unwrap()
+            .1;
+        assert_eq!(pixel(mask, 24, 8), [0, 0, 0, 255]);
         assert_eq!(pixel(&before.channels[4], 24, 8), [0, 0, 0, 255]);
         assert_eq!(pixel(&before.channels[4], 8, 8), [255; 4]);
         let mut effects = doc.layer_effects("layer-1");
@@ -595,10 +694,42 @@ mod tests {
         assert_eq!(reduced, thumbs.channels[0]);
         assert_eq!(pixel(&thumbs.layers[0].1, 32, 32), [255, 0, 0, 255]);
         assert_eq!(pixel(&thumbs.channels[4], 32, 32), [128, 128, 128, 255]);
+        doc.write_mask_rect("a", [0, 0, 64, 128], &vec![0; 64 * 128])
+            .unwrap();
+        let mask = render_tiled(&doc).unwrap().masks.remove(0).1;
+        assert_eq!(pixel(&mask, 8, 32), [0, 0, 0, 255]);
+        assert_eq!(pixel(&mask, 48, 32), [255; 4]);
+        doc.set_layer_mask("a", false, true, 0.5).unwrap();
+        let mask = render_tiled(&doc).unwrap().masks.remove(0).1;
+        assert_eq!(pixel(&mask, 8, 32), [255; 4]);
+        assert_eq!(pixel(&mask, 48, 32), [0, 0, 0, 255]);
         doc.set_layer_appearance("a", false, 1.).unwrap();
         let hidden = render_tiled(&doc).unwrap();
         assert_eq!(hidden.layers[0].1, thumbs.layers[0].1);
         assert_eq!(pixel(&hidden.channels[4], 32, 32), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn tiled_mask_thumbnail_keeps_a_thin_off_center_feature() {
+        let mut doc = TiledRasterDocument::new(512, 512).unwrap();
+        doc.add_layer("a".into(), "Mask".into()).unwrap();
+        doc.set_layer_mask("a", true, false, 1.).unwrap();
+        doc.write_mask_rect("a", [2, 0, 1, 512], &[0; 512]).unwrap();
+        let mask = render_tiled(&doc).unwrap().masks.remove(0).1;
+        assert_eq!(pixel(&mask, 0, 30), [128, 128, 128, 255]);
+        assert_eq!(pixel(&mask, 1, 30), [255; 4]);
+    }
+
+    #[test]
+    fn tiled_disabled_white_mask_keeps_its_thumbnail() {
+        let mut doc = TiledRasterDocument::new(32, 32).unwrap();
+        doc.add_layer("a".into(), "Mask".into()).unwrap();
+        assert!(render_tiled(&doc).unwrap().masks.is_empty());
+        doc.set_layer_mask("a", true, false, 1.).unwrap();
+        doc.set_layer_mask("a", false, false, 1.).unwrap();
+        let masks = render_tiled(&doc).unwrap().masks;
+        assert_eq!(masks.len(), 1);
+        assert_eq!(pixel(&masks[0].1, 10, 10), [255; 4]);
     }
 
     #[test]

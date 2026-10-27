@@ -44,6 +44,52 @@ fn tile_count(rect: [u32; 4]) -> usize {
 fn unsupported() -> ImportError {
     ImportError::Unsupported("PSD raster layer features")
 }
+// Inspect only bounded layer-record metadata after the full decoder has already
+// chosen a flattened fallback. Unknown layer features must not hide a later
+// text block, but malformed structures are never guessed from raw byte patterns.
+pub(super) fn contains_text_metadata(data: &[u8], large: bool) -> Result<bool, ImportError> {
+    if data.is_empty() {
+        return Ok(false);
+    }
+    let mut outer = Reader { bytes: data, at: 0 };
+    let info = outer.sized_section(large)?;
+    if info.is_empty() {
+        return Ok(false);
+    }
+    let mut records = Reader { bytes: info, at: 0 };
+    let count = (records.u16()? as i16).unsigned_abs() as usize;
+    if count > 4096 {
+        return Err(ImportError::LimitExceeded("PSD layer metadata scan"));
+    }
+    for _ in 0..count {
+        records.take(16)?;
+        let channels = records.u16()? as usize;
+        if channels > 1024 {
+            return Err(ImportError::LimitExceeded("PSD layer metadata channels"));
+        }
+        for _ in 0..channels {
+            records.take(2)?;
+            records.length(large)?;
+        }
+        records.take(12)?; // Blend signature, key, opacity, clipping, flags and filler.
+        let extra = records.section()?;
+        let mut metadata = Reader {
+            bytes: extra,
+            at: 0,
+        };
+        metadata.section()?;
+        metadata.section()?;
+        let name_len = metadata.take(1)?[0] as usize;
+        metadata.take(name_len + (4 - (name_len + 1) % 4) % 4)?;
+        while metadata.at < extra.len() {
+            let (key, _) = tag(&mut metadata, large, 2)?;
+            if key == b"TySh" {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
 fn tag<'a>(
     r: &mut Reader<'a>,
     large: bool,
@@ -178,6 +224,7 @@ fn name_with_metadata(
             b"lclr" if data == [0; 8] => {}
             b"iOpa" if data == [255, 0, 0, 0] => {}
             b"lsct" if data == [0, 0, 0, 0] => {}
+            b"TySh" => return Err(ImportError::Unsupported("PSD editable text layer")),
             _ => return Err(unsupported()),
         }
     }
@@ -616,6 +663,7 @@ pub(super) fn decode_with_metadata(
             opacity: f32::from(record.opacity) / 255.,
             locked,
             alpha_locked: alpha_locked || record.flags & 1 != 0,
+            mask_present: record.mask.is_some(),
             mask_enabled: record.mask.is_some_and(|mask| mask.flags & 2 == 0),
             mask_inverted: record
                 .mask
@@ -1337,6 +1385,80 @@ mod tests {
             &imported.raster.layers[0].tiles[0].pixels[..8],
             &[255, 0, 0, 255, 127, 0, 128, 255]
         );
+    }
+    #[test]
+    fn photoshop_text_metadata_requires_consent_before_flattening() {
+        // A synthetic type-tool block verifies the compatibility boundary; it
+        // does not stand in for a real Photoshop text descriptor fixture.
+        let mut bytes = fixture(false).to_vec();
+        let extra_len = u32::from_be_bytes(bytes[92..96].try_into().unwrap());
+        let mut block = b"8BIMTySh".to_vec();
+        block.extend(4u32.to_be_bytes());
+        block.extend([0u8; 4]);
+        for offset in [34, 38, 92] {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            bytes[offset..offset + 4].copy_from_slice(&(length + block.len() as u32).to_be_bytes());
+        }
+        bytes.splice(96 + extra_len as usize..96 + extra_len as usize, block);
+        let Err(ImportError::LossyConversionRequiresConsent(report)) =
+            PsdImporter.import(&bytes, ImportOptions::default())
+        else {
+            panic!("text metadata must require consent");
+        };
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.textNotEditable"));
+        let imported = PsdImporter
+            .import(&bytes, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert_eq!(imported.raster.layers.len(), 1);
+        assert_eq!(imported.raster.layers[0].id, "psd-composite");
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.layersFlattened"));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.textNotEditable"));
+
+        // An earlier unsupported blend must not hide the subsequent text tag.
+        let blend = bytes.windows(8).position(|v| v == b"8BIMnorm").unwrap() + 4;
+        bytes[blend..blend + 4].copy_from_slice(b"hue ");
+        let Err(ImportError::LossyConversionRequiresConsent(report)) =
+            PsdImporter.import(&bytes, ImportOptions::default())
+        else {
+            panic!("unsupported blend and text require consent");
+        };
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.textNotEditable"));
+    }
+    #[test]
+    fn text_metadata_scan_does_not_match_embedded_payload_bytes() {
+        let mut bytes = fixture(false).to_vec();
+        let extra_len = u32::from_be_bytes(bytes[92..96].try_into().unwrap());
+        let mut block = b"8BIMzzzz".to_vec();
+        block.extend(8u32.to_be_bytes());
+        block.extend(b"8BIMTySh");
+        for offset in [34, 38, 92] {
+            let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            bytes[offset..offset + 4].copy_from_slice(&(length + block.len() as u32).to_be_bytes());
+        }
+        bytes.splice(96 + extra_len as usize..96 + extra_len as usize, block);
+        let Err(ImportError::LossyConversionRequiresConsent(report)) =
+            PsdImporter.import(&bytes, ImportOptions::default())
+        else {
+            panic!("unknown metadata must require consent");
+        };
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "psd.textNotEditable"));
     }
     #[test]
     fn parameterized_masks_clipping_groups_and_outside_bounds_trigger_whole_image_fallback() {
