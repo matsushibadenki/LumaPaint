@@ -19,8 +19,8 @@ export type CanvasTool = 'blur' | 'sharpen' | 'smudge' | 'lasso' | 'polygonLasso
 export type DocumentEditAction = 'createTrimMarks' | 'registrationFill' | 'registrationStroke' | 'undo' | 'redo' | 'toggleLayer' | 'selectAll' | 'deselect' | 'invertSelection' | 'deleteSelectedObjects' | 'clearLayer' | 'lockSelection' | 'lockArtworkAbove' | 'lockOtherLayers' | 'unlockAllObjects' | 'hideSelection' | 'hideArtworkAbove' | 'hideOtherLayers' | 'showAllObjects' | 'copy' | 'cut' | 'paste';
 export interface Selection { regions: { shape: 'rectangle' | 'ellipse' | 'polygon' | 'stroke'; points?:{x:number;y:number}[]; radius?:number; bounds: [number, number, number, number]; operation: 'replace' | 'add' | 'subtract' | 'intersect' | 'invert' }[] }
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
-export interface PaperSettings { enabled:boolean; kind:'smooth'|'coldPress'|'rough'|'canvas'|'washi'; scale:number; depth:number; color:[number,number,number] }
-export interface MaterialSettings { enabled:boolean; medium:'graphite'|'charcoal'|'pastel'|'watercolor'|'gouache'|'oil'; loading:number; wetness:number; granulation:number; edge:number; paper:PaperSettings }
+export interface PaperSettings { textureTransform?:[number,number,number,number,number,number]; enabled:boolean; kind:'smooth'|'coldPress'|'rough'|'canvas'|'washi'; scale:number; depth:number; color:[number,number,number] }
+export interface MaterialSettings { grainTransform?:[number,number,number,number,number,number]; enabled:boolean; medium:'graphite'|'charcoal'|'pastel'|'watercolor'|'gouache'|'oil'; loading:number; wetness:number; granulation:number; edge:number; paper:PaperSettings }
 export interface Brush { material?:MaterialSettings; opacity?: number; flow?: number; smoothing?: number; alpha?: number; blendMode?: import('./brush-settings').BrushBlendMode; noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface TransformPanelInfo { corners: [number, number][]; width: number; height: number; rotation: number; shear: number; rectangle: boolean; radii: [number, number, number, number] }
 export interface TransformPanelEdit { field: 'x'|'y'|'width'|'height'|'rotation'|'shear'|'corners'; values: [number, number, number, number]; reference: [number, number]; proportional: boolean; scaleCorners: boolean; scaleStrokes: boolean; revision: number; ids: string[] }
@@ -98,6 +98,10 @@ export function setRasterBlendMode(id: string, mode: RasterBlendMode): Promise<D
   canvasQueue = result.then(() => undefined, () => undefined);
   return result;
 }
+export function setSparseMaskLinked(id:string, linked:boolean):Promise<DocumentSnapshot> {
+  const result=canvasQueue.then(()=>invoke<DocumentSnapshot>('set_sparse_mask_linked',{id,linked}));
+  canvasQueue=result.then(()=>undefined,()=>undefined); return result;
+}
 export type MaskKind = 'pixel' | 'vector';
 export interface LayerMask {kind:MaskKind;enabled:boolean;inverted:boolean;density:number;linked:boolean;transform:[number,number,number,number,number,number]}
 export function createLayerMask(id:string,kind:MaskKind):Promise<DocumentSnapshot> {
@@ -116,6 +120,7 @@ export function setLayerEffects(id: string, effects: LayerEffects): Promise<Docu
 }
 export interface LayerSnapshot {
   effects?: LayerEffects;
+  sparseMaskPresent?: boolean; sparseMaskLinked?: boolean;
   rasterBlendMode?: RasterBlendMode;
   guideColor?: [number, number, number, number]; objects: LayerObjectSnapshot[]; id: string; name: string; kind: 'paint' | 'svg' | 'vector'; visible: boolean; opacity: number; locked: boolean; alphaLocked: boolean; maskEnabled: boolean; maskInverted: boolean; maskDensity: number; deletable: boolean; strokeCount: number }
 export interface TextStyle { noColor?: boolean; fontFamily: string; fontSize: number; scaleX: number; scaleY: number; rotation: number; bold: boolean; italic: boolean; rotateLatin?: boolean; tateChuYoko?: boolean; kerning: 'metrics' | 'optical' | 'japaneseMonospaced'; tracking: number; baselineShift: number; underline: boolean; strikethrough: boolean; color: [number, number, number] }

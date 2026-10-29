@@ -17,6 +17,7 @@ struct Sample {
     sy: f32,
     rotation: f32,
     skew: f32,
+    skew_y: f32,
     alpha: f32,
     blur: f32,
     glow: f32,
@@ -42,6 +43,7 @@ impl Default for Sample {
             sy: 1.,
             rotation: 0.,
             skew: 0.,
+            skew_y: 0.,
             alpha: 1.,
             blur: 0.,
             glow: 0.,
@@ -390,6 +392,17 @@ fn sample(preset: &Preset, clip: &Clip, p: f32, index: usize, count: usize, fps:
             s.tint = strength.clamp(0., 1.);
         }
     }
+    (s.x, s.y) = match clip.coordinate_turns {
+        1 => (-s.y, s.x),
+        2 => (-s.x, -s.y),
+        3 => (s.y, -s.x),
+        _ => (s.x, s.y),
+    };
+    if clip.coordinate_turns % 2 == 1 {
+        std::mem::swap(&mut s.sx, &mut s.sy);
+        s.skew_y = -s.skew;
+        s.skew = 0.;
+    }
     s.sx = s.sx.clamp(-10., 10.);
     s.sy = s.sy.clamp(-10., 10.);
     s.alpha = s.alpha.clamp(0., 1.);
@@ -468,6 +481,24 @@ fn object_bounds(object: &VectorObject) -> [f32; 4] {
         }
         return result;
     }
+    if let Some([x0, y0, x1, y1]) = crate::stroke::path_bounds(&object.path.data) {
+        let [a, b, c, d, x, y] = object.transform;
+        let mut result = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for [u, v] in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] {
+            let px = a * u + c * v + x;
+            let py = b * u + d * v + y;
+            result[0] = result[0].min(px);
+            result[1] = result[1].min(py);
+            result[2] = result[2].max(px);
+            result[3] = result[3].max(py);
+        }
+        return result;
+    }
     [0., 0., 1., 1.]
 }
 fn affine(s: &Sample, bounds: [f32; 4], pivot: [f32; 2]) -> [f32; 6] {
@@ -475,8 +506,8 @@ fn affine(s: &Sample, bounds: [f32; 4], pivot: [f32; 2]) -> [f32; 6] {
     let ay = bounds[1] + (bounds[3] - bounds[1]) * pivot[1];
     let (sin, cos) = s.rotation.to_radians().sin_cos();
     let (a, b, c, d) = (
-        cos * s.sx,
-        sin * s.sx,
+        (cos - sin * s.skew_y) * s.sx,
+        (sin + cos * s.skew_y) * s.sx,
         (cos * s.skew - sin) * s.sy,
         (sin * s.skew + cos) * s.sy,
     );
@@ -830,6 +861,25 @@ fn mask_markup(op: Operation, p: f32, b: [f32; 4], seed: u32) -> String {
     }
     out
 }
+fn rotated_mask_markup(op: Operation, p: f32, bounds: [f32; 4], seed: u32, turns: u8) -> String {
+    if turns == 0 || op == Operation::Iris {
+        return mask_markup(op, p, bounds, seed);
+    }
+    let [x, y, right, bottom] = bounds;
+    let (w, h) = (right - x, bottom - y);
+    let (source_w, source_h) = if turns % 2 == 1 { (h, w) } else { (w, h) };
+    let matrix = match turns {
+        1 => [0., 1., -1., 0., x + w, y],
+        2 => [-1., 0., 0., -1., x + w, y + h],
+        3 => [0., -1., 1., 0., x, y + h],
+        _ => return mask_markup(op, p, bounds, seed),
+    };
+    let [a, b, c, d, e, f] = matrix;
+    let transform = format!("transform=\"matrix({a} {b} {c} {d} {e} {f})\" ");
+    mask_markup(op, p, [0., 0., source_w, source_h], seed)
+        .replace("<rect ", &format!("<rect {transform}"))
+        .replace("<path ", &format!("<path {transform}"))
+}
 fn wrap(
     source: String,
     s: &Sample,
@@ -842,7 +892,7 @@ fn wrap(
     let mut defs = String::new();
     let mut attrs = String::new();
     if let Some(mask) = s.mask {
-        let shape = mask_markup(mask, s.reveal, bounds, clip.seed);
+        let shape = rotated_mask_markup(mask, s.reveal, bounds, clip.seed, clip.coordinate_turns);
         let _ = write!(defs, "<clipPath id=\"{tag}-mask\">{shape}</clipPath>");
         let _ = write!(attrs, " clip-path=\"url(#{tag}-mask)\"");
     }

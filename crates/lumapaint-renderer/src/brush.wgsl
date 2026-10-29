@@ -12,8 +12,12 @@ struct VertexOut {
     @location(7) @interpolate(flat) material: vec4<f32>,
     @location(8) @interpolate(flat) medium_aux: vec4<f32>,
     @location(9) @interpolate(flat) paper: vec4<f32>,
+    @location(10) @interpolate(flat) paper_transform: vec4<f32>,
+    @location(11) @interpolate(flat) paper_offset: vec4<f32>,
+    @location(12) @interpolate(flat) grain_transform: vec4<f32>,
+    @location(13) @interpolate(flat) grain_offset: vec4<f32>,
 }
-@vertex fn vs_main(@builtin(vertex_index) vertex: u32, @location(0) ends: vec4<f32>, @location(1) color: vec4<f32>, @location(2) radius: f32, @location(3) hardness: f32, @location(4) weight: f32, @location(5) texture: f32, @location(6) material:vec4<f32>, @location(7) medium_aux:vec4<f32>, @location(8) paper:vec4<f32>) -> VertexOut {
+@vertex fn vs_main(@builtin(vertex_index) vertex: u32, @location(0) ends: vec4<f32>, @location(1) color: vec4<f32>, @location(2) radius: f32, @location(3) hardness: f32, @location(4) weight: f32, @location(5) texture: f32, @location(6) material:vec4<f32>, @location(7) medium_aux:vec4<f32>, @location(8) paper:vec4<f32>, @location(9) paper_transform:vec4<f32>, @location(10) paper_offset:vec4<f32>, @location(11) grain_transform:vec4<f32>, @location(12) grain_offset:vec4<f32>) -> VertexOut {
     let corners = array<vec2<f32>, 6>(vec2(0.0,0.0),vec2(1.0,0.0),vec2(0.0,1.0),vec2(0.0,1.0),vec2(1.0,0.0),vec2(1.0,1.0));
     let size = u.viewport.xy / u.viewport.z;
     let scale = max(0.01, min((size.x-48.0)/u.document.x, (size.y-48.0)/u.document.y)) * u.viewport.w;
@@ -23,7 +27,7 @@ struct VertexOut {
     var out: VertexOut;
     out.position = vec4(screen.x/size.x*2.0-1.0, 1.0-screen.y/size.y*2.0, 0.0, 1.0);
     out.point=point; out.ends=ends; out.color=color; out.radius=radius; out.hardness=hardness; out.weight=weight;
-    out.texture=texture;out.material=material;out.medium_aux=medium_aux;out.paper=paper;
+    out.texture=texture;out.material=material;out.medium_aux=medium_aux;out.paper=paper;out.paper_transform=paper_transform;out.paper_offset=paper_offset;out.grain_transform=grain_transform;out.grain_offset=grain_offset;
     return out;
 }
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
@@ -37,23 +41,25 @@ struct VertexOut {
     let inner=in.radius*clamp(in.hardness,0.0,1.0);
     let profile=1.0-smoothstep(inner,max(inner+aa,in.radius+aa),distance);
     let density=mix(4.0,16.0,in.hardness);
+    let grain_raw = vec2(in.grain_transform.x*in.point.x+in.grain_transform.z*in.point.y,in.grain_transform.y*in.point.x+in.grain_transform.w*in.point.y)+in.grain_offset.xy;
+    let grain_point = floor(grain_raw * 256. + vec2(0.5)) / 256.;
     var grain_factor = 1.0;
     if in.texture > 0.0 {
-        let cell = vec2<u32>(floor(max(in.point, vec2(0.0))));
+        let cell = vec2<u32>(floor(max(grain_point, vec2(0.0))));
         var hash = (cell.x * 1973u) ^ (cell.y * 9277u) ^ 89173u;
         hash = (hash ^ (hash >> 13u)) * 1274126177u;
         let grain = f32(hash & 255u) / 255.0;
         let pencil = 0.03 + 0.4 * grain * grain;
         grain_factor = mix(1.0, pencil, min(in.texture, 1.0));
         if in.texture > 1.0 {
-            let dry_cell = vec2<u32>(floor(max(in.point, vec2(0.0)) / vec2(1.5, 5.0)));
+            let dry_cell = vec2<u32>(floor(max(grain_point, vec2(0.0)) / vec2(1.5, 5.0)));
             var dry_hash = (dry_cell.x * 1973u) ^ (dry_cell.y * 9277u) ^ 89173u;
             dry_hash = (dry_hash ^ (dry_hash >> 13u)) * 1274126177u;
             let dry = select(0.65, 0.0, f32(dry_hash & 255u) / 255.0 < 0.48);
             grain_factor = mix(pencil, dry, in.texture - 1.0);
         }
     }
-    let optical_depth=density * in.weight * profile * grain_factor * media_deposition(in.point,distance/in.radius,in.material,in.medium_aux,in.paper);
+    let optical_depth=density * in.weight * profile * grain_factor * media_deposition(grain_point,vec2(in.paper_transform.x*in.point.x+in.paper_transform.z*in.point.y,in.paper_transform.y*in.point.x+in.paper_transform.w*in.point.y)+in.paper_offset.xy,distance/in.radius,in.material,in.medium_aux,in.paper);
     if any(in.point<vec2(0.0)) || any(in.point>=u.document.xy) { discard; }
     let selection_alpha=selection_coverage(in.point);
     if selection_alpha<=0. { discard; }

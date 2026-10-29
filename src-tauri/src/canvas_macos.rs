@@ -4133,6 +4133,8 @@ pub struct MaskTransformJob {
     document: Option<Document>,
     root_source: Option<String>,
     tiled_pixels: Option<lumapaint_core::tiles::SparseTiles>,
+    off_canvas_tiles: Option<Vec<lumapaint_core::tiles::OffCanvasTileState>>,
+    sparse_mask: Option<lumapaint_core::tiles::SparseMask>,
 }
 pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransformJob, String> {
     lumapaint_core::layer_mask::validate_transform(matrix)?;
@@ -4159,18 +4161,64 @@ pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransf
             Ok((d.revision(), document))
         })?
     };
+    let sparse_mask = if tiled {
+        ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<_, String> {
+            let slot = slot.borrow();
+            let layer = slot
+                .as_ref()
+                .ok_or("Missing tiled document")?
+                .document
+                .layers()
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?;
+            Ok((layer.mask_present
+                && (layer.effects.mask.is_none()
+                    || (layer.mask_linked
+                        && layer.effects.mask.as_ref().is_some_and(|m| m.linked))))
+            .then(|| layer.mask.clone()))
+        })?
+    } else {
+        None
+    };
     let tiled_pixels = if tiled {
         ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<_, String> {
             let slot = slot.borrow();
-            let layer = slot.as_ref().ok_or("Missing tiled document")?.document.layers().iter().find(|l| l.id == id).ok_or("Layer not found")?;
-            if layer.mask_present && layer.effects.mask.as_ref().is_some_and(|m| m.linked) {
-                return Err("Combined sparse and effect masks cannot yet be transformed together. / PSD由来のマスクを含むレイヤーの同時変形は未対応です。 / 暂不支持同时变换含PSD蒙版的图层。".into());
-            }
-            Ok(layer.effects.mask.as_ref().filter(|m| m.linked).map(|_| layer.tiles.clone()))
+            let layer = slot
+                .as_ref()
+                .ok_or("Missing tiled document")?
+                .document
+                .layers()
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?;
+            Ok((layer.effects.mask.as_ref().is_some_and(|m| m.linked)
+                || (sparse_mask.is_some() && layer.mask_linked))
+                .then(|| layer.tiles.clone()))
         })?
-    } else { None };
+    } else {
+        None
+    };
+    let off_canvas_tiles = if tiled && tiled_pixels.is_some() {
+        ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<_, String> {
+            let slot = slot.borrow();
+            let layer = slot
+                .as_ref()
+                .ok_or("Missing tiled document")?
+                .document
+                .layers()
+                .iter()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?;
+            Ok(Some(layer.off_canvas_tiles.clone()))
+        })?
+    } else {
+        None
+    };
     Ok(MaskTransformJob {
+        sparse_mask,
         tiled_pixels,
+        off_canvas_tiles,
         document_id: ACTIVE_DOCUMENT_ID.with(|d| d.get()),
         revision,
         tiled,
@@ -4181,8 +4229,18 @@ pub fn prepare_mask_transform(id: String, matrix: [f32; 6]) -> Result<MaskTransf
     })
 }
 pub fn render_mask_transform(mut job: MaskTransformJob) -> Result<MaskTransformJob, String> {
+    if let Some(mask) = job.sparse_mask.take() {
+        job.sparse_mask = Some(mask.transformed(job.matrix)?);
+    }
     if let Some(pixels) = job.tiled_pixels.take() {
-        job.tiled_pixels = Some(pixels.transformed(job.matrix)?);
+        if let Some(outside) = job.off_canvas_tiles.take() {
+            let (moved, moved_outside) =
+                pixels.transformed_with_off_canvas(&outside, job.matrix)?;
+            job.tiled_pixels = Some(moved);
+            job.off_canvas_tiles = Some(moved_outside);
+        } else {
+            job.tiled_pixels = Some(pixels.transformed(job.matrix)?);
+        }
     }
     if let Some(document) = job.document.take() {
         let (w, h, pixels) = clipboard::raw_selected_pixels(&document)?;
@@ -4191,7 +4249,7 @@ pub fn render_mask_transform(mut job: MaskTransformJob) -> Result<MaskTransformJ
     }
     Ok(job)
 }
-pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, String> {
+pub fn commit_mask_transform(mut job: MaskTransformJob) -> Result<DocumentSnapshot, String> {
     let tiled = ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some());
     let revision = if tiled {
         tiled_snapshot()?.revision
@@ -4205,6 +4263,33 @@ pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, 
         return Err("Document changed. Please retry. / 原稿が変更されました。再実行してください。 / 文档已更改，请重试。".into());
     }
     if tiled {
+        if job.sparse_mask.is_some()
+            && tiled_snapshot()?
+                .layers
+                .iter()
+                .find(|l| l.id == job.id)
+                .and_then(|l| l.effects.as_ref())
+                .and_then(|e| e.mask.as_ref())
+                .is_none()
+        {
+            let mask = job.sparse_mask.take().ok_or("Layer mask not found")?;
+            ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
+                d.borrow_mut()
+                    .as_mut()
+                    .ok_or("Missing tiled document")?
+                    .document
+                    .transform_sparse_mask_with_off_canvas(
+                        &job.id,
+                        job.tiled_pixels,
+                        mask,
+                        job.off_canvas_tiles,
+                    )?;
+                Ok(())
+            })?;
+            redraw()?;
+            emit_document();
+            return tiled_snapshot();
+        }
         let snapshot = tiled_snapshot()?;
         let mut effects = snapshot
             .layers
@@ -4216,8 +4301,17 @@ pub fn commit_mask_transform(job: MaskTransformJob) -> Result<DocumentSnapshot, 
         if mask.linked {
             let moved = job.tiled_pixels.ok_or("Missing transformed raster")?;
             ACTIVE_TILED_DOCUMENT.with(|d| -> Result<(), String> {
-                d.borrow_mut().as_mut().ok_or("Missing tiled document")?.document
-                    .transform_linked_effect_mask(&job.id, job.matrix, moved)?;
+                d.borrow_mut()
+                    .as_mut()
+                    .ok_or("Missing tiled document")?
+                    .document
+                    .transform_linked_effect_mask_with_off_canvas(
+                        &job.id,
+                        job.matrix,
+                        moved,
+                        job.sparse_mask,
+                        job.off_canvas_tiles,
+                    )?;
                 Ok(())
             })?;
             redraw()?;
@@ -4289,6 +4383,20 @@ pub fn set_layer_effects(
         Ok(())
     })?;
     redraw()?;
+    emit_document();
+    tiled_snapshot()
+}
+
+pub fn set_sparse_mask_linked(id: String, linked: bool) -> Result<DocumentSnapshot, String> {
+    ensure_tiled_open()?;
+    ACTIVE_TILED_DOCUMENT.with(|slot| -> Result<(), String> {
+        slot.borrow_mut()
+            .as_mut()
+            .ok_or("Missing tiled document")?
+            .document
+            .set_sparse_mask_linked(&id, linked)?;
+        Ok(())
+    })?;
     emit_document();
     tiled_snapshot()
 }
@@ -5889,32 +5997,53 @@ thread_local! {
 fn prepare_extended_tiled_uploads(
     document: &TiledRasterDocument,
 ) -> Result<Vec<lumapaint_renderer::extended_tile::LinearTileUpload>, String> {
-    let profile = document.icc_profile().ok_or("Document has no ICC profile")?;
+    let profile = document
+        .icc_profile()
+        .ok_or("Document has no ICC profile")?;
     let uploads = document.prepare_full_uploads();
-    let bytes = uploads.iter().try_fold(0usize, |total, tile| {
-        let length = (tile.bytes_per_row as usize).checked_mul(tile.extent[1] as usize)?;
-        total.checked_add(length.checked_mul(std::mem::size_of::<f32>())?)
-    }).ok_or("Extended tile size overflow")?;
+    let bytes = uploads
+        .iter()
+        .try_fold(0usize, |total, tile| {
+            let length = (tile.bytes_per_row as usize).checked_mul(tile.extent[1] as usize)?;
+            total.checked_add(length.checked_mul(std::mem::size_of::<f32>())?)
+        })
+        .ok_or("Extended tile size overflow")?;
     if bytes > 256 * 1024 * 1024 {
         return Err("Extended tile preview exceeds memory budget".into());
     }
     TILED_EXTENDED_ICC.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().is_none_or(|(bytes, _)| bytes != profile) {
-            *cache = Some((profile.to_vec(), lumapaint_formats::color::IccToExtendedLinearSrgb::new(profile).ok()));
+            *cache = Some((
+                profile.to_vec(),
+                lumapaint_formats::color::IccToExtendedLinearSrgb::new(profile).ok(),
+            ));
         }
-        let transform = cache.as_ref().and_then(|(_, transform)| transform.as_ref()).ok_or("Unsupported ICC profile")?;
-        uploads.into_iter().map(|upload| {
-            let row_pixels = upload.bytes_per_row / 4;
-            if !upload.bytes_per_row.is_multiple_of(4) || row_pixels < upload.extent[0] {
-                return Err("Invalid tile stride".to_string());
-            }
-            let length = (upload.bytes_per_row as usize).checked_mul(upload.extent[1] as usize).ok_or("Tile size overflow")?;
-            let input = upload.pixels.get(..length).ok_or("Invalid tile payload")?;
-            let mut pixels = vec![0.0; length];
-            transform.convert_premultiplied(input, &mut pixels)?;
-            Ok(lumapaint_renderer::extended_tile::LinearTileUpload { origin: upload.origin, extent: upload.extent, row_pixels, pixels })
-        }).collect()
+        let transform = cache
+            .as_ref()
+            .and_then(|(_, transform)| transform.as_ref())
+            .ok_or("Unsupported ICC profile")?;
+        uploads
+            .into_iter()
+            .map(|upload| {
+                let row_pixels = upload.bytes_per_row / 4;
+                if !upload.bytes_per_row.is_multiple_of(4) || row_pixels < upload.extent[0] {
+                    return Err("Invalid tile stride".to_string());
+                }
+                let length = (upload.bytes_per_row as usize)
+                    .checked_mul(upload.extent[1] as usize)
+                    .ok_or("Tile size overflow")?;
+                let input = upload.pixels.get(..length).ok_or("Invalid tile payload")?;
+                let mut pixels = vec![0.0; length];
+                transform.convert_premultiplied(input, &mut pixels)?;
+                Ok(lumapaint_renderer::extended_tile::LinearTileUpload {
+                    origin: upload.origin,
+                    extent: upload.extent,
+                    row_pixels,
+                    pixels,
+                })
+            })
+            .collect()
     })
 }
 
@@ -6053,6 +6182,8 @@ impl TiledSession {
                 opacity: layer.opacity,
                 locked: layer.locked,
                 alpha_locked: layer.alpha_locked,
+                sparse_mask_present: layer.mask_present,
+                sparse_mask_linked: layer.mask_linked,
                 mask_enabled: layer.mask_enabled,
                 mask_inverted: layer.mask_inverted,
                 mask_density: layer.mask_density,
@@ -11935,6 +12066,67 @@ pub fn apply_pdf_import(
     Ok(true)
 }
 
+pub fn rotate_image_menu(
+    document_id: u64,
+    revision: u64,
+    turns: u8,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if paint_gesture_active()
+        || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        || ACTIVE_DOCUMENT_ID.with(|d| d.get()) != document_id
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
+    {
+        return Err("Document changed or unsupported / ドキュメントが変更されたか未対応です / 文档已更改或不受支持".into());
+    }
+    DOCUMENT.with(|d| d.borrow_mut().rotate_image_quarter_turns(turns))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+pub fn set_image_resolution_menu(
+    document_id: u64,
+    revision: u64,
+    resolution: u32,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if paint_gesture_active()
+        || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        || ACTIVE_DOCUMENT_ID.with(|d| d.get()) != document_id
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
+    {
+        return Err("Document changed or unsupported / ドキュメントが変更されたか未対応です / 文档已更改或不受支持".into());
+    }
+    DOCUMENT.with(|d| d.borrow_mut().set_image_resolution(resolution))?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
+pub fn resize_canvas_menu(
+    document_id: u64,
+    revision: u64,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    if paint_gesture_active()
+        || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        || ACTIVE_DOCUMENT_ID.with(|d| d.get()) != document_id
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
+    {
+        return Err("Document changed or unsupported / ドキュメントが変更されたか未対応です / 文档已更改或不受支持".into());
+    }
+    DOCUMENT.with(|d| d.borrow_mut().resize_canvas_checked(x, y, width, height))?;
+    timeline::refresh_history_preview();
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn crop_action(confirm: bool) -> Result<(), String> {
     if confirm {
         crop_tool::commit()
@@ -12167,6 +12359,8 @@ pub fn set_paper_simulation(
 
 #[path = "rasterize_layer_macos.rs"]
 pub(crate) mod rasterize_layer;
+#[path = "resample_image_macos.rs"]
+pub(crate) mod resample_image;
 
 #[cfg(test)]
 mod filter_command_tests {

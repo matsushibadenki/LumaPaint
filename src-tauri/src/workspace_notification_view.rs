@@ -129,6 +129,8 @@ impl Serialize for LayerView<'_> {
             opacity,
             locked,
             alpha_locked,
+            sparse_mask_present,
+            sparse_mask_linked,
             mask_enabled,
             mask_inverted,
             mask_density,
@@ -154,6 +156,8 @@ impl Serialize for LayerView<'_> {
         map.serialize_entry("opacity", opacity)?;
         map.serialize_entry("locked", locked)?;
         map.serialize_entry("alphaLocked", alpha_locked)?;
+        map.serialize_entry("sparseMaskPresent", sparse_mask_present)?;
+        map.serialize_entry("sparseMaskLinked", sparse_mask_linked)?;
         map.serialize_entry("maskEnabled", mask_enabled)?;
         map.serialize_entry("maskInverted", mask_inverted)?;
         map.serialize_entry("maskDensity", mask_density)?;

@@ -1,7 +1,7 @@
 //! Bounded RGB8 PSD/PSB writing. Pixel data stays in Rust; no renderer dependency.
 use super::*;
 use crate::export::{ExportError, ExportOptions, ExportedDocument, FormatId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
 struct Output(Vec<u8>);
@@ -46,34 +46,79 @@ fn issue(report: &mut ConversionReport, code: &'static str) {
         });
     }
 }
-fn bounds(layer: &RasterLayerState, width: u32, height: u32) -> [u32; 4] {
-    let mut rect = [height, width, 0, 0];
+fn bounds(layer: &RasterLayerState, width: u32, height: u32) -> [i32; 4] {
+    let mut rect = [i64::from(height), i64::from(width), 0, 0];
+    let mut any = false;
     for tile in &layer.tiles {
-        rect[0] = rect[0].min(tile.coord.y * TILE_SIZE);
-        rect[1] = rect[1].min(tile.coord.x * TILE_SIZE);
-        rect[2] = rect[2].max(((tile.coord.y + 1) * TILE_SIZE).min(height));
-        rect[3] = rect[3].max(((tile.coord.x + 1) * TILE_SIZE).min(width));
+        any = true;
+        rect[0] = rect[0].min(i64::from(tile.coord.y * TILE_SIZE));
+        rect[1] = rect[1].min(i64::from(tile.coord.x * TILE_SIZE));
+        rect[2] = rect[2].max(i64::from(((tile.coord.y + 1) * TILE_SIZE).min(height)));
+        rect[3] = rect[3].max(i64::from(((tile.coord.x + 1) * TILE_SIZE).min(width)));
     }
-    if layer.tiles.is_empty() {
-        [0; 4]
+    // Use exact nonzero bounds, including RGB under zero alpha, so signed
+    // tile rounding cannot overflow PSD's signed coordinates.
+    for tile in &layer.off_canvas_tiles {
+        for (index, pixel) in tile.pixels.as_chunks::<4>().0.iter().enumerate() {
+            if *pixel == [0; 4] {
+                continue;
+            }
+            let x =
+                i64::from(tile.x) * i64::from(TILE_SIZE) + (index as i64 % i64::from(TILE_SIZE));
+            let y =
+                i64::from(tile.y) * i64::from(TILE_SIZE) + (index as i64 / i64::from(TILE_SIZE));
+            if !any {
+                rect = [y, x, y + 1, x + 1];
+                any = true;
+            } else {
+                rect[0] = rect[0].min(y);
+                rect[1] = rect[1].min(x);
+                rect[2] = rect[2].max(y + 1);
+                rect[3] = rect[3].max(x + 1);
+            }
+        }
+    }
+    if any {
+        rect.map(|v| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)
     } else {
-        rect
+        [0; 4]
     }
+}
+fn mask_bounds(layer: &RasterLayerState, width: u32, height: u32) -> [i32; 4] {
+    let canvas = [0, 0, height as i32, width as i32];
+    let background = (255. * layer.mask_density).round() as u8;
+    if layer.off_canvas_tiles.is_empty() || background == 0 || background == 255 {
+        return canvas;
+    }
+    let rect = bounds(layer, width, height);
+    [
+        canvas[0].min(rect[0]),
+        canvas[1].min(rect[1]),
+        canvas[2].max(rect[2]),
+        canvas[3].max(rect[3]),
+    ]
+}
+fn rect_area(rect: [i32; 4]) -> u64 {
+    ((i64::from(rect[2]) - i64::from(rect[0])) as u64)
+        .saturating_mul((i64::from(rect[3]) - i64::from(rect[1])) as u64)
 }
 fn extra(
     layer: &RasterLayerState,
-    state: &TiledRasterState,
+    mask_rect: [i32; 4],
     has_mask: bool,
+    mask_background: u8,
 ) -> Result<Vec<u8>, ExportError> {
     let mut out = Output(Vec::new());
     if has_mask {
         out.length(20, false)?;
-        for value in [0, 0, state.height, state.width] {
+        for value in mask_rect {
             out.bytes(&value.to_be_bytes())?;
         }
         out.bytes(&[
-            255,
-            u8::from(!layer.mask_enabled) * 2 + u8::from(layer.mask_inverted) * 4,
+            mask_background,
+            u8::from(!layer.mask_linked)
+                + u8::from(!layer.mask_enabled) * 2
+                + u8::from(layer.mask_inverted) * 4,
             0,
             0,
         ])?;
@@ -151,6 +196,7 @@ pub fn write(
                 .iter()
                 .map(|t| t.pixels.len())
                 .chain(l.mask_tiles.iter().map(|t| t.values.len()))
+                .chain(l.off_canvas_tiles.iter().map(|t| t.pixels.len()))
         })
         .try_fold(0usize, |total, size| total.checked_add(size))
         .ok_or_else(|| invalid("Raster payload size"))?;
@@ -163,6 +209,97 @@ pub fn write(
     // Reuse the independent model's complete validation before trusting pixel buffers.
     lumapaint_core::tiles::TiledRasterDocument::from_state(state.clone())
         .map_err(ExportError::InvalidDocument)?;
+    // A single ordinary mask can be represented as a PSD pixel mask. Keep
+    // the original image pixels and mask link rather than baking its alpha.
+    // Outside mask geometry is not yet represented by the native mask tiles.
+    let can_convert = |layer: &RasterLayerState| {
+        !layer.effects.enabled
+            && layer.effects.mask.is_some()
+            && !layer.mask_present
+            && !layer.mask_enabled
+            && layer.mask_tiles.is_empty()
+            && layer.off_canvas_tiles.is_empty()
+    };
+    let converted_mask_ids: BTreeSet<_> = state
+        .layers
+        .iter()
+        .filter(|layer| can_convert(layer))
+        .map(|layer| layer.id.clone())
+        .collect();
+    let mask_rasterized = !converted_mask_ids.is_empty();
+    let converted;
+    let state = if mask_rasterized {
+        let area = u64::from(state.width) * u64::from(state.height);
+        let count = state.layers.iter().filter(|l| can_convert(l)).count() as u64;
+        if area.saturating_mul(count) > MAX_SOURCE_BYTES as u64 {
+            return Err(invalid("PSD mask conversion exceeds the memory limit. / PSDマスク変換がメモリ上限を超えました。 / PSD蒙版转换超出内存限制。"));
+        }
+        converted = {
+            let mut copy = state.clone();
+            for layer in &mut copy.layers {
+                if !can_convert(layer) {
+                    continue;
+                }
+                let original = layer.effects.mask.take().expect("checked mask");
+                let mut raw = original.clone();
+                raw.enabled = true;
+                raw.inverted = false;
+                raw.density = 1.;
+                let mut masks = Vec::new();
+                for ty in 0..copy.height.div_ceil(TILE_SIZE) {
+                    for tx in 0..copy.width.div_ceil(TILE_SIZE) {
+                        let mut values = vec![255; (TILE_SIZE * TILE_SIZE) as usize];
+                        let mut changed = false;
+                        for y in 0..(copy.height - ty * TILE_SIZE).min(TILE_SIZE) {
+                            for x in 0..(copy.width - tx * TILE_SIZE).min(TILE_SIZE) {
+                                let value = (raw.coverage([
+                                    (tx * TILE_SIZE + x) as f32 + 0.5,
+                                    (ty * TILE_SIZE + y) as f32 + 0.5,
+                                ]) * 255.)
+                                    .round()
+                                    .clamp(0., 255.)
+                                    as u8;
+                                values[(y * TILE_SIZE + x) as usize] = value;
+                                changed |= value != 255;
+                            }
+                        }
+                        if changed {
+                            masks.push(lumapaint_core::tiles::MaskTileState {
+                                coord: TileCoord { x: tx, y: ty },
+                                values,
+                            });
+                        }
+                    }
+                }
+                layer.mask_present = true;
+                layer.mask_linked = original.linked;
+                layer.mask_enabled = original.enabled;
+                layer.mask_inverted = original.inverted;
+                layer.mask_density = original.density;
+                layer.mask_tiles = masks;
+            }
+            copy
+        };
+        &converted
+    } else {
+        state
+    };
+    // Baking only touches canvas tiles. Refuse when it would leave outside
+    // pixels in a different appearance; PSD cannot represent the effect here.
+    if state
+        .layers
+        .iter()
+        .any(|layer| layer.effects.active() && !layer.off_canvas_tiles.is_empty())
+    {
+        return Err(invalid("Effects on off-canvas pixels cannot yet be exported. / キャンバス外の画素に適用した効果はまだ書き出せません。 / 暂不支持导出应用于画布外像素的效果。"));
+    }
+    let disabled_effect_mask_lost = state.layers.iter().any(|layer| {
+        layer
+            .effects
+            .mask
+            .as_ref()
+            .is_some_and(|mask| !mask.enabled)
+    });
     let effects_baked = state.layers.iter().any(|l| l.effects.active());
     let mut baked;
     let state = if effects_baked {
@@ -199,20 +336,35 @@ pub fn write(
     let canvas_area = u64::from(state.width) * u64::from(state.height);
     let estimated_pixels = state.layers.iter().fold(canvas_area * 4, |sum, layer| {
         let rect = bounds(layer, state.width, state.height);
-        let area = u64::from(rect[2] - rect[0]) * u64::from(rect[3] - rect[1]);
+        let area = ((i64::from(rect[2]) - i64::from(rect[0])) as u64)
+            .saturating_mul((i64::from(rect[3]) - i64::from(rect[1])) as u64);
         let mask = layer.mask_present
             || !layer.mask_tiles.is_empty()
             || layer.mask_enabled
             || layer.mask_inverted
             || layer.mask_density != 1.;
-        sum + area * 4 + if mask { canvas_area } else { 0 }
+        sum.saturating_add(area.saturating_mul(4))
+            .saturating_add(if mask {
+                rect_area(mask_bounds(layer, state.width, state.height))
+            } else {
+                0
+            })
     });
-    if estimated_pixels + 32768 > MAX_OUTPUT_BYTES as u64 {
+    if estimated_pixels.saturating_add(32768) > MAX_OUTPUT_BYTES as u64 {
         return Err(invalid("PSD/PSB export exceeds 128 MiB"));
     }
     let mut report = ConversionReport::default();
     if effects_baked {
         issue(&mut report, "psd.layerEffectsBaked");
+    }
+    if mask_rasterized {
+        issue(&mut report, "psd.effectMaskRasterized");
+    }
+    if disabled_effect_mask_lost {
+        report.issues.push(ConversionIssue {
+            code: "psd.disabledEffectMaskNotPreserved",
+            tier: CompatibilityTier::C,
+        });
     }
     if state.resolution.is_some_and(|r| {
         [r.x_ppi, r.y_ppi]
@@ -277,22 +429,28 @@ pub fn write(
                 || layer.mask_enabled
                 || layer.mask_inverted
                 || layer.mask_density != 1.;
-            (layer, bounds(layer, state.width, state.height), mask)
+            (
+                layer,
+                bounds(layer, state.width, state.height),
+                mask,
+                mask_bounds(layer, state.width, state.height),
+            )
         })
         .collect();
-    for &(layer, rect, mask) in &records {
+    for &(layer, rect, mask, mask_rect) in &records {
         for value in rect {
             out.bytes(&value.to_be_bytes())?;
         }
         out.bytes(&(if mask { 5u16 } else { 4u16 }).to_be_bytes())?;
-        let area = (rect[2] - rect[0]) as usize * (rect[3] - rect[1]) as usize;
+        let area = (i64::from(rect[2]) - i64::from(rect[0])) as usize
+            * (i64::from(rect[3]) - i64::from(rect[1])) as usize;
         for id in [0i16, 1, 2, -1] {
             out.bytes(&id.to_be_bytes())?;
             out.length(area + 2, large)?;
         }
         if mask {
             out.bytes(&(-2i16).to_be_bytes())?;
-            out.length(state.width as usize * state.height as usize + 2, large)?;
+            out.length(rect_area(mask_rect) as usize + 2, large)?;
         }
         out.bytes(b"8BIM")?;
         out.bytes(blend_key(layer.blend_mode))?;
@@ -302,15 +460,29 @@ pub fn write(
             u8::from(!layer.visible) * 2 + u8::from(layer.alpha_locked),
             0,
         ])?;
-        let data = extra(layer, state, mask)?;
+        let background = if converted_mask_ids.contains(&layer.id) {
+            0
+        } else if layer.mask_density == 1. {
+            255
+        } else if (255. * layer.mask_density).round() < 1. {
+            0
+        } else {
+            255
+        };
+        let data = extra(layer, mask_rect, mask, background)?;
         out.length(data.len(), false)?;
         out.bytes(&data)?;
     }
-    for &(layer, rect, mask) in &records {
+    for &(layer, rect, mask, mask_rect) in &records {
         let tiles: BTreeMap<_, _> = layer
             .tiles
             .iter()
             .map(|t| (t.coord, t.pixels.as_slice()))
+            .collect();
+        let outside: BTreeMap<_, _> = layer
+            .off_canvas_tiles
+            .iter()
+            .map(|t| ((t.x, t.y), t.pixels.as_slice()))
             .collect();
         let masks: BTreeMap<_, _> = layer
             .mask_tiles
@@ -320,29 +492,55 @@ pub fn write(
         for channel in 0..4 {
             out.bytes(&[0, 0])?;
             for y in rect[0]..rect[2] {
-                let mut row = Vec::with_capacity((rect[3] - rect[1]) as usize);
+                let mut row =
+                    Vec::with_capacity((i64::from(rect[3]) - i64::from(rect[1])) as usize);
                 for x in rect[1]..rect[3] {
-                    let coord = TileCoord {
-                        x: x / TILE_SIZE,
-                        y: y / TILE_SIZE,
+                    let edge = TILE_SIZE as i32;
+                    let index = ((y.rem_euclid(edge) as u32) * TILE_SIZE
+                        + x.rem_euclid(edge) as u32) as usize
+                        * 4;
+                    let value = if x >= 0
+                        && y >= 0
+                        && (x as u32) < state.width
+                        && (y as u32) < state.height
+                    {
+                        let coord = TileCoord {
+                            x: x as u32 / TILE_SIZE,
+                            y: y as u32 / TILE_SIZE,
+                        };
+                        tiles.get(&coord).map_or(0, |t| t[index + channel])
+                    } else {
+                        outside
+                            .get(&(x.div_euclid(edge), y.div_euclid(edge)))
+                            .map_or(0, |t| t[index + channel])
                     };
-                    let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize * 4;
-                    row.push(tiles.get(&coord).map_or(0, |t| t[index + channel]));
+                    row.push(value);
                 }
                 out.bytes(&row)?;
             }
         }
         if mask {
             out.bytes(&[0, 0])?;
-            for y in 0..state.height {
-                let mut row = Vec::with_capacity(state.width as usize);
-                for x in 0..state.width {
-                    let coord = TileCoord {
-                        x: x / TILE_SIZE,
-                        y: y / TILE_SIZE,
+            for y in mask_rect[0]..mask_rect[2] {
+                let mut row = Vec::with_capacity(
+                    (i64::from(mask_rect[3]) - i64::from(mask_rect[1])) as usize,
+                );
+                for x in mask_rect[1]..mask_rect[3] {
+                    let value = if x >= 0
+                        && y >= 0
+                        && (x as u32) < state.width
+                        && (y as u32) < state.height
+                    {
+                        let coord = TileCoord {
+                            x: x as u32 / TILE_SIZE,
+                            y: y as u32 / TILE_SIZE,
+                        };
+                        let index = (((y as u32) % TILE_SIZE) * TILE_SIZE + (x as u32) % TILE_SIZE)
+                            as usize;
+                        masks.get(&coord).map_or(255, |m| m[index])
+                    } else {
+                        255
                     };
-                    let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
-                    let value = masks.get(&coord).map_or(255, |m| m[index]);
                     row.push((f32::from(value) * layer.mask_density).round() as u8);
                 }
                 out.bytes(&row)?;
@@ -396,6 +594,217 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn signed_off_canvas_pixels_survive_native_psd_and_psb() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(4, 2).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [1, 1, 1, 1], &[40, 60, 80, 255])
+            .unwrap();
+        let mut state = doc.state();
+        let mut negative = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
+        let at = ((TILE_SIZE - 1) * TILE_SIZE + TILE_SIZE - 1) as usize * 4;
+        negative[at..at + 4].copy_from_slice(&[17, 35, 91, 0]);
+        let mut positive = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
+        let at = (2 * TILE_SIZE + 4) as usize * 4;
+        positive[at..at + 4].copy_from_slice(&[7, 33, 127, 181]);
+        state.layers[0].off_canvas_tiles = vec![
+            lumapaint_core::tiles::OffCanvasTileState {
+                x: -1,
+                y: -1,
+                pixels: negative,
+            },
+            lumapaint_core::tiles::OffCanvasTileState {
+                x: 0,
+                y: 0,
+                pixels: positive,
+            },
+        ];
+        let mut invalid = state.clone();
+        let duplicate = invalid.layers[0].off_canvas_tiles[0].clone();
+        invalid.layers[0].off_canvas_tiles.push(duplicate);
+        assert!(crate::tile_container::encode(&invalid).is_err());
+        let mut guarded = state.clone();
+        guarded.layers[0].mask_present = true;
+        let mut live = lumapaint_core::tiles::TiledRasterDocument::from_state(guarded).unwrap();
+        let pixels = live.layers()[0].tiles.clone();
+        let mask = live.layers()[0].mask.clone();
+        assert!(live
+            .transform_sparse_mask("paint", Some(pixels), mask)
+            .is_err());
+        assert_eq!(
+            live.state().layers[0].off_canvas_tiles,
+            state.layers[0].off_canvas_tiles
+        );
+        let native = crate::tile_container::encode(&state).unwrap();
+        let restored = crate::tile_container::decode(&native).unwrap();
+        assert_eq!(
+            restored.layers[0].off_canvas_tiles,
+            state.layers[0].off_canvas_tiles
+        );
+        for large in [false, true] {
+            let saved = write(&restored, large, ExportOptions::default()).unwrap();
+            let imported = PsdImporter
+                .import(&saved.bytes, ImportOptions::default())
+                .unwrap();
+            assert_eq!(imported.raster.layers.len(), 1, "{:?}", imported.report);
+            assert_eq!(
+                imported.raster.layers[0].off_canvas_tiles,
+                state.layers[0].off_canvas_tiles
+            );
+        }
+    }
+
+    #[test]
+    fn photoshop_resaved_off_canvas_pixels_round_trip_psd_and_psb() {
+        for (large, bytes) in [
+            (
+                false,
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-offcanvas-simple.psd")
+                    .as_slice(),
+            ),
+            (
+                true,
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-offcanvas-simple.psb")
+                    .as_slice(),
+            ),
+        ] {
+            let input = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(input.raster.layers.len(), 1, "{:?}", input.report);
+            assert!(!input.raster.layers[0].off_canvas_tiles.is_empty());
+            let saved = write(&input.raster, large, ExportOptions { allow_lossy: true }).unwrap();
+            let output = PsdImporter
+                .import(&saved.bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(
+                output.raster.layers[0].off_canvas_tiles,
+                input.raster.layers[0].off_canvas_tiles
+            );
+            assert_eq!(output.raster.layers[0].tiles, input.raster.layers[0].tiles);
+        }
+    }
+
+    #[test]
+    fn disabled_effect_masks_are_reported_and_outside_effects_are_not_partially_baked() {
+        use lumapaint_core::layer_mask::{LayerMask, MaskKind};
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(2, 2).unwrap();
+        doc.add_layer("a".into(), "A".into()).unwrap();
+        doc.write_rect("a", [0, 0, 1, 1], &[100, 50, 20, 255])
+            .unwrap();
+        let mut state = doc.state();
+        let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, 2, 2).unwrap();
+        mask.enabled = false;
+        state.layers[0].effects.mask = Some(mask);
+        let mut pixels = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
+        let at = (TILE_SIZE as usize - 1) * 4;
+        pixels[at..at + 4].copy_from_slice(&[10, 20, 30, 255]);
+        state.layers[0]
+            .off_canvas_tiles
+            .push(lumapaint_core::tiles::OffCanvasTileState {
+                x: -1,
+                y: 0,
+                pixels,
+            });
+        for large in [false, true] {
+            let Err(error) = write(&state, large, ExportOptions::default()) else {
+                panic!("disabled mask must require consent");
+            };
+            assert!(
+                matches!(error, ExportError::LossyConversionRequiresConsent(ref report) if report.issues.iter().any(|i| i.code == "psd.disabledEffectMaskNotPreserved"))
+            );
+            let saved = write(&state, large, ExportOptions { allow_lossy: true }).unwrap();
+            assert!(saved
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.disabledEffectMaskNotPreserved"));
+        }
+        state.layers[0].effects.mask.as_mut().unwrap().enabled = true;
+        for large in [false, true] {
+            assert!(matches!(
+                write(&state, large, ExportOptions { allow_lossy: true }),
+                Err(ExportError::InvalidDocument(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn transformed_effect_mask_exports_as_editable_psd_pixel_mask() {
+        use lumapaint_core::{
+            layer_mask::{LayerMask, MaskKind},
+            selection::{Selection, SelectionShape},
+        };
+        for enabled in [true, false] {
+            let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(3, 2).unwrap();
+            doc.add_layer("a".into(), "A".into()).unwrap();
+            doc.write_rect("a", [0, 0, 3, 2], &[200, 100, 50, 255].repeat(6))
+                .unwrap();
+            let mut state = doc.state();
+            let selection = Selection::new(SelectionShape::Rectangle, [0., 0., 1., 2.]);
+            let mut mask =
+                LayerMask::from_selection(MaskKind::Pixel, Some(&selection), 3, 2).unwrap();
+            mask.transform = [1., 0., 0., 1., 1., 0.];
+            mask.enabled = enabled;
+            mask.linked = false;
+            state.layers[0].effects.mask = Some(mask);
+            for large in [false, true] {
+                assert!(matches!(
+                    write(&state, large, ExportOptions::default()),
+                    Err(ExportError::LossyConversionRequiresConsent(_))
+                ));
+                let saved = write(&state, large, ExportOptions { allow_lossy: true }).unwrap();
+                assert!(saved
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.effectMaskRasterized"));
+                // A moved PSD mask exposes its background; it must match the
+                // original ordinary mask's zero coverage outside the canvas.
+                let mut reader = Reader {
+                    bytes: &saved.bytes,
+                    at: 26,
+                };
+                reader.section().unwrap();
+                reader.section().unwrap();
+                let layers = reader.sized_section(large).unwrap();
+                let mut outer = Reader {
+                    bytes: layers,
+                    at: 0,
+                };
+                let info = outer.sized_section(large).unwrap();
+                let mut record = Reader { bytes: info, at: 2 };
+                record.take(16).unwrap();
+                let channels = record.u16().unwrap();
+                for _ in 0..channels {
+                    record.take(2).unwrap();
+                    record.length(large).unwrap();
+                }
+                record.take(12).unwrap();
+                let extra = record.section().unwrap();
+                let mut extra_reader = Reader {
+                    bytes: extra,
+                    at: 0,
+                };
+                let mask = extra_reader.section().unwrap();
+                assert_eq!(mask[16], 0);
+                let imported = PsdImporter
+                    .import(&saved.bytes, ImportOptions { allow_lossy: true })
+                    .unwrap();
+                assert_eq!(imported.raster.layers.len(), 1, "{:?}", imported.report);
+                let layer = &imported.raster.layers[0];
+                assert!(layer.mask_present);
+                assert_eq!(layer.mask_enabled, enabled);
+                assert!(!layer.mask_linked);
+                let live = lumapaint_core::tiles::TiledRasterDocument::from_state(imported.raster)
+                    .unwrap();
+                assert_eq!(live.layers()[0].mask.pixel(0, 0), Some(0));
+                assert_eq!(live.layers()[0].mask.pixel(1, 0), Some(255));
+                assert_eq!(live.layers()[0].mask.pixel(2, 0), Some(0));
+            }
+        }
+    }
+
     fn resolution() -> RasterResolution {
         RasterResolution {
             x_ppi: 300.5,
@@ -640,6 +1049,37 @@ mod tests {
         }
     }
     #[test]
+    fn unlinked_sparse_mask_round_trips_psd_and_psb() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(300, 4).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [257, 1, 1, 1], &[20, 30, 40, 255])
+            .unwrap();
+        doc.write_mask_rect("paint", [2, 1, 1, 1], &[0]).unwrap();
+        doc.set_layer_mask("paint", true, false, 1.).unwrap();
+        doc.set_sparse_mask_linked("paint", false).unwrap();
+        let state = doc.state();
+        for large in [false, true] {
+            let saved = write(&state, large, ExportOptions::default()).unwrap();
+            assert!(matches!(
+                PsdImporter.import(&saved.bytes, ImportOptions::default()),
+                Err(ImportError::LossyConversionRequiresConsent(report))
+                    if report.issues.iter().any(|issue| issue.code == "psd.maskOriginAmbiguous")
+            ));
+            let loaded = PsdImporter
+                .import(&saved.bytes, ImportOptions { allow_lossy: true })
+                .unwrap()
+                .raster;
+            assert!(!loaded.layers[0].mask_linked);
+            let restored = lumapaint_core::tiles::TiledRasterDocument::from_state(loaded).unwrap();
+            assert_eq!(restored.layers()[0].mask.pixel(2, 1), Some(0));
+            assert_eq!(
+                restored.layers()[0].tiles.pixel(257, 1),
+                Some([20, 30, 40, 255])
+            );
+        }
+    }
+
+    #[test]
     fn mask_density_and_opacity_quantization_are_reported_and_preserve_pixels() {
         let mut source = PsdImporter
             .import(
@@ -696,6 +1136,178 @@ mod tests {
                 .all(|(a, b)| a.abs_diff(*b) <= 1));
         }
     }
+    #[test]
+    fn fractional_mask_density_extends_over_off_canvas_pixels() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(2, 1).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [0, 0, 1, 1], &[20, 30, 40, 255])
+            .unwrap();
+        let mut state = doc.state();
+        let mut right = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
+        right[0..4].copy_from_slice(&[20, 30, 40, 255]);
+        let mut left = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
+        left[(TILE_SIZE as usize - 1) * 4..TILE_SIZE as usize * 4]
+            .copy_from_slice(&[20, 30, 40, 255]);
+        let layer = &mut state.layers[0];
+        layer
+            .off_canvas_tiles
+            .push(lumapaint_core::tiles::OffCanvasTileState {
+                x: 1,
+                y: 0,
+                pixels: right,
+            });
+        layer
+            .off_canvas_tiles
+            .push(lumapaint_core::tiles::OffCanvasTileState {
+                x: -1,
+                y: 0,
+                pixels: left,
+            });
+        layer.mask_present = true;
+        for (density, expected_rect, background, expected_sample) in
+            [(0.5, [0, -1, 1, 257], 255, 128), (0., [0, 0, 1, 2], 0, 0)]
+        {
+            for enabled in [false, true] {
+                for inverted in [false, true] {
+                    state.layers[0].mask_density = density;
+                    state.layers[0].mask_enabled = enabled;
+                    state.layers[0].mask_inverted = inverted;
+                    for large in [false, true] {
+                        let saved =
+                            write(&state, large, ExportOptions { allow_lossy: true }).unwrap();
+                        assert!(saved
+                            .report
+                            .issues
+                            .iter()
+                            .any(|i| i.code == "psd.nativeMaskDensityBaked"));
+                        let mut reader = Reader {
+                            bytes: &saved.bytes,
+                            at: 26,
+                        };
+                        reader.section().unwrap();
+                        reader.section().unwrap();
+                        let section_len = reader.length(large).unwrap();
+                        let section = reader.take(section_len).unwrap();
+                        let mut section_reader = Reader {
+                            bytes: section,
+                            at: 0,
+                        };
+                        let info_len = section_reader.length(large).unwrap();
+                        let info = section_reader.take(info_len).unwrap();
+                        let mut record = Reader {
+                            bytes: info,
+                            at: 2 + 16,
+                        };
+                        let channels = record.u16().unwrap();
+                        let mut lengths = Vec::new();
+                        for _ in 0..channels {
+                            record.take(2).unwrap();
+                            lengths.push(record.length(large).unwrap());
+                        }
+                        record.take(12).unwrap();
+                        let extra = record.section().unwrap();
+                        for (index, expected) in expected_rect.iter().enumerate() {
+                            assert_eq!(
+                                i32::from_be_bytes(
+                                    extra[4 + index * 4..8 + index * 4].try_into().unwrap()
+                                ),
+                                *expected
+                            );
+                        }
+                        assert_eq!(extra[20], background);
+                        for length in lengths.iter().take(4) {
+                            record.take(*length).unwrap();
+                        }
+                        let mask = record.take(lengths[4]).unwrap();
+                        assert_eq!(&mask[..2], &[0, 0]);
+                        assert!(mask[2..].iter().all(|v| *v == expected_sample));
+                        if density == 0.5 {
+                            let imported = PsdImporter
+                                .import(&saved.bytes, ImportOptions { allow_lossy: true })
+                                .unwrap();
+                            assert!(imported
+                                .report
+                                .issues
+                                .iter()
+                                .any(|i| i.code == "psd.maskOutsideCanvasClipped"));
+                            assert!(!imported
+                                .report
+                                .issues
+                                .iter()
+                                .any(|i| i.code == "psd.layersFlattened"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transparent_canvas_rgb_round_trips_without_loss() {
+        let mut doc = lumapaint_core::tiles::TiledRasterDocument::new(2, 1).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [0, 0, 1, 1], &[11, 22, 33, 255])
+            .unwrap();
+        for large in [false, true] {
+            let mut file = write(&doc.state(), large, ExportOptions::default())
+                .unwrap()
+                .bytes;
+            let red_second_pixel = {
+                let mut reader = Reader {
+                    bytes: &file,
+                    at: 26,
+                };
+                reader.section().unwrap();
+                reader.section().unwrap();
+                reader.length(large).unwrap();
+                reader.length(large).unwrap();
+                let info_start = reader.at;
+                let mut record = Reader {
+                    bytes: &file,
+                    at: info_start + 2 + 16,
+                };
+                let channels = record.u16().unwrap();
+                for _ in 0..channels {
+                    record.take(2).unwrap();
+                    record.length(large).unwrap();
+                }
+                record.take(12).unwrap();
+                record.section().unwrap();
+                record.at + 2 + 1 // RAW marker and second pixel in red plane.
+            };
+            file[red_second_pixel] = 90;
+            let result = PsdImporter.import(&file, ImportOptions::default()).unwrap();
+            assert!(!result
+                .report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "psd.transparentRgbDiscarded"));
+            assert_eq!(result.raster.layers.len(), 1);
+            assert!(!result
+                .report
+                .issues
+                .iter()
+                .any(|issue| issue.code == "psd.layersFlattened"));
+            let native = crate::tile_container::encode(&result.raster).unwrap();
+            let restored = lumapaint_core::tiles::TiledRasterDocument::from_state(
+                crate::tile_container::decode(&native).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                restored.layers()[0].tiles.pixel(0, 0),
+                Some([11, 22, 33, 255])
+            );
+            assert_eq!(restored.layers()[0].tiles.pixel(1, 0), Some([90, 0, 0, 0]));
+            let again = write(&restored.state(), large, ExportOptions::default()).unwrap();
+            let read = PsdImporter
+                .import(&again.bytes, ImportOptions::default())
+                .unwrap();
+            let reread =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(read.raster).unwrap();
+            assert_eq!(reread.layers()[0].tiles.pixel(1, 0), Some([90, 0, 0, 0]));
+        }
+    }
+
     #[test]
     fn invalid_raster_payloads_cannot_be_written() {
         let mut state = PsdImporter

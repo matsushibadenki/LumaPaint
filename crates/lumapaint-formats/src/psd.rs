@@ -9,6 +9,57 @@ use lumapaint_core::tiles::{
 };
 pub use write::write;
 
+/// Try diverse interpretations within a fixed upper bound on composite work.
+fn mask_origin_candidates(bits: u16) -> Vec<u16> {
+    if bits == 0 {
+        return Vec::new();
+    }
+    // Decoding every interpretation is also bounded independently of pixel work.
+    let limit = 64;
+    let mut candidates = Vec::with_capacity(limit);
+    candidates.push(bits);
+    let singles: Vec<u16> = (0..16)
+        .filter_map(|i| {
+            let bit = 1u16 << i;
+            (bits & bit != 0).then_some(bit)
+        })
+        .collect();
+    // Try both sparse relative masks and sparse absolute masks. Interleaving
+    // prevents either interpretation from consuming the entire work budget.
+    for &bit in &singles {
+        for combination in [bit, bits ^ bit] {
+            if candidates.len() == limit {
+                return candidates;
+            }
+            if combination != 0 && !candidates.contains(&combination) {
+                candidates.push(combination);
+            }
+        }
+    }
+    for (index, &a) in singles.iter().enumerate() {
+        for &b in &singles[index + 1..] {
+            for combination in [a | b, bits ^ (a | b)] {
+                if candidates.len() == limit {
+                    return candidates;
+                }
+                if combination != 0 && !candidates.contains(&combination) {
+                    candidates.push(combination);
+                }
+            }
+        }
+    }
+    if bits.count_ones() <= 6 {
+        let mut subset = bits;
+        while subset != 0 && candidates.len() < limit {
+            if !candidates.contains(&subset) {
+                candidates.push(subset);
+            }
+            subset = (subset - 1) & bits;
+        }
+    }
+    candidates
+}
+
 fn read_blend_mode(key: &[u8]) -> Option<RasterBlendMode> {
     Some(match key {
         b"norm" => RasterBlendMode::Normal,
@@ -394,41 +445,53 @@ impl DocumentImporter for PsdImporter {
         }
         let mut density_baked = false;
         let mut discarded = false;
-        let mut retained =
-            match layers::decode_with_metadata(layer_data, h, &mut density_baked, &mut discarded) {
-                Ok(layers) => layers,
-                Err(ImportError::Unsupported("PSD editable text layer")) => {
+        let mut clipped = false;
+        let mut ambiguous = false;
+        let mut ambiguous_bits = 0u16;
+        let mut mask_clipped = false;
+        let mut retained = match layers::decode_with_metadata_mode_and_clipped(
+            layer_data,
+            h,
+            &mut density_baked,
+            &mut discarded,
+            &mut clipped,
+            &mut ambiguous,
+            (0, &mut ambiguous_bits),
+            &mut mask_clipped,
+        ) {
+            Ok(layers) => layers,
+            Err(ImportError::Unsupported("PSD editable text layer")) => {
+                report.issues.push(ConversionIssue {
+                    code: "psd.textNotEditable",
+                    tier: CompatibilityTier::C,
+                });
+                None
+            }
+            Err(ImportError::Unsupported(_)) => {
+                if layers::contains_text_metadata(layer_data, h.version == 2).unwrap_or(false) {
                     report.issues.push(ConversionIssue {
                         code: "psd.textNotEditable",
                         tier: CompatibilityTier::C,
                     });
-                    None
                 }
-                Err(ImportError::Unsupported(_)) => {
-                    if layers::contains_text_metadata(layer_data, h.version == 2).unwrap_or(false) {
-                        report.issues.push(ConversionIssue {
-                            code: "psd.textNotEditable",
-                            tier: CompatibilityTier::C,
-                        });
-                    }
-                    None
-                }
-                Err(error) => return Err(error),
-            };
-        let verify_composite = discarded
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let verify_composite = clipped
+            || mask_clipped
+            || ambiguous
+            || discarded
             || retained.as_ref().is_some_and(|layers| {
                 layers
                     .iter()
                     .any(|layer| layer.blend_mode != RasterBlendMode::Normal)
             });
-        // Comparing additional Photoshop settings requires a bounded merged preview.
-        // Larger files keep the conservative flattened path, rather than skip verification.
+        // A full verification is permitted up to the existing dimension and
+        // input limits. Candidate exploration has a separate bounded budget.
         let preview_pixels = u64::from(h.width.div_ceil(TILE_SIZE))
             * u64::from(h.height.div_ceil(TILE_SIZE))
             * u64::from(TILE_SIZE * TILE_SIZE);
-        if verify_composite && preview_pixels > 4 * 1024 * 1024 {
-            retained = None;
-        }
         if discarded && retained.is_some() {
             report.issues.push(ConversionIssue {
                 code: "psd.editingMetadataNotPreserved",
@@ -520,28 +583,127 @@ impl DocumentImporter for PsdImporter {
         if r.at != bytes.len() {
             return Err(ImportError::Malformed("trailing composite data"));
         }
-        if let Some(layers) = retained.take() {
-            let matches = tiles.iter().all(|tile| {
-                let rendered =
-                    lumapaint_core::tiles::composite_raster_layers_tile(&layers, tile.coord);
-                tile.pixels
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .enumerate()
-                    .all(|(index, pixel)| {
-                        let rgba = rendered.as_ref().map_or([0; 4], |data| {
-                            data[index * 4..index * 4 + 4].try_into().expect("RGBA")
-                        });
-                        let alpha = u32::from(pixel[3]);
-                        rgba[3].abs_diff(pixel[3]) <= 1
-                            && (0..3).all(|c| {
-                                let expected = ((u32::from(pixel[c]) * alpha + 127) / 255) as u8;
-                                rgba[c].abs_diff(expected) <= 1
-                            })
-                    })
-            });
+        if let Some(mut layers) = retained.take() {
+            // Checking the first known mismatch first rejects many candidates
+            // cheaply. Acceptance still requires a match over every tile.
+            let matches_preview =
+                |layers: &[RasterLayerState], budget: &mut u64, first: Option<usize>| {
+                    let indices = first
+                        .into_iter()
+                        .chain((0..tiles.len()).filter(|i| Some(*i) != first));
+                    for index in indices {
+                        let cost = u64::from(TILE_SIZE * TILE_SIZE);
+                        if *budget < cost {
+                            return (false, None);
+                        }
+                        *budget -= cost;
+                        let tile = &tiles[index];
+                        let rendered =
+                            lumapaint_core::tiles::composite_raster_layers_tile(layers, tile.coord);
+                        let matches = tile.pixels.as_chunks::<4>().0.iter().enumerate().all(
+                            |(index, pixel)| {
+                                let rgba = rendered.as_ref().map_or([0; 4], |data| {
+                                    data[index * 4..index * 4 + 4].try_into().expect("RGBA")
+                                });
+                                let alpha = u32::from(pixel[3]);
+                                rgba[3].abs_diff(pixel[3]) <= 1
+                                    && (0..3).all(|c| {
+                                        let expected =
+                                            ((u32::from(pixel[c]) * alpha + 127) / 255) as u8;
+                                        rgba[c].abs_diff(expected) <= 1
+                                    })
+                            },
+                        );
+                        if !matches {
+                            return (false, Some(index));
+                        }
+                    }
+                    (true, None)
+                };
+            let mut baseline_budget = u64::MAX;
+            let (mut matches, first_mismatch) =
+                matches_preview(&layers, &mut baseline_budget, None);
+            let mut inferred_relative = false;
+            let invisible_bits = layers
+                .iter()
+                .enumerate()
+                .fold(0u16, |bits, (index, layer)| {
+                    if !layer.visible || layer.opacity <= 0.0 {
+                        bits | (1u16 << index)
+                    } else {
+                        bits
+                    }
+                })
+                & ambiguous_bits;
+            let relevant_bits = ambiguous_bits & !invisible_bits;
+            // Changing a hidden layer cannot change the merged preview, but its
+            // mask coordinates are still ambiguous. Do not decode combinations
+            // that differ only in those unobservable positions.
+            let mut unresolved_origin = matches && invisible_bits != 0;
+            if ambiguous && !unresolved_origin {
+                let mut budget = preview_pixels + 32_000_000u64;
+                let candidates = mask_origin_candidates(relevant_bits);
+                let expected = (1usize << relevant_bits.count_ones()) - 1;
+                let mut examined = 0usize;
+                for selected in candidates {
+                    if budget < u64::from(TILE_SIZE * TILE_SIZE) {
+                        break;
+                    }
+                    let mut candidate_mask_clipped = false;
+                    let other = layers::decode_with_metadata_mode_and_clipped(
+                        layer_data,
+                        h,
+                        &mut false,
+                        &mut false,
+                        &mut false,
+                        &mut false,
+                        (selected, &mut 0),
+                        &mut candidate_mask_clipped,
+                    )?;
+                    if let Some(other) = other {
+                        let (candidate_matches, mismatch) =
+                            matches_preview(&other, &mut budget, first_mismatch);
+                        if !candidate_matches && mismatch.is_none() {
+                            break; // Budget exhausted before the candidate was decided.
+                        }
+                        examined += 1;
+                        if candidate_matches {
+                            if matches {
+                                unresolved_origin = true;
+                                break;
+                            }
+                            layers = other;
+                            mask_clipped = candidate_mask_clipped;
+                            matches = true;
+                            inferred_relative = true;
+                            unresolved_origin |= invisible_bits != 0;
+                        }
+                    }
+                }
+                // An incomplete search cannot establish that the match is unique.
+                if matches && examined < expected {
+                    unresolved_origin = true;
+                }
+            }
             if matches {
+                if inferred_relative {
+                    report.issues.push(ConversionIssue {
+                        code: "psd.maskOriginRelativeInferred",
+                        tier: CompatibilityTier::C,
+                    });
+                }
+                if unresolved_origin {
+                    report.issues.push(ConversionIssue {
+                        code: "psd.maskOriginAmbiguous",
+                        tier: CompatibilityTier::C,
+                    });
+                }
+                if mask_clipped {
+                    report.issues.push(ConversionIssue {
+                        code: "psd.maskOutsideCanvasClipped",
+                        tier: CompatibilityTier::C,
+                    });
+                }
                 return finish(
                     TiledRasterState {
                         resolution,
@@ -578,10 +740,12 @@ impl DocumentImporter for PsdImporter {
                 locked: false,
                 alpha_locked: false,
                 mask_present: false,
+                mask_linked: true,
                 mask_enabled: false,
                 mask_inverted: false,
                 mask_density: 1.,
                 tiles,
+                off_canvas_tiles: vec![],
                 mask_tiles: vec![],
             }],
         };
@@ -601,6 +765,21 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mask_origin_candidates_cover_mixed_large_cases_with_bounded_work() {
+        let small = super::mask_origin_candidates(0b11_1111);
+        assert!(small.contains(&0b00_0101));
+        assert!(small.contains(&0b11_1111));
+        assert!(small.contains(&0b11_1010));
+        assert!(small.len() <= 64);
+        let large = super::mask_origin_candidates(0b11_1111);
+        assert!(large.contains(&0b00_0001));
+        assert!(large.contains(&0b11_1111));
+        assert!(large.contains(&0b11_1110));
+        assert!(large.len() <= 64);
+        assert!(super::mask_origin_candidates(0).is_empty());
+    }
+
     #[test]
     fn adobe_rgb_profile_survives_psd_psb_and_native_roundtrips() {
         use super::*;
@@ -657,10 +836,16 @@ mod tests {
         let layer_data = reader.sized_section(false).unwrap();
         let mut density_baked = false;
         let mut discarded = false;
-        let layers =
-            layers::decode_with_metadata(layer_data, header, &mut density_baked, &mut discarded)
-                .unwrap()
-                .expect("raster layers");
+        let layers = layers::decode_with_metadata(
+            layer_data,
+            header,
+            &mut density_baked,
+            &mut discarded,
+            &mut false,
+            &mut false,
+        )
+        .unwrap()
+        .expect("raster layers");
         let result = PsdImporter
             .import(input, ImportOptions { allow_lossy: true })
             .unwrap();

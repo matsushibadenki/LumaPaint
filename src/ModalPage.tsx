@@ -1,3 +1,5 @@
+import {ImageResolutionDialog} from './components/ImageResolutionDialog';
+import {CanvasSizeDialog} from './components/CanvasSizeDialog';
 import {PixelSelectionDialog} from './components/PixelSelectionDialog';
 import {VectorAssetsDialog} from './components/VectorAssetsDialog';
 import {BulkVectorSelectionDialog} from './components/BulkVectorSelectionDialog';
@@ -76,6 +78,8 @@ export function ModalPage() {
   if (!context) return error ? <div role="alert">{error}<button onClick={close}>Close</button></div> : null;
   let content;
   switch (context.kind) {
+    case 'imageResolution': content=context.document&&<ImageResolutionDialog locale={context.locale} document={context.document} documentId={Number(context.action)} onClose={close} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;
+    case 'canvasSize': content=context.document&&<CanvasSizeDialog locale={context.locale} document={context.document} documentId={Number(context.action)} onClose={close}/>;break;
     case 'pixelSelection': content=context.document&&<PixelSelectionDialog locale={context.locale} document={context.document} action={context.action} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;
     case 'shortcuts': content=<ShortcutDialog locale={context.locale} onClose={close}/>;break;
     case 'layerMask': content=context.document&&<LayerMaskDialog locale={context.locale} document={context.document} targetId={context.action} onClose={close} onUpdate={document=>setContext(previous=>previous&&{...previous,document})} onBusyChange={busy=>invoke('modal_busy',{busy})}/>;break;

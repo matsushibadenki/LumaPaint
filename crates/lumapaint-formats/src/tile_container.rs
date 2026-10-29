@@ -2,8 +2,8 @@
 //! This is independent from the legacy `.lumapaint` v1 JSON format.
 use crc32fast::hash;
 use lumapaint_core::tiles::{
-    MaskTileState, RasterLayerState, RasterTileState, TileCoord, TiledRasterDocument,
-    TiledRasterState, TILE_SIZE,
+    MaskTileState, OffCanvasTileState, RasterLayerState, RasterTileState, TileCoord,
+    TiledRasterDocument, TiledRasterState, TILE_SIZE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,10 @@ struct Manifest {
     layers: Vec<LayerManifest>,
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayerManifest {
@@ -50,10 +54,17 @@ struct LayerManifest {
     alpha_locked: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     mask_present: bool,
+    #[serde(
+        default = "lumapaint_core::layer_mask::default_linked",
+        skip_serializing_if = "is_true"
+    )]
+    mask_linked: bool,
     mask_enabled: bool,
     mask_inverted: bool,
     mask_density: f32,
     tiles: Vec<TileReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    off_canvas_tiles: Vec<OffCanvasReference>,
     mask_tiles: Vec<TileReference>,
 }
 
@@ -61,6 +72,16 @@ struct LayerManifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TileReference {
     coord: TileCoord,
+    offset: u64,
+    length: u32,
+    checksum: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OffCanvasReference {
+    x: i32,
+    y: i32,
     offset: u64,
     length: u32,
     checksum: u32,
@@ -74,6 +95,23 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
         let tiles = references(&layer.tiles, &mut payload, |tile| {
             (&tile.coord, &tile.pixels)
         })?;
+        let off_canvas_tiles = layer
+            .off_canvas_tiles
+            .iter()
+            .map(|tile| {
+                let offset = u64::try_from(payload.len()).map_err(|_| "Tile offset overflow")?;
+                let length =
+                    u32::try_from(tile.pixels.len()).map_err(|_| "Tile length overflow")?;
+                payload.extend_from_slice(&tile.pixels);
+                Ok(OffCanvasReference {
+                    x: tile.x,
+                    y: tile.y,
+                    offset,
+                    length,
+                    checksum: hash(&tile.pixels),
+                })
+            })
+            .collect::<Result<Vec<_>, &str>>()?;
         let mask_tiles = references(&layer.mask_tiles, &mut payload, |tile| {
             (&tile.coord, &tile.values)
         })?;
@@ -90,10 +128,12 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
             // when neither enabled state nor sparse pixels already prove that
             // a mask exists; all other documents keep their previous encoding.
             mask_present: layer.mask_present && !layer.mask_enabled && layer.mask_tiles.is_empty(),
+            mask_linked: layer.mask_linked,
             mask_enabled: layer.mask_enabled,
             mask_inverted: layer.mask_inverted,
             mask_density: layer.mask_density,
             tiles,
+            off_canvas_tiles,
             mask_tiles,
         });
     }
@@ -159,6 +199,24 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
     let mut layers = Vec::with_capacity(manifest.layers.len());
     for layer in manifest.layers {
         let tiles = read_tiles(&layer.tiles, payload, PIXEL_TILE_BYTES, &mut cursor)?;
+        let off_canvas_tiles = layer
+            .off_canvas_tiles
+            .iter()
+            .map(|tile| {
+                let reference = TileReference {
+                    coord: TileCoord { x: 0, y: 0 },
+                    offset: tile.offset,
+                    length: tile.length,
+                    checksum: tile.checksum,
+                };
+                Ok(OffCanvasTileState {
+                    x: tile.x,
+                    y: tile.y,
+                    pixels: checked_bytes(&reference, payload, PIXEL_TILE_BYTES, &mut cursor)?
+                        .to_vec(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let mask_tiles = read_masks(&layer.mask_tiles, payload, MASK_TILE_BYTES, &mut cursor)?;
         layers.push(RasterLayerState {
             effects: layer.effects,
@@ -170,10 +228,12 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
             locked: layer.locked,
             alpha_locked: layer.alpha_locked,
             mask_present: layer.mask_present || layer.mask_enabled || !mask_tiles.is_empty(),
+            mask_linked: layer.mask_linked,
             mask_enabled: layer.mask_enabled,
             mask_inverted: layer.mask_inverted,
             mask_density: layer.mask_density,
             tiles,
+            off_canvas_tiles,
             mask_tiles,
         });
     }
@@ -311,6 +371,19 @@ mod tests {
         assert!(!saved.layers[0].effects.mask.as_ref().unwrap().linked);
         let restored = TiledRasterDocument::from_state(saved).unwrap();
         assert!(!restored.layers()[0].effects.mask.as_ref().unwrap().linked);
+    }
+
+    #[test]
+    fn sparse_mask_link_state_round_trips_and_default_omits_new_key() {
+        let mut state = sample_state();
+        let bytes = encode(&state).unwrap();
+        let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&bytes[HEADER_BYTES..HEADER_BYTES + len]).unwrap();
+        assert!(manifest["layers"][0].get("maskLinked").is_none());
+        assert!(decode(&bytes).unwrap().layers[0].mask_linked);
+        state.layers[0].mask_linked = false;
+        assert!(!decode(&encode(&state).unwrap()).unwrap().layers[0].mask_linked);
     }
 
     #[test]

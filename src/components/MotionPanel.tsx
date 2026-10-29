@@ -6,6 +6,7 @@ import { motionBehavior } from '../motion-behavior';
 import { motionLabels } from '../motion-i18n';
 import { curveDefaults, newMotion, type Curve, type MotionCatalog, type MotionClip, type MotionPreset, type MotionState, type VariableFont, defaultAxes } from '../motion-types';
 import { ColorPickerPopover } from './ColorPickerPopover';
+import { parseSignedNumber } from './SignedNumberInput';
 import './motion-panel.css';
 
 const curveRanges:Record<string,[number,number,number]>={exponent:[1,8,.1],overshoot:[0,8,.01],amplitude:[1,5,.01],period:[.05,2,.01],restitution:[.1,.95,.01],stiffness:[1,2000,1],damping:[.1,200,.1],mass:[.1,20,.1],count:[1,120,1],strength:[0,2,.01],points:[2,120,1],plateau:[.05,.95,.01],ratio:[1.01,100,.01],cycles:[1,30,.1],decay:[.1,30,.1]};
@@ -13,6 +14,16 @@ type Transport = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
 let catalogPromise:Promise<MotionCatalog>|undefined;
 let fontsPromise:Promise<VariableFont[]>|undefined;
 const defaultTransport:Transport=(command,args)=>invoke(command,args);
+function MotionNumber({label,value,change,min,max,step,unit,disabled,reportInvalid}:{label:string;value:number;change:(value:number)=>void;min:number;max:number;step:number;unit?:string;disabled:boolean;reportInvalid:(id:symbol,invalid:boolean)=>void}) {
+  const id=useRef(Symbol(label));
+  const [text,setText]=useState<string|null>(null);
+  const parsed=text===null?value:parseSignedNumber(text);
+  const valid=parsed!==null&&parsed>=min&&parsed<=max;
+  useEffect(()=>()=>reportInvalid(id.current,false),[reportInvalid]);
+  const update=(next:string)=>{setText(next);const number=parseSignedNumber(next);const ok=number!==null&&number>=min&&number<=max;reportInvalid(id.current,!ok);if(ok)change(number);};
+  const reset=()=>{setText(null);reportInvalid(id.current,false);};
+  return <label className="motion-number"><span>{label}</span><span><input aria-label={label} type="text" inputMode="decimal" role="spinbutton" aria-valuemin={min} aria-valuemax={max} aria-valuenow={valid?parsed:undefined} aria-invalid={!valid} value={text??String(value)} disabled={disabled} onChange={event=>update(event.currentTarget.value)} onBlur={reset} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();const next=Math.max(min,Math.min(max,(valid?parsed:value)+(event.key==='ArrowUp'?step:-step)));update(String(Number(next.toPrecision(12))));}else if(event.key==='Enter')event.currentTarget.blur();else if(event.key==='Escape'){event.preventDefault();reset();event.currentTarget.blur();}}}/>{unit&&<small>{unit}</small>}</span></label>;
+}
 export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;transport?:Transport}) {
   const t=motionLabels[locale];
   const [fonts,setFonts]=useState<VariableFont[]>([]);
@@ -22,6 +33,9 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
   const [tab,setTab]=useState<'catalog'|'clips'>('catalog'),[limit,setLimit]=useState(48);
   const [draft,setDraft]=useState<MotionClip|null>(null),[selectedId,setSelectedId]=useState('');
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[path,setPath]=useState('');
+  const invalidNumbers=useRef(new Set<symbol>());
+  const [hasInvalidNumber,setHasInvalidNumber]=useState(false);
+  const reportInvalid=useCallback((id:symbol,invalid:boolean)=>{if(invalid)invalidNumbers.current.add(id);else invalidNumbers.current.delete(id);setHasInvalidNumber(invalidNumbers.current.size>0);},[]);
   const alive=useRef(false),serial=useRef<Promise<unknown>>(Promise.resolve()),frame=useRef(0),pendingSeek=useRef<number|null>(null),seeking=useRef(false);
   const currentDocument=useRef<number|undefined>(undefined);
   currentDocument.current=state.data?.documentId;
@@ -77,7 +91,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
   }
   function selectClip(clip:MotionClip) {setSelectedId(clip.id);setDraft(structuredClone(clip));setPath(clip.path.map(point=>point.join(', ')).join('\n'));}
   const apply=async(duplicate=false)=>{
-    if(!draft||!state.data||!layer)return;
+    if(!draft||!state.data||!layer||invalidNumbers.current.size)return;
     const points:[number,number][]=[];
     for(const line of path.split('\n').filter(line=>line.trim())) {
       const components=line.split(',').map(value=>value.trim());
@@ -94,7 +108,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
     if(seeking.current)return;seeking.current=true;
     void(async()=>{try{while(pendingSeek.current!==null&&alive.current){const next=pendingSeek.current;pendingSeek.current=null;await request({action:'seek',frame:next},true);}}finally{seeking.current=false;}})();
   };
-  const number=(label:string,value:number,change:(value:number)=>void,min:number,max:number,step=1,unit?:string)=><label key={label} className="motion-number"><span>{label}</span><span><input aria-label={label} type="number" min={min} max={max} step={step} value={value} disabled={disabled} onChange={event=>{if(event.target.value!=='')change(Number(event.target.value));}}/>{unit&&<small>{unit}</small>}</span></label>;
+  const number=(label:string,value:number,change:(value:number)=>void,min:number,max:number,step=1,unit?:string)=><MotionNumber key={label} label={label} value={value} change={change} min={min} max={max} step={step} unit={unit} disabled={disabled} reportInvalid={reportInvalid}/>;
   const curve:Curve=draft?.curve??preset?.curve??curveDefaults.power;
   const curveLabel=(key:string)=>key in t?t[key as keyof typeof t]:key;
   const has=(...operations:string[])=>preset?.operations.some(operation=>operations.includes(operation))||preset?.actors?.some(actor=>actor.keys.some(key=>operations.some(op=>op in key.values||(op==='tint'&&'red' in key.values))))||false;
@@ -127,7 +141,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
           </div>;
         })}
       </section>}
-      {draft&&preset&&<section className="motion-parameters" aria-label={title(preset)}>
+      {draft&&preset&&<section key={draft.id} className="motion-parameters" aria-label={title(preset)}>
         <header><strong>{title(preset)}</strong><button className="motion-info" aria-label={motionBehavior(preset,locale)} title={motionBehavior(preset,locale)}>ⓘ</button><a href={catalog?.reference} target="_blank" rel="noreferrer" aria-label={t.reference} title={t.reference}>↗</a></header>
         <div className="motion-parameter-grid">
           {number(t.start,draft.start+1,value=>edit({start:value-1}),1,18000)}
@@ -180,7 +194,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
         {has('counter')&&<div className="motion-parameter-grid">{number(t.from,draft.numberFrom,value=>edit({numberFrom:value}),-1e12,1e12)}{number(t.to,draft.numberTo,value=>edit({numberTo:value}),-1e12,1e12)}</div>}
         {has('morph')&&<label className="motion-field"><span>{t.morphTarget}</span><textarea aria-label={t.morphTarget} rows={3} maxLength={32768} value={draft.morphTarget??''} disabled={disabled} onChange={event=>edit({morphTarget:event.target.value})}/></label>}
         {has('arc','follow')&&<label className="motion-field"><span>{t.path}<span className="motion-info" title={t.pathHint}> ⓘ</span></span><textarea aria-label={t.path} rows={3} value={path} disabled={disabled} onChange={event=>setPath(event.target.value)}/></label>}
-        <div className="motion-actions"><button disabled={disabled} onClick={()=>void apply()}>{busy?t.working:chosen?t.apply:t.add}</button>{chosen&&<><button disabled={disabled} onClick={()=>void apply(true)}>{t.duplicate}</button><button disabled={disabled} onClick={()=>void request({action:'removeMotion',documentId,layer:layerId,id:chosen.id}).then(success=>{if(success){setDraft(null);setSelectedId('');}})}>{t.delete}</button></>}</div>
+        <div className="motion-actions"><button disabled={disabled||hasInvalidNumber} onClick={()=>void apply()}>{busy?t.working:chosen?t.apply:t.add}</button>{chosen&&<><button disabled={disabled||hasInvalidNumber} onClick={()=>void apply(true)}>{t.duplicate}</button><button disabled={disabled} onClick={()=>void request({action:'removeMotion',documentId,layer:layerId,id:chosen.id}).then(success=>{if(success){setDraft(null);setSelectedId('');}})}>{t.delete}</button></>}</div>
       </section>}
     </div>
     {layer?.locked&&<div className="motion-status">{t.locked}</div>}

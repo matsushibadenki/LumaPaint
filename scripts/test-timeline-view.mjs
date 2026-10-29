@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {visibleFrames,visibleKeys,overlapsFrames,sampleTimelineKey} from '../src/timeline-view.ts';
+import {visibleFrames,visibleKeys,overlapsFrames,sampleTimelineKey,motionDragStart,snapTimelineFrame} from '../src/timeline-view.ts';
 const keys=Array.from({length:4096},(_,frame)=>({frame,value:frame,interpolation:'linear'}));
 for(const scroll of [0,16000,65000,200000]) {
   const range=visibleFrames(scroll,800,16,18000);
@@ -101,3 +101,17 @@ const unusual=[{...crossTracks[0],id:'__proto__'},{...crossTracks[3],id:'toStrin
 const unusualSelected=selectExposureTracks(unusual,{tracks:{},anchor:null},'__proto__',0,false,true);
 assert.deepEqual(Object.keys(unusualSelected.tracks),['__proto__'],'opaque track IDs remain ordinary selection keys');
 assert.deepEqual(exposureGroupMoveBounds(unusual,unusualSelected.tracks,12,false),{min:0,max:2},'unselected prototype-named tracks are not treated as selected');
+
+assert.equal(motionDragStart(10,20,2,24,8,16),12,'pointer and scroll displacement both affect the preview');
+assert.equal(motionDragStart(10,20,2,-1000,0,16),0,'motion stays at or after the first frame');
+assert.equal(motionDragStart(17950,20,2,1000,0,16),17960,'the repeated clip stays within the frame limit');
+assert.equal(motionDragStart(10,20,2,7,0,16),10,'sub-frame motion does not commit a new frame');
+console.log('Motion drag frame and scroll bounds passed');
+
+assert.deepEqual(snapTimelineFrame(9.6,10,16,0,99,true,true),{frame:10,snapped:true});
+assert.deepEqual(snapTimelineFrame(9.4,10,16,0,99,true,true),{frame:9,snapped:false});
+assert.deepEqual(snapTimelineFrame(9.6,10,16,0,99,false,true),{frame:10,snapped:false});
+assert.deepEqual(snapTimelineFrame(9.6,10,16,0,99,true,false),{frame:10,snapped:false});
+assert.deepEqual(snapTimelineFrame(99.8,100,4,0,99,true,true),{frame:99,snapped:false});
+assert.deepEqual(snapTimelineFrame(-3,0,16,0,99,true,true),{frame:0,snapped:false});
+console.log('Playhead snap threshold, disabled state and bounds passed');

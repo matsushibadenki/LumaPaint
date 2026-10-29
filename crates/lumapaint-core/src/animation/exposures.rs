@@ -203,7 +203,7 @@ impl Track {
             self.cels.insert(0, blank);
         }
     }
-    pub(super) fn refresh_exposures(&mut self, duration: u32) -> Result<(), String> {
+    pub(crate) fn refresh_exposures(&mut self, duration: u32) -> Result<(), String> {
         self.migrate_cels();
         self.ensure_exposure_ids();
         self.validate_exposures(duration)?;

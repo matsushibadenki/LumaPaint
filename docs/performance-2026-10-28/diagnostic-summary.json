@@ -1,0 +1,44 @@
+{
+  "small": {
+    "svg_parses": 0,
+    "cache_hits": 25,
+    "cache_misses": 0,
+    "cache_bypasses": 0
+  },
+  "medium": {
+    "svg_parses": 0,
+    "cache_hits": 25,
+    "cache_misses": 0,
+    "cache_bypasses": 0
+  },
+  "large": {
+    "svg_parses": 0,
+    "cache_hits": 25,
+    "cache_misses": 0,
+    "cache_bypasses": 0
+  },
+  "stress": {
+    "svg_parses": 25,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "cache_bypasses": 25
+  },
+  "artwork": {
+    "svg_parses": 0,
+    "cache_hits": 25,
+    "cache_misses": 0,
+    "cache_bypasses": 0
+  },
+  "text_blur": {
+    "svg_parses": 0,
+    "cache_hits": 25,
+    "cache_misses": 0,
+    "cache_bypasses": 0
+  },
+  "cache_totals": {
+    "admissions": 25,
+    "admitted_bytes": 62674660,
+    "evictions": 13,
+    "max_insertion_retained_bytes": 33519464
+  }
+}

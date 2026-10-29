@@ -13,15 +13,27 @@ pub enum PaperKind {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct PaperSettings {
+    #[serde(
+        default = "identity_transform",
+        skip_serializing_if = "is_identity_transform"
+    )]
+    pub texture_transform: [f32; 6],
     pub enabled: bool,
     pub kind: PaperKind,
     pub scale: f32,
     pub depth: f32,
     pub color: [u8; 3],
 }
+fn identity_transform() -> [f32; 6] {
+    [1., 0., 0., 1., 0., 0.]
+}
+fn is_identity_transform(t: &[f32; 6]) -> bool {
+    *t == identity_transform()
+}
 impl Default for PaperSettings {
     fn default() -> Self {
         Self {
+            texture_transform: identity_transform(),
             enabled: false,
             kind: PaperKind::ColdPress,
             scale: 1.,
@@ -32,7 +44,15 @@ impl Default for PaperSettings {
 }
 impl PaperSettings {
     pub fn validate(self) -> Result<(), String> {
-        if !self.scale.is_finite()
+        if self
+            .texture_transform
+            .iter()
+            .any(|v| !v.is_finite() || v.abs() > 1_000_000.)
+            || (self.texture_transform[0] * self.texture_transform[3]
+                - self.texture_transform[1] * self.texture_transform[2])
+                .abs()
+                < 1e-10
+            || !self.scale.is_finite()
             || !(0.25..=8.).contains(&self.scale)
             || !self.depth.is_finite()
             || !(0. ..=1.).contains(&self.depth)
@@ -53,10 +73,22 @@ impl PaperSettings {
             0.,
         ]
     }
+    pub fn texture_point(self, x: f32, y: f32) -> (f32, f32) {
+        let t = self.texture_transform;
+        (t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5])
+    }
+    pub fn transform_texture(&mut self, matrix: [f32; 6]) -> Result<(), String> {
+        self.texture_transform = crate::image_frame::multiply(
+            self.texture_transform,
+            crate::image_frame::inverse(matrix)?,
+        );
+        self.validate()
+    }
     pub fn color_at(self, x: f32, y: f32) -> [u8; 3] {
         if !self.enabled {
             return [255; 3];
         }
+        let (x, y) = self.texture_point(x, y);
         let shade = 1. - self.depth * 0.14 * (1. - relief(x, y, self.packed()));
         self.color.map(|v| (v as f32 * shade).round() as u8)
     }
@@ -75,6 +107,11 @@ pub enum Medium {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaterialSettings {
+    #[serde(
+        default = "identity_transform",
+        skip_serializing_if = "is_identity_transform"
+    )]
+    pub grain_transform: [f32; 6],
     pub enabled: bool,
     pub medium: Medium,
     pub loading: f32,
@@ -86,6 +123,7 @@ pub struct MaterialSettings {
 impl Default for MaterialSettings {
     fn default() -> Self {
         Self {
+            grain_transform: identity_transform(),
             enabled: false,
             medium: Medium::Graphite,
             loading: 0.65,
@@ -97,8 +135,29 @@ impl Default for MaterialSettings {
     }
 }
 impl MaterialSettings {
+    pub fn grain_point(self, x: f32, y: f32) -> (f32, f32) {
+        let t = self.grain_transform;
+        let snap = |v: f32| (v * 256. + 0.5).floor() / 256.;
+        (
+            snap(t[0] * x + t[2] * y + t[4]),
+            snap(t[1] * x + t[3] * y + t[5]),
+        )
+    }
+    pub fn transform_grain(&mut self, matrix: [f32; 6]) -> Result<(), String> {
+        self.grain_transform = crate::image_frame::multiply(
+            self.grain_transform,
+            crate::image_frame::inverse(matrix)?,
+        );
+        self.validate()
+    }
     pub fn validate(self) -> Result<(), String> {
         self.paper.validate()?;
+        let t = self.grain_transform;
+        if t.iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.)
+            || (t[0] * t[3] - t[1] * t[2]).abs() < 1e-10
+        {
+            return Err("Invalid grain transform".into());
+        }
         if [self.loading, self.wetness, self.granulation, self.edge]
             .iter()
             .any(|v| !v.is_finite() || !(0. ..=1.).contains(v))
@@ -168,13 +227,25 @@ pub fn relief(x: f32, y: f32, p: [f32; 4]) -> f32 {
 }
 /// Same arithmetic as natural_media.wgsl. Radial distance is normalized to tip radius.
 pub fn deposition(x: f32, y: f32, r: f32, m: [f32; 4], a: [f32; 4], p: [f32; 4]) -> f32 {
+    deposition_mapped(x, y, x, y, r, m, a, p)
+}
+pub fn deposition_mapped(
+    x: f32,
+    y: f32,
+    paper_x: f32,
+    paper_y: f32,
+    r: f32,
+    m: [f32; 4],
+    a: [f32; 4],
+    p: [f32; 4],
+) -> f32 {
     if m[0] < 0.5 {
         return 1.;
     }
     if m[1] <= 0. {
         return 0.;
     }
-    let h = relief(x, y, p);
+    let h = relief(paper_x, paper_y, p);
     let relief = 0.5 + (h - 0.5) * p[2];
     let grain = 1. - m[3] + m[3] * noise(x, y);
     let load = m[1];

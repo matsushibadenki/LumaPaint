@@ -1,0 +1,4262 @@
+[
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 0.293,
+    "worker_max_ms": 0.068,
+    "dispatch_max_ms": 0.183,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 21752,
+      "parsed_text_fingerprint": 23540
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 0.644,
+    "worker_max_ms": 0.044,
+    "dispatch_max_ms": 0.596,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 199,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 13459,
+      "parsed_text_fingerprint": 11915
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 0.557,
+    "worker_max_ms": 0.072,
+    "dispatch_max_ms": 0.478,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 24712,
+      "parsed_text_fingerprint": 19956
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 0.71,
+    "worker_max_ms": 0.044,
+    "dispatch_max_ms": 0.663,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 13377,
+      "parsed_text_fingerprint": 12584
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 0.083,
+    "worker_max_ms": 0.069,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 22585,
+      "parsed_text_fingerprint": 20088
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 0.107,
+    "worker_max_ms": 0.089,
+    "dispatch_max_ms": 0.005,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 23370,
+      "parsed_text_fingerprint": 18369
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 0.412,
+    "worker_max_ms": 0.101,
+    "dispatch_max_ms": 0.307,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 24837,
+      "parsed_text_fingerprint": 19333
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 1.422,
+    "worker_max_ms": 0.7,
+    "dispatch_max_ms": 0.006,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 13920,
+      "parsed_text_fingerprint": 12837
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 0.455,
+    "worker_max_ms": 0.042,
+    "dispatch_max_ms": 0.004,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 11795,
+      "parsed_text_fingerprint": 12791
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 0.168,
+    "worker_max_ms": 0.044,
+    "dispatch_max_ms": 0.02,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 15001,
+      "parsed_text_fingerprint": 11918
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.474,
+    "worker_max_ms": 0.047,
+    "dispatch_max_ms": 0.295,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 14333,
+      "parsed_text_fingerprint": 14042
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.501,
+    "worker_max_ms": 0.112,
+    "dispatch_max_ms": 0.141,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 22928,
+      "parsed_text_fingerprint": 37924
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 0.432,
+    "worker_max_ms": 0.098,
+    "dispatch_max_ms": 0.274,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 51545,
+      "parsed_text_fingerprint": 19789
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 0.79,
+    "worker_max_ms": 0.758,
+    "dispatch_max_ms": 0.025,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 16499,
+      "parsed_text_fingerprint": 14206
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 3.095,
+    "worker_max_ms": 2.104,
+    "dispatch_max_ms": 0.983,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 21581,
+      "parsed_text_fingerprint": 2058583
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 0.222,
+    "worker_max_ms": 0.071,
+    "dispatch_max_ms": 0.14,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 24415,
+      "parsed_text_fingerprint": 20709
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 12.53,
+    "worker_max_ms": 11.924,
+    "dispatch_max_ms": 0.897,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1792,
+      "parsed_text_cache_lookup": 567783,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 800924,
+      "svg_parse_including_text_shaping": 9944333
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 0.405,
+    "worker_max_ms": 0.073,
+    "dispatch_max_ms": 0.327,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 95529,
+      "parsed_text_fingerprint": 75757
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 0.302,
+    "worker_max_ms": 0.07,
+    "dispatch_max_ms": 0.228,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 98250,
+      "parsed_text_fingerprint": 78035
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 0.334,
+    "worker_max_ms": 0.098,
+    "dispatch_max_ms": 0.264,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 120668,
+      "parsed_text_fingerprint": 79247
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 5.005,
+    "worker_max_ms": 4.808,
+    "dispatch_max_ms": 1.307,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 292,
+      "parsed_text_cache_lookup": 107452,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 77605,
+      "svg_parse_including_text_shaping": 4648916
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 0.213,
+    "worker_max_ms": 0.202,
+    "dispatch_max_ms": 0.009,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 296212,
+      "parsed_text_fingerprint": 60261
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 0.188,
+    "worker_max_ms": 0.111,
+    "dispatch_max_ms": 0.104,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 176327,
+      "parsed_text_fingerprint": 77467
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 0.398,
+    "worker_max_ms": 0.118,
+    "dispatch_max_ms": 0.304,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 91584,
+      "parsed_text_fingerprint": 145914
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 0.301,
+    "worker_max_ms": 0.082,
+    "dispatch_max_ms": 0.23,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 106169,
+      "parsed_text_fingerprint": 79876
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 0.311,
+    "worker_max_ms": 0.137,
+    "dispatch_max_ms": 0.211,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 146446,
+      "parsed_text_fingerprint": 64459
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 0.272,
+    "worker_max_ms": 0.154,
+    "dispatch_max_ms": 0.11,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 266578,
+      "parsed_text_fingerprint": 72793
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 7.234,
+    "worker_max_ms": 6.089,
+    "dispatch_max_ms": 0.239,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1333,
+      "parsed_text_cache_lookup": 93817,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 78469,
+      "svg_parse_including_text_shaping": 6011084
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 3.046,
+    "worker_max_ms": 2.947,
+    "dispatch_max_ms": 1.535,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 417,
+      "parsed_text_cache_lookup": 1274406,
+      "parsed_text_cache_retirement": 84,
+      "parsed_text_fingerprint": 67945,
+      "svg_parse_including_text_shaping": 2885958
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 1.927,
+    "worker_max_ms": 0.461,
+    "dispatch_max_ms": 1.864,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 159573,
+      "parsed_text_fingerprint": 388746
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 2.001,
+    "worker_max_ms": 1.992,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 2244299,
+      "parsed_text_fingerprint": 74854
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 8.466,
+    "worker_max_ms": 6.587,
+    "dispatch_max_ms": 0.331,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1333,
+      "parsed_text_cache_lookup": 78204,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 450717,
+      "svg_parse_including_text_shaping": 12345417
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 27.997,
+    "worker_max_ms": 27.985,
+    "dispatch_max_ms": 0.023,
+    "counts": {
+      "parsed_text_cache_hits": 1593,
+      "parsed_text_cache_lookup_contended": 7,
+      "parsed_text_cache_misses": 7,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 7
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 8124,
+      "parsed_text_cache_lookup": 3112599,
+      "parsed_text_cache_retirement": 499,
+      "parsed_text_fingerprint": 153162,
+      "svg_parse_including_text_shaping": 137560376
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 0.734,
+    "worker_max_ms": 0.125,
+    "dispatch_max_ms": 0.619,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 399812,
+      "parsed_text_fingerprint": 159056
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 0.553,
+    "worker_max_ms": 0.103,
+    "dispatch_max_ms": 0.449,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 348708,
+      "parsed_text_fingerprint": 154179
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 15.287,
+    "worker_max_ms": 15.014,
+    "dispatch_max_ms": 1.728,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 27334,
+      "parsed_text_cache_lookup": 230339,
+      "parsed_text_cache_retirement": 332,
+      "parsed_text_fingerprint": 140530,
+      "svg_parse_including_text_shaping": 28317166
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 18.693,
+    "worker_max_ms": 16.588,
+    "dispatch_max_ms": 3.434,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2291,
+      "parsed_text_cache_lookup": 147667,
+      "parsed_text_cache_retirement": 376,
+      "parsed_text_fingerprint": 133799,
+      "svg_parse_including_text_shaping": 21486709
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 0.953,
+    "worker_max_ms": 0.193,
+    "dispatch_max_ms": 0.785,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 305542,
+      "parsed_text_fingerprint": 141706
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 3.104,
+    "worker_max_ms": 1.139,
+    "dispatch_max_ms": 2.366,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1242336,
+      "parsed_text_fingerprint": 579831
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 10.365,
+    "worker_max_ms": 7.372,
+    "dispatch_max_ms": 2.885,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 958,
+      "parsed_text_cache_lookup": 158548,
+      "parsed_text_cache_retirement": 124,
+      "parsed_text_fingerprint": 150334,
+      "svg_parse_including_text_shaping": 11195333
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 11.854,
+    "worker_max_ms": 4.467,
+    "dispatch_max_ms": 1.485,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1417,
+      "parsed_text_cache_lookup": 157501,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 160034,
+      "svg_parse_including_text_shaping": 4389292
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 3.819,
+    "worker_max_ms": 0.069,
+    "dispatch_max_ms": 1.518,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 135210,
+      "parsed_text_fingerprint": 115787
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 1.95,
+    "worker_max_ms": 0.292,
+    "dispatch_max_ms": 1.81,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 481990,
+      "parsed_text_fingerprint": 132455
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 17.532,
+    "worker_max_ms": 14.904,
+    "dispatch_max_ms": 0.287,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2500,
+      "parsed_text_cache_lookup": 169659,
+      "parsed_text_cache_retirement": 334,
+      "parsed_text_fingerprint": 148413,
+      "svg_parse_including_text_shaping": 38707875
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 84.819,
+    "worker_max_ms": 74.71,
+    "dispatch_max_ms": 8.647,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 3292,
+      "parsed_text_cache_lookup": 220699,
+      "parsed_text_cache_retirement": 417,
+      "parsed_text_fingerprint": 1917765,
+      "svg_parse_including_text_shaping": 123667042
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 1.677,
+    "worker_max_ms": 0.151,
+    "dispatch_max_ms": 1.512,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 306223,
+      "parsed_text_fingerprint": 136466
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 2.449,
+    "worker_max_ms": 0.694,
+    "dispatch_max_ms": 1.816,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 240358,
+      "parsed_text_fingerprint": 116153
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 10.394,
+    "worker_max_ms": 0.794,
+    "dispatch_max_ms": 8.619,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 199188,
+      "parsed_text_fingerprint": 141459
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 4.789,
+    "worker_max_ms": 0.045,
+    "dispatch_max_ms": 0.597,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 14085,
+      "parsed_text_fingerprint": 12209
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 0.386,
+    "worker_max_ms": 0.046,
+    "dispatch_max_ms": 0.172,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 15167,
+      "parsed_text_fingerprint": 13333
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 10.987,
+    "worker_max_ms": 0.082,
+    "dispatch_max_ms": 7.542,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 31795,
+      "parsed_text_fingerprint": 21501
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 0.874,
+    "worker_max_ms": 0.078,
+    "dispatch_max_ms": 0.789,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 27792,
+      "parsed_text_fingerprint": 22620
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 0.172,
+    "worker_max_ms": 0.076,
+    "dispatch_max_ms": 0.03,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 27084,
+      "parsed_text_fingerprint": 22338
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 5.0,
+    "worker_max_ms": 0.047,
+    "dispatch_max_ms": 4.949,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 15003,
+      "parsed_text_fingerprint": 12668
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 23.024,
+    "worker_max_ms": 2.718,
+    "dispatch_max_ms": 0.616,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 2684545,
+      "parsed_text_fingerprint": 13750
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 3.514,
+    "worker_max_ms": 0.229,
+    "dispatch_max_ms": 0.453,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 27627,
+      "parsed_text_fingerprint": 22080
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 3.795,
+    "worker_max_ms": 0.197,
+    "dispatch_max_ms": 2.376,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 27167,
+      "parsed_text_fingerprint": 21545
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 1.352,
+    "worker_max_ms": 0.044,
+    "dispatch_max_ms": 0.077,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 13542,
+      "parsed_text_fingerprint": 12665
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.93,
+    "worker_max_ms": 0.098,
+    "dispatch_max_ms": 0.827,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 51959,
+      "parsed_text_fingerprint": 20792
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.968,
+    "worker_max_ms": 0.071,
+    "dispatch_max_ms": 0.843,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 25582,
+      "parsed_text_fingerprint": 19831
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 1.129,
+    "worker_max_ms": 0.043,
+    "dispatch_max_ms": 0.934,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 13292,
+      "parsed_text_fingerprint": 12833
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 0.4,
+    "worker_max_ms": 0.073,
+    "dispatch_max_ms": 0.304,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 25835,
+      "parsed_text_fingerprint": 20333
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 0.076,
+    "worker_max_ms": 0.042,
+    "dispatch_max_ms": 0.022,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 12710,
+      "parsed_text_fingerprint": 12500
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 1.508,
+    "worker_max_ms": 0.959,
+    "dispatch_max_ms": 0.267,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 928919,
+      "parsed_text_fingerprint": 13087
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 9.525,
+    "worker_max_ms": 8.545,
+    "dispatch_max_ms": 2.997,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1375,
+      "parsed_text_cache_lookup": 476879,
+      "parsed_text_cache_retirement": 84,
+      "parsed_text_fingerprint": 71619,
+      "svg_parse_including_text_shaping": 8493542
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 2.437,
+    "worker_max_ms": 0.146,
+    "dispatch_max_ms": 2.145,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 93793,
+      "parsed_text_fingerprint": 107247
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 6.264,
+    "worker_max_ms": 6.06,
+    "dispatch_max_ms": 0.224,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 4,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1083,
+      "parsed_text_cache_lookup": 91504,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 73495,
+      "svg_parse_including_text_shaping": 5976416
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 6.135,
+    "worker_max_ms": 5.703,
+    "dispatch_max_ms": 0.538,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2083,
+      "parsed_text_cache_lookup": 114124,
+      "parsed_text_cache_retirement": 292,
+      "parsed_text_fingerprint": 74798,
+      "svg_parse_including_text_shaping": 9702751
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 0.317,
+    "worker_max_ms": 0.099,
+    "dispatch_max_ms": 0.245,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 127542,
+      "parsed_text_fingerprint": 77118
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 10.596,
+    "worker_max_ms": 4.723,
+    "dispatch_max_ms": 0.26,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1042,
+      "parsed_text_cache_lookup": 91464,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 410964,
+      "svg_parse_including_text_shaping": 4641416
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 18.574,
+    "worker_max_ms": 13.012,
+    "dispatch_max_ms": 4.49,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1749,
+      "parsed_text_cache_lookup": 69174,
+      "parsed_text_cache_retirement": 208,
+      "parsed_text_fingerprint": 63045,
+      "svg_parse_including_text_shaping": 23216542
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 5.639,
+    "worker_max_ms": 5.313,
+    "dispatch_max_ms": 0.159,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 708,
+      "parsed_text_cache_lookup": 64419,
+      "parsed_text_cache_retirement": 209,
+      "parsed_text_fingerprint": 55207,
+      "svg_parse_including_text_shaping": 5240292
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 1.01,
+    "worker_max_ms": 0.079,
+    "dispatch_max_ms": 0.921,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 48369,
+      "parsed_text_fingerprint": 86543
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 28.001,
+    "worker_max_ms": 14.105,
+    "dispatch_max_ms": 6.953,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 4,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 958,
+      "parsed_text_cache_lookup": 79801,
+      "parsed_text_cache_retirement": 417,
+      "parsed_text_fingerprint": 5748544,
+      "svg_parse_including_text_shaping": 20744500
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 13.054,
+    "worker_max_ms": 12.351,
+    "dispatch_max_ms": 0.618,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 2,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 666,
+      "parsed_text_cache_lookup": 96671,
+      "parsed_text_cache_retirement": 41,
+      "parsed_text_fingerprint": 76411,
+      "svg_parse_including_text_shaping": 12284042
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 21.089,
+    "worker_max_ms": 20.038,
+    "dispatch_max_ms": 0.019,
+    "counts": {
+      "parsed_text_cache_hits": 797,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2584,
+      "parsed_text_cache_lookup": 75446,
+      "parsed_text_cache_retirement": 334,
+      "parsed_text_fingerprint": 63988,
+      "svg_parse_including_text_shaping": 47878583
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 0.589,
+    "worker_max_ms": 0.073,
+    "dispatch_max_ms": 0.513,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 94835,
+      "parsed_text_fingerprint": 79338
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 13.227,
+    "worker_max_ms": 12.903,
+    "dispatch_max_ms": 0.144,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 13,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1166,
+      "parsed_text_cache_lookup": 103503,
+      "parsed_text_cache_retirement": 166,
+      "parsed_text_fingerprint": 78077,
+      "svg_parse_including_text_shaping": 12817625
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 4.513,
+    "worker_max_ms": 4.096,
+    "dispatch_max_ms": 0.275,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 958,
+      "parsed_text_cache_lookup": 120257,
+      "parsed_text_cache_retirement": 208,
+      "parsed_text_fingerprint": 99542,
+      "svg_parse_including_text_shaping": 3993875
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 18.882,
+    "worker_max_ms": 17.397,
+    "dispatch_max_ms": 0.254,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1374,
+      "parsed_text_cache_lookup": 10624339,
+      "parsed_text_cache_retirement": 292,
+      "parsed_text_fingerprint": 51383,
+      "svg_parse_including_text_shaping": 17342708
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 30.318,
+    "worker_max_ms": 26.612,
+    "dispatch_max_ms": 3.154,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 3584,
+      "parsed_text_cache_lookup": 191811,
+      "parsed_text_cache_retirement": 250,
+      "parsed_text_fingerprint": 156386,
+      "svg_parse_including_text_shaping": 66783167
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 13.139,
+    "worker_max_ms": 11.214,
+    "dispatch_max_ms": 2.307,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 527,
+      "parsed_text_cache_promotion_unneeded": 77,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 958,
+      "parsed_text_cache_lookup": 1335571,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 1206305,
+      "svg_parse_including_text_shaping": 20869084
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 14.78,
+    "worker_max_ms": 14.17,
+    "dispatch_max_ms": 1.302,
+    "counts": {
+      "parsed_text_cache_hits": 1596,
+      "parsed_text_cache_lookup_contended": 4,
+      "parsed_text_cache_misses": 4,
+      "parsed_text_cache_promotion_skipped": 44,
+      "parsed_text_cache_promotion_unneeded": 6,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 4
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4208,
+      "parsed_text_cache_lookup": 223333,
+      "parsed_text_cache_retirement": 376,
+      "parsed_text_fingerprint": 1158222,
+      "svg_parse_including_text_shaping": 38170916
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 6.988,
+    "worker_max_ms": 5.514,
+    "dispatch_max_ms": 1.805,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2209,
+      "parsed_text_cache_lookup": 265622,
+      "parsed_text_cache_retirement": 208,
+      "parsed_text_fingerprint": 176565,
+      "svg_parse_including_text_shaping": 10717209
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 14.88,
+    "worker_max_ms": 14.836,
+    "dispatch_max_ms": 0.689,
+    "counts": {
+      "parsed_text_cache_hits": 1596,
+      "parsed_text_cache_lookup_contended": 4,
+      "parsed_text_cache_misses": 4,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 4
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 3500,
+      "parsed_text_cache_lookup": 463614,
+      "parsed_text_cache_retirement": 459,
+      "parsed_text_fingerprint": 147419,
+      "svg_parse_including_text_shaping": 44011083
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 12.679,
+    "worker_max_ms": 7.908,
+    "dispatch_max_ms": 3.622,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 917,
+      "parsed_text_cache_lookup": 388665,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 873341,
+      "svg_parse_including_text_shaping": 7518625
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 7.824,
+    "worker_max_ms": 4.999,
+    "dispatch_max_ms": 2.195,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1000,
+      "parsed_text_cache_lookup": 1111447,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 234664,
+      "svg_parse_including_text_shaping": 4945333
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 16.265,
+    "worker_max_ms": 14.371,
+    "dispatch_max_ms": 1.201,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4459,
+      "parsed_text_cache_lookup": 174673,
+      "parsed_text_cache_retirement": 250,
+      "parsed_text_fingerprint": 146870,
+      "svg_parse_including_text_shaping": 31814917
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 23.19,
+    "worker_max_ms": 23.171,
+    "dispatch_max_ms": 0.143,
+    "counts": {
+      "parsed_text_cache_hits": 1594,
+      "parsed_text_cache_lookup_contended": 6,
+      "parsed_text_cache_misses": 6,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 6
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 6499,
+      "parsed_text_cache_lookup": 681523,
+      "parsed_text_cache_retirement": 625,
+      "parsed_text_fingerprint": 535119,
+      "svg_parse_including_text_shaping": 86533709
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 0.717,
+    "worker_max_ms": 0.111,
+    "dispatch_max_ms": 0.438,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 173869,
+      "parsed_text_fingerprint": 111163
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 0.803,
+    "worker_max_ms": 0.249,
+    "dispatch_max_ms": 0.647,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 163588,
+      "parsed_text_fingerprint": 258211
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 0.631,
+    "worker_max_ms": 0.095,
+    "dispatch_max_ms": 0.55,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 192253,
+      "parsed_text_fingerprint": 175087
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 13.995,
+    "worker_max_ms": 6.367,
+    "dispatch_max_ms": 1.814,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 500,
+      "parsed_text_cache_lookup": 563117,
+      "parsed_text_cache_retirement": 83,
+      "parsed_text_fingerprint": 289885,
+      "svg_parse_including_text_shaping": 6314541
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 23.49,
+    "worker_max_ms": 22.792,
+    "dispatch_max_ms": 0.351,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 8,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1416,
+      "parsed_text_cache_lookup": 177702,
+      "parsed_text_cache_retirement": 125,
+      "parsed_text_fingerprint": 145948,
+      "svg_parse_including_text_shaping": 32323459
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 10.339,
+    "worker_max_ms": 9.118,
+    "dispatch_max_ms": 2.499,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1792,
+      "parsed_text_cache_lookup": 192283,
+      "parsed_text_cache_retirement": 249,
+      "parsed_text_fingerprint": 156994,
+      "svg_parse_including_text_shaping": 15534625
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 1179,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 8.255,
+    "worker_max_ms": 8.184,
+    "dispatch_max_ms": 1.314,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 1292,
+      "parsed_text_cache_lookup": 106743,
+      "parsed_text_cache_retirement": 250,
+      "parsed_text_fingerprint": 116080,
+      "svg_parse_including_text_shaping": 7652292
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 4.824,
+    "worker_max_ms": 4.807,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 2381916,
+      "parsed_text_fingerprint": 2389836
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 1.076,
+    "worker_max_ms": 1.066,
+    "dispatch_max_ms": 0.005,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 199,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1014624,
+      "parsed_text_fingerprint": 19212
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 1.25,
+    "worker_max_ms": 1.133,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1086999,
+      "parsed_text_fingerprint": 16501
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 1.277,
+    "worker_max_ms": 1.262,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1203120,
+      "parsed_text_fingerprint": 20994
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 0.705,
+    "worker_max_ms": 0.695,
+    "dispatch_max_ms": 0.005,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 647505,
+      "parsed_text_fingerprint": 19871
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 0.522,
+    "worker_max_ms": 0.513,
+    "dispatch_max_ms": 0.004,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 471039,
+      "parsed_text_fingerprint": 15161
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 3.84,
+    "worker_max_ms": 2.828,
+    "dispatch_max_ms": 0.013,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 2784993,
+      "parsed_text_fingerprint": 14283
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 1.178,
+    "worker_max_ms": 0.902,
+    "dispatch_max_ms": 0.006,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 835792,
+      "parsed_text_fingerprint": 37166
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 1.813,
+    "worker_max_ms": 0.512,
+    "dispatch_max_ms": 0.03,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 469833,
+      "parsed_text_fingerprint": 14330
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 0.439,
+    "worker_max_ms": 0.433,
+    "dispatch_max_ms": 0.004,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 397591,
+      "parsed_text_fingerprint": 12004
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.74,
+    "worker_max_ms": 0.729,
+    "dispatch_max_ms": 0.006,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 677044,
+      "parsed_text_fingerprint": 19956
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.952,
+    "worker_max_ms": 0.839,
+    "dispatch_max_ms": 0.004,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 790583,
+      "parsed_text_fingerprint": 20379
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 2.083,
+    "worker_max_ms": 0.621,
+    "dispatch_max_ms": 0.427,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 575791,
+      "parsed_text_fingerprint": 14824
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 0.775,
+    "worker_max_ms": 0.71,
+    "dispatch_max_ms": 0.011,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 659166,
+      "parsed_text_fingerprint": 19745
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 2.284,
+    "worker_max_ms": 1.127,
+    "dispatch_max_ms": 0.327,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1029755,
+      "parsed_text_fingerprint": 47668
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 1.338,
+    "worker_max_ms": 0.994,
+    "dispatch_max_ms": 0.337,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 942534,
+      "parsed_text_fingerprint": 18838
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 23.218,
+    "worker_max_ms": 21.237,
+    "dispatch_max_ms": 0.912,
+    "counts": {
+      "parsed_text_cache_hits": 796,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 4,
+      "parsed_text_cache_misses": 4,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 4
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 12499,
+      "parsed_text_cache_lookup": 4610910,
+      "parsed_text_cache_retirement": 1750,
+      "parsed_text_fingerprint": 174038,
+      "svg_parse_including_text_shaping": 41192375
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 9.793,
+    "worker_max_ms": 4.714,
+    "dispatch_max_ms": 5.004,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 7023176,
+      "parsed_text_fingerprint": 59167
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 5.552,
+    "worker_max_ms": 2.255,
+    "dispatch_max_ms": 3.291,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 4154209,
+      "parsed_text_fingerprint": 60617
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 12.899,
+    "worker_max_ms": 12.777,
+    "dispatch_max_ms": 1.164,
+    "counts": {
+      "parsed_text_cache_hits": 795,
+      "parsed_text_cache_lookup_contended": 5,
+      "parsed_text_cache_misses": 5,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 5
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 19668,
+      "parsed_text_cache_lookup": 3048092,
+      "parsed_text_cache_retirement": 3417,
+      "parsed_text_fingerprint": 174159,
+      "svg_parse_including_text_shaping": 28502791
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 8.108,
+    "worker_max_ms": 7.824,
+    "dispatch_max_ms": 1.669,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 31541,
+      "parsed_text_cache_lookup": 2780705,
+      "parsed_text_cache_retirement": 959,
+      "parsed_text_fingerprint": 78758,
+      "svg_parse_including_text_shaping": 7073042
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 3.18,
+    "worker_max_ms": 1.96,
+    "dispatch_max_ms": 0.011,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 6256038,
+      "parsed_text_fingerprint": 135657
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 3.977,
+    "worker_max_ms": 2.811,
+    "dispatch_max_ms": 1.453,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 6460412,
+      "parsed_text_fingerprint": 68421
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 15.802,
+    "worker_max_ms": 14.388,
+    "dispatch_max_ms": 7.398,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 2875,
+      "parsed_text_cache_lookup": 10888620,
+      "parsed_text_cache_retirement": 375,
+      "parsed_text_fingerprint": 86582,
+      "svg_parse_including_text_shaping": 10841750
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 13.401,
+    "worker_max_ms": 13.261,
+    "dispatch_max_ms": 0.423,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 9833,
+      "parsed_text_cache_lookup": 4754925,
+      "parsed_text_cache_retirement": 1292,
+      "parsed_text_fingerprint": 72819,
+      "svg_parse_including_text_shaping": 18662751
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 3.948,
+    "worker_max_ms": 3.88,
+    "dispatch_max_ms": 0.021,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 12406250,
+      "parsed_text_fingerprint": 518334
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 1.116,
+    "worker_max_ms": 1.013,
+    "dispatch_max_ms": 0.163,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 3627208,
+      "parsed_text_fingerprint": 82915
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 27.859,
+    "worker_max_ms": 26.788,
+    "dispatch_max_ms": 1.134,
+    "counts": {
+      "parsed_text_cache_hits": 796,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 4,
+      "parsed_text_cache_misses": 4,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 4
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 14500,
+      "parsed_text_cache_lookup": 15986612,
+      "parsed_text_cache_retirement": 2208,
+      "parsed_text_fingerprint": 76776,
+      "svg_parse_including_text_shaping": 56474083
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 21.199,
+    "worker_max_ms": 19.295,
+    "dispatch_max_ms": 0.245,
+    "counts": {
+      "parsed_text_cache_hits": 797,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 11291,
+      "parsed_text_cache_lookup": 11588947,
+      "parsed_text_cache_retirement": 1791,
+      "parsed_text_fingerprint": 65971,
+      "svg_parse_including_text_shaping": 36730665
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 2.647,
+    "worker_max_ms": 2.451,
+    "dispatch_max_ms": 0.099,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 6809115,
+      "parsed_text_fingerprint": 70538
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 3.386,
+    "worker_max_ms": 1.572,
+    "dispatch_max_ms": 1.577,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_unneeded": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 3178459,
+      "parsed_text_fingerprint": 65699
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 7.934,
+    "worker_max_ms": 1.113,
+    "dispatch_max_ms": 3.222,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 3755760,
+      "parsed_text_fingerprint": 96628
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 24.162,
+    "worker_max_ms": 21.071,
+    "dispatch_max_ms": 14.364,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 7918,
+      "parsed_text_cache_lookup": 13573872,
+      "parsed_text_cache_retirement": 1624,
+      "parsed_text_fingerprint": 280838,
+      "svg_parse_including_text_shaping": 37200126
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 10.173,
+    "worker_max_ms": 4.034,
+    "dispatch_max_ms": 8.925,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 12455437,
+      "parsed_text_fingerprint": 183631
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 6.073,
+    "worker_max_ms": 3.223,
+    "dispatch_max_ms": 3.733,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 11553844,
+      "parsed_text_fingerprint": 2394615
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 35.83,
+    "worker_max_ms": 31.667,
+    "dispatch_max_ms": 3.204,
+    "counts": {
+      "parsed_text_cache_hits": 1593,
+      "parsed_text_cache_insert_contended": 2,
+      "parsed_text_cache_lookup_contended": 7,
+      "parsed_text_cache_misses": 7,
+      "parsed_text_cache_source_comparisons": 1598,
+      "svg_parses": 7
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 20875,
+      "parsed_text_cache_lookup": 15147053,
+      "parsed_text_cache_retirement": 3124,
+      "parsed_text_fingerprint": 149433,
+      "svg_parse_including_text_shaping": 109095835
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 37.433,
+    "worker_max_ms": 32.321,
+    "dispatch_max_ms": 5.046,
+    "counts": {
+      "parsed_text_cache_hits": 1595,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 5,
+      "parsed_text_cache_misses": 5,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 5
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 19834,
+      "parsed_text_cache_lookup": 15209020,
+      "parsed_text_cache_retirement": 2876,
+      "parsed_text_fingerprint": 541764,
+      "svg_parse_including_text_shaping": 80751748
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 13.917,
+    "worker_max_ms": 11.254,
+    "dispatch_max_ms": 4.9,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 50120372,
+      "parsed_text_fingerprint": 132570
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 7.339,
+    "worker_max_ms": 3.991,
+    "dispatch_max_ms": 3.539,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 17784757,
+      "parsed_text_fingerprint": 121662
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 65.066,
+    "worker_max_ms": 51.483,
+    "dispatch_max_ms": 14.273,
+    "counts": {
+      "parsed_text_cache_hits": 1592,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 8,
+      "parsed_text_cache_misses": 8,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 8
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 31539,
+      "parsed_text_cache_lookup": 28326896,
+      "parsed_text_cache_retirement": 4251,
+      "parsed_text_fingerprint": 141085,
+      "svg_parse_including_text_shaping": 224065126
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 40.311,
+    "worker_max_ms": 39.556,
+    "dispatch_max_ms": 3.655,
+    "counts": {
+      "parsed_text_cache_hits": 1592,
+      "parsed_text_cache_insert_contended": 2,
+      "parsed_text_cache_lookup_contended": 8,
+      "parsed_text_cache_misses": 8,
+      "parsed_text_cache_source_comparisons": 1598,
+      "svg_parses": 8
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 28375,
+      "parsed_text_cache_lookup": 11734484,
+      "parsed_text_cache_retirement": 4458,
+      "parsed_text_fingerprint": 202079,
+      "svg_parse_including_text_shaping": 158179998
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 14.148,
+    "worker_max_ms": 4.874,
+    "dispatch_max_ms": 10.195,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 15904447,
+      "parsed_text_fingerprint": 3253680
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 10.614,
+    "worker_max_ms": 4.165,
+    "dispatch_max_ms": 5.555,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 8616435,
+      "parsed_text_fingerprint": 416245
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 43.67,
+    "worker_max_ms": 42.559,
+    "dispatch_max_ms": 12.412,
+    "counts": {
+      "parsed_text_cache_hits": 1594,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 6,
+      "parsed_text_cache_misses": 6,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 6
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 24918,
+      "parsed_text_cache_lookup": 19166793,
+      "parsed_text_cache_retirement": 3542,
+      "parsed_text_fingerprint": 182234,
+      "svg_parse_including_text_shaping": 153953084
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 40.094,
+    "worker_max_ms": 34.121,
+    "dispatch_max_ms": 6.297,
+    "counts": {
+      "parsed_text_cache_hits": 1594,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 6,
+      "parsed_text_cache_misses": 6,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 6
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 25041,
+      "parsed_text_cache_lookup": 14203103,
+      "parsed_text_cache_retirement": 2792,
+      "parsed_text_fingerprint": 918358,
+      "svg_parse_including_text_shaping": 105436792
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 6.423,
+    "worker_max_ms": 4.195,
+    "dispatch_max_ms": 5.767,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 14372651,
+      "parsed_text_fingerprint": 203789
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 15.202,
+    "worker_max_ms": 6.286,
+    "dispatch_max_ms": 7.383,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_unneeded": 1600,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 29609874,
+      "parsed_text_fingerprint": 119434
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 1,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 47.835,
+    "worker_max_ms": 40.733,
+    "dispatch_max_ms": 14.206,
+    "counts": {
+      "parsed_text_cache_hits": 1593,
+      "parsed_text_cache_lookup_contended": 7,
+      "parsed_text_cache_misses": 7,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 7
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 29040,
+      "parsed_text_cache_lookup": 25971748,
+      "parsed_text_cache_retirement": 4291,
+      "parsed_text_fingerprint": 140441,
+      "svg_parse_including_text_shaping": 226045957
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 0.455,
+    "worker_max_ms": 0.436,
+    "dispatch_max_ms": 0.003,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 392134,
+      "parsed_text_fingerprint": 14932
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 200,
+    "wall_ms": 0.892,
+    "worker_max_ms": 0.722,
+    "dispatch_max_ms": 0.007,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_promotion_unneeded": 1,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 659706,
+      "parsed_text_fingerprint": 20092
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 1.053,
+    "worker_max_ms": 0.988,
+    "dispatch_max_ms": 0.042,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 867757,
+      "parsed_text_fingerprint": 15590
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 200,
+    "wall_ms": 1.473,
+    "worker_max_ms": 1.387,
+    "dispatch_max_ms": 0.005,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1306925,
+      "parsed_text_fingerprint": 21959
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 1.248,
+    "worker_max_ms": 1.056,
+    "dispatch_max_ms": 0.165,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1009042,
+      "parsed_text_fingerprint": 17747
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 200,
+    "wall_ms": 1.188,
+    "worker_max_ms": 0.963,
+    "dispatch_max_ms": 0.003,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 919950,
+      "parsed_text_fingerprint": 14065
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 1.282,
+    "worker_max_ms": 1.227,
+    "dispatch_max_ms": 0.04,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1183817,
+      "parsed_text_fingerprint": 13563
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 200,
+    "wall_ms": 1.073,
+    "worker_max_ms": 0.95,
+    "dispatch_max_ms": 0.017,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 873669,
+      "parsed_text_fingerprint": 39335
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 0.899,
+    "worker_max_ms": 0.741,
+    "dispatch_max_ms": 0.005,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 701746,
+      "parsed_text_fingerprint": 13073
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 200,
+    "wall_ms": 0.758,
+    "worker_max_ms": 0.628,
+    "dispatch_max_ms": 0.049,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 562868,
+      "parsed_text_fingerprint": 13614
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 0.569,
+    "worker_max_ms": 0.553,
+    "dispatch_max_ms": 0.013,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 449335,
+      "parsed_text_fingerprint": 13590
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 200,
+    "wall_ms": 2.025,
+    "worker_max_ms": 1.133,
+    "dispatch_max_ms": 0.541,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1073621,
+      "parsed_text_fingerprint": 23176
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 3.878,
+    "worker_max_ms": 3.156,
+    "dispatch_max_ms": 0.562,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 3090505,
+      "parsed_text_fingerprint": 25294
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 200,
+    "wall_ms": 1.887,
+    "worker_max_ms": 1.335,
+    "dispatch_max_ms": 0.073,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1281912,
+      "parsed_text_fingerprint": 20031
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 1.596,
+    "worker_max_ms": 1.175,
+    "dispatch_max_ms": 0.396,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 1079921,
+      "parsed_text_fingerprint": 23627
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 1,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 200,
+    "wall_ms": 0.7,
+    "worker_max_ms": 0.65,
+    "dispatch_max_ms": 0.03,
+    "counts": {
+      "parsed_text_cache_hits": 200,
+      "parsed_text_cache_source_comparisons": 200
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 560744,
+      "parsed_text_fingerprint": 58329
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 6.392,
+    "worker_max_ms": 6.146,
+    "dispatch_max_ms": 1.771,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4167,
+      "parsed_text_cache_lookup": 2334902,
+      "parsed_text_cache_retirement": 500,
+      "parsed_text_fingerprint": 70160,
+      "svg_parse_including_text_shaping": 5575500
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 800,
+    "wall_ms": 6.592,
+    "worker_max_ms": 6.364,
+    "dispatch_max_ms": 3.4,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 77,
+      "parsed_text_cache_promotion_unneeded": 10,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4459,
+      "parsed_text_cache_lookup": 3670547,
+      "parsed_text_cache_retirement": 667,
+      "parsed_text_fingerprint": 107533,
+      "svg_parse_including_text_shaping": 5290875
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 10.804,
+    "worker_max_ms": 10.228,
+    "dispatch_max_ms": 0.93,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 112,
+      "parsed_text_cache_promotion_unneeded": 9,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5916,
+      "parsed_text_cache_lookup": 3424202,
+      "parsed_text_cache_retirement": 1000,
+      "parsed_text_fingerprint": 65377,
+      "svg_parse_including_text_shaping": 16995666
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 800,
+    "wall_ms": 94.467,
+    "worker_max_ms": 94.206,
+    "dispatch_max_ms": 1.627,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 8124,
+      "parsed_text_cache_lookup": 76032585,
+      "parsed_text_cache_retirement": 1417,
+      "parsed_text_fingerprint": 86697,
+      "svg_parse_including_text_shaping": 36149084
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 189.685,
+    "worker_max_ms": 179.74,
+    "dispatch_max_ms": 9.945,
+    "counts": {
+      "parsed_text_cache_hits": 796,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 4,
+      "parsed_text_cache_misses": 4,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 4
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 14333,
+      "parsed_text_cache_lookup": 65772814,
+      "parsed_text_cache_retirement": 2750,
+      "parsed_text_fingerprint": 1670199,
+      "svg_parse_including_text_shaping": 422367375
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 800,
+    "wall_ms": 63.285,
+    "worker_max_ms": 35.88,
+    "dispatch_max_ms": 2.176,
+    "counts": {
+      "parsed_text_cache_hits": 800,
+      "parsed_text_cache_promotion_skipped": 614,
+      "parsed_text_cache_promotion_unneeded": 89,
+      "parsed_text_cache_source_comparisons": 800
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 90492081,
+      "parsed_text_fingerprint": 89423
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 32.457,
+    "worker_max_ms": 17.675,
+    "dispatch_max_ms": 14.72,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 16,
+      "parsed_text_cache_promotion_unneeded": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4333,
+      "parsed_text_cache_lookup": 9583423,
+      "parsed_text_cache_retirement": 542,
+      "parsed_text_fingerprint": 116573,
+      "svg_parse_including_text_shaping": 15959917
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 800,
+    "wall_ms": 12.002,
+    "worker_max_ms": 11.252,
+    "dispatch_max_ms": 1.711,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5125,
+      "parsed_text_cache_lookup": 3485161,
+      "parsed_text_cache_retirement": 708,
+      "parsed_text_fingerprint": 186829,
+      "svg_parse_including_text_shaping": 10077583
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 22.044,
+    "worker_max_ms": 21.575,
+    "dispatch_max_ms": 2.003,
+    "counts": {
+      "parsed_text_cache_hits": 797,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 12583,
+      "parsed_text_cache_lookup": 8947672,
+      "parsed_text_cache_retirement": 2208,
+      "parsed_text_fingerprint": 80042,
+      "svg_parse_including_text_shaping": 55424251
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 800,
+    "wall_ms": 20.219,
+    "worker_max_ms": 19.948,
+    "dispatch_max_ms": 1.436,
+    "counts": {
+      "parsed_text_cache_hits": 799,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 38,
+      "parsed_text_cache_promotion_unneeded": 5,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5166,
+      "parsed_text_cache_lookup": 13228849,
+      "parsed_text_cache_retirement": 459,
+      "parsed_text_fingerprint": 96540,
+      "svg_parse_including_text_shaping": 16695958
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 22.364,
+    "worker_max_ms": 21.816,
+    "dispatch_max_ms": 0.006,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 374,
+      "parsed_text_cache_promotion_unneeded": 51,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5292,
+      "parsed_text_cache_lookup": 9630761,
+      "parsed_text_cache_retirement": 2000,
+      "parsed_text_fingerprint": 2108214,
+      "svg_parse_including_text_shaping": 29542458
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 800,
+    "wall_ms": 33.074,
+    "worker_max_ms": 22.426,
+    "dispatch_max_ms": 17.18,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 10250,
+      "parsed_text_cache_lookup": 18913653,
+      "parsed_text_cache_retirement": 1667,
+      "parsed_text_fingerprint": 125374,
+      "svg_parse_including_text_shaping": 36304208
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 48.194,
+    "worker_max_ms": 48.169,
+    "dispatch_max_ms": 0.009,
+    "counts": {
+      "parsed_text_cache_hits": 795,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 5,
+      "parsed_text_cache_misses": 5,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 5
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 14582,
+      "parsed_text_cache_lookup": 12016785,
+      "parsed_text_cache_retirement": 2000,
+      "parsed_text_fingerprint": 167120,
+      "svg_parse_including_text_shaping": 102022666
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 800,
+    "wall_ms": 9.448,
+    "worker_max_ms": 8.904,
+    "dispatch_max_ms": 1.981,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 257,
+      "parsed_text_cache_promotion_unneeded": 35,
+      "parsed_text_cache_source_comparisons": 799,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 4750,
+      "parsed_text_cache_lookup": 7255503,
+      "parsed_text_cache_retirement": 1374,
+      "parsed_text_fingerprint": 78300,
+      "svg_parse_including_text_shaping": 9413167
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 10.894,
+    "worker_max_ms": 10.484,
+    "dispatch_max_ms": 0.533,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 13,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 8542,
+      "parsed_text_cache_lookup": 4317970,
+      "parsed_text_cache_retirement": 1083,
+      "parsed_text_fingerprint": 78030,
+      "svg_parse_including_text_shaping": 13680875
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 4,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 800,
+    "wall_ms": 13.047,
+    "worker_max_ms": 11.623,
+    "dispatch_max_ms": 1.313,
+    "counts": {
+      "parsed_text_cache_hits": 798,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 800,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 8541,
+      "parsed_text_cache_lookup": 3884008,
+      "parsed_text_cache_retirement": 959,
+      "parsed_text_fingerprint": 84388,
+      "svg_parse_including_text_shaping": 21691750
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 41.69,
+    "worker_max_ms": 36.218,
+    "dispatch_max_ms": 5.602,
+    "counts": {
+      "parsed_text_cache_hits": 1593,
+      "parsed_text_cache_insert_contended": 2,
+      "parsed_text_cache_lookup_contended": 7,
+      "parsed_text_cache_misses": 7,
+      "parsed_text_cache_source_comparisons": 1598,
+      "svg_parses": 7
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 27249,
+      "parsed_text_cache_lookup": 17580547,
+      "parsed_text_cache_retirement": 4958,
+      "parsed_text_fingerprint": 386551,
+      "svg_parse_including_text_shaping": 109112291
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 0,
+    "ops": 1600,
+    "wall_ms": 7.134,
+    "worker_max_ms": 5.93,
+    "dispatch_max_ms": 1.714,
+    "counts": {
+      "parsed_text_cache_hits": 1600,
+      "parsed_text_cache_promotion_skipped": 1282,
+      "parsed_text_cache_promotion_unneeded": 182,
+      "parsed_text_cache_source_comparisons": 1600
+    },
+    "host_ns": {
+      "parsed_text_cache_lookup": 21840544,
+      "parsed_text_fingerprint": 480032
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 21.069,
+    "worker_max_ms": 19.06,
+    "dispatch_max_ms": 1.965,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 1205,
+      "parsed_text_cache_promotion_unneeded": 171,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5417,
+      "parsed_text_cache_lookup": 28361278,
+      "parsed_text_cache_retirement": 708,
+      "parsed_text_fingerprint": 7864962,
+      "svg_parse_including_text_shaping": 12976875
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 1,
+    "ops": 1600,
+    "wall_ms": 17.522,
+    "worker_max_ms": 13.096,
+    "dispatch_max_ms": 6.661,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 7459,
+      "parsed_text_cache_lookup": 10292245,
+      "parsed_text_cache_retirement": 792,
+      "parsed_text_fingerprint": 161080,
+      "svg_parse_including_text_shaping": 20913292
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 37.697,
+    "worker_max_ms": 31.52,
+    "dispatch_max_ms": 6.156,
+    "counts": {
+      "parsed_text_cache_hits": 1592,
+      "parsed_text_cache_insert_contended": 2,
+      "parsed_text_cache_lookup_contended": 8,
+      "parsed_text_cache_misses": 8,
+      "parsed_text_cache_source_comparisons": 1598,
+      "svg_parses": 8
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 28418,
+      "parsed_text_cache_lookup": 17252563,
+      "parsed_text_cache_retirement": 4874,
+      "parsed_text_fingerprint": 180146,
+      "svg_parse_including_text_shaping": 131522249
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 2,
+    "ops": 1600,
+    "wall_ms": 49.161,
+    "worker_max_ms": 48.09,
+    "dispatch_max_ms": 7.737,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_promotion_skipped": 121,
+      "parsed_text_cache_promotion_unneeded": 18,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 10209,
+      "parsed_text_cache_lookup": 27089115,
+      "parsed_text_cache_retirement": 917,
+      "parsed_text_fingerprint": 205830,
+      "svg_parse_including_text_shaping": 97648584
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 23.184,
+    "worker_max_ms": 22.675,
+    "dispatch_max_ms": 12.53,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 996,
+      "parsed_text_cache_promotion_unneeded": 138,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 7916,
+      "parsed_text_cache_lookup": 75537323,
+      "parsed_text_cache_retirement": 1166,
+      "parsed_text_fingerprint": 148719,
+      "svg_parse_including_text_shaping": 17683917
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 3,
+    "ops": 1600,
+    "wall_ms": 47.078,
+    "worker_max_ms": 46.68,
+    "dispatch_max_ms": 1.308,
+    "counts": {
+      "parsed_text_cache_hits": 1592,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 8,
+      "parsed_text_cache_misses": 8,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 8
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 27958,
+      "parsed_text_cache_lookup": 13341861,
+      "parsed_text_cache_retirement": 4375,
+      "parsed_text_fingerprint": 155188,
+      "svg_parse_including_text_shaping": 220309207
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 119.056,
+    "worker_max_ms": 52.128,
+    "dispatch_max_ms": 66.268,
+    "counts": {
+      "parsed_text_cache_hits": 1595,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 5,
+      "parsed_text_cache_misses": 5,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 5
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 16749,
+      "parsed_text_cache_lookup": 12134320,
+      "parsed_text_cache_retirement": 3123,
+      "parsed_text_fingerprint": 41788675,
+      "svg_parse_including_text_shaping": 113588668
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 4,
+    "ops": 1600,
+    "wall_ms": 15.649,
+    "worker_max_ms": 12.944,
+    "dispatch_max_ms": 5.403,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 535,
+      "parsed_text_cache_promotion_unneeded": 63,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 5084,
+      "parsed_text_cache_lookup": 9445493,
+      "parsed_text_cache_retirement": 875,
+      "parsed_text_fingerprint": 178903,
+      "svg_parse_including_text_shaping": 8874209
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 92.06,
+    "worker_max_ms": 70.347,
+    "dispatch_max_ms": 72.892,
+    "counts": {
+      "parsed_text_cache_hits": 1595,
+      "parsed_text_cache_insert_contended": 1,
+      "parsed_text_cache_lookup_contended": 5,
+      "parsed_text_cache_misses": 5,
+      "parsed_text_cache_promotion_skipped": 252,
+      "parsed_text_cache_promotion_unneeded": 35,
+      "parsed_text_cache_source_comparisons": 1599,
+      "svg_parses": 5
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 12957,
+      "parsed_text_cache_lookup": 9653481,
+      "parsed_text_cache_retirement": 2210,
+      "parsed_text_fingerprint": 138218,
+      "svg_parse_including_text_shaping": 97145083
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 5,
+    "ops": 1600,
+    "wall_ms": 102.265,
+    "worker_max_ms": 84.539,
+    "dispatch_max_ms": 65.844,
+    "counts": {
+      "parsed_text_cache_hits": 1597,
+      "parsed_text_cache_lookup_contended": 3,
+      "parsed_text_cache_misses": 3,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 3
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 11709,
+      "parsed_text_cache_lookup": 38607588,
+      "parsed_text_cache_retirement": 1292,
+      "parsed_text_fingerprint": 140924,
+      "svg_parse_including_text_shaping": 198647124
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 108.807,
+    "worker_max_ms": 84.98,
+    "dispatch_max_ms": 68.654,
+    "counts": {
+      "parsed_text_cache_hits": 1594,
+      "parsed_text_cache_insert_contended": 2,
+      "parsed_text_cache_lookup_contended": 6,
+      "parsed_text_cache_misses": 6,
+      "parsed_text_cache_source_comparisons": 1598,
+      "svg_parses": 6
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 30250,
+      "parsed_text_cache_lookup": 20050673,
+      "parsed_text_cache_retirement": 3166,
+      "parsed_text_fingerprint": 150718,
+      "svg_parse_including_text_shaping": 193947500
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 6,
+    "ops": 1600,
+    "wall_ms": 16.46,
+    "worker_max_ms": 10.985,
+    "dispatch_max_ms": 7.232,
+    "counts": {
+      "parsed_text_cache_hits": 1598,
+      "parsed_text_cache_lookup_contended": 2,
+      "parsed_text_cache_misses": 2,
+      "parsed_text_cache_promotion_skipped": 767,
+      "parsed_text_cache_promotion_unneeded": 108,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 2
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 8458,
+      "parsed_text_cache_lookup": 14355999,
+      "parsed_text_cache_retirement": 1375,
+      "parsed_text_fingerprint": 255116,
+      "svg_parse_including_text_shaping": 19045584
+    }
+  },
+  {
+    "mode": "parallel",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 14.373,
+    "worker_max_ms": 7.338,
+    "dispatch_max_ms": 7.023,
+    "counts": {
+      "parsed_text_cache_hits": 1599,
+      "parsed_text_cache_lookup_contended": 1,
+      "parsed_text_cache_misses": 1,
+      "parsed_text_cache_promotion_skipped": 229,
+      "parsed_text_cache_promotion_unneeded": 32,
+      "parsed_text_cache_source_comparisons": 1600,
+      "svg_parses": 1
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 3000,
+      "parsed_text_cache_lookup": 8815347,
+      "parsed_text_cache_retirement": 541,
+      "parsed_text_fingerprint": 148854,
+      "svg_parse_including_text_shaping": 6775084
+    }
+  },
+  {
+    "mode": "serial",
+    "sources": 8,
+    "workers": 8,
+    "bytes": 65691,
+    "round": 7,
+    "ops": 1600,
+    "wall_ms": 62.482,
+    "worker_max_ms": 58.784,
+    "dispatch_max_ms": 3.715,
+    "counts": {
+      "parsed_text_cache_hits": 1592,
+      "parsed_text_cache_insert_contended": 3,
+      "parsed_text_cache_lookup_contended": 8,
+      "parsed_text_cache_misses": 8,
+      "parsed_text_cache_source_comparisons": 1597,
+      "svg_parses": 8
+    },
+    "host_ns": {
+      "parsed_text_cache_insert": 23417,
+      "parsed_text_cache_lookup": 10867408,
+      "parsed_text_cache_retirement": 4959,
+      "parsed_text_fingerprint": 144833,
+      "svg_parse_including_text_shaping": 210629001
+    }
+  }
+]

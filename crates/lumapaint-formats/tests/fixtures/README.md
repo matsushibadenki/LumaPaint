@@ -78,3 +78,31 @@ opacity and its merged blue component corrected to zero. `psd_roundtrip`
 exported it to PSB. Photoshop 2026 opened the output and showed the Japanese
 layer as Multiply (`乗算`) with 50% opacity. This verifies one own fixture,
 not arbitrary Photoshop blend settings, color profiles or every blend mode.
+
+## Photoshop 2026 mask link samples (2026-10-28)
+
+The four `lp-photoshop-2026-mask-{linked,unlinked}.{psd,psb}` files were
+saved in Photoshop 2026 from a copy of `lp-psd-layers.psd`, after adding a
+white layer mask and toggling its link. In this 4×2 origin-aligned sample,
+the mask flag's low bit is 0 when linked and 1 when unlinked in both formats.
+The mask rectangle is empty; this observation alone does not establish how
+nonzero layer origins and mask positions must be encoded or whether all files
+use this bit exclusively for link state.
+
+`lp-photoshop-2026-mask-offset.psd` moves a Photoshop layer to (10, 10)
+with its unlinked mask remaining at the canvas origin; its layer extends past
+the canvas and currently falls back to a flattened import. The `mask-offset.psb`
+and `mask-offset-roundtrip.psd` files originate from LumaPaint output with an
+image near x=257 and an unlinked mask near x=2, opened and saved by Photoshop.
+Regression tests check the retained mask link, mask samples, and image pixels.
+
+`lp-photoshop-2026-negative-layer.psd` and `.psb` were saved by Photoshop
+2026 after moving a masked layer to (-10, -10). Decoder tests check its
+in-canvas tiles and unlinked mask. They do not verify preservation of pixels
+outside the canvas or successful editable import after composite verification.
+
+- `lp-photoshop-2026-offcanvas-simple.psd` / `.psb`: 100×100の単一レイヤーを左右にはみ出すよう移動し、Photoshop 2026で保存した検証用ファイル。PSDは右、PSBは左に移動した状態。
+
+- `lp-photoshop-2026-effect-mask-moved-outside.psd` / `.psb`: LumaPaintで変換したリンク解除マスクをPhotoshop 2026で10px移動・保存したファイル。キャンバス外のマスク画素の破棄に同意すると、キャンバス内のレイヤーとマスクを編集可能な状態で読み込む。
+
+- `lp-photoshop-2026-transparent-rgb.psd` / `.psb`: Photoshop 2026で開いて別名保存した検証用ファイル。キャンバス内と左外側に完全透明のRGBを含む。

@@ -1,4 +1,4 @@
-//! Sparse RGBA8 raster tiles. A fully transparent tile has no allocation.
+//! Sparse RGBA8 raster tiles. A fully zero tile has no allocation.
 use crate::document::{mask_factor, LayerSettings, Point};
 use crate::selection::Selection;
 use serde::{Deserialize, Serialize};
@@ -146,10 +146,14 @@ pub struct RasterLayerState {
     pub alpha_locked: bool,
     #[serde(default)]
     pub mask_present: bool,
+    #[serde(default = "crate::layer_mask::default_linked")]
+    pub mask_linked: bool,
     pub mask_enabled: bool,
     pub mask_inverted: bool,
     pub mask_density: f32,
     pub tiles: Vec<RasterTileState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_canvas_tiles: Vec<OffCanvasTileState>,
     pub mask_tiles: Vec<MaskTileState>,
 }
 
@@ -343,6 +347,16 @@ pub struct RasterTileState {
     pub pixels: Vec<u8>,
 }
 
+/// Raw straight RGBA for a signed tile outside the canvas. Bytes within the
+/// canvas must be zero; edge tiles can contain data on both sides of an edge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OffCanvasTileState {
+    pub x: i32,
+    pub y: i32,
+    pub pixels: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaskTileState {
@@ -428,6 +442,30 @@ impl SparseMask {
             }
         }
         result
+    }
+
+    /// Transform deviations from the sparse mask's fully visible default.
+    pub fn transformed(&self, matrix: [f32; 6]) -> Result<Self, String> {
+        let mut pixels = SparseTiles::new(self.width, self.height)?;
+        for (coord, values) in &self.tiles {
+            let mut data = vec![0; TILE_BYTES];
+            for (idx, value) in values.iter().enumerate() {
+                data[idx * 4 + 3] = 255 - value;
+            }
+            pixels.tiles.insert(*coord, data);
+        }
+        let moved = pixels.transformed(matrix)?;
+        let mut mask = Self::new(self.width, self.height);
+        for (coord, pixels) in moved.tiles {
+            let mut values = vec![255; (TILE_SIZE * TILE_SIZE) as usize];
+            for (idx, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+                values[idx] = 255 - pixel[3];
+            }
+            if values.iter().any(|v| *v != 255) {
+                mask.tiles.insert(coord, values);
+            }
+        }
+        Ok(mask)
     }
 
     fn write_rect(&mut self, rect: [u32; 4], values: &[u8]) -> Result<Vec<MaskChange>, String> {
@@ -632,8 +670,8 @@ impl SparseTiles {
             tiles: BTreeMap::new(),
         };
         for (coord, tile) in &self.tiles {
-            for (index, pixel) in tile.chunks_exact(4).enumerate() {
-                if pixel == [0, 0, 0, 0] {
+            for (index, pixel) in tile.as_chunks::<4>().0.iter().enumerate() {
+                if *pixel == [0, 0, 0, 0] {
                     continue;
                 }
                 let x = i64::from(coord.x * TILE_SIZE) + (index as i64 % i64::from(TILE_SIZE));
@@ -661,6 +699,274 @@ impl SparseTiles {
         result
     }
 
+    /// Translate canvas and signed outside tiles together without resampling.
+    pub fn translated_with_off_canvas(
+        &self,
+        outside: &[OffCanvasTileState],
+        dx: i32,
+        dy: i32,
+    ) -> Result<(Self, Vec<OffCanvasTileState>), String> {
+        let mut result = Self::new(self.width, self.height)?;
+        let mut overflow = BTreeMap::<(i32, i32), Vec<u8>>::new();
+        let edge = i64::from(TILE_SIZE);
+        let mut move_tile = |tx: i64, ty: i64, bytes: &[u8]| -> Result<(), String> {
+            if bytes.len() != TILE_BYTES {
+                return Err("Invalid raster tile".into());
+            }
+            for (index, pixel) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                if *pixel == [0; 4] {
+                    continue;
+                }
+                let x = tx * edge + (index as i64 % edge) + i64::from(dx);
+                let y = ty * edge + (index as i64 / edge) + i64::from(dy);
+                if x < i64::from(i32::MIN)
+                    || y < i64::from(i32::MIN)
+                    || x >= i64::from(i32::MAX)
+                    || y >= i64::from(i32::MAX)
+                {
+                    return Err("Transformed raster coordinates exceed supported range".into());
+                }
+                let offset = (y.rem_euclid(edge) * edge + x.rem_euclid(edge)) as usize * 4;
+                if x >= 0 && y >= 0 && x < i64::from(self.width) && y < i64::from(self.height) {
+                    let coord = TileCoord {
+                        x: x as u32 / TILE_SIZE,
+                        y: y as u32 / TILE_SIZE,
+                    };
+                    result
+                        .tiles
+                        .entry(coord)
+                        .or_insert_with(|| vec![0; TILE_BYTES])[offset..offset + 4]
+                        .copy_from_slice(pixel);
+                } else {
+                    let key = (x.div_euclid(edge) as i32, y.div_euclid(edge) as i32);
+                    if !overflow.contains_key(&key) && overflow.len() >= 2048 {
+                        return Err("Too many off-canvas tiles".into());
+                    }
+                    overflow.entry(key).or_insert_with(|| vec![0; TILE_BYTES])[offset..offset + 4]
+                        .copy_from_slice(pixel);
+                }
+            }
+            Ok(())
+        };
+        for (coord, bytes) in &self.tiles {
+            move_tile(i64::from(coord.x), i64::from(coord.y), bytes)?;
+        }
+        for tile in outside {
+            move_tile(i64::from(tile.x), i64::from(tile.y), &tile.pixels)?;
+        }
+        Ok((
+            result,
+            overflow
+                .into_iter()
+                .map(|((x, y), pixels)| OffCanvasTileState { x, y, pixels })
+                .collect(),
+        ))
+    }
+
+    /// Transform signed raster tiles with premultiplied bilinear sampling.
+    /// The work limit covers both canvas and off-canvas destination tiles.
+    pub fn transformed_with_off_canvas(
+        &self,
+        outside: &[OffCanvasTileState],
+        matrix: [f32; 6],
+    ) -> Result<(Self, Vec<OffCanvasTileState>), String> {
+        crate::layer_mask::validate_transform(matrix)?;
+        if matrix[..4] == [1., 0., 0., 1.]
+            && matrix[4].fract() == 0.
+            && matrix[5].fract() == 0.
+            && matrix[4] >= i32::MIN as f32
+            && matrix[4] < 2147483648.
+            && matrix[5] >= i32::MIN as f32
+            && matrix[5] < 2147483648.
+        {
+            return self.translated_with_off_canvas(outside, matrix[4] as i32, matrix[5] as i32);
+        }
+        validate_off_canvas_tiles(outside, self.width, self.height)?;
+        if outside
+            .iter()
+            .map(|t| &t.pixels)
+            .chain(self.tiles.values())
+            .any(|pixels| {
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[3] == 0 && *p != [0; 4])
+            })
+        {
+            return Err("Cannot resample hidden transparent RGB / 透明画素のRGBを保持した補間には未対応です / 暂不支持保留透明像素RGB的重采样".into());
+        }
+        let inverse = crate::image_frame::inverse(matrix)?;
+        let edge = i64::from(TILE_SIZE);
+        let mut candidates = BTreeSet::<(i32, i32)>::new();
+        let sources = self
+            .tiles
+            .keys()
+            .map(|c| (i64::from(c.x), i64::from(c.y)))
+            .chain(outside.iter().map(|t| (i64::from(t.x), i64::from(t.y))));
+        for (tx, ty) in sources {
+            let x0 = (tx * edge) as f64 - 1.;
+            let y0 = (ty * edge) as f64 - 1.;
+            let x1 = ((tx + 1) * edge) as f64 + 1.;
+            let y1 = ((ty + 1) * edge) as f64 + 1.;
+            let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| {
+                (
+                    f64::from(matrix[0]) * x + f64::from(matrix[2]) * y + f64::from(matrix[4]),
+                    f64::from(matrix[1]) * x + f64::from(matrix[3]) * y + f64::from(matrix[5]),
+                )
+            });
+            let min_x = corners
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min)
+                .floor();
+            let max_x = corners
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil();
+            let min_y = corners
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::INFINITY, f64::min)
+                .floor();
+            let max_y = corners
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil();
+            if min_x < i32::MIN as f64
+                || min_y < i32::MIN as f64
+                || max_x >= i32::MAX as f64
+                || max_y >= i32::MAX as f64
+            {
+                return Err("Transformed raster coordinates exceed supported range".into());
+            }
+            let (x0, x1, y0, y1) = (
+                (min_x as i64).div_euclid(edge),
+                (max_x as i64).div_euclid(edge),
+                (min_y as i64).div_euclid(edge),
+                (max_y as i64).div_euclid(edge),
+            );
+            if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > 2048 {
+                return Err("Transformed raster exceeds tile limit".into());
+            }
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    candidates.insert((x as i32, y as i32));
+                    if candidates.len() > 2048 {
+                        return Err("Transformed raster exceeds tile limit".into());
+                    }
+                }
+            }
+        }
+        let outside_map: BTreeMap<_, _> = outside
+            .iter()
+            .map(|t| ((t.x, t.y), t.pixels.as_slice()))
+            .collect();
+        let sample = |x: i64, y: i64| -> [u8; 4] {
+            if x < i64::from(i32::MIN)
+                || y < i64::from(i32::MIN)
+                || x >= i64::from(i32::MAX)
+                || y >= i64::from(i32::MAX)
+            {
+                return [0; 4];
+            }
+            let offset = (y.rem_euclid(edge) * edge + x.rem_euclid(edge)) as usize * 4;
+            let bytes =
+                if x >= 0 && y >= 0 && x < i64::from(self.width) && y < i64::from(self.height) {
+                    self.tiles
+                        .get(&TileCoord {
+                            x: x as u32 / TILE_SIZE,
+                            y: y as u32 / TILE_SIZE,
+                        })
+                        .map(Vec::as_slice)
+                } else {
+                    outside_map
+                        .get(&(x.div_euclid(edge) as i32, y.div_euclid(edge) as i32))
+                        .copied()
+                };
+            bytes.map_or([0; 4], |b| b[offset..offset + 4].try_into().expect("RGBA"))
+        };
+        let mut result = Self::new(self.width, self.height)?;
+        let mut overflow = Vec::new();
+        for (tx, ty) in candidates {
+            let mut inside = vec![0; TILE_BYTES];
+            let mut out = vec![0; TILE_BYTES];
+            let (mut has_inside, mut has_out) = (false, false);
+            for iy in 0..edge {
+                for ix in 0..edge {
+                    let x = i64::from(tx) * edge + ix;
+                    let y = i64::from(ty) * edge + iy;
+                    let px = x as f64 + 0.5;
+                    let py = y as f64 + 0.5;
+                    let sx = f64::from(inverse[0]) * px
+                        + f64::from(inverse[2]) * py
+                        + f64::from(inverse[4])
+                        - 0.5;
+                    let sy = f64::from(inverse[1]) * px
+                        + f64::from(inverse[3]) * py
+                        + f64::from(inverse[5])
+                        - 0.5;
+                    let bx = sx.floor() as i64;
+                    let by = sy.floor() as i64;
+                    let fx = sx - sx.floor();
+                    let fy = sy - sy.floor();
+                    let mut alpha = 0.;
+                    let mut rgb = [0.; 3];
+                    for (dx, dy, w) in [
+                        (0, 0, (1. - fx) * (1. - fy)),
+                        (1, 0, fx * (1. - fy)),
+                        (0, 1, (1. - fx) * fy),
+                        (1, 1, fx * fy),
+                    ] {
+                        let p = sample(bx.saturating_add(dx), by.saturating_add(dy));
+                        let a = f64::from(p[3]) * w;
+                        alpha += a;
+                        for c in 0..3 {
+                            rgb[c] += f64::from(p[c]) * a;
+                        }
+                    }
+                    let a = alpha.round().clamp(0., 255.) as u8;
+                    if a == 0 {
+                        continue;
+                    }
+                    let offset = (iy * edge + ix) as usize * 4;
+                    let in_canvas =
+                        x >= 0 && y >= 0 && x < i64::from(self.width) && y < i64::from(self.height);
+                    let target = if in_canvas {
+                        has_inside = true;
+                        &mut inside
+                    } else {
+                        has_out = true;
+                        &mut out
+                    };
+                    for c in 0..3 {
+                        target[offset + c] = (rgb[c] / alpha).round().clamp(0., 255.) as u8;
+                    }
+                    target[offset + 3] = a;
+                }
+            }
+            if has_inside {
+                result.tiles.insert(
+                    TileCoord {
+                        x: tx as u32,
+                        y: ty as u32,
+                    },
+                    inside,
+                );
+            }
+            if has_out {
+                overflow.push(OffCanvasTileState {
+                    x: tx,
+                    y: ty,
+                    pixels: out,
+                });
+            }
+        }
+        Ok((result, overflow))
+    }
+
     /// Affine resampling in straight-alpha storage, interpolating premultiplied colors.
     pub fn transformed(&self, matrix: [f32; 6]) -> Result<Self, String> {
         crate::layer_mask::validate_transform(matrix)?;
@@ -676,6 +982,15 @@ impl SparseTiles {
             && matrix[5] < 2147483648.
         {
             return Ok(self.translated(matrix[4] as i32, matrix[5] as i32));
+        }
+        if self.tiles.values().any(|pixels| {
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[3] == 0 && *p != [0; 4])
+        }) {
+            return Err("Cannot resample hidden transparent RGB / 透明画素のRGBを保持した補間には未対応です / 暂不支持保留透明像素RGB的重采样".into());
         }
         let inv = crate::image_frame::inverse(matrix)?;
         let mut candidates = BTreeSet::new();
@@ -826,12 +1141,6 @@ impl SparseTiles {
                     after[target..target + length]
                         .copy_from_slice(&pixels[source..source + length]);
                 }
-                // RGB in transparent pixels has no visible or stored meaning.
-                for pixel in after.as_chunks_mut::<4>().0 {
-                    if pixel[3] == 0 {
-                        pixel[..3].fill(0);
-                    }
-                }
                 let after = after.iter().any(|byte| *byte != 0).then_some(after);
                 if before == after {
                     continue;
@@ -971,6 +1280,47 @@ impl SparseTiles {
     }
 }
 
+fn validate_off_canvas_tiles(
+    tiles: &[OffCanvasTileState],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if tiles.len() > 2048 {
+        return Err("Too many off-canvas tiles".into());
+    }
+    let mut coords = BTreeSet::new();
+    for tile in tiles {
+        if tile.pixels.len() != TILE_BYTES || !coords.insert((tile.x, tile.y)) {
+            return Err("Invalid off-canvas tile state".into());
+        }
+        let x0 = i64::from(tile.x) * i64::from(TILE_SIZE);
+        let y0 = i64::from(tile.y) * i64::from(TILE_SIZE);
+        if x0 < i64::from(i32::MIN)
+            || y0 < i64::from(i32::MIN)
+            || x0 >= i64::from(i32::MAX)
+            || y0 >= i64::from(i32::MAX)
+        {
+            return Err("Invalid off-canvas tile coordinates".into());
+        }
+        let mut nonzero = false;
+        for (i, pixel) in tile.pixels.as_chunks::<4>().0.iter().enumerate() {
+            let x = x0 + i as i64 % i64::from(TILE_SIZE);
+            let y = y0 + i as i64 / i64::from(TILE_SIZE);
+            if x >= 0 && x < i64::from(width) && y >= 0 && y < i64::from(height) {
+                if *pixel != [0; 4] {
+                    return Err("Off-canvas tile overlaps canvas".into());
+                }
+            } else if *pixel != [0; 4] {
+                nonzero = true;
+            }
+        }
+        if !nonzero {
+            return Err("Empty off-canvas tile".into());
+        }
+    }
+    Ok(())
+}
+
 fn valid_tile_payload(coord: TileCoord, bytes: &[u8], width: u32, height: u32) -> bool {
     if bytes.len() != TILE_BYTES {
         return false;
@@ -979,11 +1329,11 @@ fn valid_tile_payload(coord: TileCoord, bytes: &[u8], width: u32, height: u32) -
     for (index, pixel) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let x = coord.x * TILE_SIZE + (index as u32 % TILE_SIZE);
         let y = coord.y * TILE_SIZE + (index as u32 / TILE_SIZE);
-        if x >= width || y >= height || pixel[3] == 0 {
+        if x >= width || y >= height {
             if *pixel != [0, 0, 0, 0] {
                 return false;
             }
-        } else {
+        } else if *pixel != [0, 0, 0, 0] {
             painted = true;
         }
     }
@@ -1024,11 +1374,15 @@ pub struct RasterLayer {
     pub alpha_locked: bool,
     #[serde(default)]
     pub mask_present: bool,
+    #[serde(default = "crate::layer_mask::default_linked")]
+    pub mask_linked: bool,
     pub mask_enabled: bool,
     pub mask_inverted: bool,
     pub mask_density: f32,
     pub mask: SparseMask,
     pub tiles: SparseTiles,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off_canvas_tiles: Vec<OffCanvasTileState>,
 }
 
 impl RasterLayer {
@@ -1096,6 +1450,10 @@ enum RasterEdit {
     LinkedMaskMove {
         layer_id: String,
         changes: Vec<TileChange>,
+        #[serde(default)]
+        masks: Vec<MaskChange>,
+        #[serde(default)]
+        outside: Option<(Vec<OffCanvasTileState>, Vec<OffCanvasTileState>)>,
         before: Box<crate::layer_effects::LayerEffects>,
         after: Box<crate::layer_effects::LayerEffects>,
     },
@@ -1113,6 +1471,18 @@ enum RasterEdit {
         layer_id: String,
         before: (bool, bool, f32, bool),
         after: (bool, bool, f32, bool),
+    },
+    SparseMaskLink {
+        layer_id: String,
+        before: bool,
+        after: bool,
+    },
+    SparseMaskTransform {
+        layer_id: String,
+        pixels: Vec<TileChange>,
+        masks: Vec<MaskChange>,
+        #[serde(default)]
+        outside: Option<(Vec<OffCanvasTileState>, Vec<OffCanvasTileState>)>,
     },
     MaskPixels {
         layer_id: String,
@@ -1292,9 +1662,19 @@ fn dab_density_on_tiles(
                             continue;
                         }
                         let (m, a, p) = dab.material.packed();
-                        let deposition = crate::natural_media::deposition(
+                        let paper_point = dab.material.paper.texture_point(
                             (x as f32 + 0.5) / dab.texture_scale,
                             (y as f32 + 0.5) / dab.texture_scale,
+                        );
+                        let grain_point = dab.material.grain_point(
+                            (x as f32 + 0.5) / dab.texture_scale,
+                            (y as f32 + 0.5) / dab.texture_scale,
+                        );
+                        let deposition = crate::natural_media::deposition_mapped(
+                            grain_point.0,
+                            grain_point.1,
+                            paper_point.0,
+                            paper_point.1,
                             distance / dab.radius,
                             m,
                             a,
@@ -1305,11 +1685,7 @@ fn dab_density_on_tiles(
                             * (4.0 + 12.0 * dab.hardness)
                             * dab.weight
                             * profile
-                            * brush_texture(
-                                (x as f32 + 0.5) / dab.texture_scale,
-                                (y as f32 + 0.5) / dab.texture_scale,
-                                dab.texture,
-                            );
+                            * brush_texture(grain_point.0, grain_point.1, dab.texture);
                     }
                 }
             }
@@ -1423,6 +1799,7 @@ impl TiledRasterDocument {
                     locked: layer.locked,
                     alpha_locked: layer.alpha_locked,
                     mask_present: layer.mask_present || layer.mask.allocated_tile_count() > 0,
+                    mask_linked: layer.mask_linked,
                     mask_enabled: layer.mask_enabled,
                     mask_inverted: layer.mask_inverted,
                     mask_density: layer.mask_density,
@@ -1435,6 +1812,7 @@ impl TiledRasterDocument {
                             pixels: pixels.clone(),
                         })
                         .collect(),
+                    off_canvas_tiles: layer.off_canvas_tiles.clone(),
                     mask_tiles: layer
                         .mask
                         .tiles
@@ -1484,9 +1862,12 @@ impl TiledRasterDocument {
             layer.alpha_locked = saved.alpha_locked;
             layer.mask_present =
                 saved.mask_present || saved.mask_enabled || !saved.mask_tiles.is_empty();
+            layer.mask_linked = saved.mask_linked;
             layer.mask_enabled = saved.mask_enabled;
             layer.mask_inverted = saved.mask_inverted;
             layer.mask_density = saved.mask_density;
+            validate_off_canvas_tiles(&saved.off_canvas_tiles, document.width, document.height)?;
+            layer.off_canvas_tiles = saved.off_canvas_tiles;
             for tile in saved.tiles {
                 if layer.tiles.tiles.contains_key(&tile.coord)
                     || !valid_tile_payload(
@@ -1693,11 +2074,13 @@ impl TiledRasterDocument {
             locked: false,
             alpha_locked: false,
             mask_present: false,
+            mask_linked: true,
             mask_enabled: false,
             mask_inverted: false,
             mask_density: 1.0,
             mask: SparseMask::new(self.width, self.height),
             tiles: SparseTiles::new(self.width, self.height)?,
+            off_canvas_tiles: Vec::new(),
         });
         self.revision += 1;
         Ok(())
@@ -1770,6 +2153,31 @@ impl TiledRasterDocument {
             after_mask_present,
         });
         Ok(Some(TileInvalidation { layer_id, coords }))
+    }
+
+    pub fn set_sparse_mask_linked(&mut self, id: &str, linked: bool) -> Result<bool, String> {
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|l| l.id == id)
+            .ok_or("Unknown raster layer")?;
+        if layer.locked {
+            return Err("Raster layer is locked".into());
+        }
+        if !layer.mask_present {
+            return Err("Layer mask not found".into());
+        }
+        let before = layer.mask_linked;
+        if before == linked {
+            return Ok(false);
+        }
+        layer.mask_linked = linked;
+        self.record_edit(RasterEdit::SparseMaskLink {
+            layer_id: id.into(),
+            before,
+            after: linked,
+        });
+        Ok(true)
     }
 
     pub fn set_layer_effects(
@@ -2103,17 +2511,41 @@ impl TiledRasterDocument {
         id: &str,
         matrix: [f32; 6],
         moved: SparseTiles,
+        moved_mask: Option<SparseMask>,
     ) -> Result<Option<TileInvalidation>, String> {
+        self.transform_linked_effect_mask_with_off_canvas(id, matrix, moved, moved_mask, None)
+    }
+
+    pub fn transform_linked_effect_mask_with_off_canvas(
+        &mut self,
+        id: &str,
+        matrix: [f32; 6],
+        moved: SparseTiles,
+        moved_mask: Option<SparseMask>,
+        moved_outside: Option<Vec<OffCanvasTileState>>,
+    ) -> Result<Option<TileInvalidation>, String> {
+        if let Some(outside) = &moved_outside {
+            validate_off_canvas_tiles(outside, self.width, self.height)?;
+        }
         let layer = self
             .layers
             .iter_mut()
             .find(|l| l.id == id)
             .ok_or("Unknown raster layer")?;
+        if !layer.off_canvas_tiles.is_empty() && moved_outside.is_none() {
+            return Err("Cannot transform a layer containing off-canvas pixels".into());
+        }
         if layer.locked || layer.alpha_locked {
             return Err("Raster layer is locked".into());
         }
-        if layer.mask_present {
-            return Err("Combined sparse and effect masks cannot yet be moved together".into());
+        if moved_mask.is_some() != (layer.mask_present && layer.mask_linked) {
+            return Err("Mask link state changed".into());
+        }
+        if moved_mask
+            .as_ref()
+            .is_some_and(|m| m.width != layer.mask.width || m.height != layer.mask.height)
+        {
+            return Err("Transformed mask dimensions differ".into());
         }
         let before = layer.effects.clone();
         let mut after = before.clone();
@@ -2152,17 +2584,168 @@ impl TiledRasterDocument {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let masks = if let Some(mask) = moved_mask {
+            let coords = layer
+                .mask
+                .tiles
+                .keys()
+                .chain(mask.tiles.keys())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let changes = coords
+                .into_iter()
+                .filter_map(|coord| {
+                    let before = layer.mask.tiles.get(&coord).cloned();
+                    let after = mask.tiles.get(&coord).cloned();
+                    (before != after).then_some(MaskChange {
+                        coord,
+                        before,
+                        after,
+                    })
+                })
+                .collect();
+            layer.mask = mask;
+            changes
+        } else {
+            Vec::new()
+        };
         layer.tiles = moved;
+        let outside = moved_outside.map(|after| (layer.off_canvas_tiles.clone(), after));
+        if let Some((_, after)) = &outside {
+            layer.off_canvas_tiles = after.clone();
+        }
         layer.effects = after.clone();
         self.record_edit(RasterEdit::LinkedMaskMove {
             layer_id: id.into(),
             changes,
+            masks,
+            outside,
             before: Box::new(before),
             after: Box::new(after),
         });
         Ok(Some(TileInvalidation {
             layer_id: id.into(),
             coords: invalidated,
+        }))
+    }
+
+    /// Commit precomputed sparse mask and optional linked content as one edit.
+    pub fn transform_sparse_mask(
+        &mut self,
+        id: &str,
+        pixels: Option<SparseTiles>,
+        mask: SparseMask,
+    ) -> Result<Option<TileInvalidation>, String> {
+        self.transform_sparse_mask_with_off_canvas(id, pixels, mask, None)
+    }
+
+    /// Commit worker-prepared canvas and outside pixels in the same undo entry.
+    pub fn transform_sparse_mask_with_off_canvas(
+        &mut self,
+        id: &str,
+        pixels: Option<SparseTiles>,
+        mask: SparseMask,
+        moved_outside: Option<Vec<OffCanvasTileState>>,
+    ) -> Result<Option<TileInvalidation>, String> {
+        if let Some(outside) = &moved_outside {
+            validate_off_canvas_tiles(outside, self.width, self.height)?;
+        }
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|l| l.id == id)
+            .ok_or("Unknown raster layer")?;
+        if !layer.off_canvas_tiles.is_empty() && pixels.is_some() && moved_outside.is_none() {
+            return Err("Cannot transform a layer containing off-canvas pixels".into());
+        }
+        if moved_outside.is_some() && pixels.is_none() {
+            return Err("Off-canvas pixels require linked raster content".into());
+        }
+        if layer.locked || (pixels.is_some() && layer.alpha_locked) {
+            return Err("Raster layer is locked".into());
+        }
+        if !layer.mask_present || pixels.is_some() != layer.mask_linked {
+            return Err("Mask link state changed".into());
+        }
+        if mask.width != layer.mask.width
+            || mask.height != layer.mask.height
+            || pixels
+                .as_ref()
+                .is_some_and(|p| p.dimensions() != layer.tiles.dimensions())
+        {
+            return Err("Transformed raster dimensions differ".into());
+        }
+        let pixel_coords = layer
+            .tiles
+            .allocated_coords()
+            .chain(pixels.iter().flat_map(|p| p.allocated_coords()))
+            .collect::<BTreeSet<_>>();
+        let changes = if let Some(moved) = &pixels {
+            pixel_coords
+                .iter()
+                .filter_map(|coord| {
+                    let before = layer.tiles.tiles.get(coord).cloned();
+                    let after = moved.tiles.get(coord).cloned();
+                    (before != after).then_some(TileChange {
+                        coord: *coord,
+                        before,
+                        after,
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mask_coords = layer
+            .mask
+            .tiles
+            .keys()
+            .chain(mask.tiles.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let masks = mask_coords
+            .iter()
+            .filter_map(|coord| {
+                let before = layer.mask.tiles.get(coord).cloned();
+                let after = mask.tiles.get(coord).cloned();
+                (before != after).then_some(MaskChange {
+                    coord: *coord,
+                    before,
+                    after,
+                })
+            })
+            .collect::<Vec<_>>();
+        let outside = moved_outside.map(|after| (layer.off_canvas_tiles.clone(), after));
+        if changes.is_empty()
+            && masks.is_empty()
+            && outside
+                .as_ref()
+                .is_none_or(|(before, after)| before == after)
+        {
+            return Ok(None);
+        }
+        let coords = pixel_coords
+            .into_iter()
+            .chain(mask_coords)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if let Some(moved) = pixels {
+            layer.tiles = moved;
+        }
+        layer.mask = mask;
+        if let Some((_, after)) = &outside {
+            layer.off_canvas_tiles = after.clone();
+        }
+        self.record_edit(RasterEdit::SparseMaskTransform {
+            layer_id: id.into(),
+            pixels: changes,
+            masks,
+            outside,
+        });
+        Ok(Some(TileInvalidation {
+            layer_id: id.into(),
+            coords,
         }))
     }
 
@@ -2305,9 +2888,11 @@ impl TiledRasterDocument {
             };
             let mut after = before.clone();
             for (pixel, depth) in after.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
-                pixel[3] = (f32::from(pixel[3]) * (-depth).exp()).round() as u8;
-                if pixel[3] == 0 {
-                    pixel.fill(0);
+                if depth > 0. && pixel[3] > 0 {
+                    pixel[3] = (f32::from(pixel[3]) * (-depth).exp()).round() as u8;
+                    if pixel[3] == 0 {
+                        pixel.fill(0);
+                    }
                 }
             }
             if after == before {
@@ -2428,14 +3013,56 @@ impl TiledRasterDocument {
         self.redo.drain(..excess - old_undo);
         let size = |entry: &RasterEdit| match entry {
             RasterEdit::Stored(_) => 0,
-            RasterEdit::LinkedMaskMove { changes, .. } | RasterEdit::Pixels { changes, .. } => {
-                changes
+            RasterEdit::LinkedMaskMove {
+                changes,
+                masks,
+                outside,
+                ..
+            } => {
+                outside.as_ref().map_or(0, |(before, after)| {
+                    (before.len() + after.len()) * TILE_BYTES
+                }) + changes
                     .iter()
-                    .map(|change| {
-                        change.before.as_ref().map_or(0, Vec::len)
-                            + change.after.as_ref().map_or(0, Vec::len)
+                    .map(|c| {
+                        c.before.as_ref().map_or(0, Vec::len) + c.after.as_ref().map_or(0, Vec::len)
                     })
-                    .sum()
+                    .sum::<usize>()
+                    + masks
+                        .iter()
+                        .map(|c| {
+                            c.before.as_ref().map_or(0, Vec::len)
+                                + c.after.as_ref().map_or(0, Vec::len)
+                        })
+                        .sum::<usize>()
+            }
+            RasterEdit::Pixels { changes, .. } => changes
+                .iter()
+                .map(|change| {
+                    change.before.as_ref().map_or(0, Vec::len)
+                        + change.after.as_ref().map_or(0, Vec::len)
+                })
+                .sum(),
+            RasterEdit::SparseMaskTransform {
+                pixels,
+                masks,
+                outside,
+                ..
+            } => {
+                outside.as_ref().map_or(0, |(before, after)| {
+                    (before.len() + after.len()) * TILE_BYTES
+                }) + pixels
+                    .iter()
+                    .map(|c| {
+                        c.before.as_ref().map_or(0, Vec::len) + c.after.as_ref().map_or(0, Vec::len)
+                    })
+                    .sum::<usize>()
+                    + masks
+                        .iter()
+                        .map(|c| {
+                            c.before.as_ref().map_or(0, Vec::len)
+                                + c.after.as_ref().map_or(0, Vec::len)
+                        })
+                        .sum::<usize>()
             }
             RasterEdit::MaskPixels { changes, .. } => changes
                 .iter()
@@ -2626,6 +3253,8 @@ impl TiledRasterDocument {
             RasterEdit::LinkedMaskMove {
                 layer_id,
                 changes,
+                masks,
+                outside,
                 before,
                 after,
             } => {
@@ -2634,10 +3263,27 @@ impl TiledRasterDocument {
                     .iter_mut()
                     .find(|l| l.id == *layer_id)
                     .ok_or("Raster history layer is missing")?;
+                if let Some((prior, next)) = outside {
+                    if layer.off_canvas_tiles != *if undo { next } else { prior } {
+                        return Err("Off-canvas pixels changed outside history".into());
+                    }
+                }
                 if layer.effects != **if undo { after } else { before } {
                     return Err("Layer effects changed outside history".into());
                 }
-                layer.tiles.apply_changes(changes, undo)?;
+                if masks.is_empty() {
+                    layer.tiles.apply_changes(changes, undo)?;
+                } else {
+                    let mut pixels = layer.tiles.clone();
+                    let mut mask = layer.mask.clone();
+                    pixels.apply_changes(changes, undo)?;
+                    mask.apply_changes(masks, undo)?;
+                    layer.tiles = pixels;
+                    layer.mask = mask;
+                }
+                if let Some((prior, next)) = outside {
+                    layer.off_canvas_tiles = if undo { prior } else { next }.clone();
+                }
                 layer.effects = (**if undo { before } else { after }).clone();
                 let coords = changes
                     .iter()
@@ -2719,6 +3365,64 @@ impl TiledRasterDocument {
                 TileInvalidation {
                     layer_id: layer_id.clone(),
                     coords,
+                }
+            }
+            RasterEdit::SparseMaskTransform {
+                layer_id,
+                pixels,
+                masks,
+                outside,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?;
+                if let Some((before, after)) = outside {
+                    if layer.off_canvas_tiles != *if undo { after } else { before } {
+                        return Err("Off-canvas pixels changed outside history".into());
+                    }
+                }
+                // Validate both deltas before applying either, preserving atomic history.
+                let mut next_pixels = layer.tiles.clone();
+                let mut next_mask = layer.mask.clone();
+                next_pixels.apply_changes(pixels, undo)?;
+                next_mask.apply_changes(masks, undo)?;
+                let coords = pixels
+                    .iter()
+                    .map(|c| c.coord)
+                    .chain(masks.iter().map(|c| c.coord))
+                    .chain(layer.tiles.allocated_coords())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                layer.tiles = next_pixels;
+                layer.mask = next_mask;
+                if let Some((before, after)) = outside {
+                    layer.off_canvas_tiles = if undo { before } else { after }.clone();
+                }
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords,
+                }
+            }
+            RasterEdit::SparseMaskLink {
+                layer_id,
+                before,
+                after,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|l| l.id == *layer_id)
+                    .ok_or("Raster history layer is missing")?;
+                if layer.mask_linked != if undo { *after } else { *before } {
+                    return Err("Mask link changed outside history".into());
+                }
+                layer.mask_linked = if undo { *before } else { *after };
+                TileInvalidation {
+                    layer_id: layer_id.clone(),
+                    coords: Vec::new(),
                 }
             }
             RasterEdit::MaskPixels {
@@ -3057,6 +3761,138 @@ mod tests {
     }
 
     #[test]
+    fn integer_translation_preserves_transparent_rgb_across_canvas_edge() {
+        let mut doc = TiledRasterDocument::new(2, 1).unwrap();
+        doc.add_layer("paint".into(), "Paint".into()).unwrap();
+        doc.write_rect("paint", [0, 0, 1, 1], &[12, 34, 56, 0])
+            .unwrap();
+        let layer = &doc.layers()[0];
+        let (pixels, outside) = layer
+            .tiles
+            .translated_with_off_canvas(&layer.off_canvas_tiles, -1, 0)
+            .unwrap();
+        assert_eq!(pixels.pixel(0, 0), Some([0, 0, 0, 0]));
+        assert_eq!(&outside[0].pixels[1020..1024], &[12, 34, 56, 0]);
+        let (returned, outside) = pixels.translated_with_off_canvas(&outside, 1, 0).unwrap();
+        assert!(outside.is_empty());
+        assert_eq!(returned.pixel(0, 0), Some([12, 34, 56, 0]));
+        assert!(returned
+            .transformed_with_off_canvas(&outside, [1., 0., 0., 1., 0.5, 0.])
+            .is_err());
+    }
+
+    #[test]
+    fn affine_off_canvas_sampling_and_linked_mask_history() {
+        let mut source = TiledRasterDocument::new(2, 2).unwrap();
+        source.add_layer("a".into(), "Layer".into()).unwrap();
+        source
+            .write_rect("a", [1, 0, 1, 1], &[0, 0, 220, 255])
+            .unwrap();
+        let mut state = source.state();
+        state.layers[0].mask_present = true;
+        let mut tile = vec![0; TILE_BYTES];
+        let at = (TILE_SIZE as usize - 1) * 4;
+        tile[at..at + 4].copy_from_slice(&[240, 0, 0, 255]);
+        state.layers[0].off_canvas_tiles.push(OffCanvasTileState {
+            x: -1,
+            y: 0,
+            pixels: tile,
+        });
+        let mut doc = TiledRasterDocument::from_state(state.clone()).unwrap();
+        let layer = &doc.layers()[0];
+        let (rotated, rotated_outside) = layer
+            .tiles
+            .transformed_with_off_canvas(&layer.off_canvas_tiles, [0., 1., -1., 0., 1., 1.])
+            .unwrap();
+        assert_eq!(rotated.pixel(0, 0), Some([240, 0, 0, 255]));
+        let tile = rotated_outside
+            .iter()
+            .find(|t| t.x == 0 && t.y == 0)
+            .unwrap();
+        let offset = 2 * TILE_SIZE as usize * 4;
+        assert_eq!(&tile.pixels[offset..offset + 4], &[0, 0, 220, 255]);
+        let mut hidden = layer.off_canvas_tiles.clone();
+        let hidden_offset = (TILE_SIZE as usize - 1) * 4 + 3;
+        hidden[0].pixels[hidden_offset] = 0;
+        assert!(layer
+            .tiles
+            .transformed_with_off_canvas(&hidden, [1., 0., 0., 1., 0.5, 0.])
+            .is_err());
+        assert!(layer
+            .tiles
+            .transformed_with_off_canvas(
+                &layer.off_canvas_tiles,
+                [100_000., 0., 0., 100_000., 0., 0.]
+            )
+            .is_err());
+        let matrix = [1., 0., 0., 1., 0.5, 0.];
+        let (pixels, outside) = layer
+            .tiles
+            .transformed_with_off_canvas(&layer.off_canvas_tiles, matrix)
+            .unwrap();
+        assert_eq!(pixels.pixel(0, 0), Some([240, 0, 0, 128]));
+        assert_eq!(pixels.pixel(1, 0), Some([0, 0, 220, 128]));
+        assert!(outside
+            .iter()
+            .any(|t| t.pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 128)));
+        let mask = layer.mask.transformed(matrix).unwrap();
+        doc.transform_sparse_mask_with_off_canvas("a", Some(pixels), mask, Some(outside))
+            .unwrap();
+        let after = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), state);
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+        let layer = &doc.layers()[0];
+        let (rotated, overflow) = layer
+            .tiles
+            .transformed_with_off_canvas(&layer.off_canvas_tiles, [0., 1., -1., 0., 1., 0.])
+            .unwrap();
+        assert!(!rotated.tiles.is_empty() || !overflow.is_empty());
+        let (scaled, overflow) = layer
+            .tiles
+            .transformed_with_off_canvas(&layer.off_canvas_tiles, [2., 0., 0., 2., 0., 0.])
+            .unwrap();
+        assert!(!scaled.tiles.is_empty() && !overflow.is_empty());
+    }
+
+    #[test]
+    fn linked_integer_translation_preserves_off_canvas_pixels_with_one_undo() {
+        let mut source = TiledRasterDocument::new(2, 1).unwrap();
+        source.add_layer("a".into(), "Layer".into()).unwrap();
+        source
+            .write_rect("a", [1, 0, 1, 1], &[0, 0, 220, 255])
+            .unwrap();
+        let mut state = source.state();
+        state.layers[0].mask_present = true;
+        let mut tile = vec![0; TILE_BYTES];
+        let at = (TILE_SIZE as usize - 1) * 4;
+        tile[at..at + 4].copy_from_slice(&[240, 0, 0, 255]);
+        state.layers[0].off_canvas_tiles.push(OffCanvasTileState {
+            x: -1,
+            y: 0,
+            pixels: tile,
+        });
+        let mut doc = TiledRasterDocument::from_state(state.clone()).unwrap();
+        let layer = &doc.layers()[0];
+        let (moved, outside) = layer
+            .tiles
+            .translated_with_off_canvas(&layer.off_canvas_tiles, 1, 0)
+            .unwrap();
+        let mask = layer.mask.translated(1, 0);
+        doc.transform_sparse_mask_with_off_canvas("a", Some(moved), mask, Some(outside))
+            .unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([240, 0, 0, 255]));
+        let after = doc.state();
+        let tile = &after.layers[0].off_canvas_tiles[0];
+        assert_eq!(&tile.pixels[8..12], &[0, 0, 220, 255]);
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), state);
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+    }
+
+    #[test]
     fn sparse_eraser_density_matches_full_density_without_allocating_empty_tiles() {
         let coord = TileCoord { x: 0, y: 0 };
         let occupied = BTreeMap::from([(coord, vec![255; TILE_BYTES])]);
@@ -3096,6 +3932,146 @@ mod tests {
     }
 
     #[test]
+    fn effect_mask_and_off_canvas_transform_share_history() {
+        let mut doc = TiledRasterDocument::new(3, 2).unwrap();
+        doc.add_layer("a".into(), "A".into()).unwrap();
+        doc.write_rect("a", [2, 0, 1, 1], &[20, 30, 40, 255])
+            .unwrap();
+        doc.write_mask_rect("a", [2, 0, 1, 1], &[64]).unwrap();
+        let mut effects = crate::layer_effects::LayerEffects::default();
+        effects.mask = Some(
+            crate::layer_mask::LayerMask::from_selection(
+                crate::layer_mask::MaskKind::Pixel,
+                None,
+                3,
+                2,
+            )
+            .unwrap(),
+        );
+        doc.set_layer_effects("a", effects).unwrap();
+        let mut state = doc.state();
+        let mut tile = vec![0; TILE_BYTES];
+        let at = (TILE_SIZE as usize - 1) * 4;
+        tile[at..at + 4].copy_from_slice(&[240, 0, 0, 255]);
+        state.layers[0].off_canvas_tiles.push(OffCanvasTileState {
+            x: -1,
+            y: 0,
+            pixels: tile,
+        });
+        let mut doc = TiledRasterDocument::from_state(state.clone()).unwrap();
+        let layer = &doc.layers()[0];
+        let matrix = [1., 0., 0., 1., 1., 0.];
+        let (pixels, outside) = layer
+            .tiles
+            .transformed_with_off_canvas(&layer.off_canvas_tiles, matrix)
+            .unwrap();
+        let mask = layer.mask.transformed(matrix).unwrap();
+        doc.transform_linked_effect_mask_with_off_canvas(
+            "a",
+            matrix,
+            pixels,
+            Some(mask),
+            Some(outside),
+        )
+        .unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([240, 0, 0, 255]));
+        assert_eq!(
+            doc.layers()[0].effects.mask.as_ref().unwrap().transform,
+            matrix
+        );
+        let after = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), state);
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+    }
+
+    #[test]
+    fn coexisting_linked_masks_transform_with_one_undo() {
+        for sparse_linked in [true, false] {
+            let mut doc = TiledRasterDocument::new(300, 3).unwrap();
+            doc.add_layer("a".into(), "A".into()).unwrap();
+            doc.write_rect("a", [255, 0, 1, 1], &[20, 30, 40, 255])
+                .unwrap();
+            doc.write_mask_rect("a", [255, 0, 1, 1], &[64]).unwrap();
+            doc.set_sparse_mask_linked("a", sparse_linked).unwrap();
+            let mut effects = crate::layer_effects::LayerEffects::default();
+            effects.mask = Some(
+                crate::layer_mask::LayerMask::from_selection(
+                    crate::layer_mask::MaskKind::Pixel,
+                    None,
+                    300,
+                    3,
+                )
+                .unwrap(),
+            );
+            doc.set_layer_effects("a", effects).unwrap();
+            doc.discard_history();
+            let before = doc.state();
+            let matrix = [1., 0., 0., 1., 1., 1.];
+            let pixels = doc.layers()[0].tiles.transformed(matrix).unwrap();
+            let mask = sparse_linked.then(|| doc.layers()[0].mask.transformed(matrix).unwrap());
+            doc.transform_linked_effect_mask("a", matrix, pixels, mask)
+                .unwrap();
+            assert_eq!(doc.layers()[0].tiles.pixel(256, 1), Some([20, 30, 40, 255]));
+            assert_eq!(
+                doc.layers()[0].effects.mask.as_ref().unwrap().transform,
+                matrix
+            );
+            assert_eq!(
+                doc.layers()[0].mask.pixel(
+                    if sparse_linked { 256 } else { 255 },
+                    if sparse_linked { 1 } else { 0 }
+                ),
+                Some(64)
+            );
+            let after = doc.state();
+            doc.undo().unwrap();
+            assert_eq!(doc.state(), before);
+            assert!(!doc.can_undo());
+            doc.redo().unwrap();
+            assert_eq!(doc.state(), after);
+        }
+    }
+
+    #[test]
+    fn sparse_mask_link_and_transform_are_undoable_and_atomic() {
+        let mut doc = TiledRasterDocument::new(300, 3).unwrap();
+        doc.add_layer("a".into(), "A".into()).unwrap();
+        doc.write_rect("a", [255, 0, 1, 1], &[20, 30, 40, 255])
+            .unwrap();
+        doc.write_mask_rect("a", [255, 0, 1, 1], &[64]).unwrap();
+        doc.discard_history();
+        let before = doc.state();
+        let matrix = [1., 0., 0., 1., 1., 1.];
+        let pixels = doc.layers()[0].tiles.transformed(matrix).unwrap();
+        let mask = doc.layers()[0].mask.transformed(matrix).unwrap();
+        doc.transform_sparse_mask("a", Some(pixels), mask).unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(256, 1), Some([20, 30, 40, 255]));
+        assert_eq!(doc.layers()[0].mask.pixel(256, 1), Some(64));
+        let after = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), before);
+        assert!(!doc.can_undo());
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), after);
+        doc.set_sparse_mask_linked("a", false).unwrap();
+        let pixels_before = doc.layers()[0].tiles.clone();
+        let moved_mask = doc.layers()[0]
+            .mask
+            .transformed([1., 0., 0., 1., 0.5, 0.])
+            .unwrap();
+        doc.transform_sparse_mask("a", None, moved_mask).unwrap();
+        assert_eq!(doc.layers()[0].tiles, pixels_before);
+        assert_eq!(doc.layers()[0].mask.pixel(256, 1), Some(159));
+        doc.undo().unwrap();
+        doc.undo().unwrap();
+        assert!(doc.layers()[0].mask_linked);
+        doc.redo().unwrap();
+        assert!(!doc.layers()[0].mask_linked);
+    }
+
+    #[test]
     fn affine_linked_mask_resamples_and_undoes_as_one_edit() {
         let mut doc = TiledRasterDocument::new(8, 8).unwrap();
         doc.add_layer("a".into(), "A".into()).unwrap();
@@ -3118,7 +4094,7 @@ mod tests {
         let moved = doc.layers()[0].tiles.transformed(matrix).unwrap();
         assert_eq!(moved.pixel(1, 1), Some([200, 10, 20, 128]));
         assert_eq!(moved.pixel(2, 1), Some([200, 10, 20, 128]));
-        doc.transform_linked_effect_mask("a", matrix, moved)
+        doc.transform_linked_effect_mask("a", matrix, moved, None)
             .unwrap();
         assert_eq!(
             doc.layers()[0].effects.mask.as_ref().unwrap().transform,
@@ -3163,7 +4139,7 @@ mod tests {
         doc.discard_history();
         let before = doc.state();
         let moved = doc.layers()[0].tiles.translated(1, 1);
-        doc.transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 1.], moved)
+        doc.transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 1.], moved, None)
             .unwrap();
         assert_eq!(doc.layers()[0].tiles.pixel(256, 1), Some([1, 2, 3, 255]));
         assert_eq!(
@@ -3181,7 +4157,7 @@ mod tests {
         doc.set_layer_effects("a", effects).unwrap();
         let moved = doc.layers()[0].tiles.translated(1, 0);
         assert!(doc
-            .transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 0.], moved)
+            .transform_linked_effect_mask("a", [1., 0., 0., 1., 1., 0.], moved, None)
             .is_err());
     }
 
@@ -3212,6 +4188,8 @@ mod tests {
         doc.add_layer("paint".into(), "Paint".into()).unwrap();
         doc.write_rect("paint", [10, 10, 1, 1], &[200, 50, 20, 255])
             .unwrap();
+        doc.write_rect("paint", [1, 1, 1, 1], &[17, 18, 19, 0])
+            .unwrap();
         let dab = RasterDab {
             material: Default::default(),
             texture: 0.0,
@@ -3226,13 +4204,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(doc.layers()[0].tiles.pixel(10, 10), Some([0, 0, 0, 0]));
+        assert_eq!(doc.layers()[0].tiles.pixel(1, 1), Some([17, 18, 19, 0]));
         doc.undo().unwrap();
         assert_eq!(
             doc.layers()[0].tiles.pixel(10, 10),
             Some([200, 50, 20, 255])
         );
         doc.redo().unwrap();
-        assert_eq!(doc.layers()[0].tiles.allocated_tile_count(), 0);
+        assert_eq!(doc.layers()[0].tiles.pixel(1, 1), Some([17, 18, 19, 0]));
     }
 
     #[test]
@@ -3297,7 +4276,7 @@ mod tests {
     }
 
     #[test]
-    fn transparent_write_releases_tile_and_noop_has_no_history() {
+    fn transparent_rgb_write_is_preserved_and_undoable() {
         let mut tiles = SparseTiles::new(256, 256).unwrap();
         assert!(tiles
             .write_rect(0, 0, 1, 1, &[0, 0, 0, 0])
@@ -3305,9 +4284,12 @@ mod tests {
             .is_empty());
         tiles.write_rect(0, 0, 1, 1, &[255, 0, 0, 255]).unwrap();
         let changes = tiles.write_rect(0, 0, 1, 1, &[200, 1, 2, 0]).unwrap();
-        assert_eq!(tiles.allocated_tile_count(), 0);
+        assert_eq!(tiles.pixel(0, 0), Some([200, 1, 2, 0]));
         tiles.apply_changes(&changes, true).unwrap();
         assert_eq!(tiles.pixel(0, 0), Some([255, 0, 0, 255]));
+        tiles.apply_changes(&changes, false).unwrap();
+        assert_eq!(tiles.pixel(0, 0), Some([200, 1, 2, 0]));
+        assert!(tiles.transformed([1., 0., 0., 1., 0.5, 0.]).is_err());
     }
 
     #[test]

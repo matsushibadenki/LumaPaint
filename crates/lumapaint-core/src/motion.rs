@@ -464,6 +464,12 @@ pub struct Clip {
     pub rotation_x: f32,
     pub rotation_y: f32,
     pub rotation_z: f32,
+    /// Quarter turns applied to the motion's document-space translation.
+    #[serde(skip_serializing_if = "is_zero_turns")]
+    pub coordinate_turns: u8,
+}
+fn is_zero_turns(value: &u8) -> bool {
+    *value == 0
 }
 impl Default for Clip {
     fn default() -> Self {
@@ -507,6 +513,7 @@ impl Default for Clip {
             rotation_x: -20.,
             rotation_y: 25.,
             rotation_z: 0.,
+            coordinate_turns: 0,
         }
     }
 }
@@ -532,6 +539,7 @@ impl Clip {
     }
     pub fn validate(&self, timeline_duration: u32) -> Result<(), String> {
         if self.id.is_empty()
+            || self.coordinate_turns > 3
             || self.id.len() > 128
             || preset(&self.preset).is_none()
             || !(1..=18000).contains(&self.duration)

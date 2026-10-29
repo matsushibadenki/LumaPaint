@@ -28,6 +28,9 @@ type Entry = EntryItem | null;
 
 const bitDepths: { value: BitDepth; label: string }[] = [{ value: 8, label: '8 bits' }, { value: 16, label: '16 bits' }, { value: 32, label: '32 bits' }];
 type Props = {
+  onCanvasSize:()=>void;
+  onImageResolution:()=>void;
+  onRotateImage:(turns:number)=>void;
   onFilter:(category:FilterCategory,preset:FilterPreset)=>void;
   onTimeline:()=>void;
   onShortcuts:()=>void;
@@ -121,7 +124,7 @@ export function WorkspaceMenu(props: Props) {
       { id: 'menu.clearLayer', label: t.clearLayer, enabled: canEdit && !doc.layers.find(layer => layer.id === doc.layerId)?.locked, action: () => onEdit('clearLayer') }],
     [{ id: 'menu.colorMode', label: t.colorMode, children: documentModes.map(mode => ({ id:`menu.colorMode.${mode}`,label: modeLabels[locale][mode], checked: doc.colorMode === mode, enabled: canEdit, action: () => onColorMode(mode) })) },
       { id: 'menu.bitDepth', label: t.bitDepth, children: bitDepths.map(depth => ({ id:`menu.bitDepth.${depth.value}`,label: depth.label, checked: doc.bitDepth === depth.value, enabled: canEdit, action: () => onBitDepth(depth.value) })) }, null,
-      future(t.imageSize), future(t.canvasSize), future(t.rotate)],
+      {id:'menu.imageSize',label:t.imageSize,enabled:canEdit,action:props.onImageResolution}, {id:'menu.canvasSize',label:t.canvasSize,enabled:canEdit,action:props.onCanvasSize}, {id:'menu.rotateImage',label:t.rotate.replace('…',''),enabled:canEdit,children:[{id:'menu.rotateImage.clockwise',label:{ja:'90° 時計回り',en:'90° clockwise','zh-CN':'顺时针 90°'}[locale],enabled:canEdit,action:()=>props.onRotateImage(1)},{id:'menu.rotateImage.half',label:'180°',enabled:canEdit,action:()=>props.onRotateImage(2)},{id:'menu.rotateImage.counterclockwise',label:{ja:'90° 反時計回り',en:'90° counterclockwise','zh-CN':'逆时针 90°'}[locale],enabled:canEdit,action:()=>props.onRotateImage(3)}]}],
     [{ id: 'menu.lock', label: t.lock, enabled: canEdit && !doc.activeSavedPath, children: [
       { id: 'menu.lockSelection', label: t.lockSelection, enabled: doc.selectedVectorObjects.length > 0 || !!doc.selection || (destination?.kind === 'svg' && destination.visible && !destination.locked), shortcut: 'CmdOrCtrl+2', action: () => onEdit('lockSelection') },
       { id: 'menu.lockArtworkAbove', label: t.lockArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('lockArtworkAbove') },

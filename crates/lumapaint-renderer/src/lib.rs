@@ -28,6 +28,7 @@ mod object_cache_state;
 pub mod performance;
 pub mod portable_paths;
 mod process_memory;
+pub mod resample;
 mod text_copy_plan;
 #[cfg(feature = "skia")]
 pub mod text_outlines;
@@ -47,7 +48,10 @@ use wgpu::util::DeviceExt;
 // wgpu 30 clears CAMetalLayer.colorspace for its sRGB surface mode. Explicitly
 // tag the encoded output so Core Animation can match it to the current display.
 // Reapply after every configure, which can reset the layer's color space.
-fn configure_surface_color_management(surface: &wgpu::Surface<'_>, wide: bool) -> Result<(), String> {
+fn configure_surface_color_management(
+    surface: &wgpu::Surface<'_>,
+    wide: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use objc2_core_graphics::{kCGColorSpaceDisplayP3, kCGColorSpaceSRGB, CGColorSpace};
@@ -57,7 +61,13 @@ fn configure_surface_color_management(surface: &wgpu::Surface<'_>, wide: bool) -
             .ok_or("Unable to access the Metal display surface")?;
         let layer = metal.render_layer().lock();
         // SAFETY: kCGColorSpaceSRGB is a constant provided by Core Graphics.
-        let name = unsafe { if wide { kCGColorSpaceDisplayP3 } else { kCGColorSpaceSRGB } };
+        let name = unsafe {
+            if wide {
+                kCGColorSpaceDisplayP3
+            } else {
+                kCGColorSpaceSRGB
+            }
+        };
         let space = CGColorSpace::with_name(Some(name))
             .ok_or("Unable to create the display color space")?;
         layer.setColorspace(Some(&space));
@@ -69,7 +79,6 @@ fn configure_surface_color_management(surface: &wgpu::Surface<'_>, wide: bool) -
     let _ = (surface, wide);
     Ok(())
 }
-
 
 fn render_metrics_enabled() -> bool {
     performance::enabled()
@@ -259,6 +268,8 @@ struct Uniforms {
     pasteboard: [f32; 4],
     paper: [f32; 4],
     paper_color: [f32; 4],
+    paper_transform: [f32; 4],
+    paper_offset: [f32; 4],
 }
 
 #[repr(C)]
@@ -273,6 +284,10 @@ struct Segment {
     material: [f32; 4],
     medium_aux: [f32; 4],
     paper: [f32; 4],
+    paper_transform: [f32; 4],
+    paper_offset: [f32; 4],
+    grain_transform: [f32; 4],
+    grain_offset: [f32; 4],
 }
 
 #[repr(C)]
@@ -550,7 +565,11 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
     }
     let points = smoothed_brush_points(stroke);
     let base_radius = stroke.brush.size * 0.5;
-    let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - stroke.brush.hardness));
+    let t = stroke.brush.material.grain_transform;
+    let inverse_scale = (t[0] * t[3] - t[1] * t[2]).abs().sqrt();
+    let spacing = ((base_radius * inverse_scale * 0.08)
+        .min(1.0 + 3.0 * (1.0 - stroke.brush.hardness)))
+        / inverse_scale;
     let length: f64 = points
         .windows(2)
         .map(|pair| f64::from((pair[1].0.x - pair[0].0.x).hypot(pair[1].0.y - pair[0].0.y)))
@@ -1199,7 +1218,10 @@ fn dabs_along_path(
     let base_radius = brush.size * 0.5;
     // Soft tips tolerate wider sampling. Avoid thousands of tiny half-float
     // additions on wide brushes; hard edges keep a one-pixel upper bound.
-    let spacing = (base_radius * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness));
+    let t = brush.material.grain_transform;
+    let inverse_scale = (t[0] * t[3] - t[1] * t[2]).abs().sqrt();
+    let spacing = ((base_radius * inverse_scale * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness)))
+        / inverse_scale;
     // A stationary hard-tip click at 50% flow deposits 50% coverage. Preserve
     // legacy full-flow density while calibrating intermediate values as alpha.
     let flow_density = if brush.flow == 1. {
@@ -1231,6 +1253,22 @@ fn dabs_along_path(
             material,
             medium_aux,
             paper,
+            grain_transform: brush.material.grain_transform[..4].try_into().unwrap(),
+            grain_offset: [
+                brush.material.grain_transform[4],
+                brush.material.grain_transform[5],
+                0.,
+                0.,
+            ],
+            paper_transform: brush.material.paper.texture_transform[..4]
+                .try_into()
+                .unwrap(),
+            paper_offset: [
+                brush.material.paper.texture_transform[4],
+                brush.material.paper.texture_transform[5],
+                0.,
+                0.,
+            ],
             ends: [p.x, p.y, p.x, p.y],
             color,
             radius,
@@ -1385,7 +1423,7 @@ fn create_brush_pipeline(
             vertex: wgpu::VertexState {
                 module: &brush_shader, entry_point: Some("vs_main"), compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<Segment>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4] })],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32, 3 => Float32, 4 => Float32, 5 => Float32, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4] })],
             },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
@@ -1414,12 +1452,7 @@ fn create_selection_pipeline_with_source(
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Selection outline"),
         source: wgpu::ShaderSource::Wgsl(
-            format!(
-                "{}\n{}",
-                include_str!("selection_common.wgsl"),
-                source
-            )
-            .into(),
+            format!("{}\n{}", include_str!("selection_common.wgsl"), source).into(),
         ),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3019,17 +3052,30 @@ impl Renderer {
         if self.composite_format != wgpu::TextureFormat::Rgba16Float {
             return Err("Extended tiles require a floating-point compositing target".into());
         }
-        let texture = extended_tile::ExtendedTileTexture::new(&self.device, &self.queue, dimensions.0, dimensions.1)?;
+        let texture = extended_tile::ExtendedTileTexture::new(
+            &self.device,
+            &self.queue,
+            dimensions.0,
+            dimensions.1,
+        )?;
         texture.upload(&self.queue, uploads)?;
         let view = texture.texture().create_view(&Default::default());
-        let make_group = |sampler: &wgpu::Sampler| self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Extended linear tile preview"),
-            layout: &self.svg_bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-            ],
-        });
+        let make_group = |sampler: &wgpu::Sampler| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Extended linear tile preview"),
+                layout: &self.svg_bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        };
         let linear_bind_group = make_group(&self.svg_sampler);
         let nearest_bind_group = make_group(&self.tile_nearest_sampler);
         self.paint_cache_installed = false;
@@ -3719,7 +3765,9 @@ impl Renderer {
         };
         let wide_presentation = cfg!(target_os = "macos")
             && format == wgpu::TextureFormat::Rgba16Float
-            && capabilities.color_spaces(surface_format).contains(wgpu::SurfaceColorSpaces::DISPLAY_P3);
+            && capabilities
+                .color_spaces(surface_format)
+                .contains(wgpu::SurfaceColorSpaces::DISPLAY_P3);
         if wide_presentation {
             config.color_space = wgpu::SurfaceColorSpace::DisplayP3;
         }
@@ -3743,7 +3791,12 @@ impl Renderer {
             immediate_size: 0,
         });
         let frame_overlay_pipeline = if wide_presentation {
-            frame_overlay::pipeline_with_source(&device, &layout, surface_format, include_str!("frame_overlay_p3.wgsl"))
+            frame_overlay::pipeline_with_source(
+                &device,
+                &layout,
+                surface_format,
+                include_str!("frame_overlay_p3.wgsl"),
+            )
         } else {
             frame_overlay::pipeline(&device, &layout, surface_format)
         };
@@ -3791,7 +3844,12 @@ impl Renderer {
         });
         let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
         let selection_pipeline = if wide_presentation {
-            create_selection_pipeline_with_source(&device, &paint_layout, surface_format, include_str!("selection_p3.wgsl"))
+            create_selection_pipeline_with_source(
+                &device,
+                &paint_layout,
+                surface_format,
+                include_str!("selection_p3.wgsl"),
+            )
         } else {
             create_selection_pipeline(&device, &paint_layout, surface_format)
         };
@@ -3808,7 +3866,11 @@ impl Renderer {
             &bind_layout,
             &svg_bind_layout,
             surface_format,
-            if wide_presentation { include_str!("onion_skin_p3.wgsl") } else { include_str!("onion_skin.wgsl") },
+            if wide_presentation {
+                include_str!("onion_skin_p3.wgsl")
+            } else {
+                include_str!("onion_skin.wgsl")
+            },
             "Onion reference overlay",
         );
         let onion_underlay_pipeline = create_textured_layer_pipeline(
@@ -3876,7 +3938,11 @@ impl Renderer {
             &bind_layout,
             &svg_bind_layout,
             surface_format,
-            if wide_presentation { include_str!("channel_p3.wgsl") } else { include_str!("channel.wgsl") },
+            if wide_presentation {
+                include_str!("channel_p3.wgsl")
+            } else {
+                include_str!("channel.wgsl")
+            },
             "Channel inspection",
         );
         let svg_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -4005,6 +4071,8 @@ impl Renderer {
         Uniforms {
             paper: [0.; 4],
             paper_color: [0.; 4],
+            paper_transform: [1., 0., 0., 1.],
+            paper_offset: [0.; 4],
             viewport: [
                 viewport.width as f32,
                 viewport.height as f32,
@@ -4347,6 +4415,9 @@ impl Renderer {
         let grayscale = document.color_mode() == lumapaint_core::document::ColorMode::Grayscale;
         uniforms.document[3] = f32::from(grayscale);
         uniforms.paper = document.paper().packed();
+        let t = document.paper().texture_transform;
+        uniforms.paper_transform = [t[0], t[1], t[2], t[3]];
+        uniforms.paper_offset = [t[4], t[5], 0., 0.];
         uniforms.paper_color = [
             document.paper().color[0] as f32 / 255.,
             document.paper().color[1] as f32 / 255.,
@@ -5723,10 +5794,45 @@ mod tests {
             }
         }
         stroke.eraser = true;
+        stroke.brush.material.enabled = true;
+        stroke.brush.envelope.enabled = true;
         assert!(sampled_raster_dabs(&stroke)
             .unwrap()
             .iter()
-            .all(|dab| dab.texture == 0.0 && dab.radius == 10.0));
+            .all(|dab| dab.texture == 0.0 && !dab.material.enabled && dab.radius == 10.0));
+        assert!(segments(&stroke, 1.0)
+            .iter()
+            .all(|dab| dab.texture == 0.0 && dab.material[0] == 0.0));
+    }
+
+    #[test]
+    fn ink_dabs_rotate_with_their_path() {
+        use lumapaint_core::document::{Brush, BrushSimulation};
+        let mut stroke = Stroke {
+            eraser: false,
+            clear: false,
+            selection: None,
+            brush: Brush {
+                size: 20.,
+                simulation: BrushSimulation::Ink,
+                ..Brush::default()
+            },
+            points: vec![Point { x: 10., y: 30. }, Point { x: 210., y: 130. }],
+            pressures: vec![1., 0.6],
+        };
+        let original = sampled_raster_dabs(&stroke).unwrap();
+        for point in &mut stroke.points {
+            (point.x, point.y) = (640. - point.y, point.x);
+        }
+        let rotated = sampled_raster_dabs(&stroke).unwrap();
+        assert_eq!(original.len(), rotated.len());
+        for (a, b) in original.iter().zip(&rotated) {
+            assert!((b.x - (640. - a.y)).abs() < 0.001);
+            assert!((b.y - a.x).abs() < 0.001);
+            assert!((b.radius - a.radius).abs() < 0.001);
+            assert!((b.weight - a.weight).abs() < 0.001);
+            assert_eq!(b.texture, 0.);
+        }
     }
     use lumapaint_core::document::Brush;
 
@@ -6822,7 +6928,6 @@ mod motion_raster_tests {
         motion::{self, Clip},
         vector::{VectorObject, VectorText},
     };
-
 
     fn artwork() -> (Document, String, String) {
         let mut doc = Document::default();

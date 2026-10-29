@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-28",
+  "timezone": "Asia/Tokyo",
+  "baseline_head": "e741d6f8ab2bafe7ce7e6c1fb85dd5dec071cc1d",
+  "dirty_baseline": true,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B123",
+  "architecture": "arm64",
+  "baseline_binary_sha256": "7b70d00e88f868e3e88e19f69d940b4bd80e196b83de8417db62c49481a61f8f",
+  "benchmark_source_sha256": "179f35e95dfb0d00481f58687f9a91091bc2553b3cd43610fa0b221173e40bdb",
+  "reference_source_sha256": "5d405e8dc3480eac836207c246e44513ae9b7ceffd6bef237ac0985505f1dce8",
+  "features": "renderer default; release thin LTO codegen-units=1",
+  "flags": {
+    "LUMAPAINT_RENDER_METRICS": null,
+    "LUMAPAINT_PARALLEL_TEXT_CACHE": null,
+    "LUMAPAINT_WORKSPACE_GPU_BASELINE": null,
+    "LUMAPAINT_ONION_GPU_BASELINE": null,
+    "LUMAPAINT_SVG_EAGER_FONTS": null
+  },
+  "load_observation": "Other native CPU workload about 100% and browser renderer about 70% were present in one process snapshot. No processes were altered. This does not establish the cause of latency variance.",
+  "protocol": "Preflight overlapping a build was excluded. Subsequent measurements did not overlap builds/tests started by this automation; other system activity was not isolated."
+}

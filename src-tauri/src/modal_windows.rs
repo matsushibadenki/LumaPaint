@@ -28,6 +28,8 @@ pub(crate) enum Kind {
     AppearanceAttribute,
     LayerMask,
     PixelSelection,
+    CanvasSize,
+    ImageResolution,
 }
 impl Kind {
     fn geometry(self) -> (f64, f64) {
@@ -46,6 +48,8 @@ impl Kind {
             Self::VectorAssets => (460., 560.),
             Self::AppearanceAttribute => (400., 240.),
             Self::PixelSelection => (440., 600.),
+            Self::CanvasSize => (400., 340.),
+            Self::ImageResolution => (400., 260.),
             Self::LayerMask => (460., 660.),
         }
     }
@@ -77,6 +81,8 @@ impl Kind {
             ],
             Self::VectorSelections => ["Saved Selections", "選択範囲の保存・編集", "已保存的选择"],
             Self::PixelSelection => ["Selection", "選択範囲", "选区"],
+            Self::CanvasSize => ["Canvas Size", "カンバスサイズ", "画布大小"],
+            Self::ImageResolution => ["Image Resolution", "画像解像度", "图像分辨率"],
             Self::LayerMask => ["Layer mask", "レイヤーマスク", "图层蒙版"],
         };
         titles[match locale {

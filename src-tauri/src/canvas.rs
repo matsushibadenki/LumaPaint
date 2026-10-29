@@ -601,6 +601,23 @@ pub async fn set_layer_effects(
 }
 
 #[tauri::command]
+pub async fn set_sparse_mask_linked(
+    window: tauri::WebviewWindow,
+    id: String,
+    linked: bool,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::set_sparse_mask_linked(id, linked)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, id, linked);
+        Err("Native document editing is not supported on this platform yet".into())
+    }
+}
+
+#[tauri::command]
 pub async fn set_raster_blend_mode(
     window: tauri::WebviewWindow,
     id: String,
@@ -2553,6 +2570,86 @@ pub(crate) async fn apply_pdf_import(
 pub(crate) fn open_psd(owner: &str, prepared: crate::psd_import::Prepared) -> Result<(), String> {
     let _session = platform::SessionGuard::enter(owner)?;
     platform::open_psd(prepared)
+}
+
+#[tauri::command]
+pub async fn rotate_image_menu(
+    window: tauri::WebviewWindow,
+    document_id: u64,
+    revision: u64,
+    turns: u8,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::rotate_image_menu(document_id, revision, turns)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, document_id, revision, turns);
+        Err("Native canvas unavailable".into())
+    }
+}
+
+#[tauri::command]
+pub async fn set_image_resolution_menu(
+    window: tauri::WebviewWindow,
+    document_id: u64,
+    revision: u64,
+    resolution: u32,
+    resample: Option<bool>,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if resample.unwrap_or(false) {
+            let job = on_main(window.clone(), move || {
+                platform::resample_image::prepare(document_id, revision, resolution)
+            })
+            .await?;
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                platform::resample_image::evaluate(job)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            on_main(window, move || platform::resample_image::commit(result)).await
+        } else {
+            on_main(window, move || {
+                platform::set_image_resolution_menu(document_id, revision, resolution)
+            })
+            .await
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, document_id, revision, resolution, resample);
+        Err("Native canvas unavailable".into())
+    }
+}
+
+#[tauri::command]
+pub async fn resize_canvas_menu(
+    window: tauri::WebviewWindow,
+    document_id: u64,
+    revision: u64,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<DocumentSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::resize_canvas_menu(document_id, revision, x, y, width, height)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, document_id, revision, x, y, width, height);
+        Err("Native canvas unavailable".into())
+    }
 }
 
 #[tauri::command]

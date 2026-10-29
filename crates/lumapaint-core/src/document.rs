@@ -30,6 +30,7 @@ mod compound_shapes;
 #[path = "document_crop.rs"]
 mod crop;
 pub use compound_shapes::{CompoundShape, CompoundShapeEdit, CompoundShapeSnapshot};
+pub use crop::ImageResamplePlan;
 #[path = "document_layer_groups.rs"]
 mod layer_groups;
 pub use layer_groups::{GroupMaskSettings, LayerGroupEdit, LayerGroupsSnapshot, LayerGroupsState};
@@ -512,6 +513,8 @@ pub struct LayerSnapshot {
     pub opacity: f32,
     pub locked: bool,
     pub alpha_locked: bool,
+    pub sparse_mask_present: bool,
+    pub sparse_mask_linked: bool,
     pub mask_enabled: bool,
     pub mask_inverted: bool,
     pub mask_density: f32,
@@ -628,6 +631,10 @@ struct VectorHistoryState {
     paint_bucket_settings: crate::paint_bucket::Settings,
     animation: std::sync::Arc<animation::Animation>,
     crop_dimensions: Option<(u32, u32)>,
+    #[serde(default)]
+    resample_resolution: Option<u32>,
+    #[serde(default)]
+    paper: Option<crate::natural_media::PaperSettings>,
     compound_shapes: Vec<CompoundShape>,
     layer_groups: LayerGroupsState,
     guides: GuidesState,
@@ -674,6 +681,7 @@ enum VectorHistoryEntry {
     Animation(std::sync::Arc<animation::Animation>),
     SavedSelections(std::sync::Arc<Vec<SavedVectorSelection>>),
     Paper(crate::natural_media::PaperSettings),
+    Resolution(u32),
     SavedPixelSelections(std::sync::Arc<Vec<SavedPixelSelection>>),
     VectorAssets(std::sync::Arc<VectorAssets>),
     PixelSelection(Option<Selection>),
@@ -1001,6 +1009,24 @@ impl Document {
         self.revision += 1;
         Ok(())
     }
+    /// Set print resolution without resampling artwork or changing pixel dimensions.
+    pub fn set_image_resolution(&mut self, resolution: u32) -> Result<bool, String> {
+        if !(1..=1200).contains(&resolution) {
+            return Err("Invalid resolution / 解像度が範囲外です / 分辨率超出范围".into());
+        }
+        if self.resolution == resolution {
+            return Ok(false);
+        }
+        self.finish();
+        self.vector_undo
+            .push(VectorHistoryEntry::Resolution(self.resolution));
+        self.resolution = resolution;
+        self.undo_order.push(HistoryKind::Vector);
+        self.vector_redo.clear();
+        self.redo_order.clear();
+        self.revision += 1;
+        Ok(true)
+    }
     pub fn canvas_color(&self) -> CanvasColor {
         self.canvas_color
     }
@@ -1106,6 +1132,8 @@ impl Document {
             opacity: self.layer_opacity,
             locked: self.layer_locked,
             alpha_locked: self.layer_alpha_locked,
+            sparse_mask_present: false,
+            sparse_mask_linked: true,
             mask_enabled: self.layer_mask_enabled,
             mask_inverted: self.layer_mask_inverted,
             mask_density: self.layer_mask_density,
@@ -1201,6 +1229,8 @@ impl Document {
                             .find(|m| m.id == layer.id)
                             .map_or(layer.locked, |m| m.locked),
                         alpha_locked: layer.alpha_locked,
+                        sparse_mask_present: false,
+                        sparse_mask_linked: true,
                         mask_enabled: layer.mask_enabled,
                         mask_inverted: layer.mask_inverted,
                         mask_density: layer.mask_density,
@@ -7381,6 +7411,9 @@ impl Document {
             VectorHistoryEntry::VectorAssets(previous) => VectorHistoryEntry::VectorAssets(
                 std::mem::replace(&mut self.vector_assets, previous),
             ),
+            VectorHistoryEntry::Resolution(previous) => {
+                VectorHistoryEntry::Resolution(std::mem::replace(&mut self.resolution, previous))
+            }
             VectorHistoryEntry::Paper(previous) => {
                 VectorHistoryEntry::Paper(std::mem::replace(&mut self.paper, previous))
             }
@@ -7400,6 +7433,12 @@ impl Document {
                 let mut current = self.vector_history_state();
                 if previous.crop_dimensions.is_some() {
                     current.crop_dimensions = Some((self.width, self.height));
+                }
+                if previous.resample_resolution.is_some() {
+                    current.resample_resolution = Some(self.resolution);
+                }
+                if previous.paper.is_some() {
+                    current.paper = Some(self.paper);
                 }
                 if previous.strokes.is_some() {
                     current.strokes = Some(self.strokes.clone());
@@ -7473,6 +7512,8 @@ impl Document {
             paint_bucket_settings: self.paint_bucket_settings.clone(),
             animation: self.animation.clone(),
             crop_dimensions: None,
+            resample_resolution: None,
+            paper: None,
             compound_shapes: self.compound_shapes.clone(),
             layer_groups: self.layer_groups.clone(),
             guides: self.guides.clone(),
@@ -7499,6 +7540,12 @@ impl Document {
         if let Some((width, height)) = state.crop_dimensions {
             self.width = width;
             self.height = height;
+        }
+        if let Some(resolution) = state.resample_resolution {
+            self.resolution = resolution;
+        }
+        if let Some(paper) = state.paper {
+            self.paper = paper;
         }
         self.transform_slots.0.clear();
         self.compound_shapes = state.compound_shapes;

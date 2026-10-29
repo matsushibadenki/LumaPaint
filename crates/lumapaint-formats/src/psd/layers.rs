@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::BTreeMap;
 struct Record<'a> {
-    rect: [u32; 4],
+    rect: [i64; 4],
     channels: Vec<(i16, usize)>,
     extra: &'a [u8],
     mask: Option<Mask>,
@@ -12,10 +12,11 @@ struct Record<'a> {
 }
 #[derive(Clone, Copy)]
 struct Mask {
-    rect: [u32; 4],
+    rect: [i64; 4],
     background: u8,
     flags: u8,
     density: u8,
+    ambiguous_origin: bool,
 }
 impl Mask {
     fn value(self, value: u8) -> u8 {
@@ -30,6 +31,7 @@ impl Mask {
         (255 - ((255 - u32::from(value)) * u32::from(self.density) + 127) / 255) as u8
     }
 }
+#[cfg(test)]
 fn dimensions(rect: [u32; 4]) -> (usize, usize) {
     ((rect[3] - rect[1]) as usize, (rect[2] - rect[0]) as usize)
 }
@@ -225,6 +227,12 @@ fn name_with_metadata(
             b"iOpa" if data == [255, 0, 0, 0] => {}
             b"lsct" if data == [0, 0, 0, 0] => {}
             b"TySh" => return Err(ImportError::Unsupported("PSD editable text layer")),
+            b"lmgm" if data == [0, 0, 0, 0] => {
+                *discarded = true;
+            }
+            b"lyvr" if data == [0, 0, 0, 70] => {
+                *discarded = true;
+            }
             _ => return Err(unsupported()),
         }
     }
@@ -242,7 +250,12 @@ fn name_with_metadata(
     Ok((name, locked, alpha_locked))
 }
 // Materialize a black outside background into native sparse masks; white is implicit.
-fn mask(extra: &[u8], h: Header, layer_rect: [u32; 4]) -> Result<Option<Mask>, ImportError> {
+fn mask(
+    extra: &[u8],
+    _h: Header,
+    layer_rect: [i64; 4],
+    prefer_relative: bool,
+) -> Result<Option<Mask>, ImportError> {
     let mut r = Reader {
         bytes: extra,
         at: 0,
@@ -267,18 +280,26 @@ fn mask(extra: &[u8], h: Header, layer_rect: [u32; 4]) -> Result<Option<Mask>, I
     if ![0, 255].contains(&background) || flags & !23 != 0 {
         return Err(unsupported());
     }
-    if flags & 1 != 0 {
-        for (index, value) in signed.iter_mut().enumerate() {
-            *value += i64::from(layer_rect[if index % 2 == 0 { 0 } else { 1 }]);
-        }
+    // Both interpretations can fit in the document; neither the flag nor
+    // the rectangle alone distinguishes old relative files from Photoshop's
+    // current document-space encoding.
+    let relative = signed.map(|v| v);
+    let translated = [
+        relative[0] + layer_rect[0],
+        relative[1] + layer_rect[1],
+        relative[2] + layer_rect[0],
+        relative[3] + layer_rect[1],
+    ];
+    // Compare plausible origins against the composite instead of guessing.
+    let ambiguous_origin = flags & 1 != 0
+        && layer_rect[..2] != [0, 0]
+        && relative != translated
+        && relative[0] < relative[2]
+        && relative[1] < relative[3];
+    if ambiguous_origin && prefer_relative {
+        signed = translated;
     }
-    if signed.iter().any(|value| *value < 0)
-        || signed[2] > i64::from(h.height)
-        || signed[3] > i64::from(h.width)
-    {
-        return Err(unsupported());
-    }
-    let rect = signed.map(|value| value as u32);
+    let rect = signed;
     let density = if flags & 16 != 0 {
         let parameters = m.take(1)?[0];
         match parameters {
@@ -302,11 +323,13 @@ fn mask(extra: &[u8], h: Header, layer_rect: [u32; 4]) -> Result<Option<Mask>, I
         background,
         flags,
         density,
+        ambiguous_origin,
     }))
 }
 fn channel_size(record: &Record<'_>, id: i16) -> (usize, usize) {
     if id == -2 {
-        dimensions(record.mask.expect("validated mask channel").rect)
+        let rect = record.mask.expect("validated mask channel").rect;
+        ((rect[3] - rect[1]) as usize, (rect[2] - rect[0]) as usize)
     } else {
         (
             (record.rect[3] - record.rect[1]) as usize,
@@ -420,12 +443,60 @@ fn rows(
     }
     Ok(())
 }
+#[cfg(test)]
 pub(super) fn decode_with_metadata(
     data: &[u8],
     h: Header,
     density_baked: &mut bool,
     discarded: &mut bool,
+    clipped: &mut bool,
+    ambiguous: &mut bool,
 ) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
+    decode_with_metadata_mode(
+        data,
+        h,
+        density_baked,
+        discarded,
+        clipped,
+        ambiguous,
+        (0, &mut 0),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn decode_with_metadata_mode(
+    data: &[u8],
+    h: Header,
+    density_baked: &mut bool,
+    discarded: &mut bool,
+    clipped: &mut bool,
+    ambiguous: &mut bool,
+    mask_choice: (u16, &mut u16),
+) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
+    decode_with_metadata_mode_and_clipped(
+        data,
+        h,
+        density_baked,
+        discarded,
+        clipped,
+        ambiguous,
+        mask_choice,
+        &mut false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn decode_with_metadata_mode_and_clipped(
+    data: &[u8],
+    h: Header,
+    density_baked: &mut bool,
+    discarded: &mut bool,
+    clipped: &mut bool,
+    ambiguous: &mut bool,
+    mask_choice: (u16, &mut u16),
+    mask_clipped: &mut bool,
+) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
+    let (relative_mask_bits, ambiguous_mask_bits) = mask_choice;
     *density_baked = false;
     if data.is_empty() {
         return Ok(None);
@@ -468,20 +539,20 @@ pub(super) fn decode_with_metadata(
     }
     let mut records = Vec::new();
     let mut budget = 0usize;
-    for _ in 0..count {
-        let mut rect = [0u32; 4];
+    for layer_index in 0..count {
+        let mut rect = [0i64; 4];
         for n in &mut rect {
-            let value = r.u32()? as i32;
-            if value < 0 {
-                return Err(unsupported());
-            }
-            *n = value as u32;
+            *n = i64::from(r.u32()? as i32);
         }
         if rect[0] > rect[2] || rect[1] > rect[3] {
             return Err(ImportError::Malformed("layer rectangle"));
         }
-        if rect[2] > h.height || rect[3] > h.width {
-            return Err(unsupported());
+        if rect[0] < 0
+            || rect[1] < 0
+            || rect[2] > i64::from(h.height)
+            || rect[3] > i64::from(h.width)
+        {
+            *clipped = true;
         }
         let n = r.u16()?;
         if n > 56 {
@@ -505,8 +576,12 @@ pub(super) fn decode_with_metadata(
             return Err(unsupported());
         }
         // Bound both CPU expansion work and tile storage across all layers, before allocation.
+        let expanded = width
+            .checked_mul(height)
+            .and_then(|area| area.checked_mul(channels.iter().filter(|(id, _)| *id != -2).count()))
+            .ok_or(ImportError::LimitExceeded("PSD layer expansion"))?;
         budget = budget
-            .checked_add(width * height * channels.iter().filter(|(id, _)| *id != -2).count())
+            .checked_add(expanded)
             .ok_or(ImportError::LimitExceeded("PSD layer expansion"))?;
         if budget > MAX_INPUT_BYTES {
             return Err(ImportError::LimitExceeded("PSD layer expansion"));
@@ -527,13 +602,36 @@ pub(super) fn decode_with_metadata(
         }
         let extra = r.section()?;
         name_with_metadata(extra, h.version == 2, discarded)?;
-        let mask = mask(extra, h, rect)?;
+        let mask = mask(
+            extra,
+            h,
+            rect,
+            relative_mask_bits & (1u16 << layer_index) != 0,
+        )?;
+        if mask.is_some_and(|m| {
+            m.rect[0] < 0
+                || m.rect[1] < 0
+                || m.rect[2] > i64::from(h.height)
+                || m.rect[3] > i64::from(h.width)
+        }) {
+            *mask_clipped = true;
+        }
+        if mask.is_some_and(|m| m.ambiguous_origin) {
+            *ambiguous = true;
+            *ambiguous_mask_bits |= 1u16 << layer_index;
+        }
         if mask.is_some() != channels.iter().any(|(id, _)| *id == -2) {
             return Err(ImportError::Malformed("layer mask channel"));
         }
         if let Some(mask) = mask {
-            let (width, height) = dimensions(mask.rect);
-            budget += width * height;
+            let width = (mask.rect[3] - mask.rect[1]) as usize;
+            let height = (mask.rect[2] - mask.rect[0]) as usize;
+            let area = width
+                .checked_mul(height)
+                .ok_or(ImportError::LimitExceeded("PSD layer expansion"))?;
+            budget = budget
+                .checked_add(area)
+                .ok_or(ImportError::LimitExceeded("PSD layer expansion"))?;
             if budget > MAX_INPUT_BYTES {
                 return Err(ImportError::LimitExceeded("PSD layer expansion"));
             }
@@ -563,13 +661,43 @@ pub(super) fn decode_with_metadata(
             let rect = if mask.value(mask.background) != 255 {
                 [0, 0, h.height, h.width]
             } else {
-                mask.rect
+                [
+                    mask.rect[0].clamp(0, i64::from(h.height)) as u32,
+                    mask.rect[1].clamp(0, i64::from(h.width)) as u32,
+                    mask.rect[2].clamp(0, i64::from(h.height)) as u32,
+                    mask.rect[3].clamp(0, i64::from(h.width)) as u32,
+                ]
             };
             storage += tile_count(rect) * (TILE_SIZE * TILE_SIZE) as usize;
             if storage > MAX_INPUT_BYTES {
                 return Err(ImportError::LimitExceeded("PSD layer tiles"));
             }
         }
+        if bottom > top
+            && right > left
+            && (top < 0 || left < 0 || bottom > i64::from(h.height) || right > i64::from(h.width))
+        {
+            let edge = i64::from(TILE_SIZE);
+            let columns = (right - 1).div_euclid(edge) - left.div_euclid(edge) + 1;
+            let rows = (bottom - 1).div_euclid(edge) - top.div_euclid(edge) + 1;
+            let all_tiles = usize::try_from(columns)
+                .ok()
+                .and_then(|x| usize::try_from(rows).ok().and_then(|y| x.checked_mul(y)))
+                .ok_or(ImportError::LimitExceeded("PSD layer tiles"))?;
+            let bytes = all_tiles
+                .checked_mul((TILE_SIZE * TILE_SIZE * 4) as usize)
+                .ok_or(ImportError::LimitExceeded("PSD layer tiles"))?;
+            storage = storage
+                .checked_add(bytes)
+                .ok_or(ImportError::LimitExceeded("PSD layer tiles"))?;
+            if storage > MAX_INPUT_BYTES {
+                return Err(ImportError::LimitExceeded("PSD layer tiles"));
+            }
+        }
+        let top = top.clamp(0, i64::from(h.height)) as u32;
+        let left = left.clamp(0, i64::from(h.width)) as u32;
+        let bottom = bottom.clamp(0, i64::from(h.height)) as u32;
+        let right = right.clamp(0, i64::from(h.width)) as u32;
         if bottom > top && right > left {
             storage += ((right - 1) / TILE_SIZE - left / TILE_SIZE + 1) as usize
                 * ((bottom - 1) / TILE_SIZE - top / TILE_SIZE + 1) as usize
@@ -590,6 +718,7 @@ pub(super) fn decode_with_metadata(
             name_with_metadata(record.extra, h.version == 2, discarded)?;
         let alpha = record.channels.iter().any(|(id, _)| *id == -1);
         let mut tiles = BTreeMap::<TileCoord, Vec<u8>>::new();
+        let mut outside = BTreeMap::<(i32, i32), Vec<u8>>::new();
         let mut masks = BTreeMap::<TileCoord, Vec<u8>>::new();
         if let Some(mask) = record
             .mask
@@ -618,8 +747,13 @@ pub(super) fn decode_with_metadata(
                 let mask = record.mask.expect("validated mask channel");
                 rows(r.take(length)?, width, height, h.version == 2, |y, row| {
                     for (x, &value) in row.iter().enumerate() {
-                        let dx = mask.rect[1] + x as u32;
-                        let dy = mask.rect[0] + y as u32;
+                        let dx = mask.rect[1] + x as i64;
+                        let dy = mask.rect[0] + y as i64;
+                        if dx < 0 || dy < 0 || dx >= i64::from(h.width) || dy >= i64::from(h.height)
+                        {
+                            continue;
+                        }
+                        let (dx, dy) = (dx as u32, dy as u32);
                         let tile = masks
                             .entry(TileCoord {
                                 x: dx / TILE_SIZE,
@@ -634,8 +768,26 @@ pub(super) fn decode_with_metadata(
             }
             rows(r.take(length)?, width, height, h.version == 2, |y, row| {
                 for (x, &value) in row.iter().enumerate() {
-                    let dx = left + x as u32;
-                    let dy = top + y as u32;
+                    let dx = left + x as i64;
+                    let dy = top + y as i64;
+                    if dx < 0 || dy < 0 || dx >= i64::from(h.width) || dy >= i64::from(h.height) {
+                        let edge = i64::from(TILE_SIZE);
+                        let coord = (dx.div_euclid(edge) as i32, dy.div_euclid(edge) as i32);
+                        let tile = outside
+                            .entry(coord)
+                            .or_insert_with(|| vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize]);
+                        let at = (dy.rem_euclid(edge) * edge + dx.rem_euclid(edge)) as usize * 4;
+                        if id == -1 {
+                            tile[at + 3] = value;
+                        } else {
+                            tile[at + id as usize] = value;
+                            if !alpha {
+                                tile[at + 3] = 255;
+                            }
+                        }
+                        continue;
+                    }
+                    let (dx, dy) = (dx as u32, dy as u32);
                     let tile = tiles
                         .entry(TileCoord {
                             x: dx / TILE_SIZE,
@@ -654,6 +806,7 @@ pub(super) fn decode_with_metadata(
                 }
             })?;
         }
+        tiles.retain(|_, pixels| pixels.iter().any(|&value| value != 0));
         layers.push(RasterLayerState {
             effects: Default::default(),
             blend_mode: record.blend_mode,
@@ -664,6 +817,7 @@ pub(super) fn decode_with_metadata(
             locked,
             alpha_locked: alpha_locked || record.flags & 1 != 0,
             mask_present: record.mask.is_some(),
+            mask_linked: record.mask.is_none_or(|mask| mask.flags & 1 == 0),
             mask_enabled: record.mask.is_some_and(|mask| mask.flags & 2 == 0),
             mask_inverted: record
                 .mask
@@ -672,6 +826,11 @@ pub(super) fn decode_with_metadata(
             tiles: tiles
                 .into_iter()
                 .map(|(coord, pixels)| RasterTileState { coord, pixels })
+                .collect(),
+            off_canvas_tiles: outside
+                .into_iter()
+                .filter(|(_, pixels)| pixels.iter().any(|&v| v != 0))
+                .map(|((x, y), pixels)| lumapaint_core::tiles::OffCanvasTileState { x, y, pixels })
                 .collect(),
             mask_tiles: masks
                 .into_iter()
@@ -690,12 +849,411 @@ fn decode(
     h: Header,
     density_baked: &mut bool,
 ) -> Result<Option<Vec<RasterLayerState>>, ImportError> {
-    decode_with_metadata(data, h, density_baked, &mut false)
+    decode_with_metadata(data, h, density_baked, &mut false, &mut false, &mut false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn photoshop_transparent_rgb_is_retained_inside_and_outside_canvas() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-transparent-rgb.psd").as_slice(),
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-transparent-rgb.psb").as_slice(),
+        ] {
+            let imported = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert!(!imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            let doc =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(imported.raster).unwrap();
+            assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([190, 10, 90, 0]));
+            let outside = &doc.layers()[0].off_canvas_tiles[0];
+            assert_eq!((outside.x, outside.y), (-1, 0));
+            assert_eq!(&outside.pixels[1020..1024], &[31, 95, 180, 0]);
+            for large in [false, true] {
+                let output = super::write::write(
+                    &doc.state(),
+                    large,
+                    crate::export::ExportOptions::default(),
+                )
+                .unwrap();
+                let result = PsdImporter
+                    .import(&output.bytes, ImportOptions { allow_lossy: true })
+                    .unwrap();
+                let restored =
+                    lumapaint_core::tiles::TiledRasterDocument::from_state(result.raster).unwrap();
+                assert_eq!(
+                    restored.layers()[0].tiles.pixel(0, 0),
+                    Some([190, 10, 90, 0])
+                );
+                assert_eq!(
+                    &restored.layers()[0].off_canvas_tiles[0].pixels[1020..1024],
+                    &[31, 95, 180, 0]
+                );
+            }
+        }
+    }
+    #[test]
+    fn photoshop_2026_mask_link_fixtures_expose_observed_flag() {
+        for (data, large, expected) in [
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-linked.psd").as_slice(),
+                false,
+                0,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-unlinked.psd")
+                    .as_slice(),
+                false,
+                1,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-linked.psb").as_slice(),
+                true,
+                0,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-unlinked.psb")
+                    .as_slice(),
+                true,
+                1,
+            ),
+        ] {
+            let mut file = Reader {
+                bytes: data,
+                at: 26,
+            };
+            file.section().unwrap();
+            file.section().unwrap();
+            let section = file.sized_section(large).unwrap();
+            let mut outer = Reader {
+                bytes: section,
+                at: 0,
+            };
+            let info = outer.sized_section(large).unwrap();
+            let mut records = Reader { bytes: info, at: 0 };
+            let count = (records.u16().unwrap() as i16).unsigned_abs();
+            let mut flags = Vec::new();
+            for _ in 0..count {
+                records.take(16).unwrap();
+                let channels = records.u16().unwrap();
+                for _ in 0..channels {
+                    records.take(2).unwrap();
+                    records.length(large).unwrap();
+                }
+                records.take(12).unwrap();
+                let extra = records.section().unwrap();
+                let mut reader = Reader {
+                    bytes: extra,
+                    at: 0,
+                };
+                let mask = reader.section().unwrap();
+                if !mask.is_empty() {
+                    flags.push(mask[17] & 1);
+                }
+            }
+            assert_eq!(flags, [expected]);
+        }
+    }
+
+    #[test]
+    fn photoshop_link_fixtures_import_link_state() {
+        for (bytes, linked) in [
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-linked.psd").as_slice(),
+                true,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-unlinked.psd")
+                    .as_slice(),
+                false,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-linked.psb").as_slice(),
+                true,
+            ),
+            (
+                include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-unlinked.psb")
+                    .as_slice(),
+                false,
+            ),
+        ] {
+            let mut reader = Reader { bytes, at: 26 };
+            reader.section().unwrap();
+            reader.section().unwrap();
+            let section = reader
+                .sized_section(read_header(bytes).unwrap().version == 2)
+                .unwrap();
+            let raw = decode_with_metadata(
+                section,
+                read_header(bytes).unwrap(),
+                &mut false,
+                &mut false,
+                &mut false,
+                &mut false,
+            );
+            assert!(raw.is_ok(), "decode: {:?}", raw.err());
+            let image = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            let mask_layer = image
+                .raster
+                .layers
+                .iter()
+                .find(|layer| layer.mask_present)
+                .unwrap_or_else(|| panic!("Photoshop mask not retained: {:?}", image.report));
+            assert_eq!(mask_layer.mask_linked, linked);
+        }
+    }
+
+    #[test]
+    fn photoshop_mask_moved_outside_canvas_retains_visible_mask_with_consent() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-effect-mask-moved-outside.psd")
+                .as_slice(),
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-effect-mask-moved-outside.psb")
+                .as_slice(),
+        ] {
+            assert!(matches!(
+                PsdImporter.import(bytes, ImportOptions::default()),
+                Err(ImportError::LossyConversionRequiresConsent(_))
+            ));
+            let result = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert!(result
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.maskOutsideCanvasClipped"));
+            assert!(!result
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            assert_eq!(result.raster.layers.len(), 1);
+            assert!(result.raster.layers[0].mask_present);
+            assert!(!result.raster.layers[0].mask_linked);
+            let live =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(result.raster).unwrap();
+            assert_eq!(live.layers()[0].mask.pixel(20, 50), Some(0));
+            assert_eq!(live.layers()[0].mask.pixel(50, 50), Some(255));
+            let large = read_header(bytes).unwrap().version == 2;
+            let saved = super::write::write(
+                &live.state(),
+                large,
+                crate::export::ExportOptions { allow_lossy: true },
+            )
+            .unwrap();
+            let again = PsdImporter
+                .import(&saved.bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert!(!again
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            let restored =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(again.raster).unwrap();
+            assert!(!restored.layers()[0].mask_linked);
+            assert_eq!(restored.layers()[0].mask.pixel(20, 50), Some(0));
+            assert_eq!(restored.layers()[0].mask.pixel(50, 50), Some(255));
+        }
+    }
+
+    #[test]
+    fn photoshop_offset_psb_retains_mask_position_and_link() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-offset.psb").as_slice(),
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-offset-roundtrip.psd")
+                .as_slice(),
+        ] {
+            let image = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            let layer = image
+                .raster
+                .layers
+                .iter()
+                .find(|l| l.mask_present)
+                .expect("Photoshop mask retained");
+            assert!(!layer.mask_linked);
+            let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(image.raster).unwrap();
+            assert_eq!(doc.layers()[0].mask.pixel(2, 30), Some(0));
+            assert_eq!(doc.layers()[0].mask.pixel(257, 30), Some(255));
+            assert_eq!(
+                doc.layers()[0].tiles.pixel(257, 30),
+                Some([255, 255, 255, 255])
+            );
+        }
+    }
+
+    #[test]
+    fn photoshop_off_canvas_layer_falls_back_if_composite_differs() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-mask-offset.psd").as_slice(),
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-offcanvas.psb").as_slice(),
+        ] {
+            let mut reader = Reader { bytes, at: 26 };
+            reader.section().unwrap();
+            reader.section().unwrap();
+            let header = read_header(bytes).unwrap();
+            let section = reader.sized_section(header.version == 2).unwrap();
+            let mut clipped = false;
+            let layers = decode_with_metadata(
+                section,
+                header,
+                &mut false,
+                &mut false,
+                &mut clipped,
+                &mut false,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(clipped);
+            assert_eq!(layers.len(), 8);
+            let layer = layers.iter().find(|l| l.name == "Layer 6").unwrap();
+            assert!(!layer.mask_linked);
+            assert!(!layer.tiles.is_empty());
+            assert!(matches!(
+                PsdImporter.import(bytes, ImportOptions::default()),
+                Err(ImportError::LossyConversionRequiresConsent(_))
+            ));
+            let imported = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert!(imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            assert!(!imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.offCanvasPixelsClipped"));
+        }
+    }
+
+    #[test]
+    fn photoshop_negative_origin_psd_psb_keep_in_canvas_layer_pixels() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-negative-layer.psb").as_slice(),
+            include_bytes!("../../tests/fixtures/lp-photoshop-2026-negative-layer.psd").as_slice(),
+        ] {
+            let header = read_header(bytes).unwrap();
+            let mut reader = Reader { bytes, at: 26 };
+            reader.section().unwrap();
+            reader.section().unwrap();
+            let section = reader.sized_section(header.version == 2).unwrap();
+            let mut clipped = false;
+            let layers = decode_with_metadata(
+                section,
+                header,
+                &mut false,
+                &mut false,
+                &mut clipped,
+                &mut false,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(clipped);
+            assert_eq!(layers.len(), 8);
+            let layer = layers.iter().find(|l| l.name == "Layer 6").unwrap();
+            assert!(!layer.mask_linked);
+            assert!(!layer.tiles.is_empty());
+            let state = TiledRasterState {
+                width: header.width,
+                height: header.height,
+                resolution: None,
+                icc_profile: None,
+                layers,
+            };
+            lumapaint_core::tiles::TiledRasterDocument::from_state(state).unwrap();
+            let imported = PsdImporter
+                .import(bytes, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert!(
+                imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "psd.layersFlattened"),
+                "{:?}",
+                imported.report
+            );
+        }
+    }
+
+    #[test]
+    fn negative_layer_origin_decodes_visible_pixels_with_clipping_report() {
+        let h = Header {
+            version: 1,
+            width: 4,
+            height: 2,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+        };
+        let mut bytes = region_layer(0, false, [0, 0, 2, 4], [0, 0, 1, 2], 255, &[0, 128]);
+        for (idx, coordinate) in [-1i32, -1, 1, 3].iter().enumerate() {
+            bytes[6 + idx * 4..10 + idx * 4].copy_from_slice(&coordinate.to_be_bytes());
+        }
+        let mut clipped = false;
+        let layers =
+            decode_with_metadata(&bytes, h, &mut false, &mut false, &mut clipped, &mut false)
+                .unwrap()
+                .unwrap();
+        assert!(clipped);
+        let state = TiledRasterState {
+            width: 4,
+            height: 2,
+            resolution: None,
+            icc_profile: None,
+            layers,
+        };
+        let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(state).unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([255, 0, 0, 255]));
+        assert_eq!(doc.layers()[0].tiles.pixel(2, 0), Some([255, 0, 0, 255]));
+        assert_eq!(doc.layers()[0].tiles.pixel(3, 0), Some([0, 0, 0, 0]));
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 1), Some([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn positive_off_canvas_pixels_are_retained_by_decoder() {
+        let h = Header {
+            version: 1,
+            width: 4,
+            height: 2,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+        };
+        let bytes = region_layer(0, false, [0, 1, 2, 5], [0, 0, 1, 2], 255, &[0, 128]);
+        let mut clipped = false;
+        let layers =
+            decode_with_metadata(&bytes, h, &mut false, &mut false, &mut clipped, &mut false)
+                .unwrap()
+                .unwrap();
+        assert!(clipped);
+        let state = TiledRasterState {
+            width: 4,
+            height: 2,
+            resolution: None,
+            icc_profile: None,
+            layers,
+        };
+        let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(state).unwrap();
+        assert_eq!(doc.layers()[0].tiles.pixel(0, 0), Some([0, 0, 0, 0]));
+        assert!(doc.layers()[0].tiles.pixel(3, 0).unwrap()[3] > 0);
+        assert!(!doc.layers()[0].off_canvas_tiles.is_empty());
+    }
+
     fn fixture(rle: bool) -> &'static [u8] {
         if rle {
             include_bytes!("../../tests/fixtures/lp-psd-layers-rle.psd")
@@ -912,7 +1470,506 @@ mod tests {
         }
     }
     #[test]
-    fn relative_masks_resolve_signed_offsets_without_moving_layer_pixels() {
+    fn merged_preview_selects_mixed_mask_origins_per_layer() {
+        fn parts(section: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            let mut outer = Reader {
+                bytes: section,
+                at: 0,
+            };
+            let info = outer.section().unwrap();
+            let mut r = Reader { bytes: info, at: 2 };
+            r.take(16).unwrap();
+            let count = r.u16().unwrap();
+            for _ in 0..count {
+                r.take(2).unwrap();
+                r.length(false).unwrap();
+            }
+            r.take(12).unwrap();
+            r.section().unwrap();
+            (info[2..r.at].to_vec(), info[r.at..].to_vec())
+        }
+        for (size, fully_outside, selected) in
+            [(4, false, 1), (4, true, 1), (513, false, 1), (4, false, 0)]
+        {
+            let h = Header {
+                version: 1,
+                width: size,
+                height: size,
+                channels: 3,
+                depth: 8,
+                color_mode: 3,
+            };
+            let first = if fully_outside {
+                region_layer(1, false, [1, 1, 2, 4], [1, 3, 2, 4], 255, &[0])
+            } else if size == 4 {
+                region_layer(1, false, [1, 1, 2, 3], [0, 0, 1, 4], 255, &[0, 128, 255, 0])
+            } else {
+                region_layer(1, false, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128])
+            };
+            let second = region_layer(1, false, [2, 1, 3, 3], [0, 0, 1, 2], 255, &[0, 128]);
+            let (r1, p1) = parts(&first);
+            let (r2, p2) = parts(&second);
+            let mut info = (-2i16).to_be_bytes().to_vec();
+            info.extend(r1);
+            info.extend(r2);
+            info.extend(p1);
+            info.extend(p2);
+            if info.len() % 2 != 0 {
+                info.push(0);
+            }
+            let mut section = (info.len() as u32).to_be_bytes().to_vec();
+            section.extend(info);
+            section.extend([0; 4]);
+            let mut bits = 0;
+            let layers = decode_with_metadata_mode(
+                &section,
+                h,
+                &mut false,
+                &mut false,
+                &mut false,
+                &mut false,
+                (selected, &mut bits),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(bits, 3);
+            let state = TiledRasterState {
+                width: size,
+                height: size,
+                resolution: None,
+                icc_profile: None,
+                layers,
+            };
+            let saved = super::write::write(&state, false, crate::export::ExportOptions::default())
+                .unwrap();
+            let mut file = saved.bytes;
+            let mut cursor = Reader {
+                bytes: &file,
+                at: 26,
+            };
+            cursor.section().unwrap();
+            cursor.section().unwrap();
+            let start = cursor.at;
+            let end =
+                start + 4 + u32::from_be_bytes(file[start..start + 4].try_into().unwrap()) as usize;
+            let mut replacement = (section.len() as u32).to_be_bytes().to_vec();
+            replacement.extend(section);
+            file.splice(start..end, replacement);
+            if selected == 0 {
+                PsdImporter.import(&file, ImportOptions::default()).unwrap();
+            }
+            let imported = PsdImporter
+                .import(&file, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(
+                imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.maskOriginRelativeInferred"),
+                selected != 0,
+                "{:?}",
+                imported.report
+            );
+            assert!(
+                !imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.maskOriginAmbiguous"),
+                "{:?}",
+                imported.report
+            );
+            assert!(!imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            if size == 4 && selected != 0 {
+                assert!(imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.maskOutsideCanvasClipped"));
+            }
+            let doc =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(imported.raster).unwrap();
+            assert_eq!(
+                doc.layers()[0].mask.pixel(1, 1),
+                Some(if fully_outside || selected == 0 {
+                    255
+                } else {
+                    0
+                })
+            );
+            assert_eq!(doc.layers()[1].mask.pixel(0, 0), Some(0));
+            assert_eq!(doc.layers()[1].mask.pixel(1, 2), Some(255));
+        }
+    }
+
+    #[test]
+    fn invisible_mask_origin_remains_ambiguous_after_preview_match() {
+        fn parts(section: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            let mut outer = Reader {
+                bytes: section,
+                at: 0,
+            };
+            let info = outer.section().unwrap();
+            let mut r = Reader { bytes: info, at: 2 };
+            r.take(16).unwrap();
+            let count = r.u16().unwrap();
+            for _ in 0..count {
+                r.take(2).unwrap();
+                r.length(false).unwrap();
+            }
+            r.take(12).unwrap();
+            r.section().unwrap();
+            (info[2..r.at].to_vec(), info[r.at..].to_vec())
+        }
+        for (size, zero_opacity, selected) in
+            [(4, false, 0), (4, false, 1), (4, true, 0), (4, true, 1)]
+        {
+            let h = Header {
+                version: 1,
+                width: size,
+                height: size,
+                channels: 3,
+                depth: 8,
+                color_mode: 3,
+            };
+            let first = region_layer(1, false, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]);
+            let second = region_layer(1, false, [2, 1, 3, 3], [0, 0, 1, 2], 255, &[0, 128]);
+            let (r1, p1) = parts(&first);
+            let (mut r2, p2) = parts(&second);
+            let channels = u16::from_be_bytes([r2[16], r2[17]]) as usize;
+            if zero_opacity {
+                r2[18 + channels * 6 + 8] = 0;
+            } else {
+                r2[18 + channels * 6 + 10] |= 2;
+            }
+
+            let mut info = (-2i16).to_be_bytes().to_vec();
+            info.extend(r1);
+            info.extend(r2);
+            info.extend(p1);
+            info.extend(p2);
+            if info.len() % 2 != 0 {
+                info.push(0);
+            }
+            let mut section = (info.len() as u32).to_be_bytes().to_vec();
+            section.extend(info);
+            section.extend([0; 4]);
+            let mut bits = 0;
+            let layers = decode_with_metadata_mode(
+                &section,
+                h,
+                &mut false,
+                &mut false,
+                &mut false,
+                &mut false,
+                (selected, &mut bits),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(bits, 3);
+            let state = TiledRasterState {
+                width: size,
+                height: size,
+                resolution: None,
+                icc_profile: None,
+                layers,
+            };
+            let saved = super::write::write(&state, false, crate::export::ExportOptions::default())
+                .unwrap();
+            let mut file = saved.bytes;
+            let mut cursor = Reader {
+                bytes: &file,
+                at: 26,
+            };
+            cursor.section().unwrap();
+            cursor.section().unwrap();
+            let start = cursor.at;
+            let end =
+                start + 4 + u32::from_be_bytes(file[start..start + 4].try_into().unwrap()) as usize;
+            let mut replacement = (section.len() as u32).to_be_bytes().to_vec();
+            replacement.extend(section);
+            file.splice(start..end, replacement);
+            let imported = PsdImporter
+                .import(&file, ImportOptions { allow_lossy: true })
+                .unwrap();
+            assert_eq!(
+                imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.maskOriginRelativeInferred"),
+                selected != 0,
+                "{:?}",
+                imported.report
+            );
+            assert!(!imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.layersFlattened"));
+            assert!(
+                imported
+                    .report
+                    .issues
+                    .iter()
+                    .any(|i| i.code == "psd.maskOriginAmbiguous"),
+                "{:?}",
+                imported.report
+            );
+
+            let doc =
+                lumapaint_core::tiles::TiledRasterDocument::from_state(imported.raster).unwrap();
+            assert_eq!(
+                doc.layers()[0].mask.pixel(1, 1),
+                Some(if selected == 0 { 255 } else { 0 })
+            );
+            assert!(if zero_opacity {
+                doc.layers()[1].opacity == 0.0
+            } else {
+                !doc.layers()[1].visible
+            });
+        }
+    }
+
+    #[test]
+    fn mixed_many_mask_origins_use_early_tile_rejection() {
+        let h = Header {
+            version: 1,
+            width: 4097,
+            height: 4097,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+        };
+        let mut records = Vec::new();
+        let mut payload = Vec::new();
+        for y in 1..=6 {
+            let section = region_layer(1, false, [y, 1, y + 1, 3], [0, 0, 1, 2], 255, &[0, 128]);
+            let mut outer = Reader {
+                bytes: &section,
+                at: 0,
+            };
+            let info = outer.section().unwrap();
+            let mut r = Reader { bytes: info, at: 2 };
+            r.take(16).unwrap();
+            let count = r.u16().unwrap();
+            for _ in 0..count {
+                r.take(2).unwrap();
+                r.length(false).unwrap();
+            }
+            r.take(12).unwrap();
+            r.section().unwrap();
+            records.extend_from_slice(&info[2..r.at]);
+            payload.extend_from_slice(&info[r.at..]);
+        }
+        let mut info = (-6i16).to_be_bytes().to_vec();
+        info.extend(records);
+        info.extend(payload);
+        if info.len() % 2 != 0 {
+            info.push(0);
+        }
+        let mut section = (info.len() as u32).to_be_bytes().to_vec();
+        section.extend(info);
+        section.extend([0; 4]);
+        let mut bits = 0;
+        let layers = decode_with_metadata_mode(
+            &section,
+            h,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut false,
+            (0b100001, &mut bits),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(bits, 0b111111);
+        let state = TiledRasterState {
+            width: h.width,
+            height: h.height,
+            resolution: None,
+            icc_profile: None,
+            layers,
+        };
+        // Bake the sparse masks only for constructing the merged preview;
+        // writing full-canvas mask channels for this synthetic document would
+        // exceed the exporter's 128 MiB limit.
+        let mut preview = state.clone();
+        for layer in &mut preview.layers {
+            for tile in &mut layer.tiles {
+                if let Some(mask) = layer
+                    .mask_tiles
+                    .iter()
+                    .find(|mask| mask.coord == tile.coord)
+                {
+                    for (pixel, &value) in tile
+                        .pixels
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(&mask.values)
+                    {
+                        pixel[3] = ((u16::from(pixel[3]) * u16::from(value) + 127) / 255) as u8;
+                        if pixel[3] == 0 {
+                            *pixel = [0; 4];
+                        }
+                    }
+                }
+            }
+            layer.tiles.retain(|tile| {
+                tile.pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] != 0)
+            });
+            layer.mask_tiles.clear();
+            layer.mask_present = false;
+            layer.mask_enabled = false;
+        }
+        let mut file =
+            super::write::write(&preview, false, crate::export::ExportOptions::default())
+                .unwrap()
+                .bytes;
+        let mut cursor = Reader {
+            bytes: &file,
+            at: 26,
+        };
+        cursor.section().unwrap();
+        cursor.section().unwrap();
+        let start = cursor.at;
+        let end =
+            start + 4 + u32::from_be_bytes(file[start..start + 4].try_into().unwrap()) as usize;
+        let mut replacement = (section.len() as u32).to_be_bytes().to_vec();
+        replacement.extend(section);
+        file.splice(start..end, replacement);
+        let imported = PsdImporter
+            .import(&file, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert!(
+            imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.maskOriginRelativeInferred"),
+            "{:?}",
+            imported.report
+        );
+        assert_eq!(imported.raster.layers.len(), 6);
+    }
+
+    #[test]
+    fn merged_preview_selects_legacy_relative_mask_when_absolute_differs() {
+        let h = Header {
+            version: 1,
+            width: 4,
+            height: 2,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+        };
+        let mut section = region_layer(1, false, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]);
+        let mut ambiguous = false;
+        let layers = decode_with_metadata_mode(
+            &section,
+            h,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut ambiguous,
+            (u16::MAX, &mut 0),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(ambiguous);
+        let state = TiledRasterState {
+            width: 4,
+            height: 2,
+            resolution: None,
+            icc_profile: None,
+            layers,
+        };
+        let saved =
+            super::write::write(&state, false, crate::export::ExportOptions::default()).unwrap();
+        let mut file = saved.bytes;
+        let mut cursor = Reader {
+            bytes: &file,
+            at: 26,
+        };
+        cursor.section().unwrap();
+        cursor.section().unwrap();
+        let start = cursor.at;
+        let end =
+            start + 4 + u32::from_be_bytes(file[start..start + 4].try_into().unwrap()) as usize;
+        // The merged image uses alpha; preserve the negative layer count.
+        section[4..6].copy_from_slice(&(-1i16).to_be_bytes());
+        let mut replacement = (section.len() as u32).to_be_bytes().to_vec();
+        replacement.extend(section);
+        file.splice(start..end, replacement);
+        let imported = PsdImporter
+            .import(&file, ImportOptions { allow_lossy: true })
+            .unwrap();
+        assert!(
+            imported
+                .report
+                .issues
+                .iter()
+                .any(|i| i.code == "psd.maskOriginRelativeInferred"),
+            "{:?}",
+            imported.report
+        );
+        assert!(!imported
+            .report
+            .issues
+            .iter()
+            .any(|i| i.code == "psd.layersFlattened"));
+        let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(imported.raster).unwrap();
+        assert_eq!(doc.layers()[0].mask.pixel(1, 1), Some(0));
+        assert_eq!(doc.layers()[0].mask.pixel(0, 0), Some(255));
+    }
+
+    #[test]
+    fn ambiguous_legacy_mask_origin_is_marked_for_preview_verification() {
+        let h = Header {
+            version: 1,
+            width: 4,
+            height: 2,
+            channels: 3,
+            depth: 8,
+            color_mode: 3,
+        };
+        let bytes = region_layer(1, false, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]);
+        let mut ambiguous = false;
+        let layers = decode_with_metadata(
+            &bytes,
+            h,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut ambiguous,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(ambiguous);
+        assert!(!layers[0].mask_linked);
+        let state = TiledRasterState {
+            width: 4,
+            height: 2,
+            resolution: None,
+            icc_profile: None,
+            layers,
+        };
+        let doc = lumapaint_core::tiles::TiledRasterDocument::from_state(state).unwrap();
+        assert_eq!(doc.layers()[0].mask.pixel(0, 0), Some(0));
+    }
+
+    #[test]
+    fn unlinked_masks_use_document_coordinates_and_resolve_negative_legacy_offsets() {
         let h = Header {
             version: 1,
             width: 4,
@@ -923,9 +1980,11 @@ mod tests {
         };
         for rle in [false, true] {
             let bytes = region_layer(1, rle, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]);
-            let relative = decode(&bytes, h, &mut false).unwrap().unwrap();
+            let mut relative = decode(&bytes, h, &mut false).unwrap().unwrap();
+            assert!(!relative[0].mask_linked);
+            relative[0].mask_linked = true;
             let absolute = decode(
-                &region_layer(0, rle, [1, 1, 2, 3], [1, 1, 2, 3], 255, &[0, 128]),
+                &region_layer(0, rle, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]),
                 h,
                 &mut false,
             )
@@ -936,7 +1995,19 @@ mod tests {
             for (index, value) in [-1i32, -1, 0, 1].into_iter().enumerate() {
                 negative[68 + index * 4..72 + index * 4].copy_from_slice(&value.to_be_bytes());
             }
-            let resolved = decode(&negative, h, &mut false).unwrap().unwrap();
+            let mut resolved = decode_with_metadata_mode(
+                &negative,
+                h,
+                &mut false,
+                &mut false,
+                &mut false,
+                &mut false,
+                (1, &mut 0),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(!resolved[0].mask_linked);
+            resolved[0].mask_linked = true;
             let expected = decode(
                 &region_layer(0, rle, [1, 1, 2, 3], [0, 0, 1, 2], 255, &[0, 128]),
                 h,
@@ -1244,14 +2315,11 @@ mod tests {
             extra
         };
         assert!(matches!(
-            mask(&extra([0, 3, 1, 2]), h, [0; 4]),
+            mask(&extra([0, 3, 1, 2]), h, [0; 4], false),
             Err(ImportError::Malformed("layer mask rectangle"))
         ));
         for rect in [[0, 0, 1, 259], [u32::MAX, 0, 1, 1]] {
-            assert!(matches!(
-                mask(&extra(rect), h, [0; 4]),
-                Err(ImportError::Unsupported(_))
-            ));
+            assert!(mask(&extra(rect), h, [0; 4], false).unwrap().is_some());
         }
     }
     #[test]
@@ -1461,7 +2529,7 @@ mod tests {
             .any(|issue| issue.code == "psd.textNotEditable"));
     }
     #[test]
-    fn parameterized_masks_clipping_groups_and_outside_bounds_trigger_whole_image_fallback() {
+    fn unsupported_masks_clipping_and_groups_fall_back_and_invalid_bounds_are_rejected() {
         for mode in 0..4 {
             let mut bytes = fixture(false).to_vec();
             assert_eq!(&bytes[80..88], b"8BIMnorm");
@@ -1491,6 +2559,14 @@ mod tests {
                     bytes.splice(at..at, payload);
                 }
                 _ => unreachable!(),
+            }
+            if mode == 1 {
+                // Only the rectangle was altered; channel lengths no longer match it.
+                assert!(matches!(
+                    PsdImporter.import(&bytes, ImportOptions { allow_lossy: true }),
+                    Err(ImportError::Malformed("layer raw length"))
+                ));
+                continue;
             }
             let result = PsdImporter
                 .import(&bytes, ImportOptions { allow_lossy: true })

@@ -1,0 +1,44 @@
+{
+  "small": {
+    "samples": 500,
+    "median_us": 1125.1255,
+    "p95_us": 4376.583,
+    "p99_us": 8501.75,
+    "maximum_us": 13240.542
+  },
+  "medium": {
+    "samples": 500,
+    "median_us": 4828.5625,
+    "p95_us": 12818.958,
+    "p99_us": 60639.709,
+    "maximum_us": 152081.792
+  },
+  "large": {
+    "samples": 500,
+    "median_us": 23478.5205,
+    "p95_us": 55307.25,
+    "p99_us": 97531.916,
+    "maximum_us": 159344.208
+  },
+  "stress": {
+    "samples": 500,
+    "median_us": 111732.8545,
+    "p95_us": 242159.75,
+    "p99_us": 621736.25,
+    "maximum_us": 989193.0
+  },
+  "artwork": {
+    "samples": 500,
+    "median_us": 7641.9375,
+    "p95_us": 15334.5,
+    "p99_us": 22272.917,
+    "maximum_us": 60786.709
+  },
+  "text_blur": {
+    "samples": 500,
+    "median_us": 1928.271,
+    "p95_us": 2149.084,
+    "p99_us": 2450.833,
+    "maximum_us": 2856.333
+  }
+}

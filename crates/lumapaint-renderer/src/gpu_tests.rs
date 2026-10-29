@@ -975,6 +975,8 @@ impl Gpu {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, scale, zoom],
                     appearance: [0.0; 4],
@@ -1922,6 +1924,8 @@ fn gpu_tile_preview_uses_document_coordinates_and_premultiplied_blending() {
             contents: bytemuck::bytes_of(&Uniforms {
                 paper: [0.; 4],
                 paper_color: [0.; 4],
+                paper_transform: [1., 0., 0., 1.],
+                paper_offset: [0.; 4],
                 pasteboard: [0.0; 4],
                 viewport: [305.0, 51.0, 1.0, 1.0],
                 appearance: [0.0; 4],
@@ -2473,6 +2477,8 @@ fn gpu_vector_drag_translates_cached_content_and_clips_to_document() {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1.0, 960.0 / 976.0],
                     appearance: [0.0; 4],
@@ -2730,6 +2736,8 @@ fn gpu_channel_components_and_alpha() {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [1., 1., 1., 1.],
                     appearance: [(mode * 2) as f32, 0., 0., 0.],
@@ -3170,6 +3178,8 @@ fn gpu_artboard_exterior_masks_page_pixels() {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [100., 100., 1., zoom],
                     appearance: [0., pan, 0., 0.],
@@ -3464,6 +3474,8 @@ fn verify_object_texture_moves(shared: bool) {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     pasteboard: [0.0; 4],
                     viewport: [W as f32, H as f32, 1., 960. / 976.],
                     appearance: [0.; 4],
@@ -3896,6 +3908,8 @@ fn retained_text_frames_comparison(opacity: f32, overlap: bool, tiled: bool) {
                 contents: bytemuck::bytes_of(&Uniforms {
                     paper: [0.; 4],
                     paper_color: [0.; 4],
+                    paper_transform: [1., 0., 0., 1.],
+                    paper_offset: [0.; 4],
                     viewport: [W as f32, H as f32, 1., 960. / 976. * zoom],
                     appearance: [0.; 4],
                     document: [960., 640., 0., 0.],
@@ -4376,6 +4390,117 @@ fn gpu_selection_gray_brush_matches_cpu() {
 
 #[test]
 #[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_grain_rotation_preserves_pixels() {
+    use lumapaint_core::document::BrushSimulation;
+    use lumapaint_core::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+    let gpu = Gpu::new();
+    for (simulation, material_enabled) in [
+        (BrushSimulation::Pencil, false),
+        (BrushSimulation::DryBrush, false),
+        (BrushSimulation::Round, true),
+    ] {
+        let brush = Brush {
+            simulation,
+            size: 60.,
+            hardness: 0.6,
+            material: MaterialSettings {
+                enabled: material_enabled,
+                medium: Medium::Oil,
+                paper: PaperSettings {
+                    enabled: true,
+                    kind: PaperKind::Washi,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let original = Stroke {
+            eraser: false,
+            clear: false,
+            brush,
+            points: vec![Point { x: 100., y: 250. }, Point { x: 850., y: 250. }],
+            pressures: vec![],
+            selection: None,
+        };
+        let mut rotated = original.clone();
+        for p in &mut rotated.points {
+            p.x = 960. - p.x;
+            p.y = 640. - p.y;
+        }
+        rotated
+            .brush
+            .material
+            .transform_grain([-1., 0., 0., -1., 960., 640.])
+            .unwrap();
+        rotated
+            .brush
+            .material
+            .paper
+            .transform_texture([-1., 0., 0., -1., 960., 640.])
+            .unwrap();
+        let before = gpu.render(&[original]);
+        let after = gpu.render(&[rotated]);
+        for y in 235..266 {
+            for x in (130..820).step_by(7) {
+                let a = (((y + 64) * W + x + 32) * 4) as usize;
+                let b = ((((639 - y) + 64) * W + (959 - x) + 32) * 4) as usize;
+                for c in 0..3 {
+                    assert!(
+                        before[a + c].abs_diff(after[b + c]) <= 5,
+                        "{simulation:?} material={material_enabled} at {x},{y}: {} vs {}",
+                        before[a + c],
+                        after[b + c]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_transformed_grain_matches_tiled_cpu() {
+    use lumapaint_core::document::BrushSimulation;
+    let gpu = Gpu::new();
+    for simulation in [BrushSimulation::Pencil, BrushSimulation::DryBrush] {
+        let stroke = Stroke {
+            eraser: false,
+            clear: false,
+            brush: Brush {
+                simulation,
+                size: 60.,
+                hardness: 0.6,
+                material: lumapaint_core::natural_media::MaterialSettings {
+                    grain_transform: [0., -1., 1., 0., 0., 960.],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            points: vec![Point { x: 100., y: 250. }, Point { x: 850., y: 250. }],
+            pressures: vec![],
+            selection: None,
+        };
+        let pixels = gpu.render(std::slice::from_ref(&stroke));
+        let cpu = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        for y in [240, 250, 260] {
+            for x in (130..820).step_by(19) {
+                let at = (((y + 64) * W + x + 32) * 4) as usize;
+                for c in 0..3 {
+                    assert!(
+                        pixels[at + c].abs_diff(cpu[at + c]) <= 4,
+                        "{simulation:?}: {x},{y} channel {c}: {} vs {}",
+                        pixels[at + c],
+                        cpu[at + c]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
 fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
     use lumapaint_core::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
     let gpu = Gpu::new();
@@ -4399,10 +4524,12 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
             material: MaterialSettings {
                 enabled: true,
                 medium: *medium,
+                grain_transform: [0., -1., 1., 0., 0., 960.],
                 loading: 0.35,
                 paper: PaperSettings {
                     enabled: true,
                     kind: PaperKind::ColdPress,
+                    texture_transform: [0., -1., 1., 0., 0., 960.],
                     ..Default::default()
                 },
                 ..Default::default()

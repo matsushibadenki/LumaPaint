@@ -99,3 +99,14 @@ export function exposureGroupMoveBounds(tracks:readonly ExposureTrack[],selectio
  for(const track of tracks){const frames=Object.hasOwn(selection,track.id)?selection[track.id]:undefined;if(!frames?.length)continue;if(!track.pixel||track.locked)return {min:0,max:0};const bounds=exposureMoveBounds(track.exposures,frames,duration,ripple);min=Math.max(min,bounds.min);max=Math.min(max,bounds.max);found=true;}
  return found?{min,max}:{min:0,max:0};
 }
+
+// Display preview uses the same frame bounds as the motion command.
+export function motionDragStart(start:number,duration:number,repeats:number,pointerDelta:number,scrollDelta:number,zoom:number):number {
+ return Math.max(0,Math.min(Math.max(0,18000-duration*repeats),start+Math.round((pointerDelta+scrollDelta)/zoom)));
+}
+
+// Snap against a visible target in screen pixels before rounding to whole frames.
+export function snapTimelineFrame(raw:number,target:number,zoom:number,min:number,max:number,enabled:boolean,moved:boolean):{frame:number;snapped:boolean} {
+ const snapped=enabled&&moved&&Number.isFinite(raw)&&Number.isFinite(target)&&zoom>0&&target>=min&&target<=max&&Math.abs(raw-target)*zoom<=8;
+ return {frame:Math.max(min,Math.min(max,Math.round(snapped?target:raw))),snapped};
+}
