@@ -241,6 +241,10 @@ fn render_sized_ink(
                 mask.as_ref(),
                 snapshot.canvas_color == CanvasColor::White && !ink_only,
                 document.paper(),
+                [
+                    snapshot.width as f32 / width as f32,
+                    snapshot.height as f32 / height as f32,
+                ],
             );
             let index = ((y * width + x) * 4) as usize;
             paint[index..index + 4].copy_from_slice(&pixel);
@@ -577,6 +581,53 @@ mod tests {
         assert_eq!(pixel(&image.layers[1].1, 32, 21), [0, 0, 255, 255]);
         assert_eq!(pixel(&image.channels[3], 32, 21), [255; 4]);
         assert_eq!(pixel(&image.channels[5], 32, 21), [0, 0, 0, 255]);
+    }
+    #[test]
+    fn paper_thumbnails_filter_the_area_covered_by_each_pixel() {
+        use lumapaint_core::natural_media::{PaperKind, PaperSettings};
+        let mut doc = Document::default();
+        let paper = PaperSettings {
+            enabled: true,
+            kind: PaperKind::Washi,
+            depth: 1.,
+            ..Default::default()
+        };
+        doc.set_paper(paper).unwrap();
+        let thumbs = render(&doc).unwrap();
+        let mut differs_from_point_sample = false;
+        for y in 0..43 {
+            for x in 0..64 {
+                let point = [(x as f32 + 0.5) * 15., (y as f32 + 0.5) * 640. / 43.];
+                let filtered = paper.color_at_footprint(point[0], point[1], [15., 640. / 43.]);
+                let actual = pixel(&thumbs.layers[0].1, x, y);
+                assert_eq!(&actual[..3], &filtered);
+                differs_from_point_sample |= filtered != paper.color_at(point[0], point[1]);
+            }
+        }
+        assert!(differs_from_point_sample);
+    }
+    #[test]
+    fn exported_png_keeps_filtered_paper_after_large_resampling() {
+        use lumapaint_core::natural_media::{PaperKind, PaperSettings};
+        let mut state = Document::default().document_state();
+        state.width = 32;
+        state.height = 32;
+        let mut doc = Document::from_document_state(state).unwrap();
+        let paper = PaperSettings {
+            enabled: true,
+            kind: PaperKind::Canvas,
+            depth: 1.,
+            texture_transform: [16., 0., 0., 16., 0., 0.],
+            ..Default::default()
+        };
+        doc.set_paper(paper).unwrap();
+        let png = document_png(&doc).unwrap();
+        for (x, y) in [(3, 5), (14, 21), (25, 17)] {
+            assert_eq!(
+                &pixel(&png, x, y)[..3],
+                &paper.color_at(x as f32 + 0.5, y as f32 + 0.5)
+            );
+        }
     }
     #[test]
     fn selected_mask_alpha_is_visible_above_white_paper_and_updates_after_edit() {

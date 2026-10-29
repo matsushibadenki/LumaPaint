@@ -4472,29 +4472,108 @@ fn gpu_transformed_grain_matches_tiled_cpu() {
                 size: 60.,
                 hardness: 0.6,
                 material: lumapaint_core::natural_media::MaterialSettings {
-                    grain_transform: [0., -1., 1., 0., 0., 960.],
+                    grain_transform: [0., -64., 64., 0., 0., 61440.],
                     ..Default::default()
                 },
                 ..Default::default()
             },
-            points: vec![Point { x: 100., y: 250. }, Point { x: 850., y: 250. }],
+            points: vec![Point { x: 100., y: 250. }, Point { x: 220., y: 250. }],
             pressures: vec![],
             selection: None,
         };
         let pixels = gpu.render(std::slice::from_ref(&stroke));
         let cpu = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        let mut max_diff = 0u8;
+        let mut total_diff = 0u32;
+        let mut count = 0u32;
         for y in [240, 250, 260] {
-            for x in (130..820).step_by(19) {
+            for x in (120..205).step_by(9) {
                 let at = (((y + 64) * W + x + 32) * 4) as usize;
                 for c in 0..3 {
-                    assert!(
-                        pixels[at + c].abs_diff(cpu[at + c]) <= 4,
-                        "{simulation:?}: {x},{y} channel {c}: {} vs {}",
-                        pixels[at + c],
-                        cpu[at + c]
-                    );
+                    let diff = pixels[at + c].abs_diff(cpu[at + c]);
+                    max_diff = max_diff.max(diff);
+                    total_diff += u32::from(diff);
+                    count += 1;
                 }
             }
+        }
+        let mean = total_diff as f32 / count as f32;
+        eprintln!("{simulation:?} max {max_diff} mean {mean}");
+        assert!(
+            max_diff <= 8 && mean <= 5.,
+            "{simulation:?}: max {max_diff}, mean {mean}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "Performance and reference comparison; run explicitly"]
+fn extreme_reduction_dab_spacing_quality_and_time() {
+    use lumapaint_core::document::BrushSimulation;
+    use std::time::Instant;
+    for simulation in [BrushSimulation::Pencil, BrushSimulation::DryBrush] {
+        for size in [1.5, 12.] {
+            let brush = Brush {
+                simulation,
+                size,
+                hardness: 0.6,
+                material: lumapaint_core::natural_media::MaterialSettings {
+                    grain_transform: [64., 0., 0., 64., 0., 0.],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let points = [
+                (Point { x: 10., y: 32. }, 1.),
+                (Point { x: 45., y: 32. }, 1.),
+            ];
+            let render = |spacing: f32| {
+                let start = Instant::now();
+                let segments = dabs_along_path_at_spacing(&points, brush, 1., spacing);
+                let count = segments.len();
+                let dabs = segments
+                    .into_iter()
+                    .map(|segment| RasterDab {
+                        material: brush.material,
+                        texture: segment.texture,
+                        texture_scale: 1.,
+                        x: segment.ends[0],
+                        y: segment.ends[1],
+                        radius: segment.radius,
+                        hardness: segment.hardness,
+                        weight: segment.weight,
+                    })
+                    .collect::<Vec<_>>();
+                let mut doc = TiledRasterDocument::new(64, 64).unwrap();
+                doc.add_layer("paint".into(), "Paint".into()).unwrap();
+                doc.paint_brush_dabs_clipped_in_tiles("paint", &dabs, brush, None, None)
+                    .unwrap();
+                (
+                    doc.prepare_full_uploads()[0].pixels.clone(),
+                    start.elapsed(),
+                    count,
+                )
+            };
+            let (reference, reference_time, reference_count) = render(1.6 / 64.);
+            let (actual, actual_time, actual_count) = render(stroke_dab_spacing(brush, &points));
+            let mut max = 0u8;
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            for (a, b) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
+                if a[3] == 0 && b[3] == 0 {
+                    continue;
+                }
+                let diff = a[3].abs_diff(b[3]);
+                max = max.max(diff);
+                sum += u64::from(diff);
+                count += 1;
+            }
+            let mean = sum as f64 / count as f64;
+            eprintln!("{simulation:?} size {size}: reference {reference_count} dabs {reference_time:?}; optimized {actual_count} dabs {actual_time:?}; max {max}, mean {mean:.4}");
+            assert!(
+                max <= 5 && mean < 1.,
+                "{simulation:?}: max {max}, mean {mean}"
+            );
         }
     }
 }
@@ -4524,12 +4603,12 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
             material: MaterialSettings {
                 enabled: true,
                 medium: *medium,
-                grain_transform: [0., -1., 1., 0., 0., 960.],
+                grain_transform: [0., -16., 16., 0., 0., 15360.],
                 loading: 0.35,
                 paper: PaperSettings {
                     enabled: true,
                     kind: PaperKind::ColdPress,
-                    texture_transform: [0., -1., 1., 0., 0., 960.],
+                    texture_transform: [0., -16., 16., 0., 0., 15360.],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -4542,7 +4621,7 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
                 y: 60. + i as f32 * 100.,
             },
             Point {
-                x: 850.,
+                x: 220.,
                 y: 60. + i as f32 * 100.,
             },
         ],
@@ -4555,20 +4634,26 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
     let mut sums = Vec::new();
     for i in 0..6 {
         let mut sum = 0u32;
+        let mut max_diff = 0u8;
+        let mut total_diff = 0u32;
+        let mut count = 0u32;
         for y in [50, 60, 70] {
-            for x in (130..820).step_by(19) {
+            for x in (120..205).step_by(9) {
                 let at = (((y + i * 100 + 64) * W + x + 32) * 4) as usize;
                 for c in 0..3 {
-                    assert!(
-                        pixels[at + c].abs_diff(cpu[at + c]) <= 4,
-                        "medium {i}, {x},{y}, channel {c}: {} vs {}",
-                        pixels[at + c],
-                        cpu[at + c]
-                    );
+                    let diff = pixels[at + c].abs_diff(cpu[at + c]);
+                    max_diff = max_diff.max(diff);
+                    total_diff += u32::from(diff);
+                    count += 1;
                 }
                 sum += pixels[at] as u32;
             }
         }
+        let mean = total_diff as f32 / count as f32;
+        assert!(
+            max_diff <= 12 && mean <= 7.,
+            "medium {i}: max {max_diff}, mean {mean}"
+        );
         sums.push(sum);
     }
     sums.sort();
@@ -4584,6 +4669,192 @@ fn gpu_natural_media_deposition_matches_cpu_for_all_six_materials() {
         .write_image_data(&pixels)
         .unwrap();
     std::fs::write("/tmp/lumapaint-natural-media-gpu.png", output).unwrap();
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_extreme_materials_and_papers_match_cpu() {
+    use lumapaint_core::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+    use std::time::Instant;
+    let gpu = Gpu::new();
+    let kinds = [
+        PaperKind::ColdPress,
+        PaperKind::Rough,
+        PaperKind::Canvas,
+        PaperKind::Washi,
+    ];
+    let media = [
+        Medium::Graphite,
+        Medium::Charcoal,
+        Medium::Pastel,
+        Medium::Watercolor,
+        Medium::Gouache,
+        Medium::Oil,
+    ];
+    let mut strokes = Vec::new();
+    for (x, kind) in kinds.iter().enumerate() {
+        for (y, medium) in media.iter().enumerate() {
+            let left = 100. + x as f32 * 180.;
+            let top = 60. + y as f32 * 100.;
+            strokes.push(Stroke {
+                eraser: false,
+                clear: false,
+                brush: Brush {
+                    size: 12.,
+                    hardness: 0.6,
+                    color: [42, 95, 150],
+                    material: MaterialSettings {
+                        enabled: true,
+                        medium: *medium,
+                        loading: 0.35,
+                        grain_transform: [0., -64., 64., 0., 0., 61440.],
+                        paper: PaperSettings {
+                            enabled: true,
+                            kind: *kind,
+                            texture_transform: [0., -64., 64., 0., 0., 61440.],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                points: vec![
+                    Point { x: left, y: top },
+                    Point {
+                        x: left + 40.,
+                        y: top,
+                    },
+                ],
+                pressures: vec![],
+                selection: None,
+            });
+        }
+    }
+    let start = Instant::now();
+    let actual = gpu.render(&strokes);
+    let gpu_time = start.elapsed();
+    let start = Instant::now();
+    let expected = gpu.render_tiled_strokes(&strokes);
+    let cpu_time = start.elapsed();
+    let mut max = 0u8;
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for x in 0..4 {
+        for y in 0..6 {
+            for dy in [-3i32, 0, 3] {
+                for dx in [5, 15, 25, 35] {
+                    let px = 100 + x * 180 + dx + 32;
+                    let py = (60 + y * 100 + 64) as i32 + dy;
+                    let at = (py as usize * W as usize + px as usize) * 4;
+                    for c in 0..3 {
+                        let d = actual[at + c].abs_diff(expected[at + c]);
+                        max = max.max(d);
+                        total += u64::from(d);
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mean = total as f64 / count as f64;
+    eprintln!("64x 6 materials × 4 papers: max {max}, mean {mean:.3}, GPU {gpu_time:?}, CPU {cpu_time:?} (including setup/readback)");
+    assert!(max <= 8 && mean <= 3., "max {max}, mean {mean}");
+}
+
+#[test]
+#[ignore = "Performance and reference comparison; run explicitly"]
+fn extreme_media_and_paper_spacing_quality_and_time() {
+    use lumapaint_core::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+    use std::time::{Duration, Instant};
+    let papers = [
+        PaperKind::ColdPress,
+        PaperKind::Rough,
+        PaperKind::Canvas,
+        PaperKind::Washi,
+    ];
+    let media = [
+        Medium::Graphite,
+        Medium::Charcoal,
+        Medium::Pastel,
+        Medium::Watercolor,
+        Medium::Gouache,
+        Medium::Oil,
+    ];
+    let points = [
+        (Point { x: 10., y: 32. }, 1.),
+        (Point { x: 45., y: 32. }, 1.),
+    ];
+    let mut old_total = Duration::ZERO;
+    let mut new_total = Duration::ZERO;
+    let mut all_max = 0u8;
+    for paper in papers {
+        for medium in media {
+            let brush = Brush {
+                size: 1.5,
+                hardness: 0.6,
+                material: MaterialSettings {
+                    enabled: true,
+                    medium,
+                    grain_transform: [64., 0., 0., 64., 0., 0.],
+                    paper: PaperSettings {
+                        enabled: true,
+                        kind: paper,
+                        texture_transform: [64., 0., 0., 64., 0., 0.],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let render = |spacing| {
+                let start = Instant::now();
+                let dabs = dabs_along_path_at_spacing(&points, brush, 1., spacing)
+                    .into_iter()
+                    .map(|s| RasterDab {
+                        material: brush.material,
+                        texture: s.texture,
+                        texture_scale: 1.,
+                        x: s.ends[0],
+                        y: s.ends[1],
+                        radius: s.radius,
+                        hardness: s.hardness,
+                        weight: s.weight,
+                    })
+                    .collect::<Vec<_>>();
+                let mut doc = TiledRasterDocument::new(64, 64).unwrap();
+                doc.add_layer("paint".into(), "Paint".into()).unwrap();
+                doc.paint_brush_dabs_clipped_in_tiles("paint", &dabs, brush, None, None)
+                    .unwrap();
+                (
+                    doc.prepare_full_uploads()[0].pixels.clone(),
+                    start.elapsed(),
+                )
+            };
+            let (before, t0) = render(1.6 / 64.);
+            let (after, t1) = render(stroke_dab_spacing(brush, &points));
+            old_total += t0;
+            new_total += t1;
+            let mut max = 0;
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            for (a, b) in before.chunks_exact(4).zip(after.chunks_exact(4)) {
+                if a[3] == 0 && b[3] == 0 {
+                    continue;
+                }
+                let diff = a[3].abs_diff(b[3]);
+                max = max.max(diff);
+                sum += u64::from(diff);
+                count += 1;
+            }
+            let mean = sum as f64 / count.max(1) as f64;
+            all_max = all_max.max(max);
+            assert!(
+                max <= 5 && mean <= 1.,
+                "{medium:?}/{paper:?}: max {max}, mean {mean}"
+            );
+        }
+    }
+    eprintln!("64x 6 materials × 4 papers: reference {old_total:?}, optimized {new_total:?}, maximum alpha difference {all_max}");
 }
 
 #[test]

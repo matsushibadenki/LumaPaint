@@ -2585,7 +2585,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lumapaint"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.23.1",
  "image",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "roxmltree 0.21.2",
  "serde",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-fonts"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "fontdb",
  "tempfile",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-formats"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.23.1",
  "crc32fast",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-mcp"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "lumapaint-core",
  "serde",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-renderer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.23.1",
  "bytemuck",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "lumapaint-svg"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "lumapaint-core",
  "lumapaint-fonts",

@@ -42,6 +42,34 @@ impl Default for PaperSettings {
         }
     }
 }
+/// Number of samples along each pixel axis for a transformed texture.
+/// The bounded grid keeps work predictable for extreme reductions.
+pub fn texture_samples(t: [f32; 6], pixel_size: f32) -> u32 {
+    texture_samples_for_footprint(texture_footprint(t, pixel_size))
+}
+pub fn texture_samples_for_footprint(footprint: f32) -> u32 {
+    let limit = if footprint > 32. { 12. } else { 8. };
+    (footprint - 0.0001).ceil().clamp(1., limit) as u32
+}
+pub fn texture_footprint(t: [f32; 6], pixel_size: f32) -> f32 {
+    t[0].hypot(t[1]).max(t[2].hypot(t[3])) * pixel_size
+}
+/// Deterministic stratification avoids repeatedly sampling the same noise cells
+/// when an output pixel spans more source pixels than the bounded sample grid.
+pub fn texture_sample_offset(i: u32, j: u32, n: u32, jitter: bool) -> (f32, f32) {
+    let (jx, jy) = if jitter {
+        (
+            ((i * 3 + j * 5) % 7) as f32 - 3.,
+            ((i * 5 + j * 3) % 7) as f32 - 3.,
+        )
+    } else {
+        (0., 0.)
+    };
+    (
+        (i as f32 + 0.5 + jx / 8.) / n as f32 - 0.5,
+        (j as f32 + 0.5 + jy / 8.) / n as f32 - 0.5,
+    )
+}
 impl PaperSettings {
     pub fn validate(self) -> Result<(), String> {
         if self
@@ -85,11 +113,28 @@ impl PaperSettings {
         self.validate()
     }
     pub fn color_at(self, x: f32, y: f32) -> [u8; 3] {
+        self.color_at_footprint(x, y, [1., 1.])
+    }
+    pub fn color_at_footprint(self, x: f32, y: f32, pixel_size: [f32; 2]) -> [u8; 3] {
         if !self.enabled {
             return [255; 3];
         }
-        let (x, y) = self.texture_point(x, y);
-        let shade = 1. - self.depth * 0.14 * (1. - relief(x, y, self.packed()));
+        if self.depth == 0. || self.kind == PaperKind::Smooth {
+            let shade = 1. - self.depth * 0.07;
+            return self.color.map(|v| (v as f32 * shade).round() as u8);
+        }
+        let size = pixel_size[0].max(pixel_size[1]);
+        let n = texture_samples(self.texture_transform, size);
+        let jitter = texture_footprint(self.texture_transform, size) > 8.;
+        let mut sum = 0.;
+        for j in 0..n {
+            for i in 0..n {
+                let (ox, oy) = texture_sample_offset(i, j, n, jitter);
+                let (px, py) = self.texture_point(x + ox * pixel_size[0], y + oy * pixel_size[1]);
+                sum += relief(px, py, self.packed());
+            }
+        }
+        let shade = 1. - self.depth * 0.14 * (1. - sum / (n * n) as f32);
         self.color.map(|v| (v as f32 * shade).round() as u8)
     }
 }
@@ -274,6 +319,145 @@ pub fn deposition_mapped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_reductions_average_more_source_detail_and_avoid_grid_aliasing() {
+        let paper = PaperSettings {
+            enabled: true,
+            kind: PaperKind::Washi,
+            depth: 1.,
+            ..Default::default()
+        };
+        for factor in [8_u32, 16, 32, 64, 128] {
+            let transform = [factor as f32, 0., 0., factor as f32, 0., 0.];
+            let mut new_error = 0.;
+            let mut old_error = 0.;
+            let mut previous_error = 0.;
+            for y in 0..8 {
+                for x in 0..8 {
+                    let origin_x = (x * factor) as f32;
+                    let origin_y = (y * factor) as f32;
+                    let mut exact = 0.;
+                    for j in 0..factor {
+                        for i in 0..factor {
+                            exact += relief(
+                                origin_x + i as f32 + 0.5,
+                                origin_y + j as f32 + 0.5,
+                                paper.packed(),
+                            );
+                        }
+                    }
+                    exact /= (factor * factor) as f32;
+                    let sample = |n: u32, jitter: bool| {
+                        let mut value = 0.;
+                        for j in 0..n {
+                            for i in 0..n {
+                                let (dx, dy) = texture_sample_offset(i, j, n, jitter);
+                                value += relief(
+                                    origin_x + (0.5 + dx) * factor as f32,
+                                    origin_y + (0.5 + dy) * factor as f32,
+                                    paper.packed(),
+                                );
+                            }
+                        }
+                        value / (n * n) as f32
+                    };
+                    let n = texture_samples(transform, 1.);
+                    new_error += (sample(n, factor > 8) - exact).powi(2);
+                    old_error += (sample(4, false) - exact).powi(2);
+                    previous_error += (sample(8, factor > 8) - exact).powi(2);
+                }
+            }
+            assert!(
+                new_error < old_error,
+                "factor {factor}: {new_error} >= {old_error}"
+            );
+            if factor > 32 {
+                assert!(
+                    new_error < previous_error,
+                    "factor {factor}: {new_error} >= {previous_error}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn extreme_reductions_improve_pencil_and_dry_brush_average() {
+        for factor in [64_u32, 128] {
+            for texture in [1., 2.] {
+                let mut new_error = 0.;
+                let mut old_error = 0.;
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let origin = [(x * factor) as f32, (y * factor) as f32];
+                        let mut exact = 0.;
+                        for j in 0..factor {
+                            for i in 0..factor {
+                                exact += crate::tiles::brush_texture(
+                                    origin[0] + i as f32 + 0.5,
+                                    origin[1] + j as f32 + 0.5,
+                                    texture,
+                                );
+                            }
+                        }
+                        exact /= (factor * factor) as f32;
+                        let sample = |n| {
+                            let mut sum = 0.;
+                            for j in 0..n {
+                                for i in 0..n {
+                                    let (dx, dy) = texture_sample_offset(i, j, n, true);
+                                    sum += crate::tiles::brush_texture(
+                                        origin[0] + (0.5 + dx) * factor as f32,
+                                        origin[1] + (0.5 + dy) * factor as f32,
+                                        texture,
+                                    );
+                                }
+                            }
+                            sum / (n * n) as f32
+                        };
+                        new_error += (sample(12) - exact).powi(2);
+                        old_error += (sample(8) - exact).powi(2);
+                    }
+                }
+                assert!(
+                    new_error < old_error,
+                    "factor {factor}, texture {texture}: {new_error} >= {old_error}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn reduced_paper_averages_the_original_pixel_footprint() {
+        for kind in [
+            PaperKind::ColdPress,
+            PaperKind::Rough,
+            PaperKind::Canvas,
+            PaperKind::Washi,
+        ] {
+            let original = PaperSettings {
+                enabled: true,
+                kind,
+                ..Default::default()
+            };
+            let mut reduced = original;
+            reduced
+                .transform_texture([0.5, 0., 0., 0.5, 0., 0.])
+                .unwrap();
+            for (x, y) in [(10.5, 13.5), (35.5, 70.5), (80.5, 55.5)] {
+                let mut sum = 0.;
+                for dy in [-0.25, 0.25] {
+                    for dx in [-0.25, 0.25] {
+                        sum += relief((x + dx) * 2., (y + dy) * 2., original.packed());
+                    }
+                }
+                let shade = 1. - original.depth * 0.14 * (1. - sum / 4.);
+                assert_eq!(
+                    reduced.color_at(x, y),
+                    original.color.map(|v| (v as f32 * shade).round() as u8)
+                );
+            }
+        }
+        assert_eq!(texture_samples([1., 0., 0., 1., 0., 0.], 1.), 1);
+        assert_eq!(texture_samples([8., 0., 0., 8., 0., 0.], 1.), 8);
+    }
     #[test]
     fn natural_media_relief_and_deposition_are_stable_and_bounded() {
         for kind in [

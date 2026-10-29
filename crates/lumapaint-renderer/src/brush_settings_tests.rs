@@ -19,6 +19,19 @@ fn pixel(doc: &Document) -> [u8; 4] {
         .unwrap()
 }
 #[test]
+fn extreme_reduction_spacing_respects_pressure_and_ink_taper() {
+    let mut brush = Brush {
+        size: 12.,
+        ..Default::default()
+    };
+    brush.material.grain_transform = [64., 0., 0., 64., 0., 0.];
+    let point = Point { x: 10., y: 10. };
+    assert_eq!(stroke_dab_spacing(brush, &[(point, 1.)]), 0.5);
+    assert!(stroke_dab_spacing(brush, &[(point, 0.05)]) <= 0.1);
+    brush.simulation = lumapaint_core::document::BrushSimulation::Ink;
+    assert!(stroke_dab_spacing(brush, &[(point, 1.)]) <= 0.25);
+}
+#[test]
 fn flow_percentage_controls_click_coverage_and_zero_flow_never_emits_negative_dabs() {
     let mut doc = document();
     doc.begin(

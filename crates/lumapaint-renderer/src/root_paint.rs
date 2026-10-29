@@ -19,11 +19,12 @@ pub(crate) fn composite(
     mask: Option<&LayerMask>,
     paper: bool,
     surface: lumapaint_core::natural_media::PaperSettings,
+    pixel_size: [f32; 2],
 ) -> [u8; 4] {
     let adjusted = effects.apply_at(input, point);
     let alpha = adjusted[3] as f32 / 255.;
     let coverage = mask.map_or(1., |m| m.coverage(point));
-    let paper_color = surface.color_at(point[0], point[1]);
+    let paper_color = surface.color_at_footprint(point[0], point[1], pixel_size);
     let mut out = [0; 4];
     for c in 0..3 {
         out[c] = ((adjusted[c] as f32 * alpha
@@ -51,15 +52,23 @@ mod tests {
             ..Default::default()
         };
         let point = [12.5, 9.5];
-        let out = composite([0; 4], point, &effects, None, true, paper);
+        let out = composite([0; 4], point, &effects, None, true, paper, [1., 1.]);
         assert_eq!(out[..3], paper.color_at(point[0], point[1]));
         assert_eq!(out[3], 255);
         assert_eq!(
-            composite([0; 4], point, &effects, None, false, paper),
+            composite([0; 4], point, &effects, None, false, paper, [1., 1.]),
             [0; 4]
         );
         assert_eq!(
-            composite([10, 20, 30, 255], point, &effects, None, true, paper),
+            composite(
+                [10, 20, 30, 255],
+                point,
+                &effects,
+                None,
+                true,
+                paper,
+                [1., 1.]
+            ),
             [10, 20, 30, 255]
         );
     }

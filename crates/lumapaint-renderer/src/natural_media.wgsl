@@ -2,3 +2,21 @@ fn media_noise(p:vec2<f32>)->f32{let c=vec2<u32>(floor(max(p,vec2(0.))));var h=(
 fn media_smooth_noise(p:vec2<f32>)->f32{let q=floor(p);let f=p-q;let t=f*f*(vec2(3.)-2.*f);let a=media_noise(q);let b=media_noise(q+vec2(1.,0.));let c=media_noise(q+vec2(0.,1.));let d=media_noise(q+vec2(1.,1.));let top=a+(b-a)*t.x;let bottom=c+(d-c)*t.x;return top+(bottom-top)*t.y;}
 fn paper_relief(point:vec2<f32>,p:vec4<f32>)->f32{if p.x<1.5{return 0.5;}let q=point/p.y;let fine=media_noise(q);let coarse=media_smooth_noise((q+vec2(11.,7.))/4.);if p.x<2.5{return 0.35*fine+0.65*coarse;}if p.x<3.5{return 0.2*fine+0.8*media_smooth_noise(q/8.);}if p.x<4.5{let c=vec2<u32>(floor(max(q,vec2(0.))/3.));return 0.2*fine+select(0.1,0.7,c.x%2u==c.y%2u);}return 0.35*fine+0.65*media_smooth_noise(q/vec2(9.,1.5));}
 fn media_deposition(point:vec2<f32>,paper_point:vec2<f32>,r:f32,m:vec4<f32>,a:vec4<f32>,p:vec4<f32>)->f32{if m.x<0.5{return 1.;}if m.y<=0.{return 0.;}let h=paper_relief(paper_point,p);let relief=0.5+(h-0.5)*p.z;let grain=1.-m.w+m.w*media_noise(point);let load=m.y;let wet=m.z;let dry=clamp((relief-(1.-load)*0.75)*3.,0.,1.);if m.x<1.5{return(0.02+dry*0.35)*grain;}if m.x<2.5{return dry*0.22*grain;}if m.x<3.5{return(0.1+dry*0.65)*grain;}if m.x<4.5{let rim=clamp((r-0.65)/0.35,0.,1.);return(0.03+load*0.12)*(1.-wet*0.65)*(1.+a.x*rim*3.)*(1.-m.w*0.75*relief)*grain;}if m.x<5.5{return(0.35+load*0.65)*(0.5+dry*0.5)*(1.-wet*0.3)*grain;}let bristle=0.35+0.65*media_noise(point/vec2(2.,12.));return(0.4+load*0.6)*(0.4+dry*0.6)*bristle*(1.-wet*0.2)*grain;}
+
+fn media_footprint(t:vec4<f32>)->f32 { return max(length(t.xy),length(t.zw)); }
+fn media_samples(t:vec4<f32>)->u32 { let footprint=media_footprint(t); return u32(clamp(ceil(footprint-0.0001),1.,select(8.,12.,footprint>32.))); }
+fn media_sample_offset(i:u32,j:u32,n:u32,jitter:bool)->vec2<f32> {
+    var shift=vec2(0.);
+    if jitter { shift=(vec2<f32>(f32((i*3u+j*5u)%7u),f32((i*5u+j*3u)%7u))-vec2(3.))/8.; }
+    return (vec2<f32>(f32(i),f32(j))+vec2(0.5)+shift)/f32(n)-vec2(0.5);
+}
+fn media_point(point:vec2<f32>, t:vec4<f32>, offset:vec2<f32>)->vec2<f32> { return vec2(t.x*point.x+t.z*point.y,t.y*point.x+t.w*point.y)+offset; }
+fn paper_relief_filtered(point:vec2<f32>,p:vec4<f32>,t:vec4<f32>,offset:vec2<f32>)->f32 {
+    if p.x<1.5 { return 0.5; }
+    let n=media_samples(t); var sum=0.;
+    for(var j=0u;j<n;j++){for(var i=0u;i<n;i++){
+        let delta=media_sample_offset(i,j,n,media_footprint(t)>8.);
+        sum+=paper_relief(media_point(point+delta,t,offset),p);
+    }}
+    return sum/f32(n*n);
+}

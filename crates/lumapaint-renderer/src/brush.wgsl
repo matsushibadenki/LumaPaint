@@ -41,25 +41,33 @@ struct VertexOut {
     let inner=in.radius*clamp(in.hardness,0.0,1.0);
     let profile=1.0-smoothstep(inner,max(inner+aa,in.radius+aa),distance);
     let density=mix(4.0,16.0,in.hardness);
-    let grain_raw = vec2(in.grain_transform.x*in.point.x+in.grain_transform.z*in.point.y,in.grain_transform.y*in.point.x+in.grain_transform.w*in.point.y)+in.grain_offset.xy;
-    let grain_point = floor(grain_raw * 256. + vec2(0.5)) / 256.;
-    var grain_factor = 1.0;
-    if in.texture > 0.0 {
-        let cell = vec2<u32>(floor(max(grain_point, vec2(0.0))));
-        var hash = (cell.x * 1973u) ^ (cell.y * 9277u) ^ 89173u;
-        hash = (hash ^ (hash >> 13u)) * 1274126177u;
-        let grain = f32(hash & 255u) / 255.0;
-        let pencil = 0.03 + 0.4 * grain * grain;
-        grain_factor = mix(1.0, pencil, min(in.texture, 1.0));
-        if in.texture > 1.0 {
-            let dry_cell = vec2<u32>(floor(max(grain_point, vec2(0.0)) / vec2(1.5, 5.0)));
-            var dry_hash = (dry_cell.x * 1973u) ^ (dry_cell.y * 9277u) ^ 89173u;
-            dry_hash = (dry_hash ^ (dry_hash >> 13u)) * 1274126177u;
-            let dry = select(0.65, 0.0, f32(dry_hash & 255u) / 255.0 < 0.48);
-            grain_factor = mix(pencil, dry, in.texture - 1.0);
+    var samples=1u;
+    if in.texture>0. || in.material.x>0.5 { samples=media_samples(in.grain_transform); }
+    if in.material.x>0.5 && in.paper.x>0.5 { samples=max(samples,media_samples(in.paper_transform)); }
+    var footprint=1.;
+    if in.texture>0. || in.material.x>0.5 { footprint=media_footprint(in.grain_transform); }
+    if in.material.x>0.5 && in.paper.x>0.5 { footprint=max(footprint,media_footprint(in.paper_transform)); }
+    let stable_point=floor(in.point*256.+vec2(0.5))/256.;
+    var pigment=0.;
+    for(var j=0u;j<samples;j++){for(var i=0u;i<samples;i++){
+        let offset=media_sample_offset(i,j,samples,footprint>8.);
+        let sample_point=stable_point+offset;
+        let grain_raw=media_point(sample_point,in.grain_transform,in.grain_offset.xy);
+        let grain_point=floor(grain_raw*256.+vec2(0.5))/256.;
+        var grain_factor=1.;
+        if in.texture>0. {
+            let grain=media_noise(grain_point);
+            let pencil=0.03+0.4*grain*grain;
+            grain_factor=mix(1.,pencil,min(in.texture,1.));
+            if in.texture>1. {
+                let dry=select(0.65,0.,media_noise(grain_point/vec2(1.5,5.))<0.48);
+                grain_factor=mix(pencil,dry,in.texture-1.);
+            }
         }
-    }
-    let optical_depth=density * in.weight * profile * grain_factor * media_deposition(grain_point,vec2(in.paper_transform.x*in.point.x+in.paper_transform.z*in.point.y,in.paper_transform.y*in.point.x+in.paper_transform.w*in.point.y)+in.paper_offset.xy,distance/in.radius,in.material,in.medium_aux,in.paper);
+        let paper_point=media_point(sample_point,in.paper_transform,in.paper_offset.xy);
+        pigment+=grain_factor*media_deposition(grain_point,paper_point,distance/in.radius,in.material,in.medium_aux,in.paper);
+    }}
+    let optical_depth=density*in.weight*profile*pigment/f32(samples*samples);
     if any(in.point<vec2(0.0)) || any(in.point>=u.document.xy) { discard; }
     let selection_alpha=selection_coverage(in.point);
     if selection_alpha<=0. { discard; }

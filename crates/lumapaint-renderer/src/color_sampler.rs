@@ -88,6 +88,7 @@ impl ColorSampler {
                 mask.as_ref(),
                 document.canvas_color() == CanvasColor::White,
                 document.paper(),
+                [1., 1.],
             );
             for c in 0..4 {
                 result[c] = background[c] as f32 * document.paint_layer_opacity();

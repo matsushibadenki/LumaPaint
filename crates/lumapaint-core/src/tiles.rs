@@ -1623,6 +1623,30 @@ fn dab_density_on_tiles(
             continue;
         }
         let inner = dab.radius * dab.hardness;
+        // These values depend on the dab, not the covered pixel. Computing
+        // them once matters most for the many overlapping dabs in a stroke.
+        let (m, a, p) = dab.material.packed();
+        let pixel_size = 1. / dab.texture_scale;
+        let mut footprint: f32 = 1.;
+        if dab.texture > 0. || dab.material.enabled {
+            footprint =
+                crate::natural_media::texture_footprint(dab.material.grain_transform, pixel_size);
+        }
+        if dab.material.enabled && dab.material.paper.enabled {
+            footprint = footprint.max(crate::natural_media::texture_footprint(
+                dab.material.paper.texture_transform,
+                pixel_size,
+            ));
+        }
+        let samples = crate::natural_media::texture_samples_for_footprint(footprint);
+        let jitter = footprint > 8.;
+        let mut offsets = [(0., 0.); 144];
+        for j in 0..samples {
+            for i in 0..samples {
+                offsets[(j * samples + i) as usize] =
+                    crate::natural_media::texture_sample_offset(i, j, samples, jitter);
+            }
+        }
         for tile_y in top / TILE_SIZE..bottom.div_ceil(TILE_SIZE) {
             for tile_x in left / TILE_SIZE..right.div_ceil(TILE_SIZE) {
                 let coord = TileCoord {
@@ -1661,31 +1685,28 @@ fn dab_density_on_tiles(
                         if profile <= 0.0 {
                             continue;
                         }
-                        let (m, a, p) = dab.material.packed();
-                        let paper_point = dab.material.paper.texture_point(
-                            (x as f32 + 0.5) / dab.texture_scale,
-                            (y as f32 + 0.5) / dab.texture_scale,
-                        );
-                        let grain_point = dab.material.grain_point(
-                            (x as f32 + 0.5) / dab.texture_scale,
-                            (y as f32 + 0.5) / dab.texture_scale,
-                        );
-                        let deposition = crate::natural_media::deposition_mapped(
-                            grain_point.0,
-                            grain_point.1,
-                            paper_point.0,
-                            paper_point.1,
-                            distance / dab.radius,
-                            m,
-                            a,
-                            p,
-                        );
+                        let mut pigment = 0.;
+                        for &(ox, oy) in &offsets[..(samples * samples) as usize] {
+                            let px = (x as f32 + 0.5 + ox) * pixel_size;
+                            let py = (y as f32 + 0.5 + oy) * pixel_size;
+                            let paper_point = dab.material.paper.texture_point(px, py);
+                            let grain_point = dab.material.grain_point(px, py);
+                            pigment += crate::natural_media::deposition_mapped(
+                                grain_point.0,
+                                grain_point.1,
+                                paper_point.0,
+                                paper_point.1,
+                                distance / dab.radius,
+                                m,
+                                a,
+                                p,
+                            ) * brush_texture(grain_point.0, grain_point.1, dab.texture);
+                        }
                         let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
-                        coverage[index] += deposition
+                        coverage[index] += pigment / (samples * samples) as f32
                             * (4.0 + 12.0 * dab.hardness)
                             * dab.weight
-                            * profile
-                            * brush_texture(grain_point.0, grain_point.1, dab.texture);
+                            * profile;
                     }
                 }
             }
@@ -3488,6 +3509,34 @@ fn div_255(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_dry_brush_averages_grain_over_pixel_footprint() {
+        let mut dab = RasterDab {
+            material: Default::default(),
+            texture: 2.,
+            texture_scale: 1.,
+            x: 10.5,
+            y: 10.5,
+            radius: 10.,
+            hardness: 1.,
+            weight: 1.,
+        };
+        dab.material.grain_transform = [2., 0., 0., 2., 0., 0.];
+        let density = dab_density(32, 32, &[dab], None).unwrap();
+        let actual = density[&TileCoord { x: 0, y: 0 }][(10 * TILE_SIZE + 10) as usize];
+        let expected = [-0.25, 0.25]
+            .iter()
+            .flat_map(|dy| {
+                [-0.25, 0.25]
+                    .iter()
+                    .map(move |dx| brush_texture((10.5 + dx) * 2., (10.5 + dy) * 2., 2.))
+            })
+            .sum::<f32>()
+            / 4.
+            * 16.;
+        assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
+    }
 
     #[test]
     fn targeted_dabs_match_full_stroke_preserve_other_tiles_and_undo() {

@@ -564,12 +564,7 @@ pub fn sampled_raster_dabs(stroke: &Stroke) -> Result<Vec<RasterDab>, String> {
         return Err("Invalid stroke samples".into());
     }
     let points = smoothed_brush_points(stroke);
-    let base_radius = stroke.brush.size * 0.5;
-    let t = stroke.brush.material.grain_transform;
-    let inverse_scale = (t[0] * t[3] - t[1] * t[2]).abs().sqrt();
-    let spacing = ((base_radius * inverse_scale * 0.08)
-        .min(1.0 + 3.0 * (1.0 - stroke.brush.hardness)))
-        / inverse_scale;
+    let spacing = stroke_dab_spacing(stroke.brush, &points);
     let length: f64 = points
         .windows(2)
         .map(|pair| f64::from((pair[1].0.x - pair[0].0.x).hypot(pair[1].0.y - pair[0].0.y)))
@@ -1210,18 +1205,48 @@ fn validate_tile_uploads(width: u32, height: u32, uploads: &[TileUpload]) -> Res
     Ok(())
 }
 
+fn stroke_dab_spacing(brush: lumapaint_core::document::Brush, points: &[(Point, f32)]) -> f32 {
+    let t = brush.material.grain_transform;
+    let inverse_scale = (t[0] * t[3] - t[1] * t[2]).abs().sqrt();
+    let spacing = ((brush.size * 0.5 * inverse_scale * 0.08)
+        .min(1.0 + 3.0 * (1.0 - brush.hardness)))
+        / inverse_scale;
+    // Once the grain is area-filtered, subpixel dabs are redundant. Besides
+    // reducing work, this prevents thousands of tiny additions from being
+    // rounded away in the GPU's half-float optical-depth attachment.
+    if inverse_scale >= 8. {
+        let minimum_pressure = points
+            .iter()
+            .map(|(_, pressure)| pressure.max(0.05))
+            .fold(1., f32::min);
+        let taper = if brush.simulation == lumapaint_core::document::BrushSimulation::Ink {
+            0.12
+        } else {
+            1.
+        };
+        spacing.max((brush.size * minimum_pressure * taper / 6.).min(0.5))
+    } else {
+        spacing
+    }
+}
+
 fn dabs_along_path(
     points: &[(Point, f32)],
     brush: lumapaint_core::document::Brush,
     opacity: f32,
 ) -> Vec<Segment> {
+    dabs_along_path_at_spacing(points, brush, opacity, stroke_dab_spacing(brush, points))
+}
+
+fn dabs_along_path_at_spacing(
+    points: &[(Point, f32)],
+    brush: lumapaint_core::document::Brush,
+    opacity: f32,
+    spacing: f32,
+) -> Vec<Segment> {
     let base_radius = brush.size * 0.5;
     // Soft tips tolerate wider sampling. Avoid thousands of tiny half-float
     // additions on wide brushes; hard edges keep a one-pixel upper bound.
-    let t = brush.material.grain_transform;
-    let inverse_scale = (t[0] * t[3] - t[1] * t[2]).abs().sqrt();
-    let spacing = ((base_radius * inverse_scale * 0.08).min(1.0 + 3.0 * (1.0 - brush.hardness)))
-        / inverse_scale;
     // A stationary hard-tip click at 50% flow deposits 50% coverage. Preserve
     // legacy full-flow density while calibrating intermediate values as alpha.
     let flow_density = if brush.flow == 1. {
