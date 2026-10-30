@@ -25,7 +25,7 @@ import { TransformPanel, transformLabels } from './TransformPanel';
 import { StrokePanel, strokeLabels } from './StrokePanel';
 import { ChannelsPanel } from './ChannelsPanel';
 import { CompactSlider } from './CompactSlider';
-import { Fragment, lazy, Suspense, useEffect, useState, useRef, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, useRef, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type { DisplayChannel, BitDepth, Brush, ColorMode, ColorProfile, DocumentSettings, DocumentSnapshot, LayerSettings, TextSettings } from '../bridge';
 import { BrushPresets } from './BrushPresets';
 import { readPreference, savePreference, type Locale } from '../i18n';
@@ -38,8 +38,19 @@ import { textPanelMessages } from '../text-panel-i18n';
 import { ColorPanel, colorPanelLabels, type ColorTarget, type VectorColorControls } from './ColorPanel';
 
 const MotionPanel = lazy(() => import('./MotionPanel').then(module => ({default:module.MotionPanel})));
-const panelIds = ['color', 'swatches', 'gradient', 'brush', 'stroke', 'transform', 'align', 'pathfinder', 'pages', 'links', 'screentone', 'effects', 'motion', 'text', 'layers', 'document'] as const;
-type PanelId = (typeof panelIds)[number];
+const panelGroups = [
+  { id: 'layers', panels: ['layers', 'effects'] },
+  { id: 'color', panels: ['color', 'swatches', 'gradient'] },
+  { id: 'drawing', panels: ['brush', 'stroke', 'screentone'] },
+  { id: 'text', panels: ['text'] },
+  { id: 'size', panels: ['transform', 'align', 'pathfinder'] },
+  { id: 'layout', panels: ['pages', 'links'] },
+  { id: 'animation', panels: ['motion'] },
+  { id: 'document', panels: ['document'] },
+] as const;
+type PanelId = typeof panelGroups[number]['panels'][number];
+const panelIds: readonly PanelId[] = panelGroups.flatMap(group => [...group.panels]);
+const panelGroupFor = (panel: PanelId) => panelGroups.find(group => (group.panels as readonly PanelId[]).includes(panel))!;
 
 function pixelsPerUnit(unit: DocumentSettings['unit'], resolution: number) {
   const dpi = Math.max(1, resolution || 72);
@@ -60,13 +71,17 @@ function isPanelId(value: unknown): value is PanelId {
 }
 
 function initialPanelOrder(): PanelId[] {
-  const stored = readPreference('inspectorOrder-grouped-v1');
+  const stored = readPreference('inspectorOrder-grouped-v2');
   if (!stored) return [...panelIds];
   try {
     const parsed: unknown = JSON.parse(stored);
     if (Array.isArray(parsed) && parsed.every(isPanelId)) {
       const stored = [...new Set<PanelId>(parsed)];
-      const combined=[...stored,...panelIds.filter(panel=>!stored.includes(panel))];if(!stored.includes('align')){combined.splice(combined.indexOf('align'),1);combined.splice(Math.max(0,combined.indexOf('pathfinder')),0,'align');}return ['color',...combined.filter(panel=>panel!=='color'&&panel!=='document'),'document'];
+      // Group positions stay fixed; saved custom ordering applies within each group.
+      return panelGroups.flatMap(group => {
+        const members = group.panels as readonly PanelId[];
+        return [...stored.filter(panel => members.includes(panel)), ...members.filter(panel => !stored.includes(panel))];
+      });
     }
   } catch { /* Use the default order when an old preference cannot be read. */ }
   return [...panelIds];
@@ -150,7 +165,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
   };
   const labels: Record<PanelId, string> = { align:alignmentLabels[locale].title, motion: ({ja:'モーション',en:'Motion','zh-CN':'动效'})[locale], screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
-  useEffect(() => savePreference('inspectorOrder-grouped-v1', JSON.stringify(order)), [order]);
+  useEffect(() => savePreference('inspectorOrder-grouped-v2', JSON.stringify(order)), [order]);
   useEffect(() => {
     setSettings({ name: document.name, width: document.width, height: document.height, unit: measurementUnit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio });
     setDisplayDimensions({ width: displaySize(document.width, measurementUnit, document.resolution), height: displaySize(document.height, measurementUnit, document.resolution) });
@@ -168,7 +183,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
 
 
   function movePanel(source: PanelId, target: PanelId) {
-    if (source === target || source === 'color' || source === 'document' || target === 'color' || target === 'document') return;
+    if (source === target || panelGroupFor(source) !== panelGroupFor(target)) return;
     setOrder(current => {
       const targetIndex = current.indexOf(target);
       const next = current.filter(panel => panel !== source);
@@ -191,16 +206,9 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
     }
   }
 
-  return <aside className={`inspector${draggedPanel?' panel-drag-active':''}`} aria-label={t.properties}>
-    <div className="dock-resizer" role="separator" aria-orientation="vertical" aria-label={locale==='ja'?'パネルの幅':locale==='en'?'Panel width':'面板宽度'} aria-valuemin={260} aria-valuemax={600} aria-valuenow={dockWidth} tabIndex={0} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeDock.current={x:e.clientX,width:dockWidth};}} onPointerMove={e=>{if(resizeDock.current)setDockWidth(Math.max(260,Math.min(600,window.innerWidth*.6,resizeDock.current.width+resizeDock.current.x-e.clientX)));}} onPointerUp={()=>{resizeDock.current=null;}} onPointerCancel={()=>{resizeDock.current=null;}} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setDockWidth(w=>Math.max(260,Math.min(600,w+(e.key==='ArrowLeft'?16:-16))));}}}/>
-    <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}>{!floating[activePanel]&&(activePanel==='align'||activePanel==='pathfinder')?<div className="align-family-tabs">{(['align','pathfinder'] as const).map(panel=><button key={panel} type="button" aria-pressed={activePanel===panel} onClick={()=>setActivePanel(panel)}>{labels[panel]}</button>)}</div>:<strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong>}<button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
-    {panelView('motion', <section id="inspector-panel-motion" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-motion"><Suspense fallback={<div className="motion-empty">…</div>}><MotionPanel key={thumbnailDocumentKey} locale={locale} /></Suspense></section>)}
-    {panelView('screentone', <section id="inspector-panel-screentone" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-screentone"><ScreentonePanel key={thumbnailDocumentKey} locale={locale} layer={selectedLayer} resolution={document.resolution} enabled={enabled || rasterEnabled} canCreate={enabled} onUpdate={onTransformUpdate} /></section>)}
-    {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
-    <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
-      {order.map(panel => <Fragment key={panel}><button
+  const renderPanelTab = (panel: PanelId) => (<button key={panel}
         id={`inspector-tab-${panel}`}
-        className={`tool-button inspector-tab${panel === 'document' ? ' inspector-tab-bottom' : ''}${activePanel === panel ? ' selected' : ''}${floating[panel] ? ' floating-tab' : ''}${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
+        className={`tool-button inspector-tab${activePanel === panel ? ' selected' : ''}${floating[panel] ? ' floating-tab' : ''}${draggedPanel === panel ? ' dragging' : ''}${dropTarget === panel && draggedPanel !== panel ? ' drop-target' : ''}`}
         role="tab"
         aria-selected={activePanel === panel}
         aria-controls={`inspector-panel-${panel}`}
@@ -211,7 +219,25 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
         aria-label={labels[panel]}
         onClick={() => {if(suppressClick.current){suppressClick.current=false;return;} setSwatchDraft(undefined); if(floating[panel])dock(panel);else setActivePanel(panel); }}
         onKeyDown={event => handleTabKeyDown(event, panel)}
-      ><Icon name={panelIcons[panel]} /></button>{panel === 'color' && <span className="inspector-tab-separator" aria-hidden="true" />}</Fragment>)}
+      ><Icon name={panelIcons[panel]} /></button>);
+
+  return <aside className={`inspector${draggedPanel?' panel-drag-active':''}`} aria-label={t.properties}>
+    <div className="dock-resizer" role="separator" aria-orientation="vertical" aria-label={locale==='ja'?'パネルの幅':locale==='en'?'Panel width':'面板宽度'} aria-valuemin={260} aria-valuemax={600} aria-valuenow={dockWidth} tabIndex={0} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeDock.current={x:e.clientX,width:dockWidth};}} onPointerMove={e=>{if(resizeDock.current)setDockWidth(Math.max(260,Math.min(600,window.innerWidth*.6,resizeDock.current.width+resizeDock.current.x-e.clientX)));}} onPointerUp={()=>{resizeDock.current=null;}} onPointerCancel={()=>{resizeDock.current=null;}} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setDockWidth(w=>Math.max(260,Math.min(600,w+(e.key==='ArrowLeft'?16:-16))));}}}/>
+    <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}>{!floating[activePanel]&&(activePanel==='align'||activePanel==='pathfinder')?<div className="align-family-tabs">{(['align','pathfinder'] as const).map(panel=><button key={panel} type="button" aria-pressed={activePanel===panel} onClick={()=>setActivePanel(panel)}>{labels[panel]}</button>)}</div>:<strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong>}<button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
+    {panelView('motion', <section id="inspector-panel-motion" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-motion"><Suspense fallback={<div className="motion-empty">…</div>}><MotionPanel key={thumbnailDocumentKey} locale={locale} /></Suspense></section>)}
+    {panelView('screentone', <section id="inspector-panel-screentone" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-screentone"><ScreentonePanel key={thumbnailDocumentKey} locale={locale} layer={selectedLayer} resolution={document.resolution} enabled={enabled || rasterEnabled} canCreate={enabled} onUpdate={onTransformUpdate} /></section>)}
+    {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
+    <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
+      <div className="inspector-tab-groups" role="presentation">
+        {panelGroups.filter(group => group.id !== 'document').map(group => (
+          <div key={group.id} className="inspector-tab-group" data-panel-group={group.id} role="presentation">
+            {order.filter(panel => (group.panels as readonly PanelId[]).includes(panel)).map(renderPanelTab)}
+          </div>
+        ))}
+      </div>
+      <div className="inspector-tab-group inspector-tab-group-bottom" data-panel-group="document" role="presentation">
+        {renderPanelTab('document')}
+      </div>
     </div>
 
     {panelView('swatches',<section className="inspector-panel" role="tabpanel" id="inspector-panel-swatches" aria-labelledby="inspector-tab-swatches"><SwatchesPanel initialDraft={swatchDraft} locale={locale} document={document} enabled={enabled && !textEditing} brush={brush} backgroundColor={backgroundColor} onForegroundChange={onForegroundChange} onBackgroundChange={onBackgroundChange} foregroundNone={foregroundNone} backgroundNone={backgroundNone} onForegroundNone={onForegroundNone} onBackgroundNone={onBackgroundNone} vectorColors={vectorColors} onUpdate={onTransformUpdate}/></section>)}
