@@ -109,6 +109,7 @@ fn copy_paint_tile(pixels: &mut [u8], width: u32, upload: &lumapaint_core::tiles
 
 pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
     report.issues.iter().map(|issue| match issue.code {
+        "ae.flattened_sequence" => "PNG連番とAEスクリプトを書き出します。ZIPを展開してスクリプトを実行してください。レイヤー・編集可能なキー・音声・ICCは転送しません。現在のページのみ。\nExports PNG frames and an AE script. Extract ZIP before running the script. Layers, editable keys, audio and ICC are not transferred. Active page only.\n导出PNG序列和AE脚本，请解压ZIP后运行。不传输图层、可编辑关键帧、音频或ICC，仅当前页面。",
         "svg.brush_rasterized" => "ブラシは画像として保持されます。ベクターは編集可能です。\nBrushes are preserved as an image; vectors remain editable.\n笔刷保存为图像，矢量仍可编辑。",
         "pdf.effects_rasterized" => "PDFの効果はページ画像として保持されます。\nPDF effects are preserved as a page image.\nPDF效果保存为页面图像。",
         "pdf.registration_preview_only" => "PDFのレジストレーションカラーはプレビュー色へ変換され、全版属性は保持されません。\nPDF registration colors are converted to preview colors; all-plate attributes are not retained.\nPDF套版色转换为预览色，不保留全色版属性。",
@@ -139,6 +140,40 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
         "svg.layer_effects_rasterized" => "レイヤーエフェクトの見た目を保持するため画像へ統合します。編集可能な設定はネイティブ形式に保存してください。\nLayer effects are flattened to preserve appearance. Save editable settings in the native format.\n图层效果将合并为图像以保留外观。请使用原生格式保存可编辑设置。",
         _ => "外部形式への変換で編集情報が変わります。\nConversion changes editing information.\n格式转换会改变编辑信息。"
     }).collect::<Vec<_>>().join("\n\n")
+}
+
+/// Export the active page at authored times without changing the live document.
+pub fn after_effects(document: &Document) -> Result<ExportedDocument, String> {
+    let mut source = document.clone();
+    source.finish();
+    let mut preview = source.clone();
+    let (width, height) = source.dimensions();
+    let animation = source.animation();
+    let bytes = lumapaint_formats::after_effects::package(
+        width,
+        height,
+        animation.fps,
+        animation.duration,
+        |frame| {
+            preview.evaluate_animation_with_outlines(
+                &source,
+                frame,
+                Some(&lumapaint_renderer::text_outlines::outline),
+            );
+            lumapaint_renderer::thumbnails::document_png(&preview)
+        },
+    )?;
+    Ok(ExportedDocument {
+        format: FormatId::AfterEffects,
+        bytes,
+        media_type: "application/zip",
+        report: lumapaint_formats::ConversionReport {
+            issues: vec![lumapaint_formats::ConversionIssue {
+                code: "ae.flattened_sequence",
+                tier: lumapaint_formats::CompatibilityTier::C,
+            }],
+        },
+    })
 }
 
 #[cfg(test)]
@@ -228,6 +263,40 @@ mod tests {
             before
         );
     }
+    #[test]
+    fn ae_export_preserves_live_drawing_and_animation() {
+        use lumapaint_core::document::{Brush, Point};
+        let mut document = Document::default();
+        document.set_animation_settings(24, 2, false).unwrap();
+        document
+            .begin(Point { x: 40., y: 40. }, Brush::default())
+            .unwrap();
+        let before = serde_json::to_value(ExportSnapshot::capture(&document).state()).unwrap();
+        let result = after_effects(&document).unwrap();
+        assert_eq!(result.format, FormatId::AfterEffects);
+        assert_eq!(result.media_type, "application/zip");
+        assert!(result.bytes.starts_with(b"PK"));
+        for name in [
+            "frames/frame_000000.png",
+            "frames/frame_000001.png",
+            "Import-LumaPaint.jsx",
+        ] {
+            assert!(result
+                .bytes
+                .windows(name.len())
+                .any(|w| w == name.as_bytes()));
+        }
+        assert!(document.has_active_stroke());
+        assert_eq!(
+            serde_json::to_value(ExportSnapshot::capture(&document).state()).unwrap(),
+            before
+        );
+        assert_eq!(
+            result.report.issues[0].tier,
+            lumapaint_formats::CompatibilityTier::C
+        );
+    }
+
     #[test]
     fn export_active_paint_keeps_original_and_png_report() {
         use lumapaint_core::document::{Brush, Point};

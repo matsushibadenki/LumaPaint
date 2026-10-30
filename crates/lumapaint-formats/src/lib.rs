@@ -1,4 +1,5 @@
 //! External-format adapters. The dependency points toward the native core, never toward UI.
+pub mod after_effects;
 pub mod color;
 pub mod export;
 pub mod idml;

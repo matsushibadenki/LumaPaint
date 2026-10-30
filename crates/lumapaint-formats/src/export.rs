@@ -6,6 +6,8 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FormatId {
+    /// Host-rendered animation package; separate from single-document adapters.
+    AfterEffects,
     Native,
     Svg,
     Pdf,

@@ -9452,6 +9452,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             ensure_document_open()?;
             let Some(path) = rfd::FileDialog::new()
                 .add_filter("SVG", &["svg"])
+                .add_filter("After Effects — PNG + JSX (ZIP)", &["zip"])
                 .add_filter("PDF", &["pdf"])
                 .add_filter("IDML — Text / 文字 / 文本", &["idml"])
                 .set_file_name("Untitled.svg")
@@ -9464,6 +9465,11 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             let app = APP.get().ok_or("Application unavailable")?.clone();
             crate::diagnostic_jobs::spawn_blocking(move || {
                 let result = if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+                {
+                    crate::vector_export::after_effects(&document)
+                } else if path
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
                 {

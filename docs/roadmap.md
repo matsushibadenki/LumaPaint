@@ -2132,3 +2132,15 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 - 🟠 [Next] 背景負荷を統制した実GUI混合入力でcache hit率・競合・最大遅延を再計測。今回は時間分布が不安定で、局所的なSerial/Parallelの有利不利も条件依存のため既定値を維持。
 - 🔴 [Later] idle・IPC・allocation/copyの計測。
 - ⭕️ [Pending] Windows/Linux、専用機器による物理表示遅延・電力、未提供の制作プロジェクトでの受入れ。
+
+## After Effects交換（2026-10-30）
+
+- 🟢 [Done] 通常文書の「書き出し」にAfter Effects PNG + JSX（ZIP）を追加。現在のページをRustでフル解像度RGBA8連番へ評価し、相対参照の読み込みスクリプトを同梱。文書コピーを使用し、元の作画・履歴・再生状態を変更しない。
+- 🟢 [Done] JSXに文書fps・尺・ピクセル縦横比1・ストレートアルファを設定。単一フレームは静止画として読み込み。日英中の使い方と統合出力の制約を表示。1–99fps、最大10,000フレーム、16,777,216画素、PNG合計256MiBを上限とする。
+- 🟠 [Next] レイヤー単位の連番とAEコンポジションの組み立て。まず重なり順・表示・不透明度・セルの保持区間を検証し、その後に位置・倍率・回転キーを編集可能に転送する。
+- 🔴 [Later] AEからの往復、音声、色管理、マスク・描画モードの個別保持。AEP直接読み書きは未対応。
+- ⭕️ [Pending] AE実機でのJSX実行・透明境界・コマ保持・効果・実画素比較。現在は統合連番の片方向交換であり、編集可能なレイヤー／キー・音声・ICCは転送しない。タイル専用文書の書き出しは従来のPSD／PSB経路を使用。
+
+使い方・検証：[After Effects交換](after-effects-exchange.md)。
+- 🟢 [Done] 交換形式テスト3件・ホストの文書不変性テスト1件、アプリ全テスト対象のcargo check、fmt・アーキテクチャ境界・差分空白チェックが通過。
+- ⭕️ [Pending] After Effects 2026はインストール済みだが、Computer Useの接続がtimeoutReachedで失敗。JSX実行と画素比較の合格とはしない。

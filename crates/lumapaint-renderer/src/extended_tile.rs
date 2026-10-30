@@ -33,23 +33,26 @@ impl ExtendedTileTexture {
         {
             return Err("Invalid extended tile texture dimensions".into());
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Extended linear tile composite"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
+        let texture = crate::gpu_metrics::create_texture!(
+            device,
+            &wgpu::TextureDescriptor {
+                label: Some("Extended linear tile composite"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            }
+        );
         let view = texture.create_view(&Default::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -129,7 +132,8 @@ impl ExtendedTileTexture {
             prepared.push((tile, bytes_per_row, data));
         }
         for (tile, stride, data) in prepared {
-            queue.write_texture(
+            crate::gpu_metrics::write_texture!(
+                queue,
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
                     mip_level: 0,
