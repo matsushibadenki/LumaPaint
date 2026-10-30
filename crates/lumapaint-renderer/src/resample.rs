@@ -32,7 +32,9 @@ pub fn rgba8_triangle(
         return Err("Invalid resampling pixel buffer".into());
     }
     if pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3])
     {
         return Err("Resampling requires premultiplied RGBA pixels".into());
@@ -52,9 +54,15 @@ mod tests {
         let out = rgba8_triangle(vec![255, 0, 0, 255, 0, 0, 0, 0], (2, 1), (4, 1)).unwrap();
         assert_eq!(out.len(), 16);
         assert!(out
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| p[0] == p[3] && p[1] == 0 && p[2] == 0));
-        assert!(out.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+        assert!(out
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[3] > 0 && p[3] < 255));
     }
     #[test]
     fn shrinking_filters_and_checks_input() {

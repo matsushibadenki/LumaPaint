@@ -362,19 +362,35 @@ impl Interpreter<'_> {
                     .flatten()
                     .filter(|g| *g < glyph_count && *g != 0)
                 {
+                    let text_matrix = matrix(
+                        position.tm,
+                        [
+                            scale * state.text.hscale,
+                            0.,
+                            0.,
+                            scale,
+                            ox,
+                            oy + state.text.rise,
+                        ],
+                    );
+                    // Large text imports share translated solid glyphs and their
+                    // appearance. Gradients retain their original user-space basis.
+                    let shared = self.body.len() > 64 * 1024
+                        && state.fill_pattern.is_none()
+                        && state.stroke_pattern.is_none();
+                    let [tx, ty] = if shared {
+                        [text_matrix[4], text_matrix[5]]
+                    } else {
+                        [0., 0.]
+                    };
+                    let mut outline_matrix = text_matrix;
+                    if shared {
+                        outline_matrix[4] = 0.;
+                        outline_matrix[5] = 0.;
+                    }
                     let mut outline = Outline {
                         path: String::new(),
-                        matrix: matrix(
-                            position.tm,
-                            [
-                                scale * state.text.hscale,
-                                0.,
-                                0.,
-                                scale,
-                                ox,
-                                oy + state.text.rise,
-                            ],
-                        ),
+                        matrix: outline_matrix,
                         limited: false,
                     };
                     let valid = if let Some(face) = &face {
@@ -411,6 +427,7 @@ impl Interpreter<'_> {
                     if !outline.path.is_empty() {
                         let [a, b, c, d, e, f] = state.ctm;
                         if state.text.mode >= 4 {
+                            let [a, b, c, d, e, f] = matrix(state.ctm, [1., 0., 0., 1., tx, ty]);
                             let _ = write!(
                                 position.clip,
                                 "<path d=\"{}\" transform=\"matrix({a} {b} {c} {d} {e} {f})\"/>",
@@ -441,7 +458,31 @@ impl Interpreter<'_> {
                                 .map(|n| n.to_string())
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            self.draw(format!("<path d=\"{}\" transform=\"matrix({a} {b} {c} {d} {e} {f})\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{}\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\" stroke-miterlimit=\"{}\" stroke-dasharray=\"{dash}\" stroke-dashoffset=\"{}\" fill-opacity=\"{}\" stroke-opacity=\"{}\" style=\"mix-blend-mode:{}\"/>",outline.path,state.width,["butt","round","square"][state.cap as usize],["miter","round","bevel"][state.join as usize],state.miter,state.offset,state.fill_alpha,state.stroke_alpha,state.blend),state);
+                            let transform = if shared {
+                                String::new()
+                            } else {
+                                format!("matrix({a} {b} {c} {d} {e} {f})")
+                            };
+                            let element = format!("<path d=\"{}\" transform=\"{transform}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{}\" stroke-linecap=\"{}\" stroke-linejoin=\"{}\" stroke-miterlimit=\"{}\" stroke-dasharray=\"{dash}\" stroke-dashoffset=\"{}\" fill-opacity=\"{}\" stroke-opacity=\"{}\" style=\"mix-blend-mode:{}\"/>",outline.path,state.width,["butt","round","square"][state.cap as usize],["miter","round","bevel"][state.join as usize],state.miter,state.offset,state.fill_alpha,state.stroke_alpha,state.blend);
+                            if shared {
+                                let id = if let Some(id) = self.glyph_uses.get(&element) {
+                                    id.clone()
+                                } else {
+                                    if self.defs.len() + self.body.len() + element.len()
+                                        > 4 * 1024 * 1024
+                                    {
+                                        return Err(ImportError::LimitExceeded("pdf.svg_source"));
+                                    }
+                                    let id = format!("pdf-glyph-{}", self.serial);
+                                    self.serial += 1;
+                                    let _ = write!(self.defs, "<g id=\"{id}\">{element}</g>");
+                                    self.glyph_uses.insert(element, id.clone());
+                                    id
+                                };
+                                self.draw(format!("<use href=\"#{id}\" x=\"{tx}\" y=\"{ty}\" transform=\"matrix({a} {b} {c} {d} {e} {f})\"/>"), state);
+                            } else {
+                                self.draw(element, state);
+                            }
                         }
                     }
                 } else {
@@ -476,6 +517,7 @@ mod tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         }
     }
     #[test]

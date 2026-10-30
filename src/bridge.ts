@@ -633,7 +633,7 @@ export async function watchSwatches(callback:()=>void):Promise<()=>void> {
 
 // Adapter support and editor menu integration are deliberately separate.
 export interface FileFormatCapability {
-  format: 'native' | 'svg' | 'pdf' | 'psd' | 'ora' | 'exr' | 'kra' | 'png' | 'jpeg' | 'webp' | 'gif' | 'bmp' | 'tiff' | 'raw' | 'heif' | 'ico' | 'avif' | 'illustrator';
+  format: 'native' | 'svg' | 'pdf' | 'psd' | 'ora' | 'exr' | 'kra' | 'png' | 'jpeg' | 'webp' | 'gif' | 'bmp' | 'tiff' | 'raw' | 'heif' | 'ico' | 'avif' | 'illustrator' | 'idml';
   extensions: string[];
   family: 'native' | 'vector' | 'raster' | 'layered' | 'hdr' | 'cameraRaw';
   plannedOpen: boolean;
@@ -692,3 +692,12 @@ export const pixelSelectionPreview=(request:PixelSelectionRequest|null)=>
 export function applyFilter(documentId:number,revision:number,layer:string,category:import('./filter-presets').FilterCategory,preset:import('./filter-presets').FilterPreset):Promise<DocumentSnapshot>{
  return textCommand('apply_filter',{documentId,revision,layer,category,preset});
 }
+
+
+export interface PageTextFrame {pageId:string;objectId:string}
+export interface PageTextThread {id:string;name:string;frames:PageTextFrame[]}
+export interface PublicationFrameSummary {target:PageTextFrame;pageNumber:number;name:string;writingMode:'horizontal'|'vertical';characters:number;resolution:number;available:boolean;selected:boolean}
+export interface PublicationTextContext {documentId:number;revision:number;frames:PublicationFrameSummary[];threads:(PageTextThread&{overset:boolean})[]}
+export interface PublicationTextRequest {revision:number;action:'create'|'detach';id?:string;name?:string;frames?:PageTextFrame[]}
+export function publicationTextContext():Promise<PublicationTextContext>{return invoke('publication_text_context');}
+export function publicationTextAction(documentId:number,request:PublicationTextRequest):Promise<{document:DocumentSnapshot;context:PublicationTextContext}>{return invoke('publication_text_action',{documentId,request});}

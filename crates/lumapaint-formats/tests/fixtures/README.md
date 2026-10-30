@@ -106,3 +106,31 @@ outside the canvas or successful editable import after composite verification.
 - `lp-photoshop-2026-effect-mask-moved-outside.psd` / `.psb`: LumaPaintで変換したリンク解除マスクをPhotoshop 2026で10px移動・保存したファイル。キャンバス外のマスク画素の破棄に同意すると、キャンバス内のレイヤーとマスクを編集可能な状態で読み込む。
 
 - `lp-photoshop-2026-transparent-rgb.psd` / `.psb`: Photoshop 2026で開いて別名保存した検証用ファイル。キャンバス内と左外側に完全透明のRGBを含む。
+
+`lp-pdf-alias-test.ttf` derives solely from our original synthetic
+`lp-pdf-test.ttf`: its Unicode cmap additionally maps U+FF21 to the same original
+outline as U+0041. This tests that PDF character codes/ToUnicode entries retain
+`AＡA` even when multiple source characters use the same embedded glyph. It is
+not an Adobe font or representative fullwidth-letter typography.
+
+`lp-adobe-idml-mixed.idml`: original LumaPaint test artwork from
+`examples/idml_mixed_exchange.rs`, opened and re-exported by Adobe InDesign 2026
+(21.6) on 2026-10-30. Contains only our multilingual test sentence, cubic path,
+and generated checker PNG. No user artwork or embedded font programs. Tests
+editable text, RGB path fill/stroke, and embedded PNG import after Adobe normalization.
+
+`lp-adobe-idml-cross-page.idml` and `lp-idml-checker.png`: self-authored 160-paragraph
+Japanese/English/Simplified Chinese story linked across two pages, plus a generated
+external checker PNG. Created with `examples/idml_cross_page_exchange.rs`, opened
+and re-exported by InDesign 2026 (21.6) on 2026-10-30. The fixture's historical
+`/private/tmp/...` URI is never accessed by tests; an explicit resolver supplies the
+bundled PNG. No user documents, user images, or embedded font programs are included.
+
+`lp-adobe-idml-vertical-cross-page.idml` was exported by Adobe InDesign 2026
+on 2026-10-30 from our original two-page vertical text sample. Page 1 displays
+paragraphs 000–005 from right to left; page 2 continues with 006–011 and an
+original checker PNG. The full 160-paragraph, 5,439-character story (including
+overset) is identical before and after Adobe export. Tests resolve the linked
+checker from our own fixture, then check editable vertical threads and portable
+IDML/native saves. This does not establish pixel-identical Japanese typography
+or compatibility with other InDesign versions.

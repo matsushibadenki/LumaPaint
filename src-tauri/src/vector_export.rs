@@ -7,6 +7,20 @@ use lumapaint_formats::export::{
 pub fn svg(document: &Document) -> Result<ExportedDocument, String> {
     build(document, FormatId::Svg)
 }
+pub fn idml_read_error(error: lumapaint_formats::ImportError) -> String {
+    match error {
+        lumapaint_formats::ImportError::Unsupported("idml.external_image") => "IDMLの外部画像を取得できません。元のリンク先または文書と同じ場所のLinksフォルダーにPNG/JPEGを配置するか、画像を埋め込んで再出力してください。\nIDML linked images are unavailable. Restore the local links, place PNG/JPEG files in the document’s Links folder, or embed the images and export again.\n无法获取IDML外部图像。请恢复本地链接、将PNG/JPEG放入文档的Links文件夹，或嵌入图像后重新导出。".into(),
+        other => format!("IDMLを読み込めません。未対応の機能、または破損・上限超過を確認してください。\nUnable to open IDML. Check unsupported features, damaged data or import limits.\n无法打开IDML，请检查不支持的功能、损坏的数据或导入限制。\n{other}"),
+    }
+}
+pub fn idml(document: &Document) -> Result<ExportedDocument, String> {
+    export(
+        FormatId::Idml,
+        &ExportSnapshot::capture(document),
+        ExportOptions { allow_lossy: true },
+    )
+    .map_err(export_error)
+}
 pub fn pdf(document: &Document) -> Result<ExportedDocument, String> {
     let count = document.pages_snapshot().pages.len();
     if count == 1 {
@@ -76,6 +90,10 @@ fn export_error(error: lumapaint_formats::export::ExportError) -> String {
     match error {
         lumapaint_formats::export::ExportError::UnsupportedFeature("pdf.print_bleed_requires_vector_content") =>
             "トンボ付きPDFでは、用紙外のレイヤー効果・フィルターの書き出しはまだ対応していません。\nPDF export with printer marks does not yet support layer effects or filters outside the page.\n带印刷标记的PDF导出暂不支持页面外的图层效果或滤镜。".into(),
+        lumapaint_formats::export::ExportError::UnsupportedFeature("idml.native_text_only") =>
+            "IDML書き出しは文字フレーム・基本図形・対応画像に対応しています。高度な線・グラデーション・ブラシ・効果・グループ・可変フォント・箇条書きを含む文書にはまだ対応していません。\nIDML export supports text, basic paths and supported images. Documents containing advanced strokes, gradients, brushes, effects, groups, variable fonts or lists are not supported yet.\nIDML导出支持文本框、基本路径和受支持图像，暂不支持包含高级描边、渐变、笔刷、效果、组、可变字体或列表的文档。".into(),
+        lumapaint_formats::export::ExportError::UnsupportedFeature("idml.publication_limit") =>
+            "IDMLの出力上限を超えています。ページは8,640pt以内、文書全体で4,096フレーム・64MiB以内にしてください。\nIDML export exceeds its limits: 8,640 pt page dimensions, 4,096 frames and 64 MiB per publication.\nIDML导出超过限制：页面尺寸不得超过8,640pt，整份文档不得超过4,096个文本框和64MiB。".into(),
         other => other.to_string(),
     }
 }
@@ -94,6 +112,14 @@ pub fn report_text(report: &lumapaint_formats::ConversionReport) -> String {
         "svg.brush_rasterized" => "ブラシは画像として保持されます。ベクターは編集可能です。\nBrushes are preserved as an image; vectors remain editable.\n笔刷保存为图像，矢量仍可编辑。",
         "pdf.effects_rasterized" => "PDFの効果はページ画像として保持されます。\nPDF effects are preserved as a page image.\nPDF效果保存为页面图像。",
         "pdf.registration_preview_only" => "PDFのレジストレーションカラーはプレビュー色へ変換され、全版属性は保持されません。\nPDF registration colors are converted to preview colors; all-plate attributes are not retained.\nPDF套版色转换为预览色，不保留全色版属性。",
+        "idml.external_images_resolved" => "外部のローカル画像を読み込み、リンク先と保存用コピーをネイティブ文書へ保持します。移動後に再接続した画像は内容を確認してください。\nLocal linked images and portable copies are retained in the native document. Check images reconnected after relocation.\n原生文档保留本地图像链接和便携副本，请检查移动后重新连接的图像。",
+        "idml.import_recomposed" => "本文・連結フレーム・基本図形・対応画像を編集可能な文書へ変換します。改行位置と組版は再計算されます。\nStories, linked frames, basic paths and supported images are converted to editable content; text layout is recomposed.\n正文、链接文本框、基本路径及受支持图像将转换为可编辑内容，文本排版会重新计算。",
+        "idml.import_advanced_settings" => "高度な段落設定・マスター・色管理・テキスト回り込み等の一部は保持されません。元のIDMLも保管してください。\nSome advanced paragraph settings, master items, color management and text wrapping are not retained. Keep the original IDML.\n部分高级段落设置、母版对象、色彩管理和文本绕排不会保留，请保留原始IDML。",
+        "idml.image_preview_embedded" => "IDML出力では画像を埋め込みます。外部リンクはIDML出力には保持されません。\nIDML output embeds images and does not retain external source links.\nIDML输出嵌入图像，不保留外部图像链接。",
+        "idml.text_recomposed" => "IDMLには本文・文字設定・フレーム連結を保持します。フォントは埋め込まず、改行位置・組版はInDesignで再計算されます。\nIDML preserves stories, character settings and linked frames. Fonts are not embedded; InDesign recomposes wrapping and typography.\nIDML保留正文、字符设置和文本框链接。不嵌入字体，换行和排版由InDesign重新计算。",
+        "idml.facing_pages_separated" => "見開きは独立したページに変換されます。\nFacing spreads are exported as separate pages.\n对页导出为独立页面。",
+        "idml.font_unavailable" => "一部のフォントを確認できません。InDesignでフォントの確認または置換が必要です。\nSome fonts could not be resolved; check or replace them in InDesign.\n无法确认部分字体，请在InDesign中检查或替换。",
+        "pdf.text_positioned" => "PDFの文字列・埋め込みフォント・字形位置を保持します。段落スタイルやテキストフレームの連結は保持されません。\nPDF preserves text, embedded fonts and glyph positions; paragraph styles and linked text frames are not retained.\nPDF保留文本、嵌入字体和字形位置，不保留段落样式或文本框链接。",
         "pdf.text_outlined" => "PDFの文字は輪郭パスに変換されます。\nPDF text is converted to vector outlines.\nPDF文字转换为矢量轮廓。",
         "svg.text_requires_fonts" => "文字は編集可能ですが、表示には同じフォントが必要です。\nText remains editable and requires the same fonts.\n文字仍可编辑，显示需要相同字体。",
         "pdf.selected_page_only" => "選んだページだけを読み込みます。\nOnly the selected page is opened.\n仅打开所选页面。",

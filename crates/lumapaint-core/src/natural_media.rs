@@ -274,6 +274,10 @@ pub fn relief(x: f32, y: f32, p: [f32; 4]) -> f32 {
 pub fn deposition(x: f32, y: f32, r: f32, m: [f32; 4], a: [f32; 4], p: [f32; 4]) -> f32 {
     deposition_mapped(x, y, x, y, r, m, a, p)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the CPU reference parameters aligned with natural_media.wgsl"
+)]
 pub fn deposition_mapped(
     x: f32,
     y: f32,

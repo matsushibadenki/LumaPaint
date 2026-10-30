@@ -155,6 +155,7 @@ mod tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         }
     }
     fn mask(doc: &mut lopdf::Document, content: &[u8], kind: &str) -> Object {

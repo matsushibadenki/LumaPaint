@@ -1514,7 +1514,7 @@ mod tests {
             info.extend(r2);
             info.extend(p1);
             info.extend(p2);
-            if info.len() % 2 != 0 {
+            if !info.len().is_multiple_of(2) {
                 info.push(0);
             }
             let mut section = (info.len() as u32).to_be_bytes().to_vec();
@@ -1653,7 +1653,7 @@ mod tests {
             info.extend(r2);
             info.extend(p1);
             info.extend(p2);
-            if info.len() % 2 != 0 {
+            if !info.len().is_multiple_of(2) {
                 info.push(0);
             }
             let mut section = (info.len() as u32).to_be_bytes().to_vec();
@@ -1770,7 +1770,7 @@ mod tests {
         let mut info = (-6i16).to_be_bytes().to_vec();
         info.extend(records);
         info.extend(payload);
-        if info.len() % 2 != 0 {
+        if !info.len().is_multiple_of(2) {
             info.push(0);
         }
         let mut section = (info.len() as u32).to_be_bytes().to_vec();

@@ -2810,6 +2810,53 @@ pub async fn selection_path_action(
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationTextSession {
+    pub document_id: u64,
+    #[serde(flatten)]
+    pub context: lumapaint_core::document::PublicationTextContext,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationTextUpdate {
+    pub document: DocumentSnapshot,
+    pub context: PublicationTextSession,
+}
+#[tauri::command]
+pub async fn publication_text_context(
+    window: tauri::WebviewWindow,
+) -> Result<PublicationTextSession, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, platform::publication_text_context).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Native text linking is pending on this platform".into())
+    }
+}
+#[tauri::command]
+pub async fn publication_text_action(
+    window: tauri::WebviewWindow,
+    document_id: u64,
+    request: lumapaint_core::document::PublicationTextRequest,
+) -> Result<PublicationTextUpdate, String> {
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || {
+            platform::publication_text_action(document_id, request)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, document_id, request);
+        Err("Native text linking is pending on this platform".into())
+    }
+}
+
 #[tauri::command]
 pub async fn vector_selection_action(
     window: tauri::WebviewWindow,

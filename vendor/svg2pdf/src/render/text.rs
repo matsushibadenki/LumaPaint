@@ -48,8 +48,8 @@ pub fn write_font(
     let descriptor_ref = alloc.alloc_ref();
     let cmap_ref = alloc.alloc_ref();
     let data_ref = alloc.alloc_ref();
+    let encoding_ref = alloc.alloc_ref();
 
-    let glyph_set = &mut font.glyph_set;
     let glyph_remapper = &font.glyph_remapper;
 
     // Do we have a TrueType or CFF font?
@@ -62,16 +62,24 @@ pub fn write_font(
         .or_else(|| ttf.raw_face().table(CFF2))
         .is_some();
 
-    let base_font = base_font_name(&ttf, glyph_set);
+    let custom_encoding = font
+        .glyph_codes
+        .iter()
+        .any(|((gid, _), code)| glyph_remapper.get(*gid) != Some(*code));
+    let base_font = base_font_name(&ttf, &font.glyph_codes);
+    let encoding_name = if custom_encoding { "LPEncoding" } else { IDENTITY_H };
     let base_font_type0 =
-        if is_cff { format!("{base_font}-{IDENTITY_H}") } else { base_font.clone() };
+        if is_cff { format!("{base_font}-{encoding_name}") } else { base_font.clone() };
 
-    chunk
-        .type0_font(type0_ref)
-        .base_font(Name(base_font_type0.as_bytes()))
-        .encoding_predefined(Name(IDENTITY_H.as_bytes()))
-        .descendant_font(cid_ref)
-        .to_unicode(cmap_ref);
+    let mut type0 = chunk.type0_font(type0_ref);
+    type0.base_font(Name(base_font_type0.as_bytes()));
+    if custom_encoding {
+        type0.encoding_cmap(encoding_ref);
+    } else {
+        type0.encoding_predefined(Name(IDENTITY_H.as_bytes()));
+    }
+    type0.descendant_font(cid_ref).to_unicode(cmap_ref);
+    type0.finish();
 
     // Write the CID font referencing the font descriptor.
     let mut cid = chunk.cid_font(cid_ref);
@@ -158,8 +166,21 @@ pub fn write_font(
 
     font_descriptor.finish();
 
-    let cmap = create_cmap(glyph_set, glyph_remapper).ok_or(SubsetError(font.id))?;
-    chunk.cmap(cmap_ref, &cmap.finish()).writing_mode(WMode::Horizontal);
+    let cmap = create_cmap(&font.glyph_codes);
+    if custom_encoding {
+        let encoding = create_encoding(&font.glyph_codes, glyph_remapper)
+            .ok_or(SubsetError(font.id))?;
+        chunk
+            .cmap(encoding_ref, &encoding)
+            .name(Name(b"LPEncoding"))
+            .system_info(SYSTEM_INFO)
+            .writing_mode(WMode::Horizontal);
+    }
+    chunk
+        .cmap(cmap_ref, &cmap.finish())
+        .name(CMAP_NAME)
+        .system_info(SYSTEM_INFO)
+        .writing_mode(WMode::Horizontal);
 
     // Subset and write the font's bytes.
     let data = subset_font(&font.face_data, font.face_index, glyph_remapper, font.id)?;
@@ -175,20 +196,35 @@ pub fn write_font(
 }
 
 /// Create a /ToUnicode CMap.
-fn create_cmap(
-    glyph_set: &mut BTreeMap<u16, String>,
-    glyph_remapper: &GlyphRemapper,
-) -> Option<UnicodeCmap> {
-    // Produce a reverse mapping from glyphs' CIDs to unicode strings.
+fn create_cmap(codes: &BTreeMap<(u16, String), u16>) -> UnicodeCmap {
     let mut cmap = UnicodeCmap::new(CMAP_NAME, SYSTEM_INFO);
-    for (&g, text) in glyph_set.iter() {
-        let new_gid = glyph_remapper.get(g)?;
+    for ((_, text), &code) in codes {
         if !text.is_empty() {
-            cmap.pair_with_multiple(new_gid, text.chars());
+            cmap.pair_with_multiple(code, text.chars());
         }
     }
+    cmap
+}
 
-    Some(cmap)
+// Character codes must remain distinct when multiple Unicode strings shape to
+// the same glyph. An Encoding CMap maps those codes to the shared subset CID;
+// ToUnicode maps each original code to its own string, independently of outlines.
+fn create_encoding(
+    codes: &BTreeMap<(u16, String), u16>,
+    remapper: &GlyphRemapper,
+) -> Option<Vec<u8>> {
+    use std::fmt::Write;
+    let mut result = String::from("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def\n/CMapName /LPEncoding def\n/CMapType 1 def\n/WMode 0 def\n1 begincodespacerange\n<0000> <ffff>\nendcodespacerange\n");
+    let pairs: Vec<_> = codes.iter().collect();
+    for batch in pairs.chunks(100) {
+        writeln!(result, "{} begincidchar", batch.len()).ok()?;
+        for ((gid, _), code) in batch {
+            writeln!(result, "<{code:04x}> {}", remapper.get(*gid)?).ok()?;
+        }
+        result.push_str("endcidchar\n");
+    }
+    result.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    Some(result.into_bytes())
 }
 
 fn subset_font(
@@ -240,40 +276,95 @@ pub fn render(
         }
 
         let operation = |content: &mut Content| -> Result<()> {
-            for glyph in &span.positioned_glyphs {
-                let Some(font) = fonts.get(&glyph.font).and_then(|f| f.as_ref()) else {
-                    continue;
+            content.save_state_checked()?;
+            content.begin_text();
+            let glyphs = &span.positioned_glyphs;
+            let mut i = 0;
+            while i < glyphs.len() {
+                let first = &glyphs[i];
+                let font = fonts
+                    .get(&first.font)
+                    .and_then(|f| f.as_ref())
+                    .ok_or(InvalidFont(first.font))?;
+                let face = Face::parse(&font.face_data, font.face_index)
+                    .map_err(|_| InvalidFont(font.id))?;
+                let ts = |glyph: &usvg::layout::PositionedGlyph| {
+                    glyph
+                        .outline_transform()
+                        .pre_scale(font.units_per_em as f32, font.units_per_em as f32)
+                        .pre_scale(1.0 / span.font_size.get(), 1.0 / span.font_size.get())
+                        .to_pdf_transform()
                 };
-
-                let name = font_names.get(&font.reference).unwrap();
-
-                // TODO: Remove unwraps and switch to error-based handling.
-                // NOTE(laurmaedje): If it can't happen, I think a panic is
-                // better. There is no way to handle it as a consumer of
-                // svg2pdf.
-                let cid = font.glyph_remapper.get(glyph.id.0).unwrap();
-                let ts = glyph
-                    .outline_transform()
-                    .pre_scale(font.units_per_em as f32, font.units_per_em as f32)
-                    // The glyphs in usvg are already scaled according the font size, but
-                    // we want to leverage the native PDF font size feature instead, so we downscale
-                    // it to a font size of 1.
-                    .pre_scale(1.0 / span.font_size.get(), 1.0 / span.font_size.get());
-                content.save_state_checked()?;
-                content.begin_text();
-                content.set_text_matrix(ts.to_pdf_transform());
+                let origin = ts(first);
+                let [a, b, c, d, e, f] = origin;
+                let det = a * d - b * c;
+                let mut items = Vec::new();
+                let mut cursor = 0.;
+                let mut j = i;
+                // Keep TJ arrays and temporary buffers bounded for long frames.
+                while j < glyphs.len() && j - i < 4096 {
+                    let glyph = &glyphs[j];
+                    if glyph.font != first.font {
+                        break;
+                    }
+                    let next = ts(glyph);
+                    if next[..4] != origin[..4] {
+                        break;
+                    }
+                    let dx = (d * (next[4] - e) - c * (next[5] - f)) / det;
+                    let dy = (-b * (next[4] - e) + a * (next[5] - f)) / det;
+                    if j > i && (!dx.is_finite() || dy.abs() > 0.0001) {
+                        break;
+                    }
+                    let gid =
+                        u16::try_from(glyph.id.0).map_err(|_| InvalidFont(font.id))?;
+                    let code = *font
+                        .glyph_codes
+                        .get(&(gid, glyph.text.clone()))
+                        .ok_or(InvalidFont(font.id))?;
+                    let adjustment = if j == i {
+                        0.
+                    } else {
+                        (cursor - dx) * 1000. / span.font_size.get()
+                    };
+                    items.push((code, adjustment));
+                    cursor = dx
+                        + face.glyph_hor_advance(GlyphId(gid)).unwrap_or(0) as f32
+                            * span.font_size.get()
+                            / font.units_per_em as f32;
+                    j += 1;
+                }
+                let name = font_names.get(&font.reference).ok_or(InvalidFont(font.id))?;
+                content.set_text_matrix(origin);
                 content.set_font(Name(name.as_bytes()), span.font_size.get());
-                content.show(Str(&[(cid >> 8) as u8, (cid & 0xff) as u8]));
-                content.end_text();
-                content.restore_state();
+                if items.len() == 1 {
+                    content.show(Str(&items[0].0.to_be_bytes()));
+                } else {
+                    let mut positioned = content.show_positioned();
+                    let mut array = positioned.items();
+                    for (index, (code, adjustment)) in items.iter().enumerate() {
+                        if index > 0 && *adjustment != 0. {
+                            array.adjust(*adjustment);
+                        }
+                        array.show(Str(&code.to_be_bytes()));
+                    }
+                }
+                i = j;
             }
-
+            content.end_text();
+            content.restore_state();
             Ok(())
         };
 
         let stroke_operation = |content: &mut Content, _: &Stroke| -> Result<()> {
-            content.set_text_rendering_mode(TextRenderingMode::Stroke);
-            operation(content)
+            if span.fill.is_some() {
+                // Keep only one copy of the Unicode text when fill and stroke
+                // are painted separately (including different alpha/gradients).
+                stroke_outlines(span, &fonts, content)
+            } else {
+                content.set_text_rendering_mode(TextRenderingMode::Stroke);
+                operation(content)
+            }
         };
 
         let fill_operation = |content: &mut Content, _: &Fill| -> Result<()> {
@@ -374,6 +465,51 @@ pub fn render(
         }
     }
 
+    Ok(())
+}
+
+/// Paint the stroke counterpart of filled text without duplicating selectable text.
+fn stroke_outlines(
+    span: &usvg::layout::Span,
+    fonts: &HashMap<fontdb::ID, Option<Font>>,
+    content: &mut Content,
+) -> Result<()> {
+    struct Outline(usvg::tiny_skia_path::PathBuilder);
+    impl ttf_parser::OutlineBuilder for Outline {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.move_to(x, y);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.line_to(x, y);
+        }
+        fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+            self.0.quad_to(x1, y1, x, y);
+        }
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+            self.0.cubic_to(x1, y1, x2, y2, x, y);
+        }
+        fn close(&mut self) {
+            self.0.close();
+        }
+    }
+    for glyph in &span.positioned_glyphs {
+        let font = fonts
+            .get(&glyph.font)
+            .and_then(|f| f.as_ref())
+            .ok_or(InvalidFont(glyph.font))?;
+        let face = Face::parse(&font.face_data, font.face_index)
+            .map_err(|_| InvalidFont(font.id))?;
+        let gid = u16::try_from(glyph.id.0).map_err(|_| InvalidFont(font.id))?;
+        let mut outline = Outline(usvg::tiny_skia_path::PathBuilder::new());
+        face.outline_glyph(GlyphId(gid), &mut outline);
+        if let Some(outline) = outline.0.finish() {
+            let outline = outline
+                .transform(glyph.outline_transform())
+                .ok_or(InvalidFont(font.id))?;
+            path::draw_path(outline.segments(), content);
+        }
+    }
+    content.stroke();
     Ok(())
 }
 
@@ -500,7 +636,7 @@ where
 #[derive(Clone)]
 pub struct Font {
     pub id: fontdb::ID,
-    pub glyph_set: BTreeMap<u16, String>,
+    pub glyph_codes: BTreeMap<(u16, String), u16>,
     pub glyph_remapper: GlyphRemapper,
     pub reference: Ref,
     pub face_data: Arc<Vec<u8>>,
@@ -529,14 +665,13 @@ pub fn fill_fonts(
                                         ttf_parser::Face::parse(data, face_index)
                                     {
                                         let reference = allocator.alloc_ref();
-                                        let glyph_set = BTreeMap::new();
                                         let glyph_remapper = GlyphRemapper::new();
                                         return Some(Font {
                                             id: g.font,
                                             reference,
                                             face_data: Arc::new(Vec::from(data)),
                                             units_per_em: ttf.units_per_em(),
-                                            glyph_set,
+                                            glyph_codes: BTreeMap::new(),
                                             glyph_remapper,
                                             face_index,
                                         });
@@ -548,8 +683,15 @@ pub fn fill_fonts(
                         });
 
                         if let Some(ref mut font) = font {
-                            font.glyph_set.insert(g.id.0, g.text.clone());
-                            font.glyph_remapper.remap(g.id.0);
+                            let gid = u16::try_from(g.id.0)
+                                .map_err(|_| InvalidFont(font.id))?;
+                            font.glyph_remapper.remap(gid);
+                            let key = (gid, g.text.clone());
+                            if !font.glyph_codes.contains_key(&key) {
+                                let code = u16::try_from(font.glyph_codes.len() + 1)
+                                    .map_err(|_| InvalidFont(font.id))?;
+                                font.glyph_codes.insert(key, code);
+                            }
                         }
 
                         if ctx.options.pdfa && g.id.0 == 0 {

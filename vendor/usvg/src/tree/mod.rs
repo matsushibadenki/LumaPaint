@@ -1763,6 +1763,12 @@ fn has_text_nodes(root: &Group) -> bool {
             return true;
         }
 
+        if let Node::Group(group) = node {
+            if has_text_nodes(group) {
+                return true;
+            }
+        }
+
         let mut has_text = false;
 
         if let Node::Image(image) = node {

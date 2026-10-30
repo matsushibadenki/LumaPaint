@@ -10,6 +10,7 @@ pub enum FormatId {
     Svg,
     Pdf,
     Illustrator,
+    Idml,
     Psd,
     Psb,
     Ora,
@@ -180,6 +181,7 @@ pub fn export(
         FormatId::Native => NativeExporter.export(snapshot, options),
         FormatId::Svg => crate::svg::SvgExporter.export(snapshot, options),
         FormatId::Pdf => crate::pdf::PdfExporter.export(snapshot, options),
+        FormatId::Idml => crate::idml::IdmlExporter.export(snapshot, options),
         other => Err(ExportError::Unsupported(other)),
     }
 }

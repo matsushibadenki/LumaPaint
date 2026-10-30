@@ -1602,6 +1602,21 @@ fn dab_density_on_tiles(
         selection.validate()?;
     }
     let mut density: BTreeMap<TileCoord, Vec<f32>> = BTreeMap::new();
+    // The grain at a document pixel is shared by overlapping dabs. Watercolor
+    // depends on each dab's radial distance, and animated brush envelopes can
+    // change the texture, so neither may reuse this value.
+    let cache_grain = dabs.first().is_some_and(|first| {
+        (first.texture > 0. || first.material.enabled)
+            && !(first.material.enabled
+                && first.material.medium == crate::natural_media::Medium::Watercolor
+                && first.material.edge != 0.)
+            && dabs.iter().all(|dab| {
+                dab.material == first.material
+                    && dab.texture == first.texture
+                    && dab.texture_scale == first.texture_scale
+            })
+    });
+    let mut grain_cache: BTreeMap<TileCoord, Vec<f32>> = BTreeMap::new();
     for dab in dabs {
         if dab.weight == 0.0 {
             continue;
@@ -1661,6 +1676,13 @@ fn dab_density_on_tiles(
                 let coverage = density
                     .entry(coord)
                     .or_insert_with(|| vec![0.0; TILE_BYTES / 4]);
+                // Limit additional scratch storage for large sparse documents.
+                if cache_grain && samples > 1 && grain_cache.len() < 16 {
+                    grain_cache
+                        .entry(coord)
+                        .or_insert_with(|| vec![-1.; TILE_BYTES / 4]);
+                }
+                let mut cached = grain_cache.get_mut(&coord);
                 for y in top.max(tile_y * TILE_SIZE)..bottom.min((tile_y + 1) * TILE_SIZE) {
                     for x in left.max(tile_x * TILE_SIZE)..right.min((tile_x + 1) * TILE_SIZE) {
                         let selection_alpha = selection.map_or(1., |s| {
@@ -1685,24 +1707,31 @@ fn dab_density_on_tiles(
                         if profile <= 0.0 {
                             continue;
                         }
-                        let mut pigment = 0.;
-                        for &(ox, oy) in &offsets[..(samples * samples) as usize] {
-                            let px = (x as f32 + 0.5 + ox) * pixel_size;
-                            let py = (y as f32 + 0.5 + oy) * pixel_size;
-                            let paper_point = dab.material.paper.texture_point(px, py);
-                            let grain_point = dab.material.grain_point(px, py);
-                            pigment += crate::natural_media::deposition_mapped(
-                                grain_point.0,
-                                grain_point.1,
-                                paper_point.0,
-                                paper_point.1,
-                                distance / dab.radius,
-                                m,
-                                a,
-                                p,
-                            ) * brush_texture(grain_point.0, grain_point.1, dab.texture);
-                        }
                         let index = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                        let prior = cached.as_ref().map_or(-1., |values| values[index]);
+                        let mut pigment = prior.max(0.);
+                        if prior < 0. {
+                            for &(ox, oy) in &offsets[..(samples * samples) as usize] {
+                                let px = (x as f32 + 0.5 + ox) * pixel_size;
+                                let py = (y as f32 + 0.5 + oy) * pixel_size;
+                                let paper_point = dab.material.paper.texture_point(px, py);
+                                let grain_point = dab.material.grain_point(px, py);
+                                pigment +=
+                                    crate::natural_media::deposition_mapped(
+                                        grain_point.0,
+                                        grain_point.1,
+                                        paper_point.0,
+                                        paper_point.1,
+                                        distance / dab.radius,
+                                        m,
+                                        a,
+                                        p,
+                                    ) * brush_texture(grain_point.0, grain_point.1, dab.texture);
+                            }
+                            if let Some(values) = cached.as_mut() {
+                                values[index] = pigment;
+                            }
+                        }
                         coverage[index] += pigment / (samples * samples) as f32
                             * (4.0 + 12.0 * dab.hardness)
                             * dab.weight
@@ -3511,6 +3540,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cached_filtered_grain_matches_uncached_for_varying_dab_geometry() {
+        use crate::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+        for (enabled, medium, edge) in [
+            (false, Medium::Oil, 0.3),
+            (true, Medium::Oil, 0.3),
+            (true, Medium::Watercolor, 0.3),
+            (true, Medium::Watercolor, 0.0),
+        ] {
+            let material = MaterialSettings {
+                enabled,
+                medium,
+                edge,
+                grain_transform: [64., 0., 0., 64., 0., 0.],
+                paper: PaperSettings {
+                    enabled: true,
+                    kind: PaperKind::Washi,
+                    texture_transform: [64., 0., 0., 64., 0., 0.],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let dabs: Vec<_> = (0..20)
+                .map(|i| RasterDab {
+                    material,
+                    texture: if enabled { 0. } else { 1. },
+                    texture_scale: 1.,
+                    x: 8. + i as f32 * 0.3,
+                    y: 10.,
+                    radius: 1. + i as f32 * 0.1,
+                    hardness: 0.6,
+                    weight: 0.03,
+                })
+                .collect();
+            let mut uncached = dabs.clone();
+            // Paper color affects neither relief nor deposition, but makes the
+            // settings nonuniform and exercises the uncached path.
+            uncached[0].material.paper.color = [1, 2, 3];
+            assert_eq!(
+                dab_density(32, 32, &dabs, None).unwrap(),
+                dab_density(32, 32, &uncached, None).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "Manual timing comparison"]
+    fn filtered_grain_cache_timing_with_variable_pressure() {
+        use crate::natural_media::{MaterialSettings, Medium, PaperKind, PaperSettings};
+        use std::time::Instant;
+        for medium in [
+            Medium::Graphite,
+            Medium::Charcoal,
+            Medium::Pastel,
+            Medium::Gouache,
+            Medium::Oil,
+        ] {
+            let material = MaterialSettings {
+                enabled: true,
+                medium,
+                grain_transform: [64., 0., 0., 64., 0., 0.],
+                paper: PaperSettings {
+                    enabled: true,
+                    kind: PaperKind::Washi,
+                    texture_transform: [64., 0., 0., 64., 0., 0.],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let dabs: Vec<_> = (0..300)
+                .map(|i| RasterDab {
+                    material,
+                    texture: 0.,
+                    texture_scale: 1.,
+                    x: 4. + i as f32 * 0.08,
+                    y: 15.,
+                    radius: 0.7 + (i % 50) as f32 * 0.06,
+                    hardness: 0.6,
+                    weight: 0.03,
+                })
+                .collect();
+            let mut uncached = dabs.clone();
+            uncached[0].material.paper.color = [1, 2, 3];
+            let start = Instant::now();
+            let before = dab_density(40, 32, &uncached, None).unwrap();
+            let t0 = start.elapsed();
+            let start = Instant::now();
+            let after = dab_density(40, 32, &dabs, None).unwrap();
+            let t1 = start.elapsed();
+            assert_eq!(before, after);
+            eprintln!("{medium:?}: uncached {t0:?}, cached {t1:?}");
+        }
+    }
+
+    #[test]
     fn reduced_dry_brush_averages_grain_over_pixel_footprint() {
         let mut dab = RasterDab {
             material: Default::default(),
@@ -3987,16 +4110,18 @@ mod tests {
         doc.write_rect("a", [2, 0, 1, 1], &[20, 30, 40, 255])
             .unwrap();
         doc.write_mask_rect("a", [2, 0, 1, 1], &[64]).unwrap();
-        let mut effects = crate::layer_effects::LayerEffects::default();
-        effects.mask = Some(
-            crate::layer_mask::LayerMask::from_selection(
-                crate::layer_mask::MaskKind::Pixel,
-                None,
-                3,
-                2,
-            )
-            .unwrap(),
-        );
+        let effects = crate::layer_effects::LayerEffects {
+            mask: Some(
+                crate::layer_mask::LayerMask::from_selection(
+                    crate::layer_mask::MaskKind::Pixel,
+                    None,
+                    3,
+                    2,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
         doc.set_layer_effects("a", effects).unwrap();
         let mut state = doc.state();
         let mut tile = vec![0; TILE_BYTES];
@@ -4044,16 +4169,18 @@ mod tests {
                 .unwrap();
             doc.write_mask_rect("a", [255, 0, 1, 1], &[64]).unwrap();
             doc.set_sparse_mask_linked("a", sparse_linked).unwrap();
-            let mut effects = crate::layer_effects::LayerEffects::default();
-            effects.mask = Some(
-                crate::layer_mask::LayerMask::from_selection(
-                    crate::layer_mask::MaskKind::Pixel,
-                    None,
-                    300,
-                    3,
-                )
-                .unwrap(),
-            );
+            let effects = crate::layer_effects::LayerEffects {
+                mask: Some(
+                    crate::layer_mask::LayerMask::from_selection(
+                        crate::layer_mask::MaskKind::Pixel,
+                        None,
+                        300,
+                        3,
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            };
             doc.set_layer_effects("a", effects).unwrap();
             doc.discard_history();
             let before = doc.state();
@@ -4126,16 +4253,18 @@ mod tests {
         doc.add_layer("a".into(), "A".into()).unwrap();
         doc.write_rect("a", [1, 1, 1, 1], &[200, 10, 20, 255])
             .unwrap();
-        let mut effects = crate::layer_effects::LayerEffects::default();
-        effects.mask = Some(
-            crate::layer_mask::LayerMask::from_selection(
-                crate::layer_mask::MaskKind::Pixel,
-                None,
-                8,
-                8,
-            )
-            .unwrap(),
-        );
+        let effects = crate::layer_effects::LayerEffects {
+            mask: Some(
+                crate::layer_mask::LayerMask::from_selection(
+                    crate::layer_mask::MaskKind::Pixel,
+                    None,
+                    8,
+                    8,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
         doc.set_layer_effects("a", effects).unwrap();
         doc.discard_history();
         let before = doc.state();
@@ -4174,16 +4303,18 @@ mod tests {
         doc.add_layer("a".into(), "A".into()).unwrap();
         doc.write_rect("a", [255, 0, 1, 1], &[1, 2, 3, 255])
             .unwrap();
-        let mut effects = crate::layer_effects::LayerEffects::default();
-        effects.mask = Some(
-            crate::layer_mask::LayerMask::from_selection(
-                crate::layer_mask::MaskKind::Pixel,
-                None,
-                300,
-                2,
-            )
-            .unwrap(),
-        );
+        let effects = crate::layer_effects::LayerEffects {
+            mask: Some(
+                crate::layer_mask::LayerMask::from_selection(
+                    crate::layer_mask::MaskKind::Pixel,
+                    None,
+                    300,
+                    2,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
         doc.set_layer_effects("a", effects).unwrap();
         doc.discard_history();
         let before = doc.state();

@@ -10,6 +10,7 @@ use base64::Engine;
 mod print_layout;
 mod read;
 mod registration;
+mod text_export;
 pub use read::{inspect, read_all, read_selected, PageInfo};
 pub fn read(bytes: &[u8], options: ReadOptions) -> Result<ReadDocument, ImportError> {
     read::read(bytes, options)
@@ -163,7 +164,8 @@ impl DocumentExporter for PdfExporter {
         report
             .issues
             .retain(|i| i.code != "svg.text_requires_fonts");
-        let outlined = doc.descendants().any(|n| n.has_tag_name("text"));
+        let has_text = doc.descendants().any(|n| n.has_tag_name("text"));
+        let mut embed_text = false;
         let tree = if effects {
             if layout.is_some() {
                 return Err(ExportError::UnsupportedFeature(
@@ -183,30 +185,50 @@ impl DocumentExporter for PdfExporter {
             let data = base64::engine::general_purpose::STANDARD.encode(png);
             crate::svg::tree(&format!("<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\"><image width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{data}\"/></svg>",state.width,state.height,state.width,state.height))?
         } else {
-            if outlined {
+            let parsed = crate::svg::tree(xml)?;
+            embed_text = has_text && text_export::can_embed(&parsed);
+            if has_text {
                 report.issues.push(ConversionIssue {
-                    code: "pdf.text_outlined",
+                    code: if embed_text {
+                        "pdf.text_positioned"
+                    } else {
+                        "pdf.text_outlined"
+                    },
                     tier: CompatibilityTier::B,
                 });
             }
-            // No svg2pdf text/filter renderer features: convert font-shaped glyphs to paths
-            // using the parser, then serialize a second tree made only of vector elements.
-            let parsed = crate::svg::tree(xml)?;
-            crate::svg::tree(&parsed.to_string(&usvg::WriteOptions::default()))?
+            // Retain shaped glyph positions and Unicode mapping when fonts can be
+            // subset. The existing outline route remains the explicit fallback.
+            parsed
         };
         if !report.issues.is_empty() && !options.allow_lossy {
             return Err(ExportError::LossyConversionRequiresConsent(report));
         }
-        let bytes = svg2pdf::to_pdf(
-            &tree,
-            svg2pdf::ConversionOptions {
-                embed_text: false,
-                ..Default::default()
-            },
-            svg2pdf::PageOptions {
-                dpi: snapshot.state().resolution.unwrap_or(72) as f32,
-            },
-        )
+        let convert = |embed_text| {
+            svg2pdf::to_pdf(
+                &tree,
+                svg2pdf::ConversionOptions {
+                    embed_text,
+                    ..Default::default()
+                },
+                svg2pdf::PageOptions {
+                    dpi: snapshot.state().resolution.unwrap_or(72) as f32,
+                },
+            )
+        };
+        let bytes = match convert(embed_text) {
+            Err(
+                svg2pdf::ConversionError::SubsetError(_) | svg2pdf::ConversionError::InvalidFont(_),
+            ) if embed_text => {
+                for issue in &mut report.issues {
+                    if issue.code == "pdf.text_positioned" {
+                        issue.code = "pdf.text_outlined";
+                    }
+                }
+                convert(false)
+            }
+            result => result,
+        }
         .map_err(|e| ExportError::InvalidDocument(e.to_string()))?;
         Ok(ExportedDocument {
             format: FormatId::Pdf,

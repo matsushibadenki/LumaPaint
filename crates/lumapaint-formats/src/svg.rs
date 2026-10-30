@@ -27,19 +27,22 @@ pub fn import(name: String, source: String) -> Result<Document, String> {
     Ok(document)
 }
 
-pub(crate) fn tree(source: &str) -> Result<usvg::Tree, ExportError> {
+pub(crate) fn font_database() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
-    let fonts = FONTS
+    FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
             Arc::new(db)
         })
-        .clone();
+        .clone()
+}
+
+pub(crate) fn tree(source: &str) -> Result<usvg::Tree, ExportError> {
     usvg::Tree::from_str(
         source,
         &usvg::Options {
-            fontdb: fonts,
+            fontdb: font_database(),
             image_href_resolver: usvg::ImageHrefResolver {
                 resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
                 resolve_string: Box::new(|_, _| None),

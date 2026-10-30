@@ -766,6 +766,7 @@ mod tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         }
     }
     fn builtin_truetype(platform: u16, prefix: u16, ambiguous: bool) -> Vec<u8> {

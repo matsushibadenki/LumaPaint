@@ -216,6 +216,19 @@ pub const FILE_FORMATS: &[FileFormat] = &[
         "image/avif",
         FormatFamily::Raster,
     ),
+    FileFormat {
+        open_adapter: true,
+        editor_open: cfg!(target_os = "macos"),
+        export_adapter: true,
+        editor_export: cfg!(target_os = "macos"),
+        partial: true,
+        ..entry(
+            FormatId::Idml,
+            &["idml"],
+            "application/vnd.adobe.indesign-idml-package",
+            FormatFamily::Vector,
+        )
+    },
     // AI reading may use its PDF-compatible portion. Native AI authoring remains uncommitted.
     FileFormat {
         open_adapter: true,
@@ -362,6 +375,7 @@ pub fn read_document(
                 report: imported.report,
             })
         }
+        FormatId::Idml => crate::idml::read::read(bytes, options),
         FormatId::Pdf => crate::pdf::read(bytes, options),
         FormatId::Illustrator => {
             if !bytes.starts_with(b"%PDF-") {

@@ -158,8 +158,9 @@ pub fn reflow_text_with_system_fonts(
                 cursor += map.get(&offset).copied().unwrap_or(text.font_size);
                 offset += g.encode_utf16().count();
             }
-            baselines
-                .push(text.font_size * 0.5 + column as f32 * text.font_size * text.line_height);
+            baselines.push(text.line_baselines.get(column).copied().unwrap_or(
+                text.font_size * 0.5 + column as f32 * text.font_size * text.line_height,
+            ));
             origins.push(origin);
             widths.push(cursor - origin);
             positions.push(line_positions);

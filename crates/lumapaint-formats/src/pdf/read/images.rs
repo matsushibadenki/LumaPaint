@@ -247,6 +247,7 @@ mod tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         }
     }
     fn rgb(data: Vec<u8>) -> Stream {

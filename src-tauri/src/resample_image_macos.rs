@@ -129,16 +129,22 @@ fn resample_mask(
         return Err("Pixel mask is too large or small to resample / マスクのサイズが対応範囲外です / 蒙版尺寸超出重采样范围".into());
     }
     let mut pixels = vec![0u8; *width as usize * *height as usize * 4];
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     for [start, len] in runs {
-        for pixel in pixels[*start as usize * 4..(*start + *len) as usize * 4].chunks_exact_mut(4) {
+        for pixel in pixels[*start as usize * 4..(*start + *len) as usize * 4]
+            .as_chunks_mut::<4>()
+            .0
+        {
             pixel[..3].fill(255);
         }
     }
     for [start, len, value] in gray {
-        for pixel in pixels[*start as usize * 4..(*start + *len) as usize * 4].chunks_exact_mut(4) {
+        for pixel in pixels[*start as usize * 4..(*start + *len) as usize * 4]
+            .as_chunks_mut::<4>()
+            .0
+        {
             pixel[..3].fill(*value as u8);
         }
     }

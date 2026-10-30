@@ -894,7 +894,7 @@ mod tests {
         // Compare lossless Photoshop merged pixels and native composition in the
         // same Display P3 space; this is not a screen-capture comparison.
         let mut reference_p3 = merged.clone();
-        for pixel in reference_p3.chunks_exact_mut(4) {
+        for pixel in reference_p3.as_chunks_mut::<4>().0 {
             let alpha = u32::from(pixel[3]);
             for channel in &mut pixel[..3] {
                 *channel = ((u32::from(*channel) * alpha + 127) / 255) as u8;

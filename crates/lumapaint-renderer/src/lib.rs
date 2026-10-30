@@ -1424,9 +1424,48 @@ fn smooth_points(points: &[Point], pressures: &[f32]) -> Vec<(Point, f32)> {
 
 const BRUSH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+fn brush_format_for_adapter(adapter: &wgpu::Adapter) -> (wgpu::TextureFormat, wgpu::Features) {
+    brush_format_for_capabilities(
+        adapter.features(),
+        adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float),
+    )
+}
+
+fn brush_format_for_capabilities(
+    available: wgpu::Features,
+    support: wgpu::TextureFormatFeatures,
+) -> (wgpu::TextureFormat, wgpu::Features) {
+    let features = wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE;
+    if available.contains(features)
+        && support
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+        && support.flags.contains(
+            wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        )
+    {
+        (wgpu::TextureFormat::Rgba32Float, features)
+    } else {
+        (BRUSH_FORMAT, wgpu::Features::empty())
+    }
+}
+
+fn needs_precise_brush(stroke: &Stroke) -> bool {
+    let material = stroke.brush.material;
+    lumapaint_core::natural_media::texture_footprint(material.grain_transform, 1.) >= 8.
+        || (material.enabled
+            && material.paper.enabled
+            && lumapaint_core::natural_media::texture_footprint(
+                material.paper.texture_transform,
+                1.,
+            ) >= 8.)
+}
+
 fn create_brush_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
+    brush_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     let brush_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Round brush"),
@@ -1452,7 +1491,7 @@ fn create_brush_pipeline(
             },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &brush_shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: BRUSH_FORMAT, blend: Some(wgpu::BlendState {
+                targets: &[Some(wgpu::ColorTargetState { format: brush_format, blend: Some(wgpu::BlendState {
 color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max },
 alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
 }), write_mask: wgpu::ColorWrites::ALL })] }),
@@ -1633,6 +1672,7 @@ pub struct Renderer {
     outline_view: bool,
     selection_layout: wgpu::BindGroupLayout,
     brush_pipeline: wgpu::RenderPipeline,
+    precise_brush_pipeline: Option<wgpu::RenderPipeline>,
     brush_composite_pipeline: wgpu::RenderPipeline,
     brush_bind_layout: wgpu::BindGroupLayout,
     brush_sampler: wgpu::Sampler,
@@ -3718,14 +3758,16 @@ impl Renderer {
             .await
             .map_err(|e| e.to_string())?;
         let info = adapter.get_info();
+        let (brush_format, brush_features) = brush_format_for_adapter(&adapter);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("LumaPaint preview device"),
-                required_features: if performance::enabled() {
-                    adapter.features() & wgpu::Features::TIMESTAMP_QUERY
-                } else {
-                    wgpu::Features::empty()
-                },
+                required_features: brush_features
+                    | if performance::enabled() {
+                        adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+                    } else {
+                        wgpu::Features::empty()
+                    },
                 ..Default::default()
             })
             .await
@@ -3867,7 +3909,9 @@ impl Renderer {
             bind_group_layouts: &[Some(&bind_layout), Some(&selection_layout)],
             immediate_size: 0,
         });
-        let brush_pipeline = create_brush_pipeline(&device, &paint_layout);
+        let brush_pipeline = create_brush_pipeline(&device, &paint_layout, BRUSH_FORMAT);
+        let precise_brush_pipeline = (brush_format != BRUSH_FORMAT)
+            .then(|| create_brush_pipeline(&device, &paint_layout, brush_format));
         let selection_pipeline = if wide_presentation {
             create_selection_pipeline_with_source(
                 &device,
@@ -4048,6 +4092,7 @@ impl Renderer {
             outline_view: false,
             selection_layout,
             brush_pipeline,
+            precise_brush_pipeline,
             brush_composite_pipeline,
             brush_bind_layout,
             brush_sampler,
@@ -5116,6 +5161,17 @@ impl Renderer {
         if let (Some(buffer), Some(samples)) = (&active_buffer, &active_samples) {
             brush_buffers.push((buffer, samples.len() as u32));
         }
+        // The larger 32-bit mask is only needed for heavily reduced strokes.
+        // Keep the usual live-brush path at half the temporary texture size.
+        let precise_brush = self.precise_brush_pipeline.is_some()
+            && brush_strokes
+                .iter()
+                .any(|stroke| needs_precise_brush(stroke));
+        let brush_mask_format = if precise_brush {
+            wgpu::TextureFormat::Rgba32Float
+        } else {
+            BRUSH_FORMAT
+        };
         let brush_mask = (!brush_buffers.is_empty()).then(|| {
             let texture = crate::gpu_metrics::create_texture!(
                 self.device,
@@ -5129,7 +5185,7 @@ impl Renderer {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: BRUSH_FORMAT,
+                    format: brush_mask_format,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
@@ -5276,7 +5332,13 @@ impl Renderer {
                     })],
                     ..Default::default()
                 });
-                mask_pass.set_pipeline(&self.brush_pipeline);
+                mask_pass.set_pipeline(if precise_brush {
+                    self.precise_brush_pipeline
+                        .as_ref()
+                        .expect("selected precise brush pipeline")
+                } else {
+                    &self.brush_pipeline
+                });
                 mask_pass.set_bind_group(0, &self.bind_group, &[]);
                 mask_pass.set_bind_group(1, selection_group, &[]);
                 mask_pass.set_vertex_buffer(0, buffer.slice(..));

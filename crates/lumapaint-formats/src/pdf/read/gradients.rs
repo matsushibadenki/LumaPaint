@@ -21,6 +21,41 @@ fn inverse(m: [f32; 6]) -> Result<[f32; 6], ImportError> {
         (b * e - a * f) / det,
     ])
 }
+// Bound the interpolation error of x^N using its analytic chord extremum.
+// Subdivision is bounded even for exponents with a near-singular endpoint.
+fn exponential_samples(n: f32) -> Result<Vec<(f32, f32)>, ImportError> {
+    if !n.is_finite() || n <= 0. || n > 1e7 {
+        return Err(ImportError::Unsupported("pdf.gradient_function"));
+    }
+    let n = f64::from(n);
+    let mut samples = vec![(0., 0.)];
+    let mut pending = vec![(0_f64, 1_f64, 0_f64, 1_f64)];
+    while let Some((a, b, ya, yb)) = pending.pop() {
+        let slope = (yb - ya) / (b - a);
+        let x = if n == 1. {
+            a
+        } else {
+            (slope / n).powf(1. / (n - 1.)).clamp(a, b)
+        };
+        let error = (x.powf(n) - (ya + slope * (x - a))).abs();
+        if error > 1. / 1024. {
+            let mid = (a + b) * 0.5;
+            // SVG offsets are f32: refuse unrepresentable subdivisions.
+            if samples.len() + pending.len() + 2 > 256
+                || mid as f32 <= a as f32
+                || mid as f32 >= b as f32
+            {
+                return Err(ImportError::Unsupported("pdf.gradient_function"));
+            }
+            let y = mid.powf(n);
+            pending.push((mid, b, y, yb));
+            pending.push((a, mid, ya, y));
+        } else {
+            samples.push((b as f32, yb as f32));
+        }
+    }
+    Ok(samples)
+}
 impl Interpreter<'_> {
     fn gradient_stops(
         &mut self,
@@ -56,10 +91,9 @@ impl Interpreter<'_> {
         }
         match num(dict.get(b"FunctionType").map_err(|_| malformed())?)? {
             2. => {
-                if num(dict.get(b"N").map_err(|_| malformed())?)? != 1. {
-                    return Err(ImportError::Unsupported("pdf.gradient_function"));
-                }
-                let mut result = Vec::new();
+                let samples =
+                    exponential_samples(num(dict.get(b"N").map_err(|_| malformed())?)?)?;
+                let mut endpoints = Vec::new();
                 for (key, offset) in [(b"C0".as_slice(), 0.), (b"C1".as_slice(), 1.)] {
                     let default = vec![Object::Real(offset); channels];
                     let values = match dict.get(key) {
@@ -74,9 +108,19 @@ impl Interpreter<'_> {
                     if numbers.iter().any(|v| !(0. ..=1.).contains(v)) {
                         return Err(ImportError::Unsupported("pdf.gradient_function"));
                     }
-                    result.push((offset, self.color(values, channels)?));
+                    endpoints.push(numbers);
                 }
-                Ok(result)
+                samples
+                    .into_iter()
+                    .map(|(t, weight)| {
+                        let values: Vec<Object> = endpoints[0]
+                            .iter()
+                            .zip(&endpoints[1])
+                            .map(|(a, b)| Object::Real(a + weight * (b - a)))
+                            .collect();
+                        Ok((t, self.color(&values, channels)?))
+                    })
+                    .collect()
             }
             3. => {
                 let functions =
@@ -334,6 +378,7 @@ mod tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         }
     }
     fn function() -> Object {
@@ -341,6 +386,61 @@ mod tests {
     }
     fn shading() -> Object {
         dictionary! {"ShadingType"=>2,"ColorSpace"=>"DeviceRGB","Coords"=>vec![0.into(),0.into(),100.into(),0.into()],"Extend"=>vec![true.into(),true.into()],"Function"=>function()}.into()
+    }
+    #[test]
+    fn exponential_samples_bound_error_and_work() {
+        for n in [0.1_f32, 0.5, 1., 2., 8., 100.] {
+            let samples = exponential_samples(n).unwrap();
+            assert!(samples.len() <= 256);
+            assert_eq!(samples.first(), Some(&(0., 0.)));
+            assert_eq!(samples.last(), Some(&(1., 1.)));
+            for pair in samples.windows(2) {
+                let [(a, ya), (b, yb)] = [pair[0], pair[1]];
+                assert!(a < b);
+                for i in 0..=100 {
+                    let f = i as f32 / 100.;
+                    let x = a + f * (b - a);
+                    assert!((x.powf(n) - (ya + f * (yb - ya))).abs() < 0.00098);
+                }
+            }
+        }
+        assert!(exponential_samples(0.).is_err());
+        assert!(exponential_samples(-1.).is_err());
+        assert!(exponential_samples(f32::MAX).is_err());
+        assert!(exponential_samples(f32::NAN).is_err());
+        assert!(exponential_samples(1e7).is_err());
+    }
+    #[test]
+    fn nonlinear_rgb_shading_preserves_midpoint_and_stitched_functions() {
+        let doc = lopdf::Document::new();
+        let mut f = function().as_dict().unwrap().clone();
+        f.set("N", 2);
+        let mut p = parser(&doc);
+        let stops = p.gradient_stops(&f.clone().into(), 3, 0).unwrap();
+        assert!(stops.contains(&(0.5, "#bf0040".into())));
+        let stitched: Object = dictionary! {"FunctionType"=>3,"Domain"=>vec![0.into(),1.into()],
+        "Functions"=>vec![Object::Dictionary(f.clone()), Object::Dictionary(f.clone())],
+        "Bounds"=>vec![0.5.into()],"Encode"=>vec![0.into(),1.into(),0.into(),1.into()]}
+        .into();
+        let stops = p.gradient_stops(&stitched, 3, 0).unwrap();
+        assert!(stops.contains(&(0.25, "#bf0040".into())));
+        assert!(stops.contains(&(0.75, "#bf0040".into())));
+        let mut s = shading().as_dict().unwrap().clone();
+        s.set("Function", f);
+        for kind in [2, 3] {
+            s.set("ShadingType", kind);
+            if kind == 3 {
+                s.set(
+                    "Coords",
+                    vec![0.into(), 0.into(), 0.into(), 0.into(), 0.into(), 100.into()],
+                );
+            }
+            let resources = dictionary! {"Shading"=>dictionary! {"S"=>s.clone()}};
+            p.shading_draw(b"S", &resources, &State::default()).unwrap();
+        }
+        assert!(p.defs.contains("<linearGradient"));
+        assert!(p.defs.contains("<radialGradient"));
+        assert!(p.issues.is_empty());
     }
     #[test]
     fn direct_shading_obeys_current_transform_clip_and_opacity() {
@@ -363,13 +463,13 @@ mod tests {
         assert!(p.body.contains("width=\"100\" height=\"80\""));
     }
     #[test]
-    fn nonlinear_functions_and_nonextended_shadings_require_consent() {
+    fn invalid_exponents_and_nonextended_shadings_require_consent() {
         let doc = lopdf::Document::new();
         for nonlinear in [true, false] {
             let mut s = shading().as_dict().unwrap().clone();
             if nonlinear {
                 let mut f = function().as_dict().unwrap().clone();
-                f.set("N", 2);
+                f.set("N", -2);
                 s.set("Function", f);
             } else {
                 s.set("Extend", vec![false.into(), true.into()]);

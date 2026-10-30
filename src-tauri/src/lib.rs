@@ -2,6 +2,7 @@ mod cel_previews;
 mod diagnostic_jobs;
 mod document_previews;
 mod font_viewer;
+mod idml_links;
 mod image_frames;
 mod measurement_units;
 mod media_browser;
@@ -283,6 +284,8 @@ pub fn run() {
             canvas::set_selection_tool_settings,
             canvas::selection_path_action,
             canvas::vector_selection_action,
+            canvas::publication_text_context,
+            canvas::publication_text_action,
             canvas::pixel_selection_action,
             canvas::pixel_selection_preview,
             canvas::set_paint_bucket_settings,

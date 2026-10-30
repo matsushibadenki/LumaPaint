@@ -40,7 +40,8 @@ pub use guides::{Guide, GuideEdit, GuidesSnapshot, GuidesState};
 #[path = "document_pages.rs"]
 mod pages;
 pub use pages::{
-    PageBinding, PageBookState, PageEdit, PageSetup, PageState, PageSummary, PagesSnapshot,
+    PageBinding, PageBookState, PageEdit, PageSetup, PageState, PageSummary, PageTextFrame,
+    PageTextThread, PagesSnapshot, PublicationTextContext, PublicationTextRequest,
 };
 // Session document: a stable layer identity and retained brush strokes.
 // This is deliberately independent of pixels, AppKit, and the renderer.
@@ -611,6 +612,7 @@ pub struct SavedPathSnapshot {
 
 #[derive(Clone, Copy)]
 enum HistoryKind {
+    PublicationText(u64),
     Page,
     Stroke,
     Vector,
@@ -626,6 +628,8 @@ struct PathEditing {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct VectorHistoryState {
+    #[serde(default)]
+    publication_epoch: u64,
     #[serde(default)]
     vector_assets: std::sync::Arc<VectorAssets>,
     paint_bucket_settings: crate::paint_bucket::Settings,
@@ -1017,6 +1021,7 @@ impl Document {
         if self.resolution == resolution {
             return Ok(false);
         }
+        self.ensure_publication_resolution(resolution)?;
         self.finish();
         self.vector_undo
             .push(VectorHistoryEntry::Resolution(self.resolution));
@@ -1538,7 +1543,7 @@ impl Document {
             .map(|l| l.id.clone())
             .collect();
         let stroke_count = file.strokes.len();
-        Ok(Self {
+        let document = Self {
             paint_bucket_settings: file.paint_bucket_settings,
             animation: std::sync::Arc::new(file.animation),
             saved_pixel_selections: std::sync::Arc::new(file.saved_pixel_selections),
@@ -1585,7 +1590,9 @@ impl Document {
             point_count: count,
             undo_order: vec![HistoryKind::Stroke; stroke_count],
             ..Self::default()
-        })
+        };
+        document.validate_publication_text()?;
+        Ok(document)
     }
     pub fn mark_saved(&mut self, name: String) {
         self.saved_revision = self.revision;
@@ -1644,6 +1651,7 @@ impl Document {
         {
             return Err("Invalid document settings".into());
         }
+        self.ensure_publication_resolution(settings.resolution)?;
         self.finish();
         if self.width != settings.width || self.height != settings.height {
             self.deselect();
@@ -1878,6 +1886,7 @@ impl Document {
                 HistoryKind::Vector => {
                     self.vector_undo.remove(0);
                 }
+                HistoryKind::PublicationText(_) => {}
                 HistoryKind::Page => {
                     self.page_undo.remove(0);
                 }
@@ -1889,6 +1898,7 @@ impl Document {
                 HistoryKind::Vector => {
                     self.vector_redo.remove(0);
                 }
+                HistoryKind::PublicationText(_) => {}
                 HistoryKind::Page => {
                     self.page_redo.remove(0);
                 }
@@ -1928,6 +1938,9 @@ impl Document {
         }
         self.finish();
         match self.undo_order.pop() {
+            Some(HistoryKind::PublicationText(token)) => {
+                self.restore_publication_text(token, false)
+            }
             Some(HistoryKind::Page) => self.undo_page(),
             Some(HistoryKind::Stroke) => {
                 if let Some(stroke) = self.strokes.pop() {
@@ -1954,6 +1967,7 @@ impl Document {
         }
         self.finish();
         match self.redo_order.pop() {
+            Some(HistoryKind::PublicationText(token)) => self.restore_publication_text(token, true),
             Some(HistoryKind::Page) => self.redo_page(),
             Some(HistoryKind::Stroke) => {
                 if let Some(stroke) = self.redo.pop() {
@@ -2415,6 +2429,7 @@ impl Document {
             .as_deref()
             .unwrap_or("layer-1")
             .to_owned();
+        self.ensure_no_publication_frames_in_layer(&id)?;
         let locked = if id == "layer-1" {
             self.layer_locked
         } else {
@@ -2480,6 +2495,7 @@ impl Document {
 
     pub fn delete_layer(&mut self, id: &str) -> Result<(), String> {
         self.finish();
+        self.ensure_no_publication_frames_in_layer(id)?;
         if id == "layer-1" {
             return Err("The paint layer cannot be deleted yet".into());
         }
@@ -3081,6 +3097,16 @@ impl Document {
             return Err("Object identity is reserved by a compound shape".into());
         }
         self.ensure_object_unlocked(&object.id)?;
+        if self.is_managed_publication_text_frame(&object.id)
+            && self
+                .svg_layers
+                .iter()
+                .flat_map(|l| &l.vector_objects)
+                .find(|o| o.id == object.id)
+                .is_some_and(|old| old.text != object.text)
+        {
+            return self.update_publication_text_object(layer_id, object);
+        }
         if self
             .vector_assets
             .threads
@@ -5172,6 +5198,23 @@ impl Document {
         mode: crate::vector::WritingMode,
         mut reflow: impl FnMut(&mut crate::vector::VectorText, [u8; 3]) -> Result<(), String>,
     ) -> Result<(), String> {
+        if self
+            .svg_layers
+            .iter()
+            .flat_map(|l| &l.vector_objects)
+            .any(|o| {
+                self.selected_vector_objects.contains(&o.id)
+                    && o.text.as_ref().is_some_and(|t| t.writing_mode != mode)
+                    && (self.is_publication_text_frame(&o.id)
+                        || self
+                            .vector_assets
+                            .threads
+                            .iter()
+                            .any(|t| t.frames.contains(&o.id)))
+            })
+        {
+            return Err("Change the writing direction before linking frames / 連結前に文字フレームの組み方向を揃えてください / 请在链接前统一文本框的排版方向".into());
+        }
         let mut layers = self.svg_layers.clone();
         let mut changed = false;
         for layer in &mut layers {
@@ -5263,6 +5306,9 @@ impl Document {
         mut outline: impl FnMut(&str, &VectorObject) -> Result<Vec<VectorObject>, String>,
     ) -> Result<(), String> {
         let selected = self.selected_vector_objects.clone();
+        if selected.iter().any(|id| self.is_publication_text_frame(id)) {
+            return Err("Outlining publication-linked frames is not supported yet / 跨ページ連結フレームのアウトライン化にはまだ対応していません / 暂不支持将跨页链接文本框转换为轮廓".into());
+        }
         let mut layers = self.svg_layers.clone();
         let mut ids = Vec::new();
         let mut count = 0;
@@ -6773,6 +6819,10 @@ impl Document {
             return Ok(false);
         }
         let selected = self.selected_vector_objects.clone();
+        if selected.iter().any(|id| self.is_publication_text_frame(id)) {
+            return Err("Detach the publication story before deleting its frames / 連結を解除してからフレームを削除してください / 请先解除跨页文本链接再删除文本框".into());
+        }
+
         if self.svg_layers.iter().any(|layer| {
             layer.vector_layer
                 && layer.locked
@@ -7508,6 +7558,7 @@ impl Document {
     }
     fn vector_history_state(&self) -> VectorHistoryState {
         VectorHistoryState {
+            publication_epoch: self.publication_text_epoch(),
             vector_assets: self.vector_assets.clone(),
             paint_bucket_settings: self.paint_bucket_settings.clone(),
             animation: self.animation.clone(),
@@ -7533,7 +7584,25 @@ impl Document {
             pixel_selection: self.selection.clone(),
         }
     }
-    fn restore_vector_history(&mut self, state: VectorHistoryState) {
+    fn restore_vector_history(&mut self, mut state: VectorHistoryState) {
+        if state.publication_epoch != self.publication_text_epoch() {
+            let live = self.active_publication_text_objects();
+            let (width, height) = state.crop_dimensions.unwrap_or((self.width, self.height));
+            for layer in &mut state.layers {
+                let mut changed = false;
+                for object in &mut layer.vector_objects {
+                    if let Some(current) = live.get(&object.id) {
+                        object.text = current.text.clone();
+                        object.control_points = current.control_points.clone();
+                        object.fill = current.fill;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    layer.source = vector_svg(width, height, &layer.vector_objects);
+                }
+            }
+        }
         self.vector_assets = state.vector_assets;
         self.paint_bucket_settings = state.paint_bucket_settings;
         self.animation = state.animation;
@@ -7586,6 +7655,7 @@ impl Document {
         }
     }
     fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        self.prune_publication_text_history();
         if !self.vector_assets.is_empty() {
             let mut assets = self.vector_assets.as_ref().clone();
             assets.reconcile(&self.svg_layers);
@@ -13864,6 +13934,63 @@ mod text_frame_overflow_tests {
 mod text_frame_svg_tests {
     use super::{Document, TextSettings};
     use crate::vector::{VectorText, WritingMode};
+    #[test]
+    fn long_text_frame_preserves_overset_content_save_reload_resize_and_undo() {
+        let content = (0..400)
+            .map(|i| format!("Paragraph {i}: 日本語 English 简体中文 😀"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(content.chars().count() > 4096);
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: content.clone(),
+                font_size: 10.,
+                line_height: 1.,
+                box_width: 600.,
+                box_height: Some(100.),
+                ..Default::default()
+            },
+            position: [0., 0.],
+            color: [0; 3],
+        })
+        .unwrap();
+        let created = doc.snapshot().text_objects[0].clone();
+        assert_eq!(created.text.content, content);
+        let svg = &doc.svg_layers().next().unwrap().source;
+        assert!(svg.contains("Paragraph 0:"));
+        assert!(!svg.contains("Paragraph 399:"));
+        let mut restored = Document::decode(&doc.encode().unwrap()).unwrap();
+        assert_eq!(restored.snapshot().text_objects[0].text.content, content);
+        let mut text = created.text;
+        text.box_height = Some(8192.);
+        restored
+            .set_text_object(TextSettings {
+                id: Some(created.id),
+                text,
+                position: created.position,
+                color: created.color,
+            })
+            .unwrap();
+        assert!(restored
+            .svg_layers()
+            .next()
+            .unwrap()
+            .source
+            .contains("Paragraph 399:"));
+        restored.undo();
+        assert_eq!(restored.snapshot().text_objects[0].text.content, content);
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.box_height,
+            Some(100.)
+        );
+        restored.redo();
+        assert_eq!(
+            restored.snapshot().text_objects[0].text.box_height,
+            Some(8192.)
+        );
+    }
     #[test]
     fn overflowing_last_line_stays_editable_and_returns_when_frame_grows() {
         for mode in [WritingMode::Horizontal, WritingMode::Vertical] {

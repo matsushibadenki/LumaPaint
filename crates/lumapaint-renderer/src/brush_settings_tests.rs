@@ -4,6 +4,56 @@ use lumapaint_core::{
     document::{Brush, CanvasColor},
 };
 use lumapaint_formats::native::NativeDocumentCodec;
+
+#[test]
+fn brush_format_falls_back_when_32bit_blending_or_filtering_is_unavailable() {
+    let support = wgpu::TextureFormatFeatures {
+        allowed_usages: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        flags: wgpu::TextureFormatFeatureFlags::BLENDABLE
+            | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+    };
+    let features = wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::FLOAT32_BLENDABLE;
+    assert_eq!(
+        brush_format_for_capabilities(features, support).0,
+        wgpu::TextureFormat::Rgba32Float
+    );
+    assert_eq!(
+        brush_format_for_capabilities(wgpu::Features::FLOAT32_FILTERABLE, support).0,
+        BRUSH_FORMAT
+    );
+    assert_eq!(
+        brush_format_for_capabilities(
+            features,
+            wgpu::TextureFormatFeatures {
+                flags: wgpu::TextureFormatFeatureFlags::empty(),
+                ..support
+            }
+        )
+        .0,
+        BRUSH_FORMAT
+    );
+}
+
+#[test]
+fn precise_brush_mask_is_reserved_for_large_texture_footprints() {
+    let mut stroke = Stroke {
+        eraser: false,
+        clear: false,
+        brush: Brush::default(),
+        points: vec![Point { x: 1., y: 1. }],
+        pressures: vec![],
+        selection: None,
+    };
+    assert!(!needs_precise_brush(&stroke));
+    stroke.brush.material.grain_transform = [8., 0., 0., 8., 0., 0.];
+    assert!(needs_precise_brush(&stroke));
+    stroke.brush.material.grain_transform = [1., 0., 0., 1., 0., 0.];
+    stroke.brush.material.enabled = true;
+    stroke.brush.material.paper.enabled = true;
+    stroke.brush.material.paper.texture_transform = [0., -16., 16., 0., 0., 0.];
+    assert!(needs_precise_brush(&stroke));
+}
 fn document() -> Document {
     let mut state = Document::default().document_state();
     state.width = 64;

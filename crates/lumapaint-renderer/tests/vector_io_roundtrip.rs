@@ -678,3 +678,188 @@ fn crop_svg_pixels_match_original_region_and_undo_restores_image() {
         before.pixels
     );
 }
+
+#[test]
+fn positioned_pdf_text_preserves_pixels_transforms_tracking_and_paint_order() {
+    for (name, attributes, content) in [
+        ("fill", "fill='#204080'", "ABC"),
+        (
+            "fill-stroke",
+            "fill='#204080' stroke='#a04020' stroke-width='1.5'",
+            "ABC",
+        ),
+        (
+            "stroke-fill",
+            "fill='#204080' stroke='#a04020' stroke-width='1.5' paint-order='stroke fill'",
+            "ABC",
+        ),
+        (
+            "stroke",
+            "fill='none' stroke='#204080' stroke-width='1.5'",
+            "ABC",
+        ),
+        ("vertical", "fill='#204080' writing-mode='tb'", "AB"),
+        ("spacing", "fill='#204080' letter-spacing='4'", "A B"),
+    ] {
+        let source = format!("<svg width='180' height='120'><text x='40' y='35' font-family='sans-serif' font-size='24' transform='rotate(8 40 35)' {attributes}>{content}</text></svg>");
+        let document = lumapaint_formats::svg::import(name.into(), source.clone()).unwrap();
+        let pdf = export(
+            FormatId::Pdf,
+            &ExportSnapshot::capture(&document),
+            ExportOptions { allow_lossy: true },
+        )
+        .unwrap();
+        assert!(
+            pdf.report
+                .issues
+                .iter()
+                .any(|i| i.code == "pdf.text_positioned"),
+            "{name}: {:?}",
+            pdf.report
+        );
+        let parsed = lopdf::Document::load_mem(&pdf.bytes).unwrap();
+        assert_eq!(parsed.extract_text(&[1]).unwrap().trim(), content, "{name}");
+        let imported = read_document(
+            FormatId::Pdf,
+            name.into(),
+            &pdf.bytes,
+            ReadOptions {
+                allow_lossy: true,
+                raster_dpi: 72,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ReadContent::Vector(result) = imported.content else {
+            panic!()
+        };
+        let svg = result.svg_layers().next().unwrap().source.clone();
+        let original = rasterize_svg(&source, 180, 120).unwrap();
+        let actual = rasterize_svg(&svg, 180, 120).unwrap();
+        let error: u64 = original
+            .pixels
+            .iter()
+            .zip(&actual.pixels)
+            .map(|(a, b)| u64::from(a.abs_diff(*b)))
+            .sum();
+        assert!(original.pixels.iter().skip(3).step_by(4).any(|v| *v > 0));
+        assert!(
+            error < 180 * 120,
+            "{name}: round-trip channel error {error}"
+        );
+    }
+}
+
+#[test]
+fn shared_pdf_glyphs_preserve_nonuniform_strokes_opacity_and_clipping_pixels() {
+    let padding = "<rect width='1' height='1' fill='#808080'/>".repeat(400);
+    let source = format!("<svg width='240' height='120'><defs><clipPath id='clip'><rect x='20' y='10' width='170' height='100'/></clipPath></defs>{padding}<g clip-path='url(#clip)' opacity='0.7' transform='translate(12 4) scale(1.3 0.8)'><text x='15' y='45' font-family='sans-serif' font-size='24' fill='none' stroke='#204080' stroke-width='2'>ABCA</text><text x='15' y='90' font-family='sans-serif' font-size='24' fill='#a04020'>ABCA</text></g></svg>");
+    let document = lumapaint_formats::svg::import("Shared glyphs".into(), source.clone()).unwrap();
+    let pdf = export(
+        FormatId::Pdf,
+        &ExportSnapshot::capture(&document),
+        ExportOptions { allow_lossy: true },
+    )
+    .unwrap();
+    let imported = read_document(
+        FormatId::Pdf,
+        "Shared glyphs".into(),
+        &pdf.bytes,
+        ReadOptions {
+            allow_lossy: true,
+            raster_dpi: 72,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ReadContent::Vector(result) = imported.content else {
+        panic!()
+    };
+    let svg = &result.svg_layers().next().unwrap().source;
+    assert!(
+        svg.contains("<use href=\"#pdf-glyph-"),
+        "shared glyph route was not exercised"
+    );
+    let reference = rasterize_svg(&source, 240, 120).unwrap();
+    let actual = rasterize_svg(svg, 240, 120).unwrap();
+    let error: u64 = reference
+        .pixels
+        .iter()
+        .zip(&actual.pixels)
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    assert!(error < 240 * 120, "shared glyph round-trip error {error}");
+}
+
+#[test]
+fn adobe_idml_curve_and_embedded_image_match_expected_pixels_after_native_import() {
+    use lumapaint_core::document::vector_svg;
+    let bytes = include_bytes!("../../lumapaint-formats/tests/fixtures/lp-adobe-idml-mixed.idml");
+    let imported = lumapaint_formats::idml::read::read(
+        bytes,
+        ReadOptions {
+            allow_lossy: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ReadContent::Vector(doc) = imported.content else {
+        panic!()
+    };
+    let state = doc.document_state();
+    let objects: Vec<_> = state
+        .svg_layers
+        .iter()
+        .flat_map(|l| &l.vector_objects)
+        .filter(|o| o.text.is_none())
+        .cloned()
+        .collect();
+    let uri = &objects
+        .iter()
+        .find_map(|o| o.image_frame.as_ref()?.image.as_ref())
+        .unwrap()
+        .data_uri;
+    let expected = format!(
+        r##"<svg width="612" height="792"><path d="M40 150 C100 80 180 240 260 150 L260 290 L40 290 Z" fill="#dc506e" stroke="#1e3c64" stroke-width="4"/><image x="320" y="150" width="240" height="240" href="{uri}"/></svg>"##
+    );
+    let actual = vector_svg(612, 792, &objects);
+    let a = rasterize_svg(&expected, 612, 792).unwrap();
+    let b = rasterize_svg(&actual, 612, 792).unwrap();
+    let error: u64 = a
+        .pixels
+        .iter()
+        .zip(&b.pixels)
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    assert!(error < 612 * 792, "IDML pixel error {error}");
+    let exported = export(
+        FormatId::Idml,
+        &ExportSnapshot::capture(&doc),
+        ExportOptions { allow_lossy: true },
+    )
+    .unwrap();
+    let ReadContent::Vector(roundtrip) = read_document(
+        FormatId::Idml,
+        "Roundtrip".into(),
+        &exported.bytes,
+        ReadOptions {
+            allow_lossy: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .content
+    else {
+        panic!()
+    };
+    let objects: Vec<_> = roundtrip
+        .document_state()
+        .svg_layers
+        .iter()
+        .flat_map(|l| &l.vector_objects)
+        .filter(|o| o.text.is_none())
+        .cloned()
+        .collect();
+    let c = rasterize_svg(&vector_svg(612, 792, &objects), 612, 792).unwrap();
+    assert_eq!(b.pixels, c.pixels);
+}

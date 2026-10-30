@@ -228,8 +228,8 @@ mod tests {
         assert!(linear[0] < -0.01 || linear[1] > 1.01 || linear[2] < -0.01);
         let p3_linear = [
             0.82259287 * linear[0] + 0.17753395 * linear[1],
-            0.03319951 * linear[0] + 0.96678350 * linear[1],
-            0.01708535 * linear[0] + 0.07239572 * linear[1] + 0.91030148 * linear[2],
+            0.03319951 * linear[0] + 0.966_783_5 * linear[1],
+            0.01708535 * linear[0] + 0.07239572 * linear[1] + 0.910_301_5 * linear[2],
         ];
         for (actual, expected) in p3_linear.iter().zip(direct) {
             let encoded = if *actual <= 0.0031308 {

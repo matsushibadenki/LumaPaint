@@ -183,17 +183,19 @@ impl VectorAssets {
             {
                 return Err("Invalid text thread".into());
             }
+            let mode = all
+                .get(thread.frames[0].as_str())
+                .and_then(|o| o.text.as_ref())
+                .map(|t| t.writing_mode);
             for id in &thread.frames {
                 if !frames.insert(id.as_str())
                     || !all.get(id.as_str()).is_some_and(|o| {
                         o.text.as_ref().is_some_and(|t| {
-                            !t.point_text
-                                && t.box_height.is_some()
-                                && t.writing_mode == crate::vector::WritingMode::Horizontal
+                            !t.point_text && t.box_height.is_some() && Some(t.writing_mode) == mode
                         })
                     })
                 {
-                    return Err("Text threads require distinct horizontal area frames / 横組みのエリア内文字フレームを指定してください / 请指定独立的横排区域文本框".into());
+                    return Err("Text threads require area frames with one writing direction / 同じ組み方向のエリア内文字フレームを指定してください / 请选择排版方向相同的区域文本框".into());
                 }
             }
         }
@@ -231,11 +233,9 @@ impl VectorAssets {
         for thread in &mut self.threads {
             thread.frames.retain(|id| {
                 all.get(id.as_str()).is_some_and(|o| {
-                    o.text.as_ref().is_some_and(|t| {
-                        !t.point_text
-                            && t.box_height.is_some()
-                            && t.writing_mode == crate::vector::WritingMode::Horizontal
-                    })
+                    o.text
+                        .as_ref()
+                        .is_some_and(|t| !t.point_text && t.box_height.is_some())
                 })
             });
         }
@@ -288,6 +288,33 @@ impl VectorAssets {
     }
 }
 impl Document {
+    /// Recompose a newly imported page atomically, including hidden/locked frames.
+    /// The supplied layout is process-local; serialized state never owns a backend.
+    pub fn recompose_imported_text(&mut self, layout: TextLayout) -> Result<(), String> {
+        let mut layers = self.svg_layers.clone();
+        let linked: BTreeSet<_> = self
+            .vector_assets
+            .threads
+            .iter()
+            .flat_map(|t| t.frames.iter())
+            .collect();
+        for layer in &mut layers {
+            for object in &mut layer.vector_objects {
+                if !linked.contains(&object.id) {
+                    if let Some(text) = &mut object.text {
+                        let color = object
+                            .fill
+                            .map_or([0; 3], |p| [p.color[0], p.color[1], p.color[2]]);
+                        layout(text, color)?;
+                    }
+                }
+            }
+        }
+        for thread in &self.vector_assets.threads {
+            reflow_thread(&mut layers, thread, layout)?;
+        }
+        self.commit_assets(layers, self.vector_assets.as_ref().clone())
+    }
     pub fn set_text_layout_backend(&mut self, layout: Option<TextLayout>) {
         self.text_layout_backend = layout;
     }
@@ -418,6 +445,15 @@ impl Document {
             );
         }
         let kind = request.criterion.as_deref().unwrap_or("");
+        if kind == "linkedText"
+            && request.action != "assetSelect"
+            && self
+                .selected_vector_objects
+                .iter()
+                .any(|id| self.is_publication_text_frame(id))
+        {
+            return Err("Publication-linked frames cannot also join a page-local story / 跨ページ連結フレームをページ内の別の連結に追加することはできません / 跨页链接文本框不能同时加入页内文本链接".into());
+        }
         if !["graphicStyle", "symbolInstance", "linkedText"].contains(&kind) {
             return Err("Invalid asset kind".into());
         }
@@ -727,18 +763,39 @@ impl Document {
         self.commit_assets(layers, self.vector_assets.as_ref().clone())
     }
 }
-fn text_overset(t: &VectorText) -> bool {
+pub(super) fn text_overset(t: &VectorText) -> bool {
+    first_overflow(t, [0; 3]).is_some()
+}
+fn first_overflow(t: &VectorText, color: [u8; 3]) -> Option<usize> {
     if t.content.is_empty() {
-        return false;
+        return None;
     }
-    let last = t.visual_lines().len().saturating_sub(1);
-    let bottom = t
-        .line_baselines
-        .get(last)
-        .copied()
-        .unwrap_or((last + 1) as f32 * t.font_size * t.line_height)
-        + t.font_size * 0.25;
-    t.box_height.is_some_and(|h| bottom > h + 0.01)
+    for (index, (offset, line, _)) in t.visual_lines().iter().enumerate() {
+        let vertical = t.writing_mode == crate::vector::WritingMode::Vertical;
+        let baseline = t.line_baselines.get(index).copied().unwrap_or(
+            (if vertical {
+                t.font_size * 0.5
+            } else {
+                t.font_size * t.line_height
+            }) + index as f32 * t.font_size * t.line_height,
+        );
+        let fits = if vertical {
+            super::text_line_fits_frame(
+                t,
+                *offset,
+                if line.is_empty() { "\u{200b}" } else { line },
+                t.box_width - baseline,
+                color,
+            )
+        } else {
+            baseline + t.style_at(*offset, color).font_size * 0.25
+                <= t.box_height.unwrap_or(f32::INFINITY) + 0.01
+        };
+        if !fits {
+            return Some(*offset);
+        }
+    }
+    None
 }
 fn slice_text(content: &str, start: usize, end: usize) -> Result<String, String> {
     let units: Vec<_> = content.encode_utf16().collect();
@@ -762,7 +819,7 @@ fn slice_runs(
         })
         .collect()
 }
-fn reflow_thread(
+pub(super) fn reflow_thread(
     layers: &mut [SvgLayer],
     thread: &TextThread,
     layout: TextLayout,
@@ -826,18 +883,8 @@ fn reflow_thread_in_order(
         layout(&mut candidate, color)?;
         let mut end = at;
         if index + 1 < thread.frames.len() {
-            for (line, (offset, _, _)) in candidate.visual_lines().iter().enumerate() {
-                let size = candidate.style_at(*offset, color).font_size;
-                let bottom = candidate
-                    .line_baselines
-                    .get(line)
-                    .copied()
-                    .unwrap_or((line + 1) as f32 * candidate.font_size * candidate.line_height)
-                    + size * 0.25;
-                if bottom > candidate.box_height.unwrap_or(f32::INFINITY) + 0.01 {
-                    end = start + offset;
-                    break;
-                }
+            if let Some(offset) = first_overflow(&candidate, color) {
+                end = start + offset;
             }
         }
         candidate.content = slice_text(&story, start, end)?;

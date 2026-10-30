@@ -399,16 +399,10 @@ fn vertical_utf16_prefix(value: &str, end: usize) -> Option<&str> {
     (at == end).then_some(value)
 }
 
-fn utf16_boundary_in(value: &str, offset: usize) -> bool {
-    let mut at = 0;
-    for character in value.chars() {
-        if at == offset {
-            return true;
-        }
-        at += character.len_utf16();
-    }
-    at == offset
-}
+/// Bounded long-form content; source text is retained even when a frame overflows.
+pub const MAX_TEXT_CHARACTERS: usize = 65_536;
+pub const MAX_TEXT_PARAGRAPHS: usize = 4_096;
+pub const MAX_TEXT_SOFT_BREAKS: usize = MAX_TEXT_CHARACTERS - 1;
 
 impl VectorText {
     pub fn has_vertical_character_options(&self) -> bool {
@@ -603,8 +597,28 @@ impl VectorText {
             }
         }
         self.soft_breaks = breaks;
-        let columns = self.visual_lines().len() as f32;
-        let span = columns * self.font_size * self.line_height;
+        let mut span = 0.;
+        let mut baselines = Vec::new();
+        for (start, line, _) in self.visual_lines() {
+            let mut at = start;
+            let mut half = 0f32;
+            for c in line.chars() {
+                let style = self.style_at(at, [0; 3]);
+                at += c.len_utf16();
+                let angle = style.rotation.to_radians();
+                half = half.max(
+                    (style.font_size * style.scale_x * angle.cos().abs()
+                        + style.font_size * style.scale_y * angle.sin().abs())
+                        * 0.5,
+                );
+            }
+            if half == 0. {
+                half = self.style_at(start, [0; 3]).font_size * 0.5;
+            }
+            baselines.push(span + half);
+            span += half * 2. * self.line_height;
+        }
+        self.line_baselines = baselines;
         self.layout_bounds = Some([
             self.box_width - span,
             0.,
@@ -680,21 +694,39 @@ impl VectorText {
                 if !first_width.is_finite() || !(0.0..100_000.0).contains(&first_width) {
                     return Err("Invalid measured text width".into());
                 }
-                let mut upper = last + 1;
-                while fitting < upper {
-                    let end = fitting + (upper - fitting) / 2;
-                    if end == fitting {
-                        break;
-                    }
-                    let source = &paragraph[boundaries[line_start].0..boundaries[end].0];
-                    let width = measure(source, paragraph_utf16 + boundaries[line_start].1)?;
-                    if !width.is_finite() || !(0.0..100_000.0).contains(&width) {
-                        return Err("Invalid measured text width".into());
-                    }
-                    if width <= available {
+                if first_width <= available {
+                    let mut upper;
+                    let mut span = 2;
+                    loop {
+                        let end = (line_start + span).min(last);
+                        let source = &paragraph[boundaries[line_start].0..boundaries[end].0];
+                        let width = measure(source, paragraph_utf16 + boundaries[line_start].1)?;
+                        if !width.is_finite() || !(0.0..100_000.0).contains(&width) {
+                            return Err("Invalid measured text width".into());
+                        }
+                        if width > available {
+                            upper = end;
+                            break;
+                        }
                         fitting = end;
-                    } else {
-                        upper = end;
+                        if fitting == last {
+                            upper = last;
+                            break;
+                        }
+                        span *= 2;
+                    }
+                    while fitting + 1 < upper {
+                        let end = fitting + (upper - fitting) / 2;
+                        let source = &paragraph[boundaries[line_start].0..boundaries[end].0];
+                        let width = measure(source, paragraph_utf16 + boundaries[line_start].1)?;
+                        if !width.is_finite() || !(0.0..100_000.0).contains(&width) {
+                            return Err("Invalid measured text width".into());
+                        }
+                        if width <= available {
+                            fitting = end;
+                        } else {
+                            upper = end;
+                        }
                     }
                 }
                 if fitting == last {
@@ -787,9 +819,10 @@ impl VectorText {
         starts
     }
     pub fn style_at(&self, offset: usize, color: [u8; 3]) -> TextStyle {
+        let index = self.runs.partition_point(|run| run.start <= offset);
         self.runs
-            .iter()
-            .find(|run| run.start <= offset && offset < run.end)
+            .get(index.wrapping_sub(1))
+            .filter(|run| offset < run.end)
             .map(|run| run.style.clone())
             .unwrap_or_else(|| self.base_style(color))
     }
@@ -863,10 +896,18 @@ impl VectorText {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
+        if self.content.chars().take(MAX_TEXT_CHARACTERS + 1).count() > MAX_TEXT_CHARACTERS
+            || self
+                .content
+                .split('\n')
+                .take(MAX_TEXT_PARAGRAPHS + 1)
+                .count()
+                > MAX_TEXT_PARAGRAPHS
+        {
+            return Err("Text supports up to 65,536 characters and 4,096 paragraphs / 本文は65,536文字・4,096段落までです / 文本最多支持65,536个字符和4,096个段落".into());
+        }
         if !valid_font_axes(&self.font_axes)
             || (self.content.trim().is_empty() && self.box_height.is_none())
-            || self.content.chars().count() > 4096
-            || self.content.split('\n').count() > 64
             || self
                 .content
                 .chars()
@@ -900,20 +941,30 @@ impl VectorText {
             return Err("Too many character runs".into());
         }
         let utf16: Vec<_> = self.content.encode_utf16().collect();
-        if self.soft_breaks.len() > 4096
+        // Boundary checks use the already decoded UTF-16, avoiding a source scan
+        // for every run, wrap point and shaping cluster in a long text box.
+        let boundary = |offset: usize| {
+            offset <= utf16.len()
+                && !(offset > 0
+                    && offset < utf16.len()
+                    && (0xD800..=0xDBFF).contains(&utf16[offset - 1])
+                    && (0xDC00..=0xDFFF).contains(&utf16[offset]))
+        };
+        if self.soft_breaks.len() > MAX_TEXT_SOFT_BREAKS
             || self.soft_breaks.windows(2).any(|pair| pair[0] >= pair[1])
             || self.soft_breaks.iter().any(|&offset| {
                 offset == 0
                     || offset >= utf16.len()
-                    || !self.utf16_boundary(offset)
+                    || !boundary(offset)
                     || utf16[offset - 1] == b'\n' as u16
                     || utf16[offset] == b'\n' as u16
             })
         {
             return Err("Invalid text wrap positions".into());
         }
+        let lines = self.visual_lines();
         if !self.line_baselines.is_empty()
-            && (self.line_baselines.len() != self.visual_lines().len()
+            && (self.line_baselines.len() != lines.len()
                 || self
                     .line_baselines
                     .iter()
@@ -926,7 +977,7 @@ impl VectorText {
             return Err("Invalid text line baselines".into());
         }
         if !self.line_widths.is_empty()
-            && (self.line_widths.len() != self.visual_lines().len()
+            && (self.line_widths.len() != lines.len()
                 || self
                     .line_widths
                     .iter()
@@ -935,7 +986,7 @@ impl VectorText {
             return Err("Invalid text line widths".into());
         }
         if !self.line_origins.is_empty()
-            && (self.line_origins.len() != self.visual_lines().len()
+            && (self.line_origins.len() != lines.len()
                 || self
                     .line_origins
                     .iter()
@@ -944,11 +995,11 @@ impl VectorText {
             return Err("Invalid text line origins".into());
         }
         if !self.style_segment_origins.is_empty()
-            && (self.style_segment_origins.len() != self.visual_lines().len()
+            && (self.style_segment_origins.len() != lines.len()
                 || self
                     .style_segment_origins
                     .iter()
-                    .zip(self.visual_lines())
+                    .zip(lines.iter().copied())
                     .any(|(origins, (_, line, _))| {
                         origins.len() > line.chars().count()
                             || (origins.is_empty() != line.is_empty())
@@ -960,23 +1011,25 @@ impl VectorText {
             return Err("Invalid text style segment origins".into());
         }
         if !self.character_origins.is_empty()
-            && (self.character_origins.len() != self.visual_lines().len()
-                || self.character_origins.iter().zip(self.visual_lines()).any(
-                    |(origins, (_, line, _))| {
+            && (self.character_origins.len() != lines.len()
+                || self
+                    .character_origins
+                    .iter()
+                    .zip(lines.iter().copied())
+                    .any(|(origins, (_, line, _))| {
                         origins.len() != line.chars().count()
                             || origins
                                 .iter()
                                 .any(|value| !value.is_finite() || value.abs() >= 100_000.0)
                             || origins.windows(2).any(|pair| pair[0] > pair[1])
-                    },
-                ))
+                    }))
         {
             return Err("Invalid text character origins".into());
         }
         if !self.glyph_clusters.is_empty()
-            && (self.glyph_clusters.len() != self.visual_lines().len()
-                || self.glyph_clusters.iter().zip(self.visual_lines()).any(
-                    |(clusters, (_, line, _))| {
+            && (self.glyph_clusters.len() != lines.len()
+                || self.glyph_clusters.iter().zip(lines.iter().copied()).any(
+                    |(clusters, (start, line, _))| {
                         let line_len = line.encode_utf16().count();
                         let mut end = 0;
                         for cluster in clusters {
@@ -985,8 +1038,8 @@ impl VectorText {
                                 || cluster.end > line_len
                                 || !cluster.x.is_finite()
                                 || cluster.x.abs() >= 100_000.0
-                                || !utf16_boundary_in(line, cluster.start)
-                                || !utf16_boundary_in(line, cluster.end)
+                                || !boundary(start + cluster.start)
+                                || !boundary(start + cluster.end)
                             {
                                 return true;
                             }
@@ -1013,8 +1066,8 @@ impl VectorText {
         for run in &self.runs {
             if run.start < previous_end
                 || run.start >= run.end
-                || !self.utf16_boundary(run.start)
-                || !self.utf16_boundary(run.end)
+                || !boundary(run.start)
+                || !boundary(run.end)
             {
                 return Err("Invalid character runs".into());
             }
@@ -1788,6 +1841,71 @@ mod text_style_tests {
         assert_eq!(text, before);
     }
 
+    #[test]
+    fn long_multilingual_frame_reflows_local_prefixes_and_preserves_unicode() {
+        let content = "A日😀e\u{301}".repeat(8000);
+        let mut text = VectorText {
+            content: content.clone(),
+            font_size: 10.,
+            box_width: 160.,
+            box_height: Some(120.),
+            ..Default::default()
+        };
+        let mut measured = 0;
+        text.reflow_soft_breaks_with(|source, _| {
+            use unicode_segmentation::UnicodeSegmentation;
+            let count = source.graphemes(true).count();
+            assert!(count <= 32, "measured a distant paragraph prefix: {count}");
+            measured += count;
+            Ok(count as f32 * 8.)
+        })
+        .unwrap();
+        assert!(measured < text.content.chars().count() * 12);
+        assert!(text.visual_lines().len() > 1000);
+        assert_eq!(text.content, content);
+        assert_eq!(
+            text.visual_lines()
+                .iter()
+                .map(|(_, line, _)| *line)
+                .collect::<String>(),
+            content
+        );
+        text.validate().unwrap();
+        let end = text.content.encode_utf16().count();
+        text.apply_style(
+            end - 6,
+            end,
+            &TextStylePatch {
+                bold: Some(true),
+                ..Default::default()
+            },
+            [0; 3],
+        )
+        .unwrap();
+        assert!(text.style_at(end - 1, [0; 3]).bold);
+        assert!(!text.style_at(0, [0; 3]).bold);
+        text.validate().unwrap();
+    }
+    #[test]
+    fn long_text_bounds_and_surrogate_validation_remain_explicit() {
+        let mut text = VectorText {
+            content: "😀".repeat(MAX_TEXT_CHARACTERS),
+            box_height: Some(100.),
+            ..Default::default()
+        };
+        text.validate().unwrap();
+        text.soft_breaks = vec![1];
+        assert!(text.validate().is_err());
+        text.soft_breaks = vec![2];
+        text.validate().unwrap();
+        text.content.push('a');
+        assert!(text.validate().is_err());
+        text.content = vec!["a"; MAX_TEXT_PARAGRAPHS].join("\n");
+        text.soft_breaks.clear();
+        text.validate().unwrap();
+        text.content.push('\n');
+        assert!(text.validate().is_err());
+    }
     #[test]
     fn portable_reflow_avoids_measuring_every_prefix_of_a_long_line() {
         let mut text = VectorText {

@@ -505,8 +505,8 @@ fn gpu_extended_tile_upload_preserves_out_of_gamut_and_alpha() {
     ];
     let want = [
         0.82259287 * rgb[0] + 0.17753395 * rgb[1],
-        0.03319951 * rgb[0] + 0.96678350 * rgb[1],
-        0.01708535 * rgb[0] + 0.07239572 * rgb[1] + 0.91030148 * rgb[2],
+        0.03319951 * rgb[0] + 0.966_783_5 * rgb[1],
+        0.01708535 * rgb[0] + 0.07239572 * rgb[1] + 0.910_301_5 * rgb[2],
     ];
     for c in 0..3 {
         let actual =
@@ -933,6 +933,7 @@ struct Gpu {
     uniform_layout: wgpu::BindGroupLayout,
     queue: wgpu::Queue,
     brush: wgpu::RenderPipeline,
+    brush_format: wgpu::TextureFormat,
     composite: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
@@ -947,6 +948,10 @@ impl Gpu {
     }
 
     fn new_with_viewport(scale: f32, zoom: f32) -> Self {
+        Self::new_with_precision(scale, zoom, true)
+    }
+
+    fn new_with_precision(scale: f32, zoom: f32, prefer_high_precision: bool) -> Self {
         pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -954,7 +959,19 @@ impl Gpu {
                 .await
                 .expect("GPU adapter required");
             eprintln!("GPU regression adapter: {:?}", adapter.get_info());
-            let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
+            let (brush_format, brush_features) = if prefer_high_precision {
+                brush_format_for_adapter(&adapter)
+            } else {
+                (BRUSH_FORMAT, wgpu::Features::empty())
+            };
+            eprintln!("Brush accumulation format: {brush_format:?}");
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_features: brush_features,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
             let uniform_layout =
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: None,
@@ -998,7 +1015,7 @@ impl Gpu {
                 bind_group_layouts: &[Some(&uniform_layout), Some(&selection_layout)],
                 immediate_size: 0,
             });
-            let brush = create_brush_pipeline(&device, &layout);
+            let brush = create_brush_pipeline(&device, &layout, brush_format);
             let outline =
                 create_selection_pipeline(&device, &layout, wgpu::TextureFormat::Rgba8UnormSrgb);
             let (texture_layout, composite) = create_brush_composite(
@@ -1012,6 +1029,7 @@ impl Gpu {
                 uniform_layout,
                 queue,
                 brush,
+                brush_format,
                 composite,
                 uniforms,
                 texture_layout,
@@ -1081,7 +1099,7 @@ impl Gpu {
             })
         };
         let paint = texture(
-            BRUSH_FORMAT,
+            self.brush_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         let output = texture(
@@ -4507,6 +4525,72 @@ fn gpu_transformed_grain_matches_tiled_cpu() {
 }
 
 #[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_extreme_grain_with_varying_pressure_matches_cpu() {
+    use lumapaint_core::document::BrushSimulation;
+    let gpu = Gpu::new();
+    let fallback = Gpu::new_with_precision(1.0, 960.0 / 976.0, false);
+    for simulation in [BrushSimulation::Pencil, BrushSimulation::DryBrush] {
+        let stroke = Stroke {
+            eraser: false,
+            clear: false,
+            brush: Brush {
+                simulation,
+                size: 30.,
+                hardness: 0.6,
+                material: lumapaint_core::natural_media::MaterialSettings {
+                    grain_transform: [0., -64., 64., 0., 0., 61440.],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            points: vec![
+                Point { x: 100., y: 250. },
+                Point { x: 140., y: 250. },
+                Point { x: 180., y: 250. },
+                Point { x: 220., y: 250. },
+            ],
+            pressures: vec![0.05, 0.3, 1., 0.15],
+            selection: None,
+        };
+        let actual = gpu.render(std::slice::from_ref(&stroke));
+        let previous = fallback.render(std::slice::from_ref(&stroke));
+        let expected = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+        let mut max = 0u8;
+        let mut sum = 0u64;
+        let mut previous_sum = 0u64;
+        let mut count = 0u64;
+        for y in 236..265 {
+            for x in 100..220 {
+                let at = (((y + 64) * W + x + 32) * 4) as usize;
+                for c in 0..3 {
+                    let d = actual[at + c].abs_diff(expected[at + c]);
+                    previous_sum += u64::from(previous[at + c].abs_diff(expected[at + c]));
+                    max = max.max(d);
+                    sum += u64::from(d);
+                    count += 1;
+                }
+            }
+        }
+        let mean = sum as f64 / count as f64;
+        eprintln!(
+            "{simulation:?} varying pressure: max {max}, mean {mean:.3}; 16-bit mean {:.3}",
+            previous_sum as f64 / count as f64
+        );
+        assert!(
+            max <= 8 && mean <= 2.,
+            "{simulation:?}: max {max}, mean {mean}"
+        );
+        if gpu.brush_format == wgpu::TextureFormat::Rgba32Float {
+            assert!(
+                sum <= previous_sum,
+                "{simulation:?}: 32-bit {sum}, 16-bit {previous_sum}"
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "Performance and reference comparison; run explicitly"]
 fn extreme_reduction_dab_spacing_quality_and_time() {
     use lumapaint_core::document::BrushSimulation;
@@ -4559,7 +4643,12 @@ fn extreme_reduction_dab_spacing_quality_and_time() {
             let mut max = 0u8;
             let mut sum = 0u64;
             let mut count = 0u64;
-            for (a, b) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
+            for (a, b) in reference
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(actual.as_chunks::<4>().0.iter())
+            {
                 if a[3] == 0 && b[3] == 0 {
                     continue;
                 }
@@ -4744,7 +4833,7 @@ fn gpu_extreme_materials_and_papers_match_cpu() {
             for dy in [-3i32, 0, 3] {
                 for dx in [5, 15, 25, 35] {
                     let px = 100 + x * 180 + dx + 32;
-                    let py = (60 + y * 100 + 64) as i32 + dy;
+                    let py = (60 + y * 100 + 64) + dy;
                     let at = (py as usize * W as usize + px as usize) * 4;
                     for c in 0..3 {
                         let d = actual[at + c].abs_diff(expected[at + c]);
@@ -4837,7 +4926,12 @@ fn extreme_media_and_paper_spacing_quality_and_time() {
             let mut max = 0;
             let mut sum = 0u64;
             let mut count = 0u64;
-            for (a, b) in before.chunks_exact(4).zip(after.chunks_exact(4)) {
+            for (a, b) in before
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(after.as_chunks::<4>().0.iter())
+            {
                 if a[3] == 0 && b[3] == 0 {
                     continue;
                 }

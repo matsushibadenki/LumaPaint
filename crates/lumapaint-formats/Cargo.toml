@@ -16,10 +16,13 @@ image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
 usvg = "=0.49.0"
 roxmltree = "=0.21.2"
 
-svg2pdf = { version = "=0.13.0", default-features = false, features = ["image"] }
+svg2pdf = { version = "=0.13.0", default-features = false, features = ["image", "text"] }
 lopdf = { version = "=0.46.0", default-features = false }
 
 sha2 = "=0.11.1"
 ttf-parser = "=0.25.1"
 freetype-rs = { version = "=0.38.0", features = ["bundled"] }
 moxcms = "=0.8.1"
+
+zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2"] }
+svgtypes = "=0.16.1"

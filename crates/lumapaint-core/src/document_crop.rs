@@ -17,6 +17,7 @@ impl Document {
     /// sources are accepted only when they contain JPEG images and transforms;
     /// the worker must additionally verify their uncropped bounds.
     pub fn prepare_image_resample(&self, resolution: u32) -> Result<ImageResamplePlan, String> {
+        self.ensure_publication_resolution(resolution)?;
         if !(1..=1200).contains(&resolution) {
             return Err("Invalid resolution".into());
         }
@@ -599,8 +600,8 @@ impl Document {
         }
         previous.strokes = Some(next.strokes.clone());
         let old = (next.width, next.height);
-        next.width = width as u32;
-        next.height = height as u32;
+        next.width = width;
+        next.height = height;
         let shift = |object: &mut VectorObject| {
             object.transform[4] -= x;
             object.transform[5] -= y;
@@ -859,11 +860,13 @@ mod tests {
     }
     #[test]
     fn checked_resize_rejects_pixel_selection_without_mutation() {
-        let mut doc = Document::default();
-        doc.selection = Some(Selection::new(
-            SelectionShape::Rectangle,
-            [2., 3., 20., 30.],
-        ));
+        let mut doc = Document {
+            selection: Some(Selection::new(
+                SelectionShape::Rectangle,
+                [2., 3., 20., 30.],
+            )),
+            ..Default::default()
+        };
         let before = serde_json::to_value(doc.document_state()).unwrap();
         assert!(doc.resize_canvas_checked(-10, -10, 980, 660).is_err());
         assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);

@@ -53,7 +53,7 @@ filters = [
 image = ["dep:image"]
 text = [
     "usvg/text",
-    "resvg/text",
+    "resvg?/text",
     "dep:siphasher",
     "dep:subsetter",
     "dep:ttf-parser",
@@ -66,7 +66,7 @@ path = "src/lib.rs"
 bench = false
 
 [dependencies.fontdb]
-version = "0.23"
+version = "0.24"
 optional = true
 
 [dependencies.image]

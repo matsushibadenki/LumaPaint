@@ -6062,7 +6062,7 @@ fn extended_tiled_uploads_keep_wide_color_and_source_document() {
     assert!(!uploads.is_empty());
     assert!(uploads
         .iter()
-        .flat_map(|u| u.pixels.chunks_exact(4))
+        .flat_map(|u| u.pixels.as_chunks::<4>().0.iter())
         .any(|p| p[..3].iter().any(|c| *c < -0.001 || *c > 1.001)));
     for upload in &uploads {
         assert_eq!(
@@ -6071,7 +6071,9 @@ fn extended_tiled_uploads_keep_wide_color_and_source_document() {
         );
         assert!(upload
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| (0.0..=1.0).contains(&p[3])));
     }
     assert_eq!(document.state().icc_profile, before.icc_profile);
@@ -9451,6 +9453,7 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
             let Some(path) = rfd::FileDialog::new()
                 .add_filter("SVG", &["svg"])
                 .add_filter("PDF", &["pdf"])
+                .add_filter("IDML — Text / 文字 / 文本", &["idml"])
                 .set_file_name("Untitled.svg")
                 .save_file()
             else {
@@ -9465,6 +9468,11 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
                 {
                     crate::vector_export::pdf(&document)
+                } else if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("idml"))
+                {
+                    crate::vector_export::idml(&document)
                 } else {
                     crate::vector_export::svg(&document)
                 };
@@ -9498,12 +9506,13 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "LumaPaint / SVG / PDF / AI / PSD / PSB / JPEG / PNG",
+                    "LumaPaint / SVG / PDF / AI / IDML / PSD / PSB / JPEG / PNG",
                     &[
                         "lumapaint",
                         "svg",
                         "pdf",
                         "ai",
+                        "idml",
                         "psd",
                         "psb",
                         "jpg",
@@ -9535,6 +9544,63 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                     path,
                     None,
                 );
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
+            if extension == "idml" {
+                let app = APP.get().ok_or("Application unavailable")?.clone();
+                let label = current_label();
+                crate::diagnostic_jobs::spawn_blocking(move || {
+                    let result = (|| {
+                        use std::io::Read;
+                        let mut bytes = Vec::new();
+                        std::fs::File::open(&path)
+                            .map_err(|e| e.to_string())?
+                            .take(64 * 1024 * 1024 + 1)
+                            .read_to_end(&mut bytes)
+                            .map_err(|e| e.to_string())?;
+                        lumapaint_formats::idml::read::read_with_links(
+                            &bytes,
+                            lumapaint_formats::io::ReadOptions {
+                                allow_lossy: true,
+                                ..Default::default()
+                            },
+                            Some(lumapaint_renderer::vector::reflow_text_with_system_fonts),
+                            &mut |uri| {
+                                let (bytes, source) = crate::idml_links::read(
+                                    uri,
+                                    path.parent().ok_or(
+                                        lumapaint_formats::ImportError::Malformed("idml.link_base"),
+                                    )?,
+                                )
+                                .map_err(|_| {
+                                    lumapaint_formats::ImportError::Unsupported(
+                                        "idml.external_image",
+                                    )
+                                })?;
+                                Ok(lumapaint_formats::idml::read::ResolvedImage {
+                                    bytes,
+                                    source_path: Some(source),
+                                })
+                            },
+                        )
+                        .map_err(crate::vector_export::idml_read_error)
+                    })();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let _ = app.run_on_main_thread(move || {
+                        let Ok(_session) = SessionGuard::enter(&label) else {
+                            return;
+                        };
+                        if let Err(error) =
+                            result.and_then(|decoded| apply_pdf_import(decoded, None, name))
+                        {
+                            emit_error(error);
+                        }
+                    });
+                });
                 return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
             }
             if extension == "svg" {
@@ -12408,4 +12474,41 @@ mod filter_command_tests {
         assert!(result.can_undo);
         assert_eq!(result.revision, 1);
     }
+}
+
+pub fn publication_text_context() -> Result<super::PublicationTextSession, String> {
+    ensure_document_open()?;
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        return Err("Text linking requires a vector document / 文字連結にはベクター文書が必要です / 文本链接需要矢量文档".into());
+    }
+    text_editor::finish(true)?;
+    Ok(super::PublicationTextSession {
+        document_id: ACTIVE_DOCUMENT_ID.with(|id| id.get()),
+        context: DOCUMENT.with(|d| d.borrow().publication_text_context()),
+    })
+}
+pub fn publication_text_action(
+    document_id: u64,
+    request: lumapaint_core::document::PublicationTextRequest,
+) -> Result<super::PublicationTextUpdate, String> {
+    ensure_document_open()?;
+    if ACTIVE_DOCUMENT_ID.with(|id| id.get()) != document_id
+        || ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some())
+        || raster_import::active()
+    {
+        return Err("Document changed. Reopen the panel / 文書が変更されました。パネルを開き直してください / 文档已更改，请重新打开面板".into());
+    }
+    text_editor::finish(true)?;
+    finish_open_pen()?;
+    DOCUMENT.with(|d| {
+        let mut doc = d.borrow_mut();
+        doc.set_text_layout_backend(Some(text_editor::reflow_text));
+        doc.edit_publication_text(request)
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(super::PublicationTextUpdate {
+        document: DOCUMENT.with(|d| d.borrow().snapshot()),
+        context: publication_text_context()?,
+    })
 }

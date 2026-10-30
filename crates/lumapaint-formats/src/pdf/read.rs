@@ -147,6 +147,7 @@ struct Interpreter<'a> {
     glyph_depth: usize,
     image_remaining: usize,
     image_cache: std::collections::HashMap<(usize, usize), String>,
+    glyph_uses: std::collections::HashMap<String, String>,
 }
 impl Interpreter<'_> {
     fn unsupported(&mut self, code: &'static str) -> Result<(), ImportError> {
@@ -902,6 +903,7 @@ fn read_publication(
             content: Some(Box::new(state)),
         }));
         first.pages = Some(PageBookState {
+            text_threads: Vec::new(),
             facing: false,
             binding: PageBinding::LeftToRight,
             active: 0,
@@ -989,6 +991,7 @@ fn read_page(
         glyph_depth: 0,
         image_remaining: 64 * 1024 * 1024,
         image_cache: Default::default(),
+        glyph_uses: Default::default(),
     };
     if selected_only && pages.len() > 1 {
         parser.unsupported("pdf.selected_page_only")?;
@@ -1051,6 +1054,7 @@ mod transparency_tests {
             glyph_depth: 0,
             image_remaining: 64 * 1024 * 1024,
             image_cache: Default::default(),
+            glyph_uses: Default::default(),
         };
         parser.content(
             b"/F Do",
