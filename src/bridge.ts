@@ -37,8 +37,9 @@ export interface GuideEdit {action:'visibility'|'lock'|'make'|'release'|'clear'|
 export function editGuides(edit:GuideEdit):Promise<DocumentSnapshot>{return invoke('edit_guides',{edit});}
 export function rulerGuide(axis:'horizontal'|'vertical',position:number,phase:number):Promise<void>{return invoke('ruler_guide',{axis,position,phase});}
 export interface LayerGroup {id:string;name:string;visible:boolean;locked:boolean;collapsed:boolean;maskEnabled:boolean;maskInverted:boolean;maskDensity:number;children:string[]}
-export interface LayerGroupsState {filterEnabled?:boolean;filterQuery?:string;isolated?:string[];groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
-export interface LayerGroupEdit {action:'selectAll'|'deselectAll'|'filter'|'clearFilter'|'isolate'|'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
+export interface LayerFilter {kind: 'all'|'paint'|'svg'|'vector'|'text'|'group';visible: boolean|null;locked: boolean|null}
+export interface LayerGroupsState {filter?:LayerFilter;filterMatches?:string[]|null;filterTargets?:string[]|null;filterEnabled?:boolean;filterQuery?:string;isolated?:string[];groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
+export interface LayerGroupEdit {filter?:LayerFilter;action:'selectAll'|'deselectAll'|'filter'|'clearFilter'|'isolate'|'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
 export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
 export interface CompoundShapeSnapshot { id: string; operation: PathfinderOperation; operands: {id:string;name:string;transform:[number,number,number,number,number,number]}[] }
 export type LayerEditTarget = 'content' | 'mask' | 'none';

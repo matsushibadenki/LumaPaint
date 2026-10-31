@@ -3882,6 +3882,7 @@ pub fn edit(action: DocumentAction) -> Result<DocumentSnapshot, String> {
                         ids: vec![],
                         additive: false,
                         mask: None,
+                        filter: None,
                     })?;
                 } else {
                     doc.toggle_visibility();
@@ -12070,12 +12071,19 @@ pub fn edit_layer_groups(
     edit: lumapaint_core::document::LayerGroupEdit,
 ) -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
-    text_editor::finish(true)?;
-    cancel_vector_drag();
+    let view_only = matches!(edit.action.as_str(), "filter" | "clearFilter" | "isolate");
+    if !view_only {
+        text_editor::finish(true)?;
+        cancel_vector_drag();
+    }
     DOCUMENT.with(|doc| doc.borrow_mut().edit_layer_groups(edit))?;
-    redraw()?;
+    if !view_only {
+        redraw()?;
+    }
     emit_document();
-    emit_workspace();
+    if !view_only {
+        emit_workspace();
+    }
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 

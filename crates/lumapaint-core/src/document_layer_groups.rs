@@ -1,6 +1,26 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LayerFilter {
+    #[serde(default)]
+    pub kind: LayerFilterKind,
+    pub visible: Option<bool>,
+    pub locked: Option<bool>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LayerFilterKind {
+    #[default]
+    All,
+    Paint,
+    Svg,
+    Vector,
+    Text,
+    Group,
+}
+
 /// Folder hierarchy is independent of renderer resources. Layer flags remain
 /// projected for legacy rendering/editing paths, while members retain own flags.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -10,6 +30,8 @@ pub struct LayerGroupsState {
     pub filter_enabled: bool,
     #[serde(skip)]
     pub filter_query: String,
+    #[serde(skip)]
+    pub filter: LayerFilter,
     #[serde(skip)]
     pub isolated: Vec<String>,
     #[serde(default)]
@@ -61,6 +83,8 @@ pub struct LayerGroupEdit {
     pub additive: bool,
     #[serde(default)]
     pub mask: Option<GroupMaskSettings>,
+    #[serde(default)]
+    pub filter: Option<LayerFilter>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -75,6 +99,9 @@ pub struct GroupMaskSettings {
 pub struct LayerGroupsSnapshot {
     pub filter_enabled: bool,
     pub filter_query: String,
+    pub filter: LayerFilter,
+    pub filter_matches: Option<Vec<String>>,
+    pub filter_targets: Option<Vec<String>>,
     pub isolated: Vec<String>,
     pub groups: Vec<LayerGroup>,
     pub roots: Vec<String>,
@@ -194,7 +221,15 @@ impl Document {
         if let Some(edit) = &self.path_editing {
             state.roots.retain(|id| id != &edit.layer_id);
         }
+        let (filter_matches, filter_targets) = self
+            .filtered_layer_ids(&state)
+            .map_or((None, None), |(visible, targets)| {
+                (Some(visible), Some(targets))
+            });
         LayerGroupsSnapshot {
+            filter: state.filter,
+            filter_matches,
+            filter_targets,
             filter_enabled: state.filter_enabled,
             filter_query: state.filter_query,
             isolated: state.isolated,
@@ -203,6 +238,114 @@ impl Document {
             members: state.members,
             selected: state.selected,
         }
+    }
+    /// Search metadata only. Context folders are returned with matching leaves,
+    /// without changing collapse, selection, artwork, history, or revision.
+    fn filtered_layer_ids(&self, state: &LayerGroupsState) -> Option<(Vec<String>, Vec<String>)> {
+        use std::collections::HashMap;
+        if !state.filter_enabled && state.isolated.is_empty() {
+            return None;
+        }
+        let parents: HashMap<&str, &str> = state
+            .groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .children
+                    .iter()
+                    .map(move |id| (id.as_str(), group.id.as_str()))
+            })
+            .collect();
+        let folders: HashMap<&str, &LayerGroup> =
+            state.groups.iter().map(|g| (g.id.as_str(), g)).collect();
+        let names: HashMap<&str, String> = state
+            .groups
+            .iter()
+            .map(|g| (g.id.as_str(), g.name.to_lowercase()))
+            .collect();
+        let query = state.filter_query.trim().to_lowercase();
+        let filter = if state.filter_enabled {
+            state.filter.clone()
+        } else {
+            LayerFilter::default()
+        };
+        let mut result = BTreeSet::new();
+        let mut targets = BTreeSet::new();
+        let mut consider = |id: &str,
+                            name: &str,
+                            kind: LayerFilterKind,
+                            has_text: bool,
+                            mut visible: bool,
+                            mut locked: bool| {
+            let mut chain = vec![id];
+            let mut name_matches =
+                !state.filter_enabled || query.is_empty() || name.to_lowercase().contains(&query);
+            let mut isolated = state.isolated.is_empty() || state.isolated.iter().any(|v| v == id);
+            let mut current = id;
+            for _ in 0..state.groups.len() {
+                let Some(parent) = parents.get(current).copied() else {
+                    break;
+                };
+                let Some(group) = folders.get(parent) else {
+                    break;
+                };
+                name_matches |= names[parent].contains(&query);
+                isolated |= state.isolated.iter().any(|v| v == parent);
+                visible &= group.visible;
+                locked |= group.locked;
+                chain.push(parent);
+                current = parent;
+            }
+            let kind_matches = filter.kind == LayerFilterKind::All
+                || filter.kind == kind
+                || (filter.kind == LayerFilterKind::Text && has_text);
+            if name_matches
+                && isolated
+                && kind_matches
+                && filter.visible.is_none_or(|v| v == visible)
+                && filter.locked.is_none_or(|v| v == locked)
+            {
+                targets.insert(id.to_owned());
+                result.extend(chain.into_iter().map(str::to_owned));
+            }
+        };
+        consider(
+            "layer-1",
+            &self.layer_name,
+            LayerFilterKind::Paint,
+            false,
+            self.visible,
+            self.layer_locked,
+        );
+        for layer in &self.svg_layers {
+            let kind = if layer.paint_layer {
+                LayerFilterKind::Paint
+            } else if layer.vector_layer {
+                LayerFilterKind::Vector
+            } else {
+                LayerFilterKind::Svg
+            };
+            consider(
+                &layer.id,
+                &layer.name,
+                kind,
+                filter.kind == LayerFilterKind::Text
+                    && layer.vector_objects.iter().any(|o| o.text.is_some()),
+                layer.visible,
+                layer.locked,
+            );
+        }
+        for group in &state.groups {
+            consider(
+                &group.id,
+                &group.name,
+                LayerFilterKind::Group,
+                false,
+                group.visible,
+                group.locked,
+            );
+        }
+        Some((result.into_iter().collect(), targets.into_iter().collect()))
     }
     pub(super) fn sync_layer_group_flags(&mut self) {
         self.layer_groups.reconcile(&self.svg_layers);
@@ -306,7 +449,9 @@ impl Document {
         Ok(())
     }
     pub fn edit_layer_groups(&mut self, e: LayerGroupEdit) -> Result<(), String> {
-        if self.path_editing.is_some() {
+        if self.path_editing.is_some()
+            && !matches!(e.action.as_str(), "filter" | "clearFilter" | "isolate")
+        {
             return Err("Finish path editing before editing layer groups".into());
         }
         self.layer_groups.reconcile(&self.svg_layers);
@@ -341,17 +486,23 @@ impl Document {
                 return Ok(());
             }
             "filter" => {
-                let query = e.name.unwrap_or_default();
+                let query = e
+                    .name
+                    .unwrap_or_else(|| self.layer_groups.filter_query.clone());
                 if query.chars().count() > 100 {
                     return Err("Layer query too long".into());
                 }
                 self.layer_groups.filter_enabled = true;
                 self.layer_groups.filter_query = query;
+                if let Some(filter) = e.filter {
+                    self.layer_groups.filter = filter;
+                }
                 return Ok(());
             }
             "clearFilter" => {
                 self.layer_groups.filter_enabled = false;
                 self.layer_groups.filter_query.clear();
+                self.layer_groups.filter = LayerFilter::default();
                 return Ok(());
             }
             "isolate" => {
@@ -707,6 +858,7 @@ mod tests {
             ids: vec![],
             additive: false,
             mask: None,
+            filter: None,
         }
     }
     fn group(d: &mut Document, ids: Vec<String>) -> String {
@@ -959,5 +1111,223 @@ mod selection_menu_tests {
                 .map(|l| (l.id.clone(), l.source.clone(), l.visible))
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    fn command(action: &str) -> LayerGroupEdit {
+        serde_json::from_value(serde_json::json!({"action": action})).unwrap()
+    }
+    fn filter(
+        document: &mut Document,
+        query: &str,
+        kind: LayerFilterKind,
+        visible: Option<bool>,
+        locked: Option<bool>,
+    ) -> Vec<String> {
+        let mut request = command("filter");
+        request.name = Some(query.into());
+        request.filter = Some(LayerFilter {
+            kind,
+            visible,
+            locked,
+        });
+        document.edit_layer_groups(request).unwrap();
+        document.layer_groups_snapshot().filter_matches.unwrap()
+    }
+    #[test]
+    fn kinds_names_and_text_subset_use_metadata_without_mutating_document() {
+        let mut doc = Document::default();
+        let paint = doc.add_paint_layer().unwrap();
+        let vector = doc.add_vector_layer().unwrap();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "文字".into(),
+                ..Default::default()
+            },
+            position: [10., 10.],
+            color: [0, 0, 0],
+        })
+        .unwrap();
+        let text = doc
+            .svg_layers
+            .iter()
+            .find(|layer| {
+                layer
+                    .vector_objects
+                    .iter()
+                    .any(|object| object.text.is_some())
+            })
+            .unwrap()
+            .id
+            .clone();
+        doc.import_svg_as_layer("Reference".into(), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><path d=\"M0 0h10v10H0z\"/></svg>".into()).unwrap();
+        let image = doc.svg_layers.last().unwrap().id.clone();
+        doc.svg_layers
+            .iter_mut()
+            .find(|l| l.id == vector)
+            .unwrap()
+            .name = "INK 線画 简体".into();
+        let before = serde_json::to_value(doc.document_state()).unwrap();
+        let revision = doc.revision();
+        let selected = doc.selected_layer_id().to_string();
+        let paint_matches = filter(&mut doc, "", LayerFilterKind::Paint, None, None);
+        assert_eq!(paint_matches.len(), 2);
+        assert!(paint_matches.contains(&paint) && paint_matches.contains(&"layer-1".into()));
+        assert_eq!(
+            filter(&mut doc, "ink 線画", LayerFilterKind::Vector, None, None),
+            vec![vector.clone()]
+        );
+        assert_eq!(
+            filter(&mut doc, "简体", LayerFilterKind::All, None, None),
+            vec![vector]
+        );
+        assert_eq!(
+            filter(&mut doc, "", LayerFilterKind::Text, None, None),
+            vec![text]
+        );
+        assert_eq!(
+            filter(&mut doc, "", LayerFilterKind::Svg, None, None),
+            vec![image]
+        );
+        assert!(filter(&mut doc, "missing", LayerFilterKind::All, None, None).is_empty());
+        assert_eq!(serde_json::to_value(doc.document_state()).unwrap(), before);
+        assert_eq!(doc.revision(), revision);
+        assert_eq!(doc.selected_layer_id(), selected);
+        let reopened = Document::from_document_state(
+            serde_json::from_value(serde_json::to_value(doc.document_state()).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(!reopened.layer_groups_snapshot().filter_enabled);
+        assert!(reopened.layer_groups_snapshot().filter_matches.is_none());
+    }
+    #[test]
+    fn collapsed_nested_groups_keep_matching_children_and_effective_flags() {
+        let mut doc = Document::default();
+        let vector = doc.add_vector_layer().unwrap();
+        let other = doc.add_vector_layer().unwrap();
+        let mut create = command("create");
+        create.ids = vec![vector.clone()];
+        create.name = Some("線画".into());
+        doc.edit_layer_groups(create).unwrap();
+        let inner = doc.layer_groups.selected[0].clone();
+        let mut create = command("create");
+        create.ids = vec![inner.clone()];
+        create.name = Some("Scene".into());
+        doc.edit_layer_groups(create).unwrap();
+        let outer = doc.layer_groups.selected[0].clone();
+        for action in ["collapse", "visibility", "lock"] {
+            let mut edit = command(action);
+            edit.id = Some(outer.clone());
+            doc.edit_layer_groups(edit).unwrap();
+        }
+        let revision = doc.revision();
+        let matches = filter(
+            &mut doc,
+            "線画",
+            LayerFilterKind::Vector,
+            Some(false),
+            Some(true),
+        );
+        assert!(matches.contains(&vector) && matches.contains(&inner) && matches.contains(&outer));
+        assert!(!matches.contains(&other));
+        assert!(filter(&mut doc, "線画", LayerFilterKind::Vector, Some(true), None).is_empty());
+        assert!(filter(&mut doc, "線画", LayerFilterKind::Vector, None, Some(false)).is_empty());
+        assert_eq!(doc.revision(), revision);
+        assert!(
+            doc.layer_groups
+                .groups
+                .iter()
+                .find(|g| g.id == outer)
+                .unwrap()
+                .collapsed
+        );
+    }
+    #[test]
+    fn clearing_filters_preserves_selection_and_isolation_and_resets_criteria() {
+        let mut doc = Document::default();
+        let vector = doc.add_vector_layer().unwrap();
+        doc.add_paint_layer().unwrap();
+        let mut select = command("select");
+        select.id = Some(vector.clone());
+        doc.edit_layer_groups(select).unwrap();
+        doc.edit_layer_groups(command("isolate")).unwrap();
+        assert_eq!(
+            filter(&mut doc, "", LayerFilterKind::Vector, None, None),
+            vec![vector.clone()]
+        );
+        assert!(filter(&mut doc, "", LayerFilterKind::Paint, None, None).is_empty());
+        let selected = doc.layer_groups.selected.clone();
+        doc.edit_layer_groups(command("clearFilter")).unwrap();
+        let state = doc.layer_groups_snapshot();
+        assert_eq!(state.selected, selected);
+        assert_eq!(state.filter, LayerFilter::default());
+        assert_eq!(state.filter_matches, Some(vec![vector]));
+        assert!(!state.filter_enabled);
+        doc.edit_layer_groups(command("isolate")).unwrap();
+        assert!(doc.layer_groups_snapshot().filter_matches.is_none());
+    }
+    #[test]
+    fn undo_redo_recompute_matches_without_restoring_old_search_state() {
+        let mut doc = Document::default();
+        let vector = doc.add_vector_layer().unwrap();
+        assert_eq!(
+            filter(&mut doc, "Vector", LayerFilterKind::Vector, None, None),
+            vec![vector.clone()]
+        );
+        doc.undo();
+        let state = doc.layer_groups_snapshot();
+        assert!(state.filter_enabled);
+        assert_eq!(state.filter_query, "Vector");
+        assert_eq!(state.filter_matches, Some(vec![]));
+        doc.redo();
+        assert_eq!(
+            doc.layer_groups_snapshot().filter_matches,
+            Some(vec![vector])
+        );
+    }
+    #[test]
+    fn large_metadata_search_returns_only_matching_ids() {
+        let mut doc = Document::default();
+        doc.add_vector_layer().unwrap();
+        let template = doc.svg_layers[0].clone();
+        for i in 0..1024 {
+            let mut layer = template.clone();
+            layer.id = format!("bulk-{i}");
+            layer.name = format!("Target {i:04}");
+            doc.svg_layers.push(layer);
+        }
+        let revision = doc.revision();
+        assert_eq!(
+            filter(&mut doc, "target 1000", LayerFilterKind::Vector, None, None),
+            vec!["bulk-1000".to_string()]
+        );
+        assert_eq!(doc.revision(), revision);
+        assert!(doc
+            .svg_layers
+            .iter()
+            .all(|layer| layer.source == template.source));
+    }
+    #[test]
+    fn invalid_filters_and_overlong_queries_leave_previous_filter_intact() {
+        let mut doc = Document::default();
+        filter(&mut doc, "keep", LayerFilterKind::Paint, None, None);
+        assert!(serde_json::from_value::<LayerGroupEdit>(
+            serde_json::json!({"action":"filter","filter":{"kind":"unknown"}})
+        )
+        .is_err());
+        let mut edit = command("filter");
+        edit.name = Some("x".repeat(101));
+        edit.filter = Some(LayerFilter {
+            kind: LayerFilterKind::Vector,
+            ..Default::default()
+        });
+        assert!(doc.edit_layer_groups(edit).is_err());
+        let state = doc.layer_groups_snapshot();
+        assert_eq!(state.filter_query, "keep");
+        assert_eq!(state.filter.kind, LayerFilterKind::Paint);
     }
 }

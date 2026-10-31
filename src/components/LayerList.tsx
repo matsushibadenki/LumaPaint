@@ -1,8 +1,9 @@
+import { layerFilterLabels } from './layer-filter-labels';
 import {LayerContextMenu} from './LayerContextMenu';
 import { MaskLinkButton } from './MaskLinkButton';
 import { layerGroupLabels } from './layer-group-labels';
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from 'react';
-import type { LayerEditTarget, LayerSnapshot, TextObjectSnapshot, LayerGroup, LayerGroupsState, LayerGroupEdit } from '../bridge';
+import type { LayerEditTarget, LayerSnapshot, TextObjectSnapshot, LayerGroup, LayerGroupsState, LayerGroupEdit, LayerFilter } from '../bridge';
 import type { Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
 import { Icon } from './Icon';
@@ -48,29 +49,46 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [objectDrag, setObjectDrag] = useState<{ layerId: string; objectId: string; targetId: string } | null>(null);
+  const [queryDraft, setQueryDraft] = useState(groups.filterQuery ?? '');
+  const pendingQuery = useRef<string | null>(null);
+  const pendingNavigation = useRef(false);
+  useEffect(() => {
+    const query = groups.filterQuery ?? '';
+    if (!groups.filterEnabled || pendingQuery.current === null || pendingQuery.current === query) {
+      pendingQuery.current = null;
+      setQueryDraft(query);
+    }
+  }, [groups.filterEnabled, groups.filterQuery]);
   const textLayers = new Set(textObjects.map(object => object.layerId));
   const groupText = layerGroupLabels[locale];
+  const layerById = new Map(layers.map(layer => [layer.id, layer]));
+  const groupById = new Map(groups.groups.map(group => [group.id, group]));
   type Row = LayerSnapshot & {group?:LayerGroup;depth:number;parent?:string};
   let displayed:Row[] = [];
   const filtering=!!groups.filterEnabled||!!groups.isolated?.length;
   reorderEnabled=reorderEnabled&&!filtering;
   const append = (ids:string[],depth:number,parent?:string) => {
     for (const id of ids) {
-      const group = groups.groups.find(g=>g.id===id);
+      const group = groupById.get(id);
       if (group) {
         displayed.push({id:group.id,name:group.name,kind:'svg',visible:group.visible,locked:group.locked,opacity:1,alphaLocked:false,maskEnabled:false,maskInverted:false,maskDensity:1,deletable:true,strokeCount:0,objects:[],group,depth,parent});
         if (!group.collapsed||filtering) append(group.children,depth+1,group.id);
       } else {
-        const layer=layers.find(l=>l.id===id);
+        const layer=layerById.get(id);
         if(layer) displayed.push({...layer,depth,parent});
       }
     }
   };
   append(groups.roots,0);
   // Old projects and the fixed background have no folder metadata.
-  for(const layer of [...layers].reverse()) if(!displayed.some(row=>row.id===layer.id)&&!groups.groups.some(g=>g.children.includes(layer.id))) displayed.push({...layer,depth:0});
+  const displayedIds = new Set(displayed.map(row => row.id));
+  const groupedIds = new Set(groups.groups.flatMap(group => group.children));
+  for (const layer of [...layers].reverse()) if (!displayedIds.has(layer.id) && !groupedIds.has(layer.id)) displayed.push({...layer, depth: 0});
 
-  if(filtering){
+  if (filtering && groups.filterMatches != null) {
+    const matches = new Set(groups.filterMatches);
+    displayed = displayed.filter(row => matches.has(row.id));
+  } else if(filtering){
     const query=(groups.filterQuery??'').trim().toLocaleLowerCase();
     const matches=new Set(displayed.filter(row=>{
       let current:Row|undefined=row;let nameMatch=!query,isolateMatch=!groups.isolated?.length;
@@ -80,7 +98,32 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
     for(const row of displayed.filter(row=>matches.has(row.id))){let parent=row.parent;for(let i=0;parent&&i<=groups.groups.length;i++){matches.add(parent);parent=displayed.find(row=>row.id===parent)?.parent;}}
     displayed=displayed.filter(row=>matches.has(row.id));
   }
-  const filterLabels={ja:{search:'レイヤーを検索',clear:'検索を解除',isolate:'レイヤー分離を解除'},en:{search:'Find Layers',clear:'Clear layer filter',isolate:'Exit layer isolation'},'zh-CN':{search:'查找图层',clear:'清除图层筛选',isolate:'退出图层隔离'}}[locale];
+  const filterLabels = layerFilterLabels[locale];
+  const clearFilter = () => {
+    pendingNavigation.current = false;
+    pendingQuery.current = null;
+    setQueryDraft('');
+    onGroupEdit({action: 'clearFilter'});
+  };
+  const filter: LayerFilter = groups.filter ?? { kind: 'all', visible: null, locked: null };
+  const changeFilter = (patch: Partial<LayerFilter>) => onGroupEdit({action: 'filter', name: queryDraft, filter: {...filter, ...patch}});
+  const selectFirstMatch = () => {
+    const targets = groups.filterTargets == null ? null : new Set(groups.filterTargets);
+    const first = displayed.find(row => !row.group && (!targets || targets.has(row.id)))
+      ?? displayed.find(row => !targets || targets.has(row.id));
+    if (!first || !selectable) return;
+    if (first.group) onGroupEdit({action: 'select', id: first.id});
+    else onSelect(first.id);
+    list.current?.querySelectorAll<HTMLElement>('[data-layer-id]').forEach(node => {
+      if (node.dataset.layerId === first.id) { node.scrollIntoView({block: 'nearest'}); node.focus(); }
+    });
+  };
+  useEffect(() => {
+    if (pendingNavigation.current && groups.filterEnabled && pendingQuery.current === null) {
+      pendingNavigation.current = false;
+      selectFirstMatch();
+    }
+  }, [groups.filterEnabled, groups.filterQuery, groups.filterMatches]);
   const orderKey = displayed.map(layer => layer.id).join('|');
 
   function cancel() {
@@ -283,7 +326,15 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
     onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}
     onPointerLeave={() => { if (!gesture.current?.dragging) cancel(); }}
     onDragStart={event => { if (!(event.target as Element).closest('.layer-object-row')) event.preventDefault(); }}>
-    {groups.filterEnabled&&<div className="layer-search"><input autoFocus type="search" aria-label={filterLabels.search} placeholder={filterLabels.search} value={groups.filterQuery??''} onChange={e=>onGroupEdit({action:'filter',name:e.target.value})}/><button type="button" title={filterLabels.clear} aria-label={filterLabels.clear} onClick={()=>onGroupEdit({action:'clearFilter'})}>×</button></div>}
+    {groups.filterEnabled ? <div className="layer-search-controls">
+      <div className="layer-search"><Icon name="zoom"/><input autoFocus type="search" maxLength={100} aria-label={filterLabels.search} placeholder={filterLabels.search} value={queryDraft} onChange={e=>{const query=e.target.value;pendingQuery.current=query;setQueryDraft(query);onGroupEdit({action:'filter',name:query});}} onBlur={()=>{pendingQuery.current=null;pendingNavigation.current=false;setQueryDraft(groups.filterQuery??'');}} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();clearFilter();}else if(event.key==='Enter'){event.preventDefault();event.stopPropagation();if(pendingQuery.current!==null)pendingNavigation.current=true;else selectFirstMatch();}}}/><button type="button" title={filterLabels.clear} aria-label={filterLabels.clear} onClick={clearFilter}>×</button></div>
+      <div className="layer-filter-criteria">
+        <label title={filterLabels.kind}><Icon name="layers"/><select aria-label={filterLabels.kind} title={filterLabels.kind} value={filter.kind} onChange={e=>changeFilter({kind:e.target.value as LayerFilter['kind']})}><option value="all">{filterLabels.allKinds}</option>{(['paint','svg','vector','text','group'] as const).map(kind=><option key={kind} value={kind}>{filterLabels[kind]}</option>)}</select></label>
+        <label title={filterLabels.visibility}><Icon name="eye"/><select aria-label={filterLabels.visibility} title={filterLabels.visibility} value={filter.visible===null?'all':String(filter.visible)} onChange={e=>changeFilter({visible:e.target.value==='all'?null:e.target.value==='true'})}><option value="all">{filterLabels.allVisibility}</option><option value="true">{filterLabels.visible}</option><option value="false">{filterLabels.hidden}</option></select></label>
+        <label title={filterLabels.lock}><Icon name="lock"/><select aria-label={filterLabels.lock} title={filterLabels.lock} value={filter.locked===null?'all':String(filter.locked)} onChange={e=>changeFilter({locked:e.target.value==='all'?null:e.target.value==='true'})}><option value="all">{filterLabels.allLocks}</option><option value="true">{filterLabels.locked}</option><option value="false">{filterLabels.unlocked}</option></select></label>
+      </div>
+    </div> : <div className="layer-search-toolbar"><button type="button" className="icon-button" disabled={!enabled} title={filterLabels.search} aria-label={filterLabels.search} onClick={()=>onGroupEdit({action:'filter'})}><Icon name="zoom"/></button></div>}
+    {filtering && displayed.length === 0 && <p className="layer-search-empty" role="status">{filterLabels.empty}</p>}
     {!!groups.isolated?.length&&<button type="button" onClick={()=>onGroupEdit({action:'isolate'})}>{filterLabels.isolate}</button>}
     {displayed.map((layer, index) => {
       if(layer.group) {
@@ -291,11 +342,11 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
         return <div key={group.id} data-layer-id={group.id} role="listitem" tabIndex={enabled?0:-1}
           className={`layer-row layer-folder-row${groups.selected.includes(group.id)?' selected':''}${draggedId===group.id?' dragging':''}${folderDrop===group.id?' folder-drop-target':''}${gap===index?' insert-before':''}`}
           style={{paddingLeft:6}} data-movable={enabled} onPointerDown={event=>start(event,layer)}
-          onKeyDown={event=>{if(event.target!==event.currentTarget||!enabled)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();onGroupEdit({action:'select',id:group.id,additive:event.metaKey||event.ctrlKey});}if(event.key==='ArrowLeft'&&!group.collapsed||event.key==='ArrowRight'&&group.collapsed){event.preventDefault();onGroupEdit({action:'collapse',id:group.id});}}}>
+          onKeyDown={event=>{if(event.target!==event.currentTarget||!enabled)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();onGroupEdit({action:'select',id:group.id,additive:event.metaKey||event.ctrlKey});}if(!filtering && (event.key==='ArrowLeft'&&!group.collapsed||event.key==='ArrowRight'&&group.collapsed)){event.preventDefault();onGroupEdit({action:'collapse',id:group.id});}}}>
           <div className="layer-indicators"><button className="icon-button" disabled={!enabled} aria-label={`${group.visible?t.hideLayer:t.showLayer}: ${group.name}`} aria-pressed={group.visible} onClick={()=>onGroupEdit({action:'visibility',id:group.id})}><Icon name={group.visible?'eye':'eyeOff'}/></button></div>
           <span className="layer-color-spacer" aria-hidden="true" />
           <div className="layer-row-content" style={{marginLeft:Math.min(layer.depth,4)*24}}>
-          <button className="icon-button layer-folder-disclosure" disabled={!enabled} aria-label={`${group.collapsed?groupText.expand:groupText.collapse}: ${group.name}`} aria-expanded={!group.collapsed} onClick={()=>onGroupEdit({action:'collapse',id:group.id})}><Icon name={group.collapsed?'chevronRight':'chevronDown'}/></button>
+          <button className="icon-button layer-folder-disclosure" disabled={!enabled || filtering} aria-label={`${group.collapsed&&!filtering?groupText.expand:groupText.collapse}: ${group.name}`} aria-expanded={!group.collapsed||filtering} onClick={()=>onGroupEdit({action:'collapse',id:group.id})}><Icon name={group.collapsed&&!filtering?'chevronRight':'chevronDown'}/></button>
           <span className="layer-folder-icon"><Icon name="folder"/></span>
           {group.maskEnabled&&<span className={`mask-thumb${group.maskInverted?' inverted':''}`} style={{backgroundColor:group.maskInverted?`rgb(${Math.round(255*(1-group.maskDensity))} ${Math.round(255*(1-group.maskDensity))} ${Math.round(255*(1-group.maskDensity))})`:'#fff'}} aria-hidden="true"/>}
           <div className="layer-description">{editingId===group.id?<input className="layer-name" autoFocus maxLength={120} aria-label={groupText.rename} value={name} onFocus={event=>event.currentTarget.select()} onChange={event=>setName(event.target.value)} onBlur={()=>commitName(layer)} onKeyDown={event=>{if(event.key==='Enter')commitName(layer);if(event.key==='Escape')setEditingId(null);}}/>:<span className="layer-name" onDoubleClick={()=>{if(enabled){setName(group.name);setEditingId(group.id);}}}>{group.name}</span>}</div>
@@ -311,7 +362,7 @@ export function LayerList({ editTarget, onSelectTarget, groups, onGroupEdit, thu
       const isExpanded = expanded.has(layer.id);
       return <Fragment key={layer.id}><div data-layer-id={layer.id} role="listitem" tabIndex={selectable ? 0 : -1}
       className={`layer-row${groups.selected.includes(layer.id) || (groups.selected.length===0&&selectedId === layer.id&&editTarget!=='none') ? ' selected' : ''}${draggedId === layer.id ? ' dragging' : ''}${gap === index ? ' insert-before' : ''}`}
-      style={{paddingLeft:6}} data-movable={reorderEnabled && (!enabled || layer.deletable)} title={reorderEnabled && (!enabled || layer.deletable) ? t.reorderLayer : t.fixedBaseLayer}
+      style={{paddingLeft:6}} data-movable={reorderEnabled && (!enabled || layer.deletable)} title={filtering ? displayName : reorderEnabled && (!enabled || layer.deletable) ? t.reorderLayer : t.fixedBaseLayer}
       onContextMenu={event=>{if((event.target as Element).closest('input,textarea'))return;if(layer.kind==='vector'){event.preventDefault();event.stopPropagation();if(rasterizing)return;cancel();setContextMenu({id:layer.id,x:event.clientX,y:event.clientY})}}}
       onPointerDown={event => { if (!reorderEnabled && selectable && event.button === 0 && !(event.target as Element).closest('input, button')) onSelect(layer.id); else start(event, layer); }}
       onKeyDown={event => {

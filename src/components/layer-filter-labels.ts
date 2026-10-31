@@ -1,0 +1,5 @@
+export const layerFilterLabels = {
+  ja: { search: 'レイヤーを検索', clear: '検索を解除', isolate: 'レイヤー分離を解除', kind: 'レイヤーの種類', visibility: '表示状態', lock: 'ロック状態', allKinds: 'すべて', allVisibility: 'すべて', allLocks: 'すべて', paint: 'ピクセル', svg: '画像・SVG', vector: 'ベクター', text: '文字', group: 'グループ', visible: '表示中', hidden: '非表示', locked: 'ロック中', unlocked: 'ロックなし', empty: '該当するレイヤーはありません' },
+  en: { search: 'Find Layers', clear: 'Clear layer filter', isolate: 'Exit layer isolation', kind: 'Layer type', visibility: 'Visibility', lock: 'Lock state', allKinds: 'All', allVisibility: 'All', allLocks: 'All', paint: 'Pixel', svg: 'Image/SVG', vector: 'Vector', text: 'Text', group: 'Group', visible: 'Visible', hidden: 'Hidden', locked: 'Locked', unlocked: 'Unlocked', empty: 'No matching layers' },
+  'zh-CN': { search: '查找图层', clear: '清除图层筛选', isolate: '退出图层隔离', kind: '图层类型', visibility: '可见性', lock: '锁定状态', allKinds: '全部', allVisibility: '全部', allLocks: '全部', paint: '像素', svg: '图像/SVG', vector: '矢量', text: '文字', group: '组', visible: '可见', hidden: '隐藏', locked: '已锁定', unlocked: '未锁定', empty: '没有匹配的图层' },
+};

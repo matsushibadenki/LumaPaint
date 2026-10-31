@@ -33,7 +33,10 @@ pub use compound_shapes::{CompoundShape, CompoundShapeEdit, CompoundShapeSnapsho
 pub use crop::ImageResamplePlan;
 #[path = "document_layer_groups.rs"]
 mod layer_groups;
-pub use layer_groups::{GroupMaskSettings, LayerGroupEdit, LayerGroupsSnapshot, LayerGroupsState};
+pub use layer_groups::{
+    GroupMaskSettings, LayerFilter, LayerFilterKind, LayerGroupEdit, LayerGroupsSnapshot,
+    LayerGroupsState,
+};
 #[path = "document_guides.rs"]
 mod guides;
 pub use guides::{Guide, GuideEdit, GuidesSnapshot, GuidesState};
@@ -7618,6 +7621,10 @@ impl Document {
         }
         self.transform_slots.0.clear();
         self.compound_shapes = state.compound_shapes;
+        // Layer search is workspace UI state; Undo must not restore old queries.
+        state.layer_groups.filter_enabled = self.layer_groups.filter_enabled;
+        state.layer_groups.filter_query = self.layer_groups.filter_query.clone();
+        state.layer_groups.filter = self.layer_groups.filter.clone();
         self.layer_groups = state.layer_groups;
         self.guides = state.guides;
         self.visible = state.background_visible;
