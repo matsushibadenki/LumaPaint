@@ -164,7 +164,7 @@ pub struct NewDocumentSettings {
 }
 
 impl ColorProfile {
-    fn mode(self) -> ColorMode {
+    pub fn mode(self) -> ColorMode {
         match self {
             Self::Srgb | Self::DisplayP3 | Self::AdobeRgb1998 => ColorMode::Rgb,
             Self::JapanColor2001Coated => ColorMode::Cmyk,
@@ -177,6 +177,8 @@ impl ColorProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Brush {
+    #[serde(default)]
+    pub pressure: crate::pressure::Settings,
     #[serde(default)]
     pub material: crate::natural_media::MaterialSettings,
     #[serde(default = "default_hardness")]
@@ -283,6 +285,7 @@ pub enum BrushSimulation {
 impl Default for Brush {
     fn default() -> Self {
         Self {
+            pressure: Default::default(),
             material: Default::default(),
             opacity: 1.,
             flow: 1.,
@@ -306,6 +309,7 @@ impl Brush {
             || self.blend_mode != crate::brush_blend::BrushBlendMode::Normal
     }
     pub fn validate(&self) -> Result<(), String> {
+        self.pressure.validate()?;
         self.envelope.validate()?;
         self.material.validate()?;
         if [self.opacity, self.flow, self.alpha, self.smoothing]
@@ -1601,6 +1605,10 @@ impl Document {
         self.saved_revision = self.revision;
         self.file_name = Some(name);
     }
+    pub fn color_profile(&self) -> ColorProfile {
+        self.color_profile
+    }
+
     pub fn color_mode(&self) -> ColorMode {
         self.color_mode
     }
@@ -8034,16 +8042,13 @@ impl Document {
             {
                 return false;
             }
-            let pressure = |index: usize| {
-                stroke
-                    .pressures
-                    .get(index)
-                    .copied()
-                    .unwrap_or(1.0)
-                    .max(0.05)
-            };
+            let pressure = |index: usize| stroke.pressures.get(index).copied().unwrap_or(1.0);
             if stroke.points.len() == 1 {
-                let radius = stroke.brush.size * pressure(0) * 0.5;
+                let radius =
+                    stroke.brush.size * stroke.brush.pressure.size.evaluate(pressure(0)) * 0.5;
+                if radius <= 0. || stroke.brush.pressure.opacity.evaluate(pressure(0)) == 0. {
+                    return false;
+                }
                 return (point.x - stroke.points[0].x).hypot(point.y - stroke.points[0].y)
                     <= radius;
             }
@@ -8065,9 +8070,14 @@ impl Document {
                     x: a.x + delta.x * t,
                     y: a.y + delta.y * t,
                 };
-                let radius = stroke.brush.size
-                    * (pressure(index) + (pressure(index + 1) - pressure(index)) * t)
-                    * 0.5;
+                let p = pressure(index) + (pressure(index + 1) - pressure(index)) * t;
+                if stroke.brush.pressure.opacity.evaluate(p) == 0. {
+                    return false;
+                }
+                let radius = stroke.brush.size * stroke.brush.pressure.size.evaluate(p) * 0.5;
+                if radius <= 0. {
+                    return false;
+                }
                 (point.x - nearest.x).hypot(point.y - nearest.y) <= radius
             })
         })

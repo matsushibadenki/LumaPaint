@@ -79,6 +79,10 @@ pub fn run() {
             "document-preview",
             |_context, request, responder| document_previews::serve(request, responder),
         )
+        .register_asynchronous_uri_scheme_protocol(
+            "pressure-preview",
+            |_context, request, responder| brush_pressure::serve(request, responder),
+        )
         .setup(|app| {
             if let Err(error) = media_browser::initialize(app.handle()) {
                 eprintln!("Media browser: {error}");
@@ -256,6 +260,9 @@ pub fn run() {
             canvas::set_gradient_tool,
             gradient_presets::gradient_library,
             swatches::swatch_library,
+            color_history::color_history,
+            brush_pressure::brush_pressure_preset,
+            brush_pressure::brush_pressure_preview,
             lut_editor::lut_editor,
             ai::ai_credentials,
             ai::ai_open_key_page,
@@ -339,6 +346,7 @@ pub fn run() {
                 canvas::close_window(window.label());
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                brush_pressure::forget_window(window.label());
                 modal_windows::parent_destroyed(window.app_handle(), window.label());
                 canvas::close_window(window.label());
             }
@@ -372,7 +380,9 @@ pub fn run() {
 mod ai;
 #[cfg(any(target_os = "macos", test))]
 mod ai_raster;
+mod brush_pressure;
 mod canvas;
+mod color_history;
 mod editor_windows;
 mod gradient_presets;
 mod lut_editor;

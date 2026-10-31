@@ -1,3 +1,4 @@
+import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {imageFrameAction,imageLinks,manageImageLinks,placeImage,type DocumentSnapshot,type ImageLink,type FrameFit} from '../bridge';
@@ -88,9 +89,9 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
  const count=rows.filter(r=>r.object.imageFrame?.name).length;
  return <div className="links-panel" aria-busy={busy}>
   <header><h2>{t.title} <span>{count}</span></h2><button disabled={busy||checking} onClick={()=>void refresh()}>{checking?t.checking:t.refresh}</button></header>
-  <div className="link-filters"><input type="search" aria-label={t.search} placeholder={t.search} value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label={t.status} value={filter} onChange={e=>setFilter(e.target.value)}>{(['all','issues','missing','modified','embedded','normal','empty'] as const).map(value=><option key={value} value={value}>{t[value]}</option>)}</select></div>
-  <details className="link-options"><summary>{t.options}</summary><label><input type="checkbox" checked={group} onChange={e=>setGroup(e.target.checked)}/>{t.group}</label><div>{(['layer','format','size'] as const).map(column=><label key={column}><input type="checkbox" checked={columns.includes(column)} onChange={e=>setColumns(old=>e.target.checked?[...old,column]:old.filter(c=>c!==column))}/>{t[column]}</label>)}</div></details>
-  <div className="link-table-scroll" onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='a'){e.preventDefault();e.stopPropagation();setSelection(visible.map(r=>r.object.id));}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setSelection([]);}}}><table className="link-table" aria-label={t.title}><thead><tr>{columns.map(column=><th key={column} scope="col" aria-sort={sort===column?(descending?'descending':'ascending'):'none'}><button onClick={()=>{if(sort===column)setDescending(v=>!v);else{setSort(column);setDescending(false);}}}>{t[column]}{sort===column?(descending?' ↓':' ↑'):''}</button></th>)}</tr></thead><tbody>
+<PanelBlock id="links.search" title={panelBlockLabels[locale].search}>  <div className="link-filters"><input type="search" aria-label={t.search} placeholder={t.search} value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label={t.status} value={filter} onChange={e=>setFilter(e.target.value)}>{(['all','issues','missing','modified','embedded','normal','empty'] as const).map(value=><option key={value} value={value}>{t[value]}</option>)}</select></div>
+</PanelBlock>  <PanelBlock id="links.options" title={<>{t.options}</>} defaultOpen={false} className="link-options"><label><input type="checkbox" checked={group} onChange={e=>setGroup(e.target.checked)}/>{t.group}</label><div>{(['layer','format','size'] as const).map(column=><label key={column}><input type="checkbox" checked={columns.includes(column)} onChange={e=>setColumns(old=>e.target.checked?[...old,column]:old.filter(c=>c!==column))}/>{t[column]}</label>)}</div></PanelBlock>
+<PanelBlock id="links.list" title={t.title}>  <div className="link-table-scroll" onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='a'){e.preventDefault();e.stopPropagation();setSelection(visible.map(r=>r.object.id));}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setSelection([]);}}}><table className="link-table" aria-label={t.title}><thead><tr>{columns.map(column=><th key={column} scope="col" aria-sort={sort===column?(descending?'descending':'ascending'):'none'}><button onClick={()=>{if(sort===column)setDescending(v=>!v);else{setSort(column);setDescending(false);}}}>{t[column]}{sort===column?(descending?' ↓':' ↑'):''}</button></th>)}</tr></thead><tbody>
   {display.map(({key,row,ids,children,child})=>{
     const chosen=ids.some(id=>selection.includes(id)),allSelected=ids.every(id=>selection.includes(id));
     const worst=children?[...children].sort((a,b)=>priority[a.status]-priority[b.status])[0].status:row.status;
@@ -101,7 +102,7 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
   </tbody></table></div>
   {!display.length&&<p>{frames.length?t.noResults:t.none}</p>}
   <div className="link-selection-bar"><span>{selected.length} {t.selected}</span><button disabled={!visible.length||busy} onClick={()=>setSelection(visible.map(r=>r.object.id))}>{t.selectAll}</button><button disabled={!selected.length||busy} onClick={()=>setSelection([])}>{t.clear}</button></div>
-  <div className="link-actions" aria-label={t.title}>
+</PanelBlock><PanelBlock id="links.actions" title={panelBlockLabels[locale].actions}>  <div className="link-actions" aria-label={t.title}>
    <button disabled={!canManage||selected.some(r=>!r.object.imageFrame?.sourcePath||r.status==='missing')} onClick={()=>void run('update')}>{t.update}</button>
    <button disabled={!canManage} title={selected.length>1?t.multiRelink:undefined} onClick={()=>void run('relink')}>{selected.length&&selected.every(r=>r.status==='embedded')?t.unembed:t.relink}</button>
    <button disabled={!canManage||selected.some(r=>!r.object.imageFrame?.sourcePath)} onClick={()=>void run('embed')}>{t.embed}</button>
@@ -109,18 +110,18 @@ export function LinksPanel({locale,document,enabled,onUpdate}:{locale:Locale;doc
    {singleRow?.status==='empty'&&<button disabled={!editable(singleRow)} onClick={()=>void single('place')}>{t.place}</button>}
    <button disabled={!modified.length||checking} onClick={()=>void run('update',modified.map(r=>r.object.id))}>{t.updateAll} ({modified.length})</button>
   </div>
-  <p className="link-hint">{t.selectionHint}</p>
-  {singleRow&&<details className="link-info" open><summary>{t.info}</summary><dl>
+</PanelBlock>  <p className="link-hint">{t.selectionHint}</p>
+  {singleRow&&<PanelBlock id="links.info" title={<>{t.info}</>} className="link-info"><dl>
    <dt>{t.name}</dt><dd>{singleRow.name}</dd><dt>{t.status}</dt><dd>{t[singleRow.status]}</dd>
    <dt>{t.path}</dt><dd>{singleRow.object.imageFrame?.sourcePath??'—'}</dd><dt>{t.layer}</dt><dd>{singleRow.layer.name} · {singleRow.object.name}</dd>
    <dt>{t.format}</dt><dd>{singleRow.link?.format||'—'}</dd><dt>{t.size}</dt><dd>{singleRow.link?byteLabel(singleRow.link.bytes):'—'}</dd>
    <dt>{t.dimensions}</dt><dd>{singleRow.object.imageFrame?.size?.join(' × ')??'—'} px</dd>
    <dt>{t.instances}</dt><dd>{singleRow.object.imageFrame?.sourcePath?rows.filter(r=>r.object.imageFrame?.sourcePath===singleRow.object.imageFrame?.sourcePath).length:1}</dd>
    <dt>{t.modifiedAt}</dt><dd>{singleRow.link?.modifiedAt?new Date(singleRow.link.modifiedAt*1000).toLocaleString(locale):'—'}</dd>
-  </dl></details>}
-  {singleRow?.object.imageFrame?.name&&<fieldset disabled={!editable(singleRow)}><legend>{t.fitting}</legend>{(['contain','cover','stretch'] as const).map(fit=><button key={fit} aria-pressed={singleRow.object.imageFrame?.fitting===fit} onClick={()=>void single(fit)}>{t[fit]}</button>)}
+  </dl></PanelBlock>}
+  {singleRow?.object.imageFrame?.name&&<PanelBlock id="links.fitting" title={t.fitting}><fieldset disabled={!editable(singleRow)}>{(['contain','cover','stretch'] as const).map(fit=><button key={fit} aria-pressed={singleRow.object.imageFrame?.fitting===fit} onClick={()=>void single(fit)}>{t[fit]}</button>)}
    <form onSubmit={e=>{e.preventDefault();void single('offset');}}><span>{t.offset}</span>{(['X','Y'] as const).map((axis,i)=><label key={axis}>{axis} ({symbol})<SignedNumberInput label={`${t.offset} ${axis} (${symbol})`} min={-100000/factor} max={100000/factor} value={offset[i]} onChange={value=>setOffset(v=>v.map((x,j)=>j===i?value:x) as [string,string])}/></label>)}<button disabled={!validOffset}>{t.apply}</button></form>
-  </fieldset>}
+  </fieldset></PanelBlock>}
   {error&&<p role="alert">{error}</p>}
  </div>;
 }

@@ -1,3 +1,4 @@
+import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { FontViewer } from './FontViewer';
 import { fontViewerMessages } from '../font-viewer';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
@@ -131,8 +132,7 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, used
       {error && <p role="alert">{error}</p>}
     </div>
     <fieldset disabled={disabled}>
-      <section className="type-section">
-
+      <PanelBlock id="text.character" title={panelBlockLabels[locale].character}>
         <div className="type-section-body">
           <select aria-label={t.font} value={mixed.includes('fontFamily') && !draft?.stylePatch?.fontFamily ? '' : text.fontFamily} onChange={event => change({ fontFamily: event.target.value })}>
             <option value="" disabled>{t.mixed}</option><option value="sans-serif">{textMessages[locale].sans}</option><option value="serif">{textMessages[locale].serif}</option><option value="monospace">{textMessages[locale].mono}</option>
@@ -158,9 +158,8 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, used
             {(['bold', 'italic', 'underline', 'strikethrough'] as const).map((key, index) => <button key={key} type="button" aria-label={key === 'strikethrough' ? t.strike : t[key]} title={key === 'strikethrough' ? t.strike : t[key]} aria-pressed={mixed.includes(key) ? 'mixed' : text[key]} className={`type-toggle type-${key}`} onClick={() => change({ [key]: !text[key] })}>{['B', 'I', 'T', 'T'][index]}</button>)}
           </div>
         </div>
-      </section>
-      <section className="type-section">
-        <h3>{t.paragraph}<span aria-hidden="true">☰</span></h3>
+      </PanelBlock>
+      <PanelBlock id="text.paragraph" title={t.paragraph}>
         <div className="type-section-body">
           <div className="type-alignments">{(['left', 'center', 'right', 'justify'] as const).map(align => <button type="button" aria-label={t[align]} title={t[align]} aria-pressed={text.alignment === align} onClick={() => change({ alignment: align })} key={align}><svg width="24" height="22" viewBox="0 0 24 22" aria-hidden="true">{[3,7,11,15,19].map((y, i) => { const inset = align === 'right' && i % 2 ? 6 : align === 'center' && i % 2 ? 3 : 0; return <path key={y} d={`M${2 + inset} ${y}h${align === 'justify' ? 20 : 20 - inset * 2}`} stroke="currentColor" />; })}</svg></button>)}</div>
           <div className="type-list-controls" role="group" aria-label={t.lists}>
@@ -181,12 +180,11 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, used
           <label className="type-check"><input type="checkbox" checked={text.hyphenation} onChange={event => change({ hyphenation: event.target.checked })} />{t.hyphenation}</label>
           <p className="type-hint">{t.paragraphHint}</p>
         </div>
-      </section>
+      </PanelBlock>
     </fieldset>
-    <section className="type-section">
-      <h3>OpenType<span aria-hidden="true">☰</span></h3>
+    <PanelBlock id="text.opentype" title="OpenType">
       <div className="type-section-body"><div className="type-toggles"><button disabled title={t.ligatures}>fi</button><button disabled title={t.alternates}>Aα</button><button disabled title={t.smallCaps}>Tᴛ</button></div><p className="type-hint">{t.advanced}</p></div>
-    </section>
+    </PanelBlock>
     </>}
   </div>;
 }

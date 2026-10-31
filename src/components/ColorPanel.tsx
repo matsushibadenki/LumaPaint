@@ -1,3 +1,6 @@
+import { PanelBlock, panelBlockLabels } from './PanelBlock';
+import { useColorUsage, colorHistoryLabels } from '../color-history';
+import { swatchLibrary } from '../bridge';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import type { Brush } from '../bridge';
 import type { Locale } from '../i18n';
@@ -23,6 +26,7 @@ function rgb(h: number, s: number, v: number): Brush['color'] {
   return channels.map(n => Math.round((n + m) * 255)) as Brush['color'];
 }
 export interface VectorColorControls {
+  fillAlpha?: number; strokeAlpha?: number;
   fill: Brush['color']; stroke: Brush['color']; fillStatus: 'none'|'mixed'|null; strokeStatus: 'none'|'mixed'|null;
   change: (target: 'fill'|'stroke', color: Brush['color']|null)=>void; swap:()=>void;
 }
@@ -65,8 +69,12 @@ function ChannelNumber({ value, min=0, max, label, onChange }: { value: number; 
     onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
 }
 
-export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false, noColor = false, onNone, foregroundNone = false, backgroundNone = false }: { vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean; noColor?: boolean; onNone?: () => void; foregroundNone?: boolean; backgroundNone?: boolean }) {
+export function ColorPanel({ vectorColors, locale, color: foregroundColor, backgroundColor, activeColor, onSelectColor, onChange: onForegroundChange, onBackgroundChange, onSwap, singleColor = false, noColor = false, onNone, foregroundNone = false, backgroundNone = false, trackUsage = false, usageAlpha }: { usageAlpha?: number; trackUsage?: boolean; vectorColors?: VectorColorControls; locale: Locale; color: Brush['color']; backgroundColor: Brush['color']; activeColor: ColorTarget; onSelectColor: (target: ColorTarget) => void; onChange: (color: Brush['color']) => void; onBackgroundChange: (color: Brush['color']) => void; onSwap: () => void; singleColor?: boolean; noColor?: boolean; onNone?: () => void; foregroundNone?: boolean; backgroundNone?: boolean }) {
   const t = colorPanelLabels[locale], w = workspaceMessages[locale];
+  const usage = useColorUsage(), historyLabels = colorHistoryLabels[locale];
+  const pendingColor = useRef<Brush['color'] | null>(null);
+  const [swatchError, setSwatchError] = useState('');
+  const [savingSwatch, setSavingSwatch] = useState(false);
   const wheelShape = useColorWheelShape();
   const [colorModel, setColorModel] = useState<ColorModel>('hsb');
   const [labEdits, setLabEdits] = useState<Partial<Record<ColorTarget, {hex:string;values:[number,number,number]}>>>({});
@@ -77,7 +85,12 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
   const fill = vectorColors?.fill ?? foregroundColor, stroke = vectorColors?.stroke ?? backgroundColor;
   const status = vectorColors ? (activeColor === 'foreground' ? vectorColors.fillStatus : vectorColors.strokeStatus) : (noColor || (activeColor === 'foreground' ? foregroundNone : backgroundNone) ? 'none' : null);
   const color = activeColor === 'background' ? stroke : fill;
-  const onChange = vectorColors ? (color: Brush['color'])=>vectorColors.change(activeColor === 'foreground' ? 'fill' : 'stroke', color) : activeColor === 'background' ? onBackgroundChange : onForegroundChange;
+  const applyColor = vectorColors ? (color: Brush['color'])=>vectorColors.change(activeColor === 'foreground' ? 'fill' : 'stroke', color) : activeColor === 'background' ? onBackgroundChange : onForegroundChange;
+  const onChange = (next: Brush['color']) => { pendingColor.current = next; applyColor(next); };
+  const commitColor = () => {
+    const next = pendingColor.current; pendingColor.current = null;
+    if (trackUsage && next) usage.commit(next, vectorColors ? (activeColor === 'foreground' ? vectorColors.fillAlpha : vectorColors.strokeAlpha) : usageAlpha ?? (activeColor === 'background' ? 1 : undefined));
+  };
   const savedCmyk = cmykEdits[activeColor];
   // Preserve the chosen black/ink separation: RGB alone cannot reconstruct it.
   const cmyk = savedCmyk?.hex === toHex(color) ? savedCmyk.values : rgbToCmyk(color);
@@ -180,8 +193,18 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     if (key === 'hue') changeHue(n);
     else changeHsv(h, key === 'saturation' ? n / 100 : current.s, key === 'value' ? n / 100 : current.v);
   }
-  return <div className={`color-panel-controls${singleColor ? ' single-color' : ''}`}>
-    <div className="color-panel-toolbar"><label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
+  const variants = [
+    { key: 'lighter', color: rgb(h, current.s, current.v + (1 - current.v) * .3) },
+    { key: 'darker', color: rgb(h, current.s, current.v * .7) },
+    { key: 'muted', color: rgb(h, current.s * .6, current.v) },
+    { key: 'vivid', color: rgb(h, current.s + (1 - current.s) * .4, current.v) },
+  ] as const;
+  const seen = new Set([toHex(color)]);
+  const candidates = variants.filter(item => { if (usage.colorMode === 'grayscale' && (item.key === 'muted' || item.key === 'vivid')) return false; const hex = toHex(item.color); if (seen.has(hex)) return false; seen.add(hex); return true; });
+  return <div className={`color-panel-controls${singleColor ? ' single-color' : ''}`}
+    onBlur={commitColor} onKeyUp={event => { if (['Enter','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'].includes(event.key)) commitColor(); }}
+    onPointerUp={commitColor} onPointerCancel={() => { pendingColor.current = null; }}>
+<PanelBlock id="color.channels" title={panelBlockLabels[locale].channels}>    <div className="color-panel-toolbar"><label className="color-model-select"><span>{t.model}</span><select value={colorModel} onChange={event => setColorModel(event.target.value as ColorModel)}>
       <option value="hsb">HSB</option><option value="rgb">RGB</option><option value="cmyk">CMYK</option><option value="grayscale">{locale==='ja'?'グレースケール':locale==='zh-CN'?'灰度':'Grayscale'}</option><option value="lab">Lab</option>
     </select></label>
       <div className="color-wheel-shapes" role="group" aria-label={t.wheelShape}>{(['square','triangle'] as const).map(shape=><button key={shape} type="button" aria-label={t[shape]} title={t[shape]} aria-pressed={wheelShape===shape} onClick={()=>setColorWheelShape(shape)}><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">{shape==='square'?<rect x="4" y="4" width="12" height="12"/>:<path d="M4 3L17 10L4 17Z"/>}</svg></button>)}</div>
@@ -195,7 +218,7 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
     </div>
     {colorModel === 'lab' && <p className="color-model-note">{t.labNote}</p>}
     {colorModel === 'cmyk' && <p className="color-model-note">{t.cmykNote}</p>}
-    <div className={`color-wheel color-wheel-${wheelShape}`} role="group" aria-label={t.color}
+</PanelBlock><PanelBlock id="color.wheel" title={panelBlockLabels[locale].wheel}>    <div className={`color-wheel color-wheel-${wheelShape}`} role="group" aria-label={t.color}
       onPointerDown={event => { if (event.button !== 0) return; event.currentTarget.setPointerCapture(event.pointerId); pick(event, true); }}
       onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) pick(event); }}
       onPointerUp={event => { mode.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
@@ -205,7 +228,15 @@ export function ColorPanel({ vectorColors, locale, color: foregroundColor, backg
       <span className="color-wheel-marker" style={{ left: (50 + 46 * Math.cos(h * Math.PI / 180)) + '%', top: (50 - 46 * Math.sin(h * Math.PI / 180)) + '%' }} />
       <span className="color-wheel-marker" style={{ left: (wheelShape === 'square' ? 22 + 56 * current.s : 29 + 62 * c) + '%', top: (wheelShape === 'square' ? 78 - 56 * current.v : 50 + 36 * (1 - c - 2 * white)) + '%' }} />
     </div>
-    {(vectorColors || onNone) && <div className="color-none-control"><button type="button" aria-pressed={status === 'none'} onClick={()=>vectorColors ? vectorColors.change(activeColor==='foreground'?'fill':'stroke',null) : onNone?.()}><span className="paint-none" aria-hidden="true" />{vectorLabels[locale].none}</button>{status === 'mixed' && <span>{vectorLabels[locale].mixed}</span>}</div>}
-    <HexInput key={activeColor} color={color} onChange={onChange} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
-  </div>;
+</PanelBlock><PanelBlock id="color.palette" title={panelBlockLabels[locale].palette}>    {(vectorColors || onNone) && <div className="color-none-control"><button type="button" aria-pressed={status === 'none'} onClick={()=>vectorColors ? vectorColors.change(activeColor==='foreground'?'fill':'stroke',null) : onNone?.()}><span className="paint-none" aria-hidden="true" />{vectorLabels[locale].none}</button>{status === 'mixed' && <span>{vectorLabels[locale].mixed}</span>}</div>}
+    <div className="color-variations" role="group" aria-label={historyLabels.variants}>
+      {candidates.map(item => <button type="button" key={item.key} style={{ background: toHex(item.color) }}
+        title={`${historyLabels[item.key]} · ${toHex(item.color).toUpperCase()}`} aria-label={`${historyLabels[item.key]} · ${toHex(item.color).toUpperCase()}`}
+        onClick={() => { onChange(item.color); commitColor(); }} />)}
+      <button type="button" className="save-color-swatch" disabled={savingSwatch || status === 'none' || status === 'mixed'} title={historyLabels.save} aria-label={historyLabels.save}
+        onClick={() => { setSavingSwatch(true); setSwatchError(''); void swatchLibrary('add', { name: toHex(color).toUpperCase(), paint: { kind: 'color', color } }).catch(error => setSwatchError(String(error))).finally(() => setSavingSwatch(false)); }}>＋</button>
+    </div>
+    {swatchError && <p className="field-error" role="alert">{swatchError}</p>}
+    <HexInput key={activeColor} color={color} onChange={next => { onChange(next); commitColor(); }} label={`${labels[activeColor]} · ${w.hex}`} invalid={w.invalidColor} />
+</PanelBlock>  </div>;
 }

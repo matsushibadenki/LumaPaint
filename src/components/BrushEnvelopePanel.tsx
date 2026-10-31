@@ -1,3 +1,4 @@
+import { PanelBlock } from './PanelBlock';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useRef, useState } from 'react';
 import type { Brush, BrushEnvelope } from '../bridge';
@@ -26,7 +27,7 @@ export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolutio
     if (patch.attack !== undefined || patch.decay !== undefined || patch.hold !== undefined || patch.release !== undefined) setViewScale(null);
     onChange({ ...brush, envelope: { ...envelope, ...patch } });
   };
-  return <section className="brush-envelope">
+  return <PanelBlock id="brush.envelope" title={t.title}><section className="brush-envelope">
     <label className="brush-envelope-enable"><input type="checkbox" disabled={!enabled} checked={envelope.enabled} onChange={e => update({ enabled: e.target.checked })} />{t.title}</label>
     <svg viewBox="0 0 280 140" aria-label={t.title} className={!enabled || !envelope.enabled ? 'inactive' : ''}
       onPointerMove={event => {
@@ -60,5 +61,5 @@ export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolutio
       return <label className="envelope-control" key={key}><span>{t[key]}</span><CompactSlider aria-label={t[key]} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000/factor} step={percent?1:1/factor} value={value} onChange={event => update({ [key]: Number(event.target.value) / (percent ? 100 : 1/factor) })} /><input aria-label={`${t[key]} ${percent ? '%' : symbol}`} disabled={!enabled || !envelope.enabled} type="number" step="any" min="0" max={percent ? 100 : 10000/factor} value={value} onChange={event => { const n = Number(event.target.value); if (Number.isFinite(n)) update({ [key]: Math.max(0, Math.min(percent ? 100 : 10000/factor, n)) / (percent ? 100 : 1/factor) }); }} /><small>{percent ? '%' : symbol}</small></label>;
     })}
     <button type="button" disabled={!enabled} onClick={() => update({ ...defaults, enabled: envelope.enabled })}>{t.reset}</button>
-  </section>;
+  </section></PanelBlock>;
 }

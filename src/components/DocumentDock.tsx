@@ -1,3 +1,5 @@
+import { ColorHistoryStrip } from './ColorHistoryStrip';
+import type { UsedColor } from '../color-history';
 import {featureIcons} from '../feature-types';
 import { useEffect, useId, useRef, useState, type ReactNode, type KeyboardEvent, type PointerEvent } from 'react';
 import { TimelinePanel } from './TimelinePanel';
@@ -13,7 +15,7 @@ type Tab = 'timeline' | 'generation';
 const tabs: Tab[] = ['timeline', 'generation'];
 
 /** Only view layout lives here; document and rendering state remain in Rust. */
-export function DocumentDock({ locale, children, timelineRequest = 0 }: { locale: Locale; children: ReactNode; timelineRequest?: number }) {
+export function DocumentDock({ locale, children, timelineRequest = 0, onColorSelect }: { onColorSelect: (color: UsedColor) => void; locale: Locale; children: ReactNode; timelineRequest?: number }) {
   const t = labels[locale];
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -104,6 +106,7 @@ export function DocumentDock({ locale, children, timelineRequest = 0 }: { locale
           tabIndex={active === null || active === tab ? 0 : -1} onKeyDown={event => tabKey(event, tab)}
           onClick={() => { prepareTab(tab); setActive(previous => previous === tab ? null : tab); }}>{tab==='timeline'&&<img className="menu-feature-icon" src={featureIcons.animation} alt="" aria-hidden="true" />}{t[tab]}</button>)}
       </div>
+      <ColorHistoryStrip locale={locale} onSelect={onColorSelect} />
       {active && <button className="document-dock-close" type="button" aria-label={t.close} title={t.close}
         onClick={() => { buttons.current[active]?.focus(); setActive(null); }}>×</button>}
     </div>

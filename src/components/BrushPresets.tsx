@@ -1,4 +1,5 @@
-import type { Brush } from '../bridge';
+import { pressurePreset, type Brush, type PressureBrushKind } from '../bridge';
+import { useRef, useState } from 'react';
 import type { Locale } from '../i18n';
 import { BrushEnvelopePanel } from './BrushEnvelopePanel';
 
@@ -40,6 +41,9 @@ export function BrushPresets({ locale, brush, enabled, onChange }: {
   locale: Locale; brush: Brush; enabled: boolean; onChange: (brush: Brush) => void;
 }) {
   const t = labels[locale];
+  const request = useRef(0); const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  const current=useRef(brush);current.current=brush;
+  async function choose(id:PressureBrushKind,patch:Partial<Brush>){const version=++request.current;const snapshot=current.current;setBusy(true);setError('');try{const pressure=await pressurePreset(id);if(version===request.current&&current.current===snapshot)onChange({...current.current,...patch,pressure});}catch(cause){setError(String(cause));}finally{if(version===request.current)setBusy(false);}}
   const language = locale === 'ja' ? 0 : locale === 'en' ? 1 : 2;
   const selected = presets.find(preset => preset.size === brush.size && Math.abs(preset.hardness - brush.hardness) < .001 && (preset.simulation ?? 'round') === (brush.simulation ?? 'round'));
   return <div className="brush-presets">
@@ -47,21 +51,22 @@ export function BrushPresets({ locale, brush, enabled, onChange }: {
     <p className="muted small">{t.hint}</p>
     <label className="brush-simulation-choice">
       <span>{locale === 'ja' ? '描画方式' : locale === 'en' ? 'Stroke simulation' : '笔触模拟'}</span>
-      <select disabled={!enabled} value={brush.simulation ?? 'round'} onChange={event => onChange({ ...brush, simulation: event.target.value as Brush['simulation'] })}>
+      <select disabled={!enabled||busy} value={brush.simulation ?? 'round'} onChange={event => {const simulation=event.target.value as Brush['simulation'];void choose(simulation==='ink'?'ink-pen':simulation==='pencil'?'graphite':simulation==='dryBrush'?'dry-brush':'round',{simulation});}}>
         <option value="round">{locale === 'ja' ? '通常' : locale === 'en' ? 'Round' : '普通'}</option>
         {presets.filter(preset => preset.simulation).map(preset => <option key={preset.id} value={preset.simulation}>{preset.names[language]}</option>)}
       </select>
     </label>
     <div className="brush-preset-grid" role="group" aria-label={t.title}>
-      {presets.map(preset => <button type="button" key={preset.id} className="brush-preset" disabled={!enabled}
+      {presets.map(preset => <button type="button" key={preset.id} className="brush-preset" disabled={!enabled||busy}
         aria-pressed={selected?.id === preset.id}
         aria-label={`${preset.names[language]}, ${t.size} ${preset.size}px, ${t.hardness} ${preset.hardness * 100}%`}
-        onClick={() => onChange({ ...brush, size: preset.size, hardness: preset.hardness, simulation: preset.simulation ?? 'round' })}>
+        onClick={() => void choose(preset.id as PressureBrushKind,{size:preset.size,hardness:preset.hardness,simulation:preset.simulation??'round'})}>
         <StrokeSample size={preset.size} hardness={preset.hardness} simulation={preset.simulation} />
         <span className="brush-preset-name">{preset.names[language]}</span>
         <small>{preset.size}px · {preset.hardness * 100}%</small>
       </button>)}
     </div>
+    {error&&<p className="panel-error" role="alert">{error}</p>}
     <BrushEnvelopePanel locale={locale} brush={brush} enabled={enabled} onChange={onChange} />
   </div>;
 }

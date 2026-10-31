@@ -852,6 +852,7 @@ impl PaintView {
     }
 
     fn pointer(&self, event: &NSEvent, phase: u8) {
+        let _color_usage = UsedBrushGesture::begin(phase);
         let _interaction = (phase != 3).then(input_timing::Interaction::new);
         let _input = (phase != 3).then(lumapaint_core::performance::input_event);
         if phase != 3 {
@@ -897,7 +898,7 @@ impl PaintView {
             point,
             phase,
             if event.subtype() == NSEventSubtype::TabletPoint {
-                event.pressure().clamp(0., 1.)
+                lumapaint_core::pressure::normalize(event.pressure())
             } else {
                 1.
             },
@@ -1221,7 +1222,7 @@ impl PaintView {
         }
 
         let pressure = if event.subtype() == NSEventSubtype::TabletPoint {
-            event.pressure().clamp(0.0, 1.0)
+            lumapaint_core::pressure::normalize(event.pressure())
         } else {
             1.0
         };
@@ -3705,6 +3706,65 @@ pub fn apply_memory_preferences() -> Result<(), String> {
     let app = APP.get().ok_or("Application unavailable")?;
     window_sessions::manage_memory(&app.state::<crate::resource_memory::Resources>().0)
 }
+thread_local! {
+    static USED_BRUSH_START: RefCell<Option<(u64, Brush)>> = const { RefCell::new(None) };
+}
+struct UsedBrushGesture(u8);
+impl UsedBrushGesture {
+    fn begin(phase: u8) -> Self {
+        if phase == 0 {
+            let brush = BRUSH.with(|b| *b.borrow());
+            let eligible = DOCUMENT.with(|d| {
+                d.borrow().layer_edit_target()
+                    == lumapaint_core::layer_mask::LayerEditTarget::Content
+                    && d.borrow().editing_channel() == 0
+            }) && TOOL.with(|t| {
+                matches!(
+                    t.get(),
+                    CanvasTool::Brush
+                        | CanvasTool::Rectangle
+                        | CanvasTool::Ellipse
+                        | CanvasTool::PaintBucket
+                        | CanvasTool::VectorRectangle
+                        | CanvasTool::VectorEllipse
+                        | CanvasTool::VectorPen
+                        | CanvasTool::VectorPencil
+                )
+            });
+            USED_BRUSH_START.with(|s| {
+                *s.borrow_mut() =
+                    eligible.then(|| DOCUMENT.with(|d| (d.borrow().revision(), brush)))
+            });
+        }
+        Self(phase)
+    }
+}
+impl Drop for UsedBrushGesture {
+    fn drop(&mut self) {
+        if self.0 != 2 {
+            return;
+        }
+        let Some((revision, brush)) = USED_BRUSH_START.with(|s| s.borrow_mut().take()) else {
+            return;
+        };
+        if brush.no_color {
+            return;
+        }
+        let color = DOCUMENT.with(|d| {
+            let d = d.borrow();
+            (d.revision() != revision).then(|| crate::color_history::UsedColor {
+                color: brush.color,
+                alpha: brush.alpha,
+                color_mode: d.color_mode(),
+                color_profile: d.color_profile(),
+            })
+        });
+        if let (Some(app), Some(color)) = (APP.get(), color) {
+            let _ = crate::color_history::record(app, color);
+        }
+    }
+}
+
 fn emit_document() {
     let _emit = input_timing::Stage::new("document_notify");
     let memory_stage = input_timing::Stage::new("document_memory_policy");

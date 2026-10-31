@@ -14,7 +14,9 @@ const labels = {
 export const colorPickerVisibilityEvent = 'lumapaint-color-picker-visibility';
 export type ColorPickerOcclusion = { left: number; top: number; right: number; bottom: number };
 
-export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', noColor = false, onNone, onChange, onOpen, onClose, children }: {
+export function ColorPickerPopover({ locale, color, disabled = false, label, target = 'foreground', noColor = false, onNone, onChange, onOpen, onClose, children, trackUsage = false, usageAlpha }: {
+  trackUsage?: boolean;
+  usageAlpha?: number;
   locale: Locale;
   color: Brush['color'];
   disabled?: boolean;
@@ -120,7 +122,7 @@ export function ColorPickerPopover({ locale, color, disabled = false, label, tar
     {open && createPortal(<div ref={popup} id={id} role="dialog" aria-label={`${label} · ${colorPanelLabels[locale].color}`}
       className="color-picker-popover" style={{ left: position.left, top: position.top }}>
       <header onPointerDown={beginDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}><strong>{label}</strong><button type="button" aria-label={labels[locale].close} onClick={() => { setOpen(false); trigger.current?.focus(); }}>×</button></header>
-      <ColorPanel locale={locale} color={color} backgroundColor={color} activeColor={target}
+      <ColorPanel usageAlpha={usageAlpha} trackUsage={trackUsage} locale={locale} color={color} backgroundColor={color} activeColor={target}
         onSelectColor={() => {}} onChange={onChange} onBackgroundChange={onChange} onSwap={() => {}} noColor={noColor} onNone={onNone} singleColor />
     </div>, document.body)}
   </span>;

@@ -1,3 +1,4 @@
+import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { useMeasurementUnit, setMeasurementUnit, pixelsPerMeasurement, unitSymbols, measurementUnits } from '../measurement-units';
 import { useEffect, useState } from 'react';
 import { defaultStrokeStyle, strokePreview, type DocumentSnapshot, type StrokeStyle } from '../bridge';
@@ -84,7 +85,7 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
   return <div className="stroke-panel">
     <h2>{t.title}</h2>
     <fieldset disabled={!editable || busy}>
-      <div className="stroke-width-row">
+<PanelBlock id="stroke.basic" title={panelBlockLabels[locale].basic}>      <div className="stroke-width-row">
         <label htmlFor="vector-stroke-width">{t.width}</label>
         <input id="vector-stroke-width" type="number" min="0" max={4096 / pixelsPerUnit} step="0.25" value={draft} placeholder={mixed ? t.mixed : '—'} onChange={e => setDraft(e.target.value)} onBlur={() => commit()} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(display); setError(''); } }} />
         <select aria-label={t.width} value={measurementUnit} onChange={e => { void setMeasurementUnit(e.target.value as typeof measurementUnit).catch(e=>setError(String(e))); }}>{measurementUnits.map(u=><option key={u} value={u}>{unitSymbols[u]}</option>)}</select>
@@ -97,10 +98,10 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
         <NumericSetting label={t.miter} value={style.miterLimit} mixed={isMixed('miterLimit') ? t.mixed : null} min={1} max={100} step={1} onCommit={n => change({ miterLimit: n })} />
         {choice('alignment', t.alignment, alignments, t.alignments)}
       </div>
-      <div className="stroke-dash-heading"><span>{t.dash} ({unit})</span><button type="button" onClick={() => change({ dashArray: [] })}>{t.solid}</button><button type="button" onClick={() => change({ dashArray: [8 * pixelsPerUnit, 4 * pixelsPerUnit] })}>{t.dashed}</button></div>
+</PanelBlock><PanelBlock id="stroke.dash" title={t.dash}>      <div className="stroke-dash-heading"><span>{t.dash} ({unit})</span><button type="button" onClick={() => change({ dashArray: [] })}>{t.solid}</button><button type="button" onClick={() => change({ dashArray: [8 * pixelsPerUnit, 4 * pixelsPerUnit] })}>{t.dashed}</button></div>
       <input className="stroke-dash-input" aria-label={`${t.dash} (${unit})`} aria-describedby="stroke-dash-hint" value={dashDraft} placeholder={isMixed('dashArray') ? t.mixed : '8 4'} onChange={e => setDashDraft(e.target.value)} onBlur={commitDash} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') setDashDraft(dashDisplay); }} />
       <p id="stroke-dash-hint" className="stroke-hint">{t.dashHint}</p>
-      <div className="stroke-settings">
+</PanelBlock><PanelBlock id="stroke.arrows" title={panelBlockLabels[locale].arrows}>      <div className="stroke-settings">
         <NumericSetting label={`${t.offset} (${unit})`} value={style.dashOffset / pixelsPerUnit} mixed={isMixed('dashOffset') ? t.mixed : null} min={-100000 / pixelsPerUnit} max={100000 / pixelsPerUnit} onCommit={n => change({ dashOffset: n * pixelsPerUnit })} />
         {choice('startArrow', t.start, arrows, t.arrows)}
         {choice('endArrow', t.end, arrows, t.arrows)}
@@ -110,9 +111,9 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
       </div>
       {style.profile === 'custom' && <WidthCurveEditor disabled={!editable || busy} curve={style.widthCurve} locale={locale} onCommit={widthCurve => change({ widthCurve })} />}
       {selected.length === 1 && (selected[0].object.strokeContours?.length ?? 0) > 1 && <div className="stroke-settings">{selected[0].object.strokeContours.map((closed, index) => <label key={index} className="stroke-setting"><span>{locale === 'ja' ? '輪郭' : locale === 'zh-CN' ? '轮廓' : 'Contour'} {index + 1}</span><select disabled={!closed} value={closed ? (style.contourAlignments[index] ?? style.alignment) : 'center'} onChange={e => { const contourAlignments = selected[0].object.strokeContours.map((_,i) => style.contourAlignments[i] ?? style.alignment); contourAlignments[index] = e.target.value as StrokeStyle['alignment']; change({ contourAlignments }); }}>{alignments.map((v,i) => <option key={v} value={v}>{t.alignments[i]}</option>)}</select></label>)}</div>}
-    </fieldset>
-    <div className="stroke-preview" role="img" aria-label={t.preview} dangerouslySetInnerHTML={{ __html: preview }} />
-    {selected.length > 1 && (mixed || styles.some(s => JSON.stringify(s) !== previewKey)) && <p className="stroke-hint">{t.mixed}</p>}
+</PanelBlock>    </fieldset>
+<PanelBlock id="stroke.preview" title={t.preview}>    <div className="stroke-preview" role="img" aria-label={t.preview} dangerouslySetInnerHTML={{ __html: preview }} />
+</PanelBlock>    {selected.length > 1 && (mixed || styles.some(s => JSON.stringify(s) !== previewKey)) && <p className="stroke-hint">{t.mixed}</p>}
     <p className="stroke-note">{t.note}</p>
     <p className="stroke-note">{editable ? `${t.selected}：${selected.length}` : t.select}</p>
     {error && <p role="alert" className="stroke-error">{error}</p>}

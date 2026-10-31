@@ -5196,3 +5196,64 @@ fn gpu_selection_large_compressed_mask_keeps_exact_indices_and_interpolation() {
         assert!(fractional > 0);
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on desktop"]
+fn gpu_custom_pressure_response_matches_cpu() {
+    use lumapaint_core::pressure::{Response, Settings};
+    let gpu = Gpu::new();
+    let stroke = Stroke {
+        brush: Brush {
+            size: 40.,
+            hardness: 0.6,
+            pressure: Settings {
+                size: Response {
+                    minimum: 0.02,
+                    points: [0., 0.1, 0.3, 0.6, 1.],
+                    ..Response::default()
+                },
+                opacity: Response {
+                    enabled: true,
+                    minimum: 0.,
+                    points: [0., 0.5, 0.75, 0.9, 1.],
+                },
+                ..Settings::default()
+            },
+            ..Brush::default()
+        },
+        points: vec![
+            Point { x: 100., y: 180. },
+            Point { x: 140., y: 180. },
+            Point { x: 180., y: 180. },
+            Point { x: 220., y: 180. },
+        ],
+        pressures: vec![0., 0.2, 0.65, 1.],
+        eraser: false,
+        clear: false,
+        selection: None,
+    };
+    let actual = gpu.render(std::slice::from_ref(&stroke));
+    let expected = gpu.render_tiled_strokes(std::slice::from_ref(&stroke));
+    let mut max = 0u8;
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    let mut painted = 0;
+    for y in 158..203 {
+        for x in 90..244 {
+            let at = (((y + 64) * W + x + 32) * 4) as usize;
+            if actual[at] < 245 {
+                painted += 1;
+            }
+            for c in 0..3 {
+                let difference = actual[at + c].abs_diff(expected[at + c]);
+                max = max.max(difference);
+                sum += u64::from(difference);
+                count += 1;
+            }
+        }
+    }
+    let mean = sum as f64 / count as f64;
+    eprintln!("custom pressure GPU/CPU: max {max}, mean {mean:.3}, painted {painted}");
+    assert!(painted > 100);
+    assert!(max <= 8 && mean <= 2., "max {max}, mean {mean}");
+}

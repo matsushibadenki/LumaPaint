@@ -15,6 +15,7 @@ mod layer_mask_paint;
 pub mod lut;
 pub mod motion;
 pub mod performance;
+pub mod pressure;
 pub mod scene;
 pub mod screentone;
 pub mod selection;

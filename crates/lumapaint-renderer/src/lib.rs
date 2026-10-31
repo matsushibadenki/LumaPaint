@@ -1217,7 +1217,7 @@ fn stroke_dab_spacing(brush: lumapaint_core::document::Brush, points: &[(Point, 
     if inverse_scale >= 8. {
         let minimum_pressure = points
             .iter()
-            .map(|(_, pressure)| pressure.max(0.05))
+            .map(|(_, pressure)| brush.pressure.size.evaluate(*pressure))
             .fold(1., f32::min);
         let taper = if brush.simulation == lumapaint_core::document::BrushSimulation::Ink {
             0.12
@@ -1249,15 +1249,26 @@ fn dabs_along_path_at_spacing(
     // additions on wide brushes; hard edges keep a one-pixel upper bound.
     // A stationary hard-tip click at 50% flow deposits 50% coverage. Preserve
     // legacy full-flow density while calibrating intermediate values as alpha.
-    let flow_density = if brush.flow == 1. {
-        1.
-    } else {
-        -(-brush.flow).ln_1p() / (4. + 12. * brush.hardness)
+    let flow_density = |pressure: f32| {
+        let flow = brush.flow * brush.pressure.opacity.evaluate(pressure);
+        if flow == 1. {
+            1.
+        } else {
+            -(-flow).ln_1p() / (4. + 12. * brush.hardness)
+        }
     };
     let color = linear_color(brush.color);
     let mut result = Vec::new();
     let mut emit = |p: Point, pressure: f32, length: f32, distance: f32| {
-        let radius = base_radius * pressure.max(0.05);
+        let size = brush.pressure.size.evaluate(pressure);
+        // Keep a zero-output dab in the sampler (weight zero) so arc-length
+        // accounting and end-cell correction never attach to an earlier dab.
+        let radius = (base_radius * size).max(0.025);
+        let pressure_density = if size == 0. {
+            0.
+        } else {
+            flow_density(pressure)
+        };
         let level = brush.envelope.level(distance);
         let base_texture = if brush.material.enabled {
             0.
@@ -1299,7 +1310,7 @@ fn dabs_along_path_at_spacing(
             radius,
             hardness: brush.hardness,
             // Optical depth per unit arc length; the shader converts it to alpha.
-            weight: length / radius * opacity * level * flow_density,
+            weight: length / radius * opacity * level * pressure_density,
             texture: base_texture + (2.0 - base_texture) * dryness,
         })
     };
@@ -1339,10 +1350,16 @@ fn dabs_along_path_at_spacing(
                 emit(*last, *pressure, remainder, traversed);
             } else if let Some(last_dab) = result.last_mut() {
                 // Preserve the envelope multiplier when correcting the final cell.
-                last_dab.weight += remainder / base_radius
-                    * brush.envelope.level(next - spacing)
-                    * opacity
-                    * flow_density;
+                // Retain legacy end-cell coverage while respecting zero-output
+                // pressure and the current response density.
+                if last_dab.weight > 0. {
+                    last_dab.weight = (last_dab.weight
+                        + remainder / base_radius
+                            * brush.envelope.level(next - spacing)
+                            * opacity
+                            * flow_density(*pressure))
+                    .max(0.);
+                }
             }
         }
     }
@@ -1357,6 +1374,11 @@ fn dabs_along_path_at_spacing(
             dab.radius = (dab.radius * factor).max(0.025);
             dab.weight *= old_radius / dab.radius;
         }
+    }
+    // RasterDab's portable format has the same finite radius/depth limits
+    // on CPU and GPU, including custom curves very close to zero output.
+    for dab in &mut result {
+        dab.weight = dab.weight.clamp(0., 64.);
     }
     result
 }
@@ -6596,6 +6618,70 @@ mod tests {
         assert!(smoothed.iter().any(|point| point.0.y < 1.0));
     }
 
+    #[test]
+    fn pressure_responses_share_cpu_gpu_dabs_and_opacity() {
+        use lumapaint_core::{
+            pressure::{Response, Settings},
+            tiles::{TileCoord, TiledRasterDocument},
+        };
+        let mut stroke = Stroke {
+            brush: lumapaint_core::document::Brush {
+                size: 32.,
+                ..Default::default()
+            },
+            points: vec![Point { x: 32., y: 32. }],
+            pressures: vec![0.5],
+            eraser: false,
+            clear: false,
+            selection: None,
+        };
+        stroke.brush.pressure.size = Response {
+            minimum: 0.,
+            points: [0., 0.1, 0.3, 0.6, 1.],
+            ..Response::default()
+        };
+        let dabs = sampled_raster_dabs(&stroke).unwrap();
+        assert!((dabs[0].radius - 4.8).abs() < 1e-5);
+        let gpu = segments(&stroke, 1.);
+        assert_eq!(gpu[0].radius, dabs[0].radius);
+        assert_eq!(gpu[0].weight, dabs[0].weight);
+        stroke.brush.pressure.size.enabled = false;
+        stroke.brush.pressure.opacity = Response {
+            minimum: 0.,
+            ..Response::default()
+        };
+        let mut alphas = vec![];
+        for p in [0., 0.25, 0.5, 1.] {
+            stroke.pressures = vec![p];
+            let mut tiles = TiledRasterDocument::new(64, 64).unwrap();
+            tiles.add_layer("ink".into(), "Ink".into()).unwrap();
+            paint_stroke_into_tiles(&mut tiles, "ink", &stroke).unwrap();
+            let alpha = tiles
+                .composite_tile(TileCoord { x: 0, y: 0 })
+                .map_or(0, |pixels| {
+                    pixels[(32 * lumapaint_core::tiles::TILE_SIZE as usize + 32) * 4 + 3]
+                });
+            alphas.push(alpha);
+        }
+        assert_eq!(alphas[0], 0);
+        assert!((alphas[1] as i32 - 64).abs() <= 4, "{alphas:?}");
+        assert!((alphas[2] as i32 - 128).abs() <= 4, "{alphas:?}");
+        assert!(alphas[3] > 250);
+        stroke.brush.pressure = Settings::default();
+        stroke.brush.pressure.size.minimum = 0.;
+        stroke.pressures = vec![0.];
+        assert!(sampled_raster_dabs(&stroke)
+            .unwrap()
+            .iter()
+            .all(|d| d.weight == 0.));
+        for p in [0., 0.0001, 0.01] {
+            stroke.brush.size = 512.;
+            stroke.pressures = vec![p];
+            let mut tiles = TiledRasterDocument::new(64, 64).unwrap();
+            tiles.add_layer("ink".into(), "Ink".into()).unwrap();
+            paint_stroke_into_tiles(&mut tiles, "ink", &stroke).unwrap();
+        }
+    }
     #[test]
     fn pressure_changes_brush_radius_along_the_stroke() {
         let stroke = Stroke {

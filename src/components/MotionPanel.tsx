@@ -1,3 +1,4 @@
+import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -126,7 +127,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
     </div>
     <div className="motion-tabs" role="tablist" aria-label={t.title}>{(['catalog','clips'] as const).map(item=><button key={item} role="tab" aria-selected={tab===item} onClick={()=>setTab(item)}>{t[item]} <small>{item==='catalog'?catalog?.presets.length??0:layer?.motions.length??0}</small></button>)}</div>
     <div className="motion-panel-content">
-      {tab==='catalog'?<section className="motion-library" aria-label={t.catalog}>
+<PanelBlock id="motion.library" title={tab === 'catalog' ? t.catalog : t.clips}>      {tab==='catalog'?<section className="motion-library" aria-label={t.catalog}>
         <div className="motion-search"><input type="search" aria-label={t.search} placeholder={t.search} value={query} onChange={event=>setQuery(event.target.value)}/><select aria-label={t.catalog} value={category} onChange={event=>setCategory(event.target.value)}><option value="">{t.all} · {matches.length}</option>{catalog?.categories.map(item=><option key={item.id} value={item.id}>{item.names[locale]??item.names.en}</option>)}</select></div>
         <div className="motion-preset-list" role="listbox" aria-label={t.catalog}>{matches.slice(0,limit).map(item=><button key={item.id} role="option" aria-selected={draft?.preset===item.id} className="motion-preset" title={`${title(item)} · ${item.durationMs} ms`} onClick={()=>selectPreset(item)}><span className="motion-preset-mark" aria-hidden="true">{item.category.startsWith('tx-')?'Aa':item.category==='easing'?'∿':item.category==='spring'?'↝':'◇'}</span><span><strong>{title(item)}</strong><small>{catalog?.categories.find(category=>category.id===item.category)?.names[locale]} · {item.durationMs} ms</small></span></button>)}</div>
         {limit<matches.length&&<button className="motion-more" onClick={()=>setLimit(value=>value+48)}>{t.more} · {matches.length-limit}</button>}
@@ -141,9 +142,9 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
           </div>;
         })}
       </section>}
-      {draft&&preset&&<section key={draft.id} className="motion-parameters" aria-label={title(preset)}>
+</PanelBlock>      {draft&&preset&&<section key={draft.id} className="motion-parameters" aria-label={title(preset)}>
         <header><strong>{title(preset)}</strong><button className="motion-info" aria-label={motionBehavior(preset,locale)} title={motionBehavior(preset,locale)}>ⓘ</button><a href={catalog?.reference} target="_blank" rel="noreferrer" aria-label={t.reference} title={t.reference}>↗</a></header>
-        <div className="motion-parameter-grid">
+<PanelBlock id="motion.timing" title={panelBlockLabels[locale].timing}>        <div className="motion-parameter-grid">
           {number(t.start,draft.start+1,value=>edit({start:value-1}),1,18000)}
           {number(t.duration,draft.duration,value=>edit({duration:value}),1,18000)}
           {number(t.repeats,draft.repeats,value=>edit({repeats:value}),1,1000)}
@@ -160,7 +161,7 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
         <label className="motion-field"><span>{t.target}</span><select aria-label={t.target} value={draft.objects.length?'selected':'layer'} disabled={disabled} onChange={event=>edit({objects:event.target.value==='selected'?(state.data?.selectedObjects??[]):[]})}><option value="layer">{t.wholeLayer}</option><option value="selected" disabled={!state.data?.selectedObjects.length}>{t.selected} · {state.data?.selectedObjects.length??0}</option></select></label>
         <label className="motion-field"><span>{t.order}</span><select aria-label={t.order} value={draft.order} disabled={disabled} onChange={event=>edit({order:event.target.value})}>{['forward','reverse','center','edges','random','grid','alternating','spiral'].map(order=><option key={order} value={order}>{order==='reverse'?t.reverseOrder:curveLabel(order)}</option>)}</select></label>
         <div className="motion-checks"><label><input type="checkbox" checked={draft.reverse} disabled={disabled} onChange={event=>edit({reverse:event.target.checked})}/>{t.reverse}</label><label><input type="checkbox" checked={draft.yoyo} disabled={disabled} onChange={event=>edit({yoyo:event.target.checked})}/>{t.yoyo}</label></div>
-        {has('cube','meshPlane','depthStack','coverflow')&&<details open><summary>3D {draft.extruded&&<span className="motion-info" title={t.bevelInfo}>ⓘ</span>}</summary><div className="motion-parameter-grid">
+</PanelBlock>        {has('cube','meshPlane','depthStack','coverflow')&&<PanelBlock id="motion.depth" title={<>3D {draft.extruded&&<span className="motion-info" title={t.bevelInfo}>ⓘ</span>}</>}><div className="motion-parameter-grid">
           {number(t.meshDepth,draft.meshDepth??80,value=>edit({meshDepth:value}),0,4096,1,'px')}
           {number(t.cameraDistance,draft.cameraDistance??600,value=>edit({cameraDistance:value}),64,8192,1,'px')}
           {number(t.rotationX,draft.rotationX??-20,value=>edit({rotationX:value}),-36000,36000,1,'°')}
@@ -168,14 +169,14 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
           {number(t.rotationZ,draft.rotationZ??0,value=>edit({rotationZ:value}),-36000,36000,1,'°')}
           {draft.extruded&&number(t.bevelWidth,draft.bevelWidth??0,value=>edit({bevelWidth:value}),0,128,.1,'px')}
           {!draft.extruded&&number(t.copies,draft.copies??4,value=>edit({copies:value}),1,24)}
-        </div>{['tx-layered-depth','tx-motext-falloff'].includes(preset.id)&&<label className="motion-checks"><input type="checkbox" checked={draft.extruded??false} disabled={disabled} onChange={event=>edit({extruded:event.target.checked})}/>{t.extruded}</label>}</details>}
-        {has('fontAxes')&&<details open><summary>{t.fontAxes} <span className="motion-info" title={t.fontInfo}>ⓘ</span></summary>
+        </div>{['tx-layered-depth','tx-motext-falloff'].includes(preset.id)&&<label className="motion-checks"><input type="checkbox" checked={draft.extruded??false} disabled={disabled} onChange={event=>edit({extruded:event.target.checked})}/>{t.extruded}</label>}</PanelBlock>}
+        {has('fontAxes')&&<PanelBlock id="motion.font-axes" title={<>{t.fontAxes} <span className="motion-info" title={t.fontInfo}>ⓘ</span></>}>
           <label className="motion-field"><span>{t.variableFont}</span><select aria-label={t.variableFont} value={draft.variableFont??''} disabled={disabled} onChange={event=>{const font=fonts.find(font=>font.family===event.target.value);const axes=(draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id)).filter(axis=>!font||font.axes.some(a=>a.tag===axis.tag)).map(axis=>{const limits=font?.axes.find(a=>a.tag===axis.tag);return limits?{...axis,from:Math.max(limits.minimum,Math.min(limits.maximum,axis.from)),to:Math.max(limits.minimum,Math.min(limits.maximum,axis.to))}:axis;});edit({variableFont:event.target.value,fontAxes:axes.length?axes:font?[{tag:font.axes[0].tag,from:font.axes[0].minimum,to:font.axes[0].maximum}]:defaultAxes(preset.id)});}}><option value="">{t.autoFont}</option>{fonts.filter((font,index,list)=>list.findIndex(other=>other.family===font.family)===index).map(font=><option key={font.family} value={font.family}>{font.family}</option>)}</select></label>
           {(draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id)).map((axis,index)=>{const font=fonts.find(font=>font.family===draft.variableFont);const limits=font?.axes.find(a=>a.tag===axis.tag);const axes=draft.fontAxes?.length?draft.fontAxes:defaultAxes(preset.id);const update=(patch:Partial<typeof axis>)=>edit({fontAxes:axes.map((old,i)=>i===index?{...old,...patch}:old)});return <div className="motion-parameter-grid" key={axis.tag}>{number(`${axis.tag} · ${t.from}`,axis.from,value=>update({from:value}),limits?.minimum??-100000,limits?.maximum??100000,.1)}{number(`${axis.tag} · ${t.to}`,axis.to,value=>update({to:value}),limits?.minimum??-100000,limits?.maximum??100000,.1)}{font&&<select aria-label={`${t.axis} ${index+1}`} value={axis.tag} disabled={disabled} onChange={event=>{const axis=font.axes.find(a=>a.tag===event.target.value)!;update({tag:axis.tag,from:axis.minimum,to:axis.maximum});}}>{font.axes.filter(a=>a.tag===axis.tag||!axes.some(existing=>existing.tag===a.tag)).map(a=><option key={a.tag} value={a.tag}>{a.tag}</option>)}</select>}<button disabled={disabled||axes.length===1} onClick={()=>edit({fontAxes:axes.filter((_,i)=>i!==index)})}>{t.delete}</button></div>;})}
           <button disabled={disabled||!fonts.find(f=>f.family===draft.variableFont)?.axes.some(a=>!(draft.fontAxes??[]).some(existing=>existing.tag===a.tag))} onClick={()=>{const font=fonts.find(f=>f.family===draft.variableFont);const axis=font?.axes.find(a=>!(draft.fontAxes??[]).some(existing=>existing.tag===a.tag));if(axis)edit({fontAxes:[...(draft.fontAxes??[]),{tag:axis.tag,from:axis.minimum,to:axis.maximum}]});}}>{t.addAxis}</button>
-        </details>}
-        {has('kanjiStroke')&&<details open><summary>{t.program} <span className="motion-info" title={t.strokeInfo}>ⓘ</span></summary><div className="motion-parameter-grid">{number(t.strokeGap,draft.strokeGapMs??100,value=>edit({strokeGapMs:value}),0,1000,1,'ms')}{number(t.strokeWidth,draft.strokeWidth??4,value=>edit({strokeWidth:value}),.5,20,.1)}</div></details>}
-        <details open><summary>{t.curve}</summary>
+        </PanelBlock>}
+        {has('kanjiStroke')&&<PanelBlock id="motion.kanji-strokes" title={<>{t.program} <span className="motion-info" title={t.strokeInfo}>ⓘ</span></>}><div className="motion-parameter-grid">{number(t.strokeGap,draft.strokeGapMs??100,value=>edit({strokeGapMs:value}),0,1000,1,'ms')}{number(t.strokeWidth,draft.strokeWidth??4,value=>edit({strokeWidth:value}),.5,20,.1)}</div></PanelBlock>}
+        <PanelBlock id="motion.curve" title={<>{t.curve}</>}>
           <label className="motion-check"><input type="checkbox" checked={draft.curve===null} disabled={disabled} onChange={event=>edit({curve:event.target.checked?null:structuredClone(preset.curve)})}/>{t.presetCurve}</label>
           <select aria-label={t.curve} value={curve.kind} disabled={disabled||draft.curve===null} onChange={event=>edit({curve:structuredClone(curveDefaults[event.target.value])})}>{Object.keys(curveDefaults).map(kind=><option key={kind} value={kind}>{curveLabel(kind)}</option>)}</select>
           {draft.curve&&<div className="motion-parameter-grid">
@@ -183,13 +184,13 @@ export function MotionPanel({locale,transport=defaultTransport}:{locale:Locale;t
             {Object.entries(curve).filter(([key,value])=>key!=='kind'&&typeof value==='number').map(([key,value])=>number(curveLabel(key),Number(value),number=>edit({curve:{...curve,[key]:number}}),...(curveRanges[key]??[0,2000,.01] as [number,number,number])))}
             {curve.kind==='bezier'&&Array.isArray(curve.points)&&curve.points.map((value,index)=>number(['X1','Y1','X2','Y2'][index],Number(value),number=>{const points=[...(curve.points as number[])];points[index]=number;edit({curve:{...curve,points}});},index%2===0?0:-8,index%2===0?1:8,.01))}
           </div>}
-        </details>
-        {(has('blur','glow','particles','confetti','snow','embers','fireworks','coalesce','hue','tint','highlight','sweep')||preset.category.startsWith('tx-'))&&<details open><summary>{t.program}</summary><div className="motion-parameter-grid">
+        </PanelBlock>
+        {(has('blur','glow','particles','confetti','snow','embers','fireworks','coalesce','hue','tint','highlight','sweep')||preset.category.startsWith('tx-'))&&<PanelBlock id="motion.program" title={<>{t.program}</>}><div className="motion-parameter-grid">
           {has('blur')&&number(t.blur,draft.blur,value=>edit({blur:value}),0,64,1,'px')}
           {has('glow')&&number(t.glow,draft.glow,value=>edit({glow:value}),0,64,1,'px')}
           {has('particles','confetti','snow','embers','fireworks','coalesce')&&number(t.particles,draft.particleCount,value=>edit({particleCount:value}),0,128)}
           <label className="motion-number"><span>{t.color}</span><ColorPickerPopover locale={locale} label={t.color} color={[draft.color[0],draft.color[1],draft.color[2]]} disabled={disabled} onChange={color=>edit({color:[...color,255]})}/></label>
-        </div></details>}
+        </div></PanelBlock>}
         {has('textSwap')&&<label className="motion-field"><span>{t.alternateText}</span><input aria-label={t.alternateText} value={draft.alternateText} disabled={disabled} maxLength={8192} onChange={event=>edit({alternateText:event.target.value})}/></label>}
         {has('counter')&&<div className="motion-parameter-grid">{number(t.from,draft.numberFrom,value=>edit({numberFrom:value}),-1e12,1e12)}{number(t.to,draft.numberTo,value=>edit({numberTo:value}),-1e12,1e12)}</div>}
         {has('morph')&&<label className="motion-field"><span>{t.morphTarget}</span><textarea aria-label={t.morphTarget} rows={3} maxLength={32768} value={draft.morphTarget??''} disabled={disabled} onChange={event=>edit({morphTarget:event.target.value})}/></label>}

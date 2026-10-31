@@ -21,7 +21,20 @@ export interface Selection { regions: { shape: 'rectangle' | 'ellipse' | 'polygo
 export interface BrushEnvelope { enabled: boolean; attack: number; decay: number; sustain: number; hold: number; release: number; dryness: number }
 export interface PaperSettings { textureTransform?:[number,number,number,number,number,number]; enabled:boolean; kind:'smooth'|'coldPress'|'rough'|'canvas'|'washi'; scale:number; depth:number; color:[number,number,number] }
 export interface MaterialSettings { grainTransform?:[number,number,number,number,number,number]; enabled:boolean; medium:'graphite'|'charcoal'|'pastel'|'watercolor'|'gouache'|'oil'; loading:number; wetness:number; granulation:number; edge:number; paper:PaperSettings }
-export interface Brush { material?:MaterialSettings; opacity?: number; flow?: number; smoothing?: number; alpha?: number; blendMode?: import('./brush-settings').BrushBlendMode; noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
+export type PressureBrushKind = 'round'|'ink-pen'|'graphite'|'dry-brush'|'detail'|'ink'|'bold'|'paint'|'soft'|'shade'|'air';
+export interface PressureResponse { enabled: boolean; minimum: number; points: [number,number,number,number,number] }
+export interface PressureSettings { brushId: PressureBrushKind; size: PressureResponse; opacity: PressureResponse }
+export interface PressureSample { x: number; y: number; pressure: number }
+export interface PressurePreview { url: string; sizeCurve: [number,number][]; opacityCurve: [number,number][]; pressure: number; size: number; opacity: number }
+export const defaultPressure: PressureSettings = { brushId:'round',size:{enabled:true,minimum:.05,points:[0,.25,.5,.75,1]},opacity:{enabled:false,minimum:0,points:[0,.25,.5,.75,1]} };
+export function pressurePreset(id: PressureBrushKind, action: 'get'|'save'|'reset'='get', settings?:PressureSettings): Promise<PressureSettings> {
+  if (!isTauri()) return Promise.resolve({...structuredClone(defaultPressure),brushId:id});
+  return invoke('brush_pressure_preset',{id,action,settings:settings??null});
+}
+export function pressurePreview(action:string, brush:Brush, samples:PressureSample[], owner:string):Promise<PressurePreview> {
+  return invoke('brush_pressure_preview',{action,brush,samples,owner});
+}
+export interface Brush { pressure?: PressureSettings; material?:MaterialSettings; opacity?: number; flow?: number; smoothing?: number; alpha?: number; blendMode?: import('./brush-settings').BrushBlendMode; noColor?: boolean; size: number; hardness: number; color: [number, number, number]; simulation?: 'round' | 'ink' | 'pencil' | 'dryBrush'; envelope?: BrushEnvelope }
 export interface TransformPanelInfo { corners: [number, number][]; width: number; height: number; rotation: number; shear: number; rectangle: boolean; radii: [number, number, number, number] }
 export interface TransformPanelEdit { field: 'x'|'y'|'width'|'height'|'rotation'|'shear'|'corners'; values: [number, number, number, number]; reference: [number, number]; proportional: boolean; scaleCorners: boolean; scaleStrokes: boolean; revision: number; ids: string[] }
 export function editTransformPanel(edit: TransformPanelEdit): Promise<DocumentSnapshot> {
