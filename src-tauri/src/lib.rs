@@ -248,6 +248,7 @@ pub fn run() {
             canvas::outline_text,
             canvas::saved_path_action,
             canvas::panel_thumbnails,
+            canvas::layer_histogram,
             document_previews::document_pane_preview,
             workspace_session::save_document_workspace_view,
             workspace_session::restore_document_workspace,

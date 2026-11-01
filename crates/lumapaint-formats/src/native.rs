@@ -64,6 +64,48 @@ impl NativeDocumentCodec for Document {
 mod tests {
     use super::*;
     #[test]
+    fn native_round_trip_preserves_layer_comps() {
+        use lumapaint_core::document::LayerGroupEdit;
+        let document = Document::default();
+        let edit = |action: &str, id: Option<&str>| LayerGroupEdit {
+            action: action.into(),
+            id: id.map(str::to_owned),
+            name: Some("仕上げ / Finish / 完稿".into()),
+            target: None,
+            ids: vec![],
+            additive: false,
+            mask: None,
+            filter: None,
+        };
+        let mut state = document.document_state();
+        state.layer_opacity = Some(0.35);
+        let mut document = Document::from_document_state(state).unwrap();
+        document
+            .edit_layer_groups(edit("compCreate", None))
+            .unwrap();
+        document.toggle_layer("layer-1").unwrap();
+        let mut state = document.document_state();
+        state.layer_opacity = Some(0.9);
+        let mut document = Document::from_document_state(state).unwrap();
+        let bytes = document.encode().unwrap();
+        let mut restored = decode(&bytes).unwrap();
+        assert!(!restored.snapshot().layer_visible);
+        assert_eq!(
+            restored.layer_groups_snapshot().comps[0].name,
+            "仕上げ / Finish / 完稿"
+        );
+        restored
+            .edit_layer_groups(edit("compApply", Some("comp-1")))
+            .unwrap();
+        assert!(restored.snapshot().layer_visible);
+        assert_eq!(restored.document_state().layer_opacity, Some(0.35));
+        restored.undo();
+        assert!(!restored.snapshot().layer_visible);
+        assert_eq!(restored.document_state().layer_opacity, Some(0.9));
+        restored.redo();
+        assert_eq!(restored.document_state().layer_opacity, Some(0.35));
+    }
+    #[test]
     fn native_round_trip_preserves_model_and_excludes_services() {
         let state = Document::default().document_state();
         let bytes = encode_state(&state).unwrap();

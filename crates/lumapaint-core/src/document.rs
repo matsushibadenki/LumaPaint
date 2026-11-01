@@ -31,8 +31,13 @@ mod compound_shapes;
 mod crop;
 pub use compound_shapes::{CompoundShape, CompoundShapeEdit, CompoundShapeSnapshot};
 pub use crop::ImageResamplePlan;
+#[path = "document_layer_comps.rs"]
+mod layer_comps;
 #[path = "document_layer_groups.rs"]
 mod layer_groups;
+pub use layer_comps::{
+    LayerComp, LayerCompDifference, LayerCompDifferenceDetail, LayerCompSummary,
+};
 pub use layer_groups::{
     GroupMaskSettings, LayerFilter, LayerFilterKind, LayerGroupEdit, LayerGroupsSnapshot,
     LayerGroupsState,
@@ -650,6 +655,8 @@ struct VectorHistoryState {
     layer_groups: LayerGroupsState,
     guides: GuidesState,
     background_visible: bool,
+    #[serde(default)]
+    background_opacity: Option<f32>,
     locked_objects: std::collections::BTreeSet<String>,
     locked_artwork_layers: std::collections::BTreeSet<String>,
     background_locked: bool,
@@ -7498,6 +7505,9 @@ impl Document {
                 if previous.resample_resolution.is_some() {
                     current.resample_resolution = Some(self.resolution);
                 }
+                if previous.background_opacity.is_some() {
+                    current.background_opacity = Some(self.layer_opacity);
+                }
                 if previous.paper.is_some() {
                     current.paper = Some(self.paper);
                 }
@@ -7580,6 +7590,7 @@ impl Document {
             layer_groups: self.layer_groups.clone(),
             guides: self.guides.clone(),
             background_visible: self.visible,
+            background_opacity: None,
             locked_objects: self.locked_objects.clone(),
             locked_artwork_layers: self.locked_artwork_layers.clone(),
             background_locked: self.layer_locked,
@@ -7636,6 +7647,9 @@ impl Document {
         self.layer_groups = state.layer_groups;
         self.guides = state.guides;
         self.visible = state.background_visible;
+        if let Some(opacity) = state.background_opacity {
+            self.layer_opacity = opacity;
+        }
         self.locked_objects = state.locked_objects;
         self.locked_artwork_layers = state.locked_artwork_layers;
         self.layer_locked = state.background_locked;
@@ -7670,6 +7684,7 @@ impl Document {
         }
     }
     fn record_vector_edit(&mut self, previous: VectorHistoryState) {
+        self.prune_layer_comp_references();
         self.prune_publication_text_history();
         if !self.vector_assets.is_empty() {
             let mut assets = self.vector_assets.as_ref().clone();

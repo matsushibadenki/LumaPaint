@@ -19,6 +19,7 @@ pub mod glyph_run;
 mod gpu_metrics;
 mod gpu_timing;
 pub mod gradient_raster;
+pub mod histogram;
 mod input_latency;
 mod motion_mesh;
 #[cfg(feature = "skia")]

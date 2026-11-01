@@ -21,12 +21,19 @@ function path(points: Point[], smooth: boolean) {
   }
   return d+` L255 ${255-points.at(-1)![1]*255}`;
 }
+function histogramPath(bins: number[] | undefined) {
+  if (!bins || bins.length !== 256 || bins.some(value => !Number.isFinite(value) || value < 0)) return '';
+  const peak = Math.max(...bins);
+  if (!peak) return '';
+  return 'M0 255 ' + bins.map((value, i) => `L${i * 255 / 256} ${255 - Math.sqrt(value / peak) * 240} H${(i + 1) * 255 / 256}`).join(' ') + ' L255 255 Z';
+}
 function Coordinate({value,label,disabled,onCommit}:{value:number;label:string;disabled:boolean;onCommit:(value:number)=>void}) {
   const [text,setText]=useState(String(Math.round(value*255)));
   const valid=text.trim()!==''&&Number.isFinite(Number(text))&&Number(text)>=0&&Number(text)<=255;
   return <label><span>{label}</span><input className="effect-number" aria-label={label} disabled={disabled} inputMode="decimal" value={text} aria-invalid={!valid} onChange={e=>setText(e.currentTarget.value)} onBlur={()=>{if(valid)onCommit(Number(text)/255);else setText(String(Math.round(value*255)));}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){setText(String(Math.round(value*255)));e.preventDefault();}}}/></label>;
 }
-export function CurveEditor({locale,channel,points,smooth,disabled,onChange,onCommit}:{locale:Locale;channel:string;points:Point[];smooth:boolean;disabled:boolean;onChange:(points:Point[],smooth:boolean)=>void;onCommit:(points:Point[],smooth:boolean)=>void}) {
+export function CurveEditor({locale,channel,points,smooth,disabled,onChange,onCommit,histogram,histogramColor='#aab4bf'}:{histogram?:number[];histogramColor?:string;locale:Locale;channel:string;points:Point[];smooth:boolean;disabled:boolean;onChange:(points:Point[],smooth:boolean)=>void;onCommit:(points:Point[],smooth:boolean)=>void}) {
+  const background = histogramPath(histogram);
   const t=labels[locale];const [selected,setSelected]=useState(0);
   const index=Math.min(selected,points.length-1);
   const latest=useRef(points);latest.current=points;
@@ -44,7 +51,7 @@ export function CurveEditor({locale,channel,points,smooth,disabled,onChange,onCo
     onLostPointerCapture={()=>{const g=drag.current;drag.current=null;if(g)update(g.before);}}
     onKeyDown={e=>{if(disabled)return;if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();e.stopPropagation();remove();return;}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();const g=drag.current;drag.current=null;if(g)update(g.before);return;}if(e.key.startsWith('Arrow')){e.preventDefault();e.stopPropagation();const step=(e.shiftKey?10:1)/255;const p=latest.current[index];update(moved(index,p[0]+(e.key==='ArrowRight'?step:e.key==='ArrowLeft'?-step:0),p[1]+(e.key==='ArrowUp'?step:e.key==='ArrowDown'?-step:0)));}}}
     onKeyUp={e=>{if(!disabled&&e.key.startsWith('Arrow')){e.stopPropagation();commit(latest.current);}}}>
-    <rect x="0" y="0" width="255" height="255" fill="var(--color-field)"/><path d="M0 63.75H255 M0 127.5H255 M0 191.25H255 M63.75 0V255 M127.5 0V255 M191.25 0V255" stroke="var(--color-rule)" fill="none"/><path d="M0 255L255 0" stroke="var(--color-muted)" opacity=".4" strokeDasharray="3 3"/>
+    <rect x="0" y="0" width="255" height="255" fill="var(--color-field)"/>{background && <path className="effect-histogram" d={background} fill={histogramColor} stroke={histogramColor} strokeWidth="1.25" strokeLinejoin="round" opacity=".18" pointerEvents="none" aria-hidden="true"/>}<path d="M0 63.75H255 M0 127.5H255 M0 191.25H255 M63.75 0V255 M127.5 0V255 M191.25 0V255" stroke="var(--color-rule)" fill="none"/><path d="M0 255L255 0" stroke="var(--color-muted)" opacity=".4" strokeDasharray="3 3"/>
     <path d={path(points,smooth)} fill="none" stroke="var(--color-ink)" strokeWidth="1.8"/>{points.map(([x,y],i)=><circle key={i} cx={x*255} cy={255-y*255} r={i===index?4.5:3.5} fill={i===index?'var(--color-accent)':'var(--color-panel)'} stroke="var(--color-ink)"/>)}</svg>
     <div className="effect-curve-toolbar"><label><input type="checkbox" disabled={disabled} checked={smooth} onChange={e=>onCommit(points,e.currentTarget.checked)}/>{t.smooth}</label><select aria-label={`${channel} ${t.point}`} disabled={disabled} value={index} onChange={e=>setSelected(Number(e.currentTarget.value))}>{points.map((_,i)=><option key={i} value={i}>{t.point} {i+1}</option>)}</select></div>
     <div className="effect-curve-coordinates"><Coordinate key={`x-${index}-${points[index][0]}`} value={points[index][0]} label={t.input} disabled={disabled} onCommit={v=>commit(moved(index,v,points[index][1]))}/><Coordinate key={`y-${index}-${points[index][1]}`} value={points[index][1]} label={t.output} disabled={disabled} onCommit={v=>commit(moved(index,points[index][0],v))}/></div>

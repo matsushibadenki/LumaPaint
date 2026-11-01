@@ -2026,6 +2026,37 @@ pub enum ThumbnailDocument {
     Standard(Box<lumapaint_core::document::Document>),
     Tiled(Box<lumapaint_core::tiles::TiledRasterDocument>),
 }
+#[cfg(target_os = "macos")]
+pub enum HistogramSource {
+    Standard(Box<lumapaint_core::document::Document>),
+    Tiled(lumapaint_renderer::histogram::Histogram),
+}
+#[tauri::command]
+pub async fn layer_histogram(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<lumapaint_renderer::histogram::Histogram, String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err("Invalid layer ID".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let source = on_main(window, move || platform::histogram_source(&id)).await?;
+        crate::diagnostic_jobs::spawn_blocking(move || match source {
+            HistogramSource::Standard(document) => {
+                lumapaint_renderer::thumbnails::effect_histogram(&document)
+            }
+            HistogramSource::Tiled(histogram) => Ok(histogram),
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Layer histograms are unavailable on this platform".into())
+    }
+}
 #[derive(Serialize)]
 pub struct ThumbnailSet {
     layers: Vec<(String, String)>,

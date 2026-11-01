@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::BTreeSet;
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerFilter {
@@ -26,6 +30,10 @@ pub enum LayerFilterKind {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LayerGroupsState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comps: Vec<LayerComp>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_comp_id: u64,
     #[serde(skip)]
     pub filter_enabled: bool,
     #[serde(skip)]
@@ -97,6 +105,7 @@ pub struct GroupMaskSettings {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerGroupsSnapshot {
+    pub comps: Vec<LayerCompSummary>,
     pub filter_enabled: bool,
     pub filter_query: String,
     pub filter: LayerFilter,
@@ -173,6 +182,7 @@ impl LayerGroupsState {
                 return Err("Invalid layer group".into());
             }
         }
+        self.validate_layer_comps(layers)?;
         let mut owned = BTreeSet::new();
         for id in self
             .roots
@@ -227,6 +237,7 @@ impl Document {
                 (Some(visible), Some(targets))
             });
         LayerGroupsSnapshot {
+            comps: self.layer_comp_summaries(),
             filter: state.filter,
             filter_matches,
             filter_targets,
@@ -454,6 +465,9 @@ impl Document {
         {
             return Err("Finish path editing before editing layer groups".into());
         }
+        if e.action.starts_with("comp") {
+            return self.edit_layer_comp(e);
+        }
         self.layer_groups.reconcile(&self.svg_layers);
         let id = e.id.as_deref().unwrap_or("");
         match e.action.as_str() {
@@ -559,6 +573,7 @@ impl Document {
             return Err(error);
         }
         self.sync_layer_group_flags();
+        self.prune_layer_comp_references();
         self.selected_vector_objects.clear();
         if let Err(error) = self.layer_groups.validate(&self.svg_layers) {
             self.restore_vector_history(before);

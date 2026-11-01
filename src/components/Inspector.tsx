@@ -1,3 +1,4 @@
+import { LayerCompsPanel } from './LayerCompsPanel';
 import { PressurePanel } from './PressurePanel';
 import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import {rasterizeVectorLayer, setSparseMaskLinked} from '../bridge';
@@ -228,7 +229,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
     <header className="dock-panel-header" draggable={false} onPointerDown={e=>panelPointerDown(e,activePanel)} onPointerMove={panelPointerMove} onPointerUp={panelPointerUp} onPointerCancel={()=>{panelDrag.current=null;setDraggedPanel(null);}}>{!floating[activePanel]&&(activePanel==='align'||activePanel==='pathfinder')?<div className="align-family-tabs">{(['align','pathfinder'] as const).map(panel=><button key={panel} type="button" aria-pressed={activePanel===panel} onClick={()=>setActivePanel(panel)}>{labels[panel]}</button>)}</div>:<strong>{floating[activePanel]?t.properties:labels[activePanel]}</strong>}<button disabled={!!floating[activePanel]} title={dockText.float} aria-label={dockText.float} onClick={()=>float(activePanel)}>↗</button><button title={dockText.reset} aria-label={dockText.reset} onClick={()=>{setFloating({});setDockWidth(308);setOrder([...panelIds]);setActivePanel('layers');}}>↺</button></header>
     {panelView('motion', <section id="inspector-panel-motion" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-motion"><Suspense fallback={<div className="motion-empty">…</div>}><MotionPanel key={thumbnailDocumentKey} locale={locale} /></Suspense></section>)}
     {panelView('screentone', <section id="inspector-panel-screentone" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-screentone"><ScreentonePanel key={thumbnailDocumentKey} locale={locale} layer={selectedLayer} resolution={document.resolution} enabled={enabled || rasterEnabled} canCreate={enabled} onUpdate={onTransformUpdate} /></section>)}
-    {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
+    {panelView('effects', <section id="inspector-panel-effects" className="inspector-panel" role="tabpanel" aria-labelledby="inspector-tab-effects"><LayerEffectsPanel histogramSource={`${thumbnailDocumentKey}:${document.pages.active}:${selectedLayer?.id ?? ''}`} revision={document.revision} locale={locale} layer={selectedLayer} enabled={enabled || rasterEnabled} onCommit={onLayerEffects} /></section>)}
     <div className="inspector-tabs" role="tablist" aria-label={t.properties} aria-orientation="vertical">
       <div className="inspector-tab-groups" role="presentation">
         {panelGroups.filter(group => group.id !== 'document').map(group => (
@@ -315,6 +316,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
             <button type="button" disabled={!(enabled||rasterEnabled) || !maskTarget || maskTarget.locked} className={maskTarget?.maskEnabled||selectedLayer?.effects?.mask?'active':''} title={layerMaskDialogLabels[locale].title} aria-label={layerMaskDialogLabels[locale].title} aria-haspopup="dialog" onClick={()=>maskTarget&&onOpenLayerMask(maskTarget.id)}>◐</button>
           </div>
         </div><p className="layer-count">{document.layers.length} {t.layerUnit}<span>{document.strokeCount} {t.strokes}</span></p>
+        <LayerCompsPanel key={`${thumbnailDocumentKey}:${document.pages.active}`} comps={document.layerGroups.comps ?? []} locale={locale} enabled={enabled && !document.activeSavedPath} onUpdate={onTransformUpdate} />
       </>}
     </section>)}
   </aside>;

@@ -51,8 +51,10 @@ export function editGuides(edit:GuideEdit):Promise<DocumentSnapshot>{return invo
 export function rulerGuide(axis:'horizontal'|'vertical',position:number,phase:number):Promise<void>{return invoke('ruler_guide',{axis,position,phase});}
 export interface LayerGroup {id:string;name:string;visible:boolean;locked:boolean;collapsed:boolean;maskEnabled:boolean;maskInverted:boolean;maskDensity:number;children:string[]}
 export interface LayerFilter {kind: 'all'|'paint'|'svg'|'vector'|'text'|'group';visible: boolean|null;locked: boolean|null}
-export interface LayerGroupsState {filter?:LayerFilter;filterMatches?:string[]|null;filterTargets?:string[]|null;filterEnabled?:boolean;filterQuery?:string;isolated?:string[];groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
-export interface LayerGroupEdit {filter?:LayerFilter;action:'selectAll'|'deselectAll'|'filter'|'clearFilter'|'isolate'|'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
+export interface LayerCompDifference {layerCount:number;visibilityCount:number;opacityCount:number;uncapturedCount:number;details:{id:string;name:string;visibility?:[boolean|null,boolean];opacity?:[number|null,number]}[]}
+export interface LayerCompSummary {id:string;name:string;matches:boolean;count:number;difference:LayerCompDifference}
+export interface LayerGroupsState {comps?:LayerCompSummary[];filter?:LayerFilter;filterMatches?:string[]|null;filterTargets?:string[]|null;filterEnabled?:boolean;filterQuery?:string;isolated?:string[];groups:LayerGroup[];roots:string[];members:{id:string;visible:boolean;locked:boolean}[];selected:string[]}
+export interface LayerGroupEdit {filter?:LayerFilter;action:'compCreate'|'compApply'|'compUpdate'|'compRename'|'compDelete'|'selectAll'|'deselectAll'|'filter'|'clearFilter'|'isolate'|'create'|'createEmpty'|'select'|'move'|'reorder'|'collapse'|'visibility'|'lock'|'rename'|'ungroup'|'delete'|'mask';id?:string;target?:string;name?:string;ids?:string[];additive?:boolean;mask?:{enabled:boolean;inverted:boolean;density:number}}
 export function editLayerGroups(edit:LayerGroupEdit):Promise<DocumentSnapshot>{return invoke('edit_layer_groups',{edit});}
 export interface CompoundShapeSnapshot { id: string; operation: PathfinderOperation; operands: {id:string;name:string;transform:[number,number,number,number,number,number]}[] }
 export type LayerEditTarget = 'content' | 'mask' | 'none';
@@ -715,3 +717,6 @@ export interface PublicationTextContext {documentId:number;revision:number;frame
 export interface PublicationTextRequest {revision:number;action:'create'|'detach';id?:string;name?:string;frames?:PageTextFrame[]}
 export function publicationTextContext():Promise<PublicationTextContext>{return invoke('publication_text_context');}
 export function publicationTextAction(documentId:number,request:PublicationTextRequest):Promise<{document:DocumentSnapshot;context:PublicationTextContext}>{return invoke('publication_text_action',{documentId,request});}
+
+export interface LayerHistogram { channels: number[][]; samples: number }
+export function layerHistogram(id: string): Promise<LayerHistogram> { return invoke("layer_histogram", {id}); }

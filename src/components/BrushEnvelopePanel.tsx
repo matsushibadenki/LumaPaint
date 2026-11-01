@@ -1,3 +1,4 @@
+import { NumberDraftInput } from './NumberDraftInput';
 import { PanelBlock } from './PanelBlock';
 import { useMeasurementUnit, pixelsPerMeasurement, unitSymbols } from '../measurement-units';
 import { useRef, useState } from 'react';
@@ -14,7 +15,10 @@ const messages = {
 export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolution=72 }: { locale: Locale; resolution?:number; brush: Brush; enabled: boolean; onChange: (brush: Brush) => void }) {
   const unit=useMeasurementUnit(),factor=pixelsPerMeasurement(unit,resolution),symbol=unitSymbols[unit];
   const t = messages[locale]; const envelope = brush.envelope ?? defaults;
+  const current = useRef(brush); current.current = brush;
   const [viewScale, setViewScale] = useState<number | null>(null);
+  // Numeric blur and pointer-down can occur before the next React render.
+  const viewScaleNow = useRef<number | null>(null);
   const total = envelope.attack + envelope.decay + envelope.hold + envelope.release;
   const scale = viewScale ?? Math.max(100, total * 1.2);
   const x = (v: number) => 14 + v / scale * 250;
@@ -24,8 +28,9 @@ export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolutio
   const drag = useRef<{ index: number; envelope: BrushEnvelope; scale: number } | null>(null);
   // Numeric edits may reframe the plot; pointer release must keep its coordinate system.
   const update = (patch: Partial<BrushEnvelope>) => {
-    if (patch.attack !== undefined || patch.decay !== undefined || patch.hold !== undefined || patch.release !== undefined) setViewScale(null);
-    onChange({ ...brush, envelope: { ...envelope, ...patch } });
+    if (patch.attack !== undefined || patch.decay !== undefined || patch.hold !== undefined || patch.release !== undefined) { viewScaleNow.current = null; setViewScale(null); }
+    const next = { ...current.current, envelope: { ...(current.current.envelope ?? defaults), ...patch } };
+    current.current = next; onChange(next);
   };
   return <PanelBlock id="brush.envelope" title={t.title}><section className="brush-envelope">
     <label className="brush-envelope-enable"><input type="checkbox" disabled={!enabled} checked={envelope.enabled} onChange={e => update({ enabled: e.target.checked })} />{t.title}</label>
@@ -45,20 +50,27 @@ export function BrushEnvelopePanel({ locale, brush, enabled, onChange, resolutio
         if (index === 1) { next.decay = clamp(dx - start.attack); next.sustain = Math.round(level * 100) / 100; }
         if (index === 2) { next.hold = clamp(dx - start.attack - start.decay); next.sustain = Math.round(level * 100) / 100; }
         if (index === 3) next.release = clamp(dx - start.attack - start.decay - start.hold);
-        onChange({ ...brush, envelope: next });
+        const nextBrush = { ...current.current, envelope: next };
+        current.current = nextBrush; onChange(nextBrush);
       }} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}>
       {[0, .5, 1].map(v => <path key={v} className="envelope-grid" d={`M14 ${y(v)} H270`} />)}
       {breaks.map((v, i) => <path key={i} className="envelope-grid" d={`M${x(v)} 12 V112`} />)}
       <path className="envelope-fill" d={`M14 112 L14 ${y(envelope.attack === 0 ? 1 : 0)} ${breaks.map((v, i) => `L${x(v)} ${y(levels[i])}`).join(' ')} L270 112 Z`} />
       <path className="envelope-line" d={`M14 ${y(envelope.attack === 0 ? 1 : 0)} ${breaks.map((v, i) => `L${x(v)} ${y(levels[i])}`).join(' ')} L270 112`} />
-      {breaks.map((v, i) => <circle key={i} cx={x(v)} cy={y(levels[i])} r="6" className="envelope-handle" onPointerDown={event => { if (!enabled || !envelope.enabled) return; event.preventDefault(); setViewScale(scale); drag.current = { index: i, envelope: { ...envelope }, scale }; event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); }} />)}
+      {breaks.map((v, i) => <circle key={i} cx={x(v)} cy={y(levels[i])} r="6" className="envelope-handle" onPointerDown={event => { if (!enabled || !envelope.enabled) return;
+        const active = event.currentTarget.ownerDocument.activeElement;
+        if (active instanceof HTMLInputElement) active.blur();
+        event.preventDefault();
+        const start = current.current.envelope ?? defaults;
+        const dragScale = viewScaleNow.current ?? Math.max(100, (start.attack + start.decay + start.hold + start.release) * 1.2);
+        viewScaleNow.current = dragScale; setViewScale(dragScale); drag.current = { index: i, envelope: { ...start }, scale: dragScale }; event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); }} />)}
       <text x="14" y="132">0</text><text x="268" y="132" textAnchor="end">{t.length}: {Number((total/factor).toFixed(3))} {symbol}</text>
     </svg>
     <p className="muted small">{t.hint.replace('px',symbol)}</p>
     {(['attack', 'decay', 'hold', 'release', 'sustain', 'dryness'] as const).map(key => {
       const percent = key === 'sustain' || key === 'dryness';
-      const value = percent ? Math.round(envelope[key] * 100) : Number((envelope[key]/factor).toFixed(4));
-      return <label className="envelope-control" key={key}><span>{t[key]}</span><CompactSlider aria-label={t[key]} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000/factor} step={percent?1:1/factor} value={value} onChange={event => update({ [key]: Number(event.target.value) / (percent ? 100 : 1/factor) })} /><input aria-label={`${t[key]} ${percent ? '%' : symbol}`} disabled={!enabled || !envelope.enabled} type="number" step="any" min="0" max={percent ? 100 : 10000/factor} value={value} onChange={event => { const n = Number(event.target.value); if (Number.isFinite(n)) update({ [key]: Math.max(0, Math.min(percent ? 100 : 10000/factor, n)) / (percent ? 100 : 1/factor) }); }} /><small>{percent ? '%' : symbol}</small></label>;
+      const value = percent ? envelope[key] * 100 : envelope[key] / factor;
+      return <label className="envelope-control" key={key}><span>{t[key]}</span><CompactSlider aria-label={t[key]} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000/factor} step={percent?1:1/factor} value={value} onChange={event => update({ [key]: Number(event.target.value) / (percent ? 100 : 1/factor) })} /><NumberDraftInput key={`${key}:${unit}:${factor}`} label={`${t[key]} ${percent ? '%' : symbol}`} disabled={!enabled || !envelope.enabled} min={0} max={percent ? 100 : 10000/factor} step={percent ? 1 : 1/factor} value={value} onCommit={number => update({ [key]: percent ? number / 100 : Math.min(10000, number * factor) })} /><small>{percent ? '%' : symbol}</small></label>;
     })}
     <button type="button" disabled={!enabled} onClick={() => update({ ...defaults, enabled: envelope.enabled })}>{t.reset}</button>
   </section></PanelBlock>;

@@ -198,3 +198,101 @@ Direct control coordinates and corner radius, selection position and size, guide
 A headless Chrome fixture exercised the actual React components with mocked native commands in Japanese, English and Simplified Chinese. Direct control rejected an incomplete minus on Enter and previewed/applied -12.5; guide movement blocked an incomplete value and submitted -2.5/-3; mask transform rejected incomplete input and zero scale and submitted X=-1.5. The production frontend build and TypeScript check passed. These fixture checks do not verify native rendering.
 
 In an isolated macOS debug app on Apple M4/Metal, a rectangle anchor's X field retained a lone minus and disabled Apply; -20.5 previewed and applied the moved anchor, and Undo restored it. A selected horizontal guide retained a lone minus and disabled Move; entering -20.5 moved its position from 184.9802 to 164.4802 px. In the native layer-mask dialog, a lone minus in X disabled Apply; entering -15.5 enabled Apply, and applying reset the field to zero without an error. This confirms the input and command flow; the full-white test mask does not establish a visual pixel-level result. No input-latency claim is made.
+
+
+## Signed text panel input — 2026-11-01
+
+🟢 [Done] Character and paragraph numeric controls now use `SignedNumberInput`. The UI keeps partial decimal text (including `-`, `-.`, and incomplete exponents), commits complete finite values within bounds on Enter or blur, and restores the committed display after invalid input or Escape. Mixed empty fields do not send zero. Typed fractional values need not align with the keyboard step or converted minimum. The shared control supports optional steps/focus callbacks; existing callers keep the default step of one. IME composition keys do not trigger stepping or forwarded commit/cancel actions.
+
+🟢 [Done] Text settings received while the serialized commit queue is pending are synchronized again when the queue settles. This prevents a later field edit from using an old panel draft after the previous response was skipped. A failed commit restores canonical settings and retains the error instead of immediately clearing it.
+
+The tested flow was the actual React TextPanel → partial signed input → commit/cancel or keyboard increment → onChange settings payload. The harness used deterministic settings responses rather than native Rust transport. Browser skill was unavailable, so Playwright was used at `http://127.0.0.1:1421/__textInputQA`.
+
+| Check | Result |
+| --- | --- |
+| Page identity, nonblank content, no Vite overlay | Pass |
+| Japanese, English, Simplified Chinese | Pass |
+| Tracking, baseline, rotation, first-line indent partial negative input | Pass; no callback before commit |
+| Empty/invalid/excessive values, Enter/Tab/Escape | Pass; no invalid or implicit-zero payload |
+| Decimal steps, upper bounds, mixed empty values | Pass |
+| Synthetic IME Enter and ArrowUp | Pass; focus/value retained |
+| Sequential character → paragraph edits and unrelated settings refresh | Pass |
+| Millimeter font size at 300ppi | Pass; 6.5mm sends 6.5 × 300 / 25.4 pixels |
+| Commit failure and subsequent recovery | Pass; error stays visible until the next edit |
+| Shared default step regression | Pass; incomplete input at base 5 steps to 6 |
+| 260px/308px layout and screenshot inspection | Pass; no horizontal overflow |
+| Runtime/console errors, frontend typecheck/build, measurement regression, dependency boundaries, diff check | Pass |
+
+⭕️ [Pending] Native Tauri rendering/save/Undo/Redo for this change, real platform IME candidate handling, and Windows/Linux interaction. Synthetic composition events do not replace physical IME testing. The Rust text model and file format were not changed.
+
+
+## Signed stroke and gradient input — 2026-11-01
+
+🟢 [Done] Stroke weight, miter limit, dash offset, and both arrow scales keep decimal drafts and use the shared signed parser. Only complete in-range edits commit on Enter/blur. Escape and invalid/empty drafts restore the displayed value; mixed empty fields do not send zero. Keyboard increments remain 0.25 for weight/offset, 1 for miter, and 0.1 for arrow scales. Selection/unit changes remount numeric style inputs to avoid reusing old drafts. The width unit selector was widened to 52px to show `mm` at the 260px inspector width.
+
+🟢 [Done] Gradient angle, aspect, opacity, stop position, and midpoint preserve draft strings. Complete in-range values still update the local preview. Escape or invalid blur restores the focus-start value and does not apply that numeric edit. Valid changed values commit for vector targets; pixel gradients retain their existing explicit Apply action. Selecting or dragging a stop first blurs the old numeric input because pointer capture otherwise suppresses the normal focus transition. This prevents a valid preview followed by an incomplete draft from becoming an unintended applied stop value.
+
+Flow under test: actual StrokePanel / GradientPanel → numeric typing → preview, commit, cancel, or stop/selection change → inspect callback payload and rendered fields. Test transport replaced Rust gradient application and stroke preview, with deterministic snapshots. Browser skill was unavailable; Playwright used the local `http://127.0.0.1:1421/__panelNumbersQA` harness.
+
+| Check | Result |
+| --- | --- |
+| Chromium + WebKit × English/Japanese/Simplified Chinese × stroke/vector gradient/pixel gradient | 18 flows passed |
+| Page identity, meaningful UI, no framework overlay, no runtime/console errors | Pass |
+| Partial negative/decimal/exponent input, empty/non-finite/out-of-range values | Pass; no invalid numeric payload |
+| Enter/Tab commit, Escape rollback, no implicit zero | Pass |
+| Stroke mixed values, selection change, keyboard increments, arrow/miter bounds | Pass |
+| Millimeter dash offset at 300ppi | Pass; -1.25mm sends -1.25 × 300 / 25.4 pixels |
+| Gradient -15.25° and 150.5% aspect | Pass; payload angle -15.25 and aspect 1.505 |
+| Preview edit → incomplete opacity → select another stop | Pass; original stop alpha 255 retained in the apply payload |
+| Pixel target | Pass; numeric blur does not paint; explicit Apply sends the valid gradient |
+| Synthetic IME Enter | Pass; no commit or focus loss |
+| 260px/308px screenshots, unit visibility, overflow | Pass; final stroke layout rechecked in all three languages |
+| Frontend typecheck/build, architecture, measurement and workspace notification regressions, diff check | Pass |
+
+⭕️ [Pending] Native Tauri rendering/save/Undo/Redo, actual IME candidate interaction, and Windows/Linux native verification. WebKit browser testing does not replace native Rust transport verification. No Rust model or file-format changes were made in this step.
+
+
+## Brush numeric drafts — 2026-11-01
+
+🟢 [Done] Shared brush diameter and percentage controls, plus all six decay-envelope numbers, use `NumberDraftInput`. Complete finite in-range values commit once on Enter/blur; incomplete, empty, or out-of-range edits restore the canonical value. Escape cancels. Explicit zero remains valid for percentages/envelope distances, but diameter zero is rejected. Percentage fractions are preserved instead of rounded to integers. Sliders remain immediate; numeric typing commits at the end of editing. Shared percentage callers include brush settings, natural media, and paper controls.
+
+🟢 [Done] Focus does not change displayed precision, avoiding selection/fill races that append new text to an expanded number. Untouched keyboard stepping uses the precise model value, independently of four-decimal display rounding. Display rounding falls back to the precise value if it would lie outside the input bounds. Diameter and envelope conversions protect physical maximums against floating-point overshoot after an already valid unit-space edit.
+
+🟢 [Done] Envelope pointer capture first settles the focused numeric input. The latest brush and immediate graph-scale mirror retain a just-committed duration when blur and pointer-down share one event. Pointer release preserves the graph coordinate system. Unit changes remount diameter/duration drafts to avoid interpreting old-unit text in a new unit. Common number fields use their remaining flex space; inspector fields are 72px wide for decimal values and unit symbols.
+
+Flow: actual SizeInput / PercentInput / BrushSettings / MaterialControls / BrushEnvelopePanel → partial text → commit/cancel, unit change, slider, or graph gesture → inspect brush callback and rendered state. The harness uses local controlled brush state, not native Rust transport. Browser skill was unavailable; Playwright used `http://127.0.0.1:1421/__brushInputQA`.
+
+| Check | Result |
+| --- | --- |
+| Chromium + WebKit × English/Japanese/Simplified Chinese | Pass |
+| Empty, negative/incomplete, non-finite, range-exceeding input | Pass; no setting change |
+| Valid decimals, explicit zero, Enter/Tab, Escape | Pass; one callback per completed change |
+| Brush opacity/hardness and material loading | Pass; 25.5% → 0.255, explicit hardness 0, 67.5% loading retained |
+| Envelope sustain/dryness fractions | Pass; 12.5% → 0.125, 42.25% → 0.4225 |
+| Slider keyboard changes | Pass; flow 70% → 71% immediately |
+| Numeric draft → graph handle, including pending 5000px attack | Pass; latest duration retained, handles within plot, no release jump |
+| Unit change with an unfinished draft | Pass; original setting retained, old text discarded |
+| mm diameter/duration at 300ppi | Pass; 2.5mm × 300 / 25.4 and 3.25mm × 300 / 25.4 |
+| Untouched mm keyboard step | Pass; increases exact diameter by 1px within floating-point tolerance |
+| Physical maxima and inch minimum/maximum display | Pass; diameter ≤512px, duration ≤10000px, valid 1px minimum |
+| Disabled controls, reset preserving enabled state and other brush settings | Pass |
+| Synthetic IME Enter | Pass; no commit or focus loss |
+| 260px/308px layout, screenshot inspection, no horizontal overflow, no console/runtime errors | Pass; final 72px field layout rechecked in WebKit |
+| Typecheck/build, measurement and notification regressions, architecture boundaries, diff check | Pass |
+
+🟠 [Next] Native macOS Tauri verification of the accumulated numeric changes, including actual drawing/save/Undo/Redo. Browser callbacks do not verify the Rust renderer or project persistence.
+
+⭕️ [Pending] Real IME candidate interaction and native Windows/Linux verification. No Rust document model or file-format change was made in this step.
+
+
+## Layer effects numeric drafts — 2026-11-01
+
+🟢 [Done] Light/color, mixer and grading fields now use the same NumberDraftInput/SignedNumberInput boundary as other inspector controls. Complete finite decimal values commit once on Enter/blur. Incomplete signs/exponents, empty text, out-of-range values and hexadecimal input are rejected without a model edit; Escape cancels and blurs. IME composition keys do not commit, cancel or increment. Exposure steps by 0.1; other controls step by 1 with their existing bounds. Input identity includes document/page/layer source so editing a draft then changing source cannot commit the old text to a new layer. Existing effect-number styling remains through an optional className prop on the common input.
+
+🟢 [Done] Actual LayerEffectsPanel was tested with deterministic transport in English/Japanese/Simplified Chinese using WebKit and Chromium, at 260px and 308px. Checks include no model calls while typing, exactly one valid commit, unchanged blur, Escape followed by Tab, decimal exposure steps, upper/lower bounds, composition Enter/arrows/Escape retaining focus and draft, numeric blur followed by slider/key editing without reviving the old field value, fractional mixer/grading values, lock/disabled states and layer/document switching with a focused draft. No error overlay, runtime/console errors or horizontal overflow. Screenshots show preserved alignment. Browser skill was unavailable; the existing Playwright installation used the local-only `/__effectsNumericQA` harness.
+
+🟢 [Done] Frontend typecheck/build, dependency boundary, workspace-notification regression and diff checks passed. This is a UI-input change; the existing Rust effects command and renderer are reused.
+
+🟢 [Done] Built a separately identified `LumaPaint Effects QA.app` and exercised its Japanese UI on macOS/Apple M4/Metal at 1200×800 with a 308px inspector. A known 512×256 two-layer fixture kept its bright-blue canvas and saved state while typing exposure −1; Enter changed the rendering and made it dirty. An incomplete minus reset without editing. After saving −1, Escape from −2 and blur from out-of-range 6 both restored −1 and kept the document saved. Up changed the draft by 0.1 without editing; Enter committed −0.9, one Undo restored −1 and Redo restored −0.9. Red mixer hue −12.5 and grading balance −37.5 also committed and saved. Saved JSON assertions verified those exact values (with f32 tolerance for exposure), other adjustment values, identity curves, original SVG sources and empty stroke list. Frontend and native debug builds passed; there were no Rust source changes in this step.
+
+⭕️ [Pending] Physical IME, native English/Simplified Chinese interaction and Windows/Linux native checks. Synthetic composition events do not establish physical IME behavior. Three-language UI operation/layout was verified in both browser engines above.

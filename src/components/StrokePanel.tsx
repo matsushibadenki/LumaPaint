@@ -1,6 +1,7 @@
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { useMeasurementUnit, setMeasurementUnit, pixelsPerMeasurement, unitSymbols, measurementUnits } from '../measurement-units';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { defaultStrokeStyle, strokePreview, type DocumentSnapshot, type StrokeStyle } from '../bridge';
 import type { Locale } from '../i18n';
 import './stroke-panel.css';
@@ -18,16 +19,29 @@ const arrows = ['none', 'triangle', 'open', 'circle', 'diamond', 'square', 'bar'
 const profiles = ['uniform', 'taperBoth', 'taperStart', 'taperEnd', 'bulge', 'custom'] as const;
 
 function NumericSetting({ label, value, mixed, min, max, step = .25, onCommit }: { label: string; value: number; mixed: string | null; min: number; max: number; step?: number; onCommit: (value: number) => void }) {
-  const [draft, setDraft] = useState('');
-  useEffect(() => setDraft(mixed ? '' : String(Number(value.toFixed(4)))), [value, mixed]);
-  const commit = () => { if (draft.trim()) onCommit(Number(draft)); };
-  return <label className="stroke-setting"><span>{label}</span><input type="number" min={min} max={max} step={step} value={draft} placeholder={mixed ?? ''} onChange={e => setDraft(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') setDraft(mixed ? '' : String(value)); }} /></label>;
+  const display = mixed ? '' : String(Number(value.toFixed(4)));
+  const [draft, setDraft] = useState(display);
+  const focused = useRef(false), dirty = useRef(false);
+  useEffect(() => { if (!focused.current) setDraft(display); }, [display]);
+  const reset = () => { dirty.current = false; setDraft(display); };
+  const commit = () => {
+    focused.current = false;
+    const number = parseSignedNumber(draft);
+    const changed = dirty.current;
+    reset();
+    if (changed && number !== null && number >= min && number <= max && (mixed || number !== value)) onCommit(number);
+  };
+  return <label className="stroke-setting"><span>{label}</span><SignedNumberInput label={label} min={min} max={max} step={step} stepBase={value} value={draft} allowEmpty={!!mixed} placeholder={mixed ?? ''} onFocus={() => { focused.current = true; }} onChange={next => { dirty.current = true; setDraft(next); }} onBlur={commit} onKeyDown={event => {
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); event.currentTarget.blur(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); reset(); event.currentTarget.blur(); }
+  }} /></label>;
 }
 
 export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { locale: Locale; document: DocumentSnapshot; enabled: boolean; onChange: (width: number) => Promise<void>; onStyle: (patch: Partial<StrokeStyle>) => Promise<void> }) {
   const t = strokeLabels[locale];
   const measurementUnit=useMeasurementUnit(); const unit=unitSymbols[measurementUnit];
   const [draft, setDraft] = useState('');
+  const widthCancelled = useRef(false);
   const [dashDraft, setDashDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -66,7 +80,9 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
   };
   const commit = (text = draft) => {
     if (!text.trim()) return;
-    const width = Number(text) * pixelsPerUnit;
+    const number = parseSignedNumber(text);
+    if (number === null) { setDraft(display); return; }
+    const width = number * pixelsPerUnit;
     if (!Number.isFinite(width) || width < 0 || width > 4096) { setError(t.error); return; }
     if (!mixed && Math.abs(width - value) < .0001) return;
     void apply(() => onChange(width));
@@ -87,7 +103,10 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
     <fieldset disabled={!editable || busy}>
 <PanelBlock id="stroke.basic" title={panelBlockLabels[locale].basic}>      <div className="stroke-width-row">
         <label htmlFor="vector-stroke-width">{t.width}</label>
-        <input id="vector-stroke-width" type="number" min="0" max={4096 / pixelsPerUnit} step="0.25" value={draft} placeholder={mixed ? t.mixed : '—'} onChange={e => setDraft(e.target.value)} onBlur={() => commit()} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') { setDraft(display); setError(''); } }} />
+        <SignedNumberInput key={`${selectionKey}:${unit}`} id="vector-stroke-width" label={t.width} min={0} max={4096 / pixelsPerUnit} step={.25} stepBase={value / pixelsPerUnit} value={draft} allowEmpty={mixed || !selected.length} placeholder={mixed ? t.mixed : '—'} onFocus={() => { widthCancelled.current = false; }} onChange={setDraft} onBlur={() => { const number = parseSignedNumber(draft); if (!widthCancelled.current && number !== null && number >= 0 && number <= 4096 / pixelsPerUnit) commit(); else setDraft(display); }} onKeyDown={event => {
+          if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); event.currentTarget.blur(); }
+          else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); widthCancelled.current = true; setDraft(display); setError(''); event.currentTarget.blur(); }
+        }} />
         <select aria-label={t.width} value={measurementUnit} onChange={e => { void setMeasurementUnit(e.target.value as typeof measurementUnit).catch(e=>setError(String(e))); }}>{measurementUnits.map(u=><option key={u} value={u}>{unitSymbols[u]}</option>)}</select>
         <select className="stroke-presets" aria-label={t.preset} value="" onChange={e => { const next = e.target.value; setDraft(next); commit(next); }}><option value="">▾</option>{[0, .25, .5, .75, 1, 2, 3, 4, 6, 8, 12, 16, 24, 48].map(width => <option key={width} value={width}>{width} {unit}</option>)}</select>
       </div>
@@ -95,18 +114,18 @@ export function StrokePanel({ locale, document, enabled, onChange, onStyle }: { 
         {choice('brush',t.brush,['basic','pencil','bristle'],t.brushes)}
         {choice('cap', t.cap, caps, t.caps)}
         {choice('join', t.join, joins, t.joins)}
-        <NumericSetting label={t.miter} value={style.miterLimit} mixed={isMixed('miterLimit') ? t.mixed : null} min={1} max={100} step={1} onCommit={n => change({ miterLimit: n })} />
+        <NumericSetting key={`${selectionKey}:${unit}:miter`} label={t.miter} value={style.miterLimit} mixed={isMixed('miterLimit') ? t.mixed : null} min={1} max={100} step={1} onCommit={n => change({ miterLimit: n })} />
         {choice('alignment', t.alignment, alignments, t.alignments)}
       </div>
 </PanelBlock><PanelBlock id="stroke.dash" title={t.dash}>      <div className="stroke-dash-heading"><span>{t.dash} ({unit})</span><button type="button" onClick={() => change({ dashArray: [] })}>{t.solid}</button><button type="button" onClick={() => change({ dashArray: [8 * pixelsPerUnit, 4 * pixelsPerUnit] })}>{t.dashed}</button></div>
       <input className="stroke-dash-input" aria-label={`${t.dash} (${unit})`} aria-describedby="stroke-dash-hint" value={dashDraft} placeholder={isMixed('dashArray') ? t.mixed : '8 4'} onChange={e => setDashDraft(e.target.value)} onBlur={commitDash} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } if (e.key === 'Escape') setDashDraft(dashDisplay); }} />
       <p id="stroke-dash-hint" className="stroke-hint">{t.dashHint}</p>
 </PanelBlock><PanelBlock id="stroke.arrows" title={panelBlockLabels[locale].arrows}>      <div className="stroke-settings">
-        <NumericSetting label={`${t.offset} (${unit})`} value={style.dashOffset / pixelsPerUnit} mixed={isMixed('dashOffset') ? t.mixed : null} min={-100000 / pixelsPerUnit} max={100000 / pixelsPerUnit} onCommit={n => change({ dashOffset: n * pixelsPerUnit })} />
+        <NumericSetting key={`${selectionKey}:${unit}:offset`} label={`${t.offset} (${unit})`} value={style.dashOffset / pixelsPerUnit} mixed={isMixed('dashOffset') ? t.mixed : null} min={-100000 / pixelsPerUnit} max={100000 / pixelsPerUnit} onCommit={n => change({ dashOffset: n * pixelsPerUnit })} />
         {choice('startArrow', t.start, arrows, t.arrows)}
         {choice('endArrow', t.end, arrows, t.arrows)}
-        <NumericSetting label={`${t.start} (×)`} value={style.startArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.startArrowScale ?? s.arrowScale) !== (style.startArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ startArrowScale: n })} />
-        <NumericSetting label={`${t.end} (×)`} value={style.endArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.endArrowScale ?? s.arrowScale) !== (style.endArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ endArrowScale: n })} />
+        <NumericSetting key={`${selectionKey}:${unit}:start`} label={`${t.start} (×)`} value={style.startArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.startArrowScale ?? s.arrowScale) !== (style.startArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ startArrowScale: n })} />
+        <NumericSetting key={`${selectionKey}:${unit}:end`} label={`${t.end} (×)`} value={style.endArrowScale ?? style.arrowScale} mixed={styles.some(s => (s.endArrowScale ?? s.arrowScale) !== (style.endArrowScale ?? style.arrowScale)) ? t.mixed : null} min={.1} max={10} step={.1} onCommit={n => change({ endArrowScale: n })} />
         {choice('profile', t.profile, profiles, t.profiles)}
       </div>
       {style.profile === 'custom' && <WidthCurveEditor disabled={!editable || busy} curve={style.widthCurve} locale={locale} onCommit={widthCurve => change({ widthCurve })} />}

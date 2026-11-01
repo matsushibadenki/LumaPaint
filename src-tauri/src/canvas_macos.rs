@@ -10430,6 +10430,31 @@ pub fn pane_preview_document(id: u64) -> Result<super::ThumbnailDocument, String
     })
 }
 
+pub fn histogram_source(id: &str) -> Result<super::HistogramSource, String> {
+    ensure_document_open()?;
+    if let Some(result) = ACTIVE_TILED_DOCUMENT.with(|slot| {
+        slot.borrow().as_ref().map(|session| {
+            let (width, height) = session.document.dimensions();
+            let layer = session
+                .document
+                .layers()
+                .iter()
+                .find(|layer| layer.id == id)
+                .ok_or("Layer not found")?;
+            Ok::<_, String>(super::HistogramSource::Tiled(
+                lumapaint_renderer::histogram::from_tiles(&layer.tiles, width, height),
+            ))
+        })
+    }) {
+        return result;
+    }
+    DOCUMENT.with(|doc| {
+        doc.borrow()
+            .effect_histogram_view(id)
+            .map(|view| super::HistogramSource::Standard(Box::new(view)))
+    })
+}
+
 pub fn thumbnail_document() -> Result<super::ThumbnailDocument, String> {
     ensure_document_open()?;
     if let Some(document) = ACTIVE_TILED_DOCUMENT.with(|slot| {

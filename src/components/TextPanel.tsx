@@ -1,3 +1,4 @@
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { FontViewer } from './FontViewer';
 import { fontViewerMessages } from '../font-viewer';
@@ -19,30 +20,29 @@ function NumberField({ label, value, placeholder, min, max, step, unit, onValidC
   const [focused, setFocused] = useState(false);
   const changed = useRef(false);
   useEffect(() => { if (!focused) setInput(display); }, [display, focused]);
-  return <span className="type-number"><input aria-label={label} type="number" min={min} max={max} step={step} placeholder={placeholder} value={input} onFocus={() => setFocused(true)} onChange={event => {
-    const next = event.currentTarget.value;
+  return <span className="type-number"><SignedNumberInput label={label} min={min} max={max} step={step === 'any' ? 1 : step} stepBase={value ?? 0} placeholder={placeholder} allowEmpty={value === null} value={input} onFocus={() => setFocused(true)} onChange={next => {
     setInput(next);
     changed.current = true;
-  }} onBlur={event => {
+  }} onBlur={() => {
     setFocused(false);
-    const next = event.currentTarget.value;
     const shouldCommit = changed.current;
     changed.current = false;
-    // `step` controls spinner increments, not which typed values are allowed.
-    // Converted units have a fractional min (e.g. 1 px in mm), so native
-    // stepMismatch would otherwise reject ordinary integer font sizes.
-    const number = Number(next);
-    if (next === '' || event.currentTarget.validity.badInput || !Number.isFinite(number) || number < min || number > max) {
+    // Typed values need not align with the keyboard step or a converted-unit minimum.
+    const number = parseSignedNumber(input);
+    if (number === null || number < min || number > max) {
       setInput(display);
     } else if (shouldCommit && (value === null || number !== value)) {
       onValidChange(number);
     }
   }} onKeyDown={event => {
     if (event.key === 'Enter') {
+      if (event.nativeEvent.isComposing) return;
       event.preventDefault();
+      event.stopPropagation();
       event.currentTarget.blur();
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       changed.current = false;
       setInput(display);
       event.currentTarget.blur();
@@ -76,14 +76,15 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, used
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState('');
   const pending = useRef(0);
+  const [settled, setSettled] = useState(0);
   const changeQueue = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { let active = true; textFonts().then(value => { if (active) setFonts(value); }).catch(cause => { if (active) setError(String(cause)); }); return () => { active = false; }; }, []);
   // Do not reset fields for unrelated document/recovery updates.
   const signature = JSON.stringify(settings);
   useEffect(() => {
     if (pending.current === 0) setDraft(settings);
-    setError('');
-  }, [signature]);
+  }, [signature, settled]);
+  useEffect(() => { setError(''); }, [signature]);
   const base = draft?.text ?? defaultVectorText;
   const style = draft?.selection?.style ?? (base.runs?.[0]?.start === 0 ? base.runs[0].style : undefined);
   const text = { ...base, ...style, ...draft?.stylePatch };
@@ -100,7 +101,10 @@ export function TextPanel({ locale, settings, resolution, enabled, editing, used
     setDraft(next); setError(''); pending.current += 1;
     const task = changeQueue.current.then(() => onChange(next));
     changeQueue.current = task.then(() => undefined, cause => { setError(String(cause)); });
-    void task.finally(() => { pending.current -= 1; }).catch(() => {});
+    void task.finally(() => {
+      pending.current -= 1;
+      if (pending.current === 0) setSettled(value => value + 1);
+    }).catch(() => {});
     return task;
   }
   function change(patch: Partial<VectorText>) {

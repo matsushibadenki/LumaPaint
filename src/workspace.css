@@ -43,11 +43,11 @@ h1, h2, h3 { font-style: normal; }
 .workspace[data-tool-mode='animation'] { --tool-mode-background: #674d12; }
 .current-tool svg { flex-shrink: 0; }
 .size-control, .hardness-control, .color-control { display: flex; align-items: center; gap: var(--space-sm); white-space: nowrap; }
-.number-field { display: inline-flex; width: 72px; align-items: center; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-field); }
-.number-field input { width: 44px; border: 0 !important; background: none !important; padding: 3px 6px; appearance: textfield; }
+.number-field { display: inline-flex; width: 72px; align-items: center; gap: 2px; padding-right: 4px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-field); }
+.number-field input { width: 0; flex: 1 1 0; border: 0 !important; background: none !important; padding: 3px 2px; appearance: textfield; }
 .number-field input::-webkit-inner-spin-button { appearance: none; }
 .number-field span { color: var(--color-muted); font-size: var(--text-small); }
-.percent-field input { width: 44px; }
+.percent-field input { width: 0; }
 .session-note { margin-left: auto; color: var(--color-muted); font-size: var(--text-small); line-height: 1.4; }
 .path-operations { max-width: 160px; font-size: var(--text-small); }
 .editor-layout { display: grid; grid-template-columns: 76px minmax(0, 1fr) var(--inspector-width,308px); min-height: 0; }
@@ -218,9 +218,9 @@ h1, h2, h3 { font-style: normal; }
 .property-section h3 { font-size: var(--text-ui); font-weight: 600; margin-bottom: var(--space-md); }
 .small { font-size: var(--text-small); }
 .muted { color: var(--color-muted); }
-.diameter-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 64px; align-items: center; gap: var(--space-sm); margin-top: var(--space-md); }
-.diameter-row .number-field { width: 64px; }
-.diameter-row .number-field input { width: 38px; }
+.diameter-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 72px; align-items: center; gap: var(--space-sm); margin-top: var(--space-md); }
+.diameter-row .number-field { width: 72px; }
+.diameter-row .number-field input { width: 0; }
 .swatches { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 7px; margin: 20px 0; }
 .swatch { min-height: 22px; padding: 0; height: 22px; background: var(--swatch); border: 1px solid var(--color-rule); border-radius: 2px; }
 .swatch:hover:not(:disabled), .swatch:active:not(:disabled) { background: var(--swatch); outline: 1px solid var(--color-ink); }
@@ -1149,7 +1149,7 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .inspector-panel .property-row { display:grid; grid-template-columns:minmax(72px,.85fr) minmax(0,1fr); align-items:center; gap:8px; line-height:1.35; }
 .inspector-panel .property-row > :where(input,select) { width:100%; min-width:0; }
 .inspector-panel .property-row > input[type='checkbox'] { width:auto; justify-self:start; }
-.inspector-panel .diameter-row { grid-template-columns:minmax(64px,.85fr) minmax(24px,1fr) 64px; gap:8px; margin:0; line-height:1.35; }
+.inspector-panel .diameter-row { grid-template-columns:minmax(64px,.85fr) minmax(24px,1fr) 72px; gap:8px; margin:0; line-height:1.35; }
 .inspector-panel input.compact-slider[type='range'] { height:28px; }
 .inspector-panel .brush-settings { display:grid; gap:8px; margin:0; }
 .inspector-panel .brush-settings .diameter-row > span:first-child { min-width:0; }
@@ -1172,9 +1172,10 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .inspector-panel .document-size-grid { gap:8px; }
 .inspector-panel .document-settings-form :where(input,select) { min-height:28px; }
 .inspector-panel .panel-block-layer-list { flex:0 0 auto; }
-.inspector-panel .panel-block-layer-list[open] { display:flex; flex-direction:column; flex:1 1 0; min-height:100px; }
-.inspector-panel .panel-block-layer-list > .panel-block-content { display:flex; flex-direction:column; flex:1 1 0; min-height:0; padding:0; gap:0; }
+.inspector-panel .panel-block-layer-list[open] { display:block; min-height:0; }
+.inspector-panel .panel-block-layer-list > .panel-block-content { display:block; padding:0; }
 .inspector-panel .panel-block-layer-list:not([open]) > .panel-block-content { display:none; }
+.inspector-panel .panel-block-layer-list .layer-list { min-height:0; max-height:clamp(100px, 30vh, 240px); }
 .inspector-panel .panel-block-content > .layer-compositing { margin:0; }
 .inspector-panel .panel-block-content > .layer-lock-row { padding:0; gap:6px; }
 .inspector-panel .panel-block-content .transform-rectangle { margin:0; padding:0; border:0; }
@@ -1238,3 +1239,18 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .pressure-pad img { display:block; width:100%; height:100%; pointer-events:none; user-select:none; }
 .pressure-mouse { display:grid; grid-template-columns:minmax(0,1fr) minmax(36px,1fr) 30px; align-items:center; gap:6px; font-size:var(--text-small); }
 .pressure-mouse output { text-align:right; font-variant-numeric:tabular-nums; }
+
+/* Named visibility configurations share the compact inspector rhythm. */
+.layer-comps { display: grid; gap: 6px; min-width: 0; }
+.layer-comp-list { display: grid; gap: 2px; max-height: 160px; overflow-y: auto; min-width: 0; }
+.layer-comp-list > button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 6px; text-align: start; }
+.layer-comp-list > button > span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-comp-list svg { flex: 0 0 18px; }
+.layer-comp-match { flex: 0 0 auto; min-width: 14px; color: var(--color-accent, #8ec9ed); text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.layer-comp-difference { color: var(--color-muted); font-size: 11px; }
+.layer-comp-empty { padding: 6px; color: var(--muted); font-size: 11px; }
+.layer-comp-edit { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; }
+.layer-comp-edit input { min-width: 0; width: 100%; }
+.layer-comp-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.layer-comp-actions button, .layer-comp-edit button { min-width: 28px; min-height: 26px; }
+.layer-comps [role="alert"] { margin: 0; font-size: 11px; overflow-wrap: anywhere; }

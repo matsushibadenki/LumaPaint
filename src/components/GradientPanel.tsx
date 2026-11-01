@@ -1,3 +1,4 @@
+import { SignedNumberInput, parseSignedNumber } from './SignedNumberInput';
 import { PanelBlock, panelBlockLabels } from './PanelBlock';
 import { listen } from '@tauri-apps/api/event';
 import { useEffect, useRef, useState } from 'react';
@@ -29,8 +30,30 @@ export const gradientCss = (g: Gradient) => {
   return `${g.kind==='radial'?`radial-gradient(ellipse 50% ${50*g.aspect}% at center,`:`linear-gradient(${90-g.angle}deg,`} ${stops})`;
 };
 function NumberField({label, value, min, max, onDraft, onCommit}:{label:string;value:number;min:number;max:number;onDraft:(v:number)=>void;onCommit:()=>void}) {
-  const [draft,setDraft]=useState(String(value)); const focused=useRef(false); const original=useRef(value); useEffect(()=>{if(!focused.current)setDraft(String(Number(value.toFixed(3))));},[value]);
-  return <label className="gradient-field"><span>{label}</span><input type="number" value={draft} min={min} max={max} step="1" onFocus={()=>{focused.current=true;original.current=value;}} onChange={e=>{setDraft(e.target.value);const n=Number(e.target.value);if(e.target.value!==''&&Number.isFinite(n)&&n>=min&&n<=max)onDraft(n);}} onBlur={()=>{focused.current=false;setDraft(String(Number(value.toFixed(3))));onCommit();}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){onDraft(original.current);setDraft(String(original.current));e.currentTarget.blur();}}}/></label>;
+  const formatted = String(Number(value.toFixed(3)));
+  const [draft, setDraft] = useState(formatted);
+  const focused = useRef(false), original = useRef(value), cancelled = useRef(false), dirty = useRef(false);
+  useEffect(() => { if (!focused.current) setDraft(formatted); }, [formatted]);
+  const update = (next: string) => {
+    dirty.current = true; setDraft(next);
+    const number = parseSignedNumber(next);
+    if (number !== null && number >= min && number <= max) onDraft(number);
+  };
+  return <label className="gradient-field"><span>{label}</span><SignedNumberInput label={label} value={draft} min={min} max={max} stepBase={value} onFocus={() => { focused.current = true; original.current = value; cancelled.current = false; dirty.current = false; }} onChange={update} onBlur={() => {
+    focused.current = false;
+    const number = parseSignedNumber(draft);
+    if (cancelled.current || number === null || number < min || number > max) {
+      if (value !== original.current) onDraft(original.current);
+      setDraft(String(Number(original.current.toFixed(3))));
+    } else {
+      setDraft(formatted);
+      if (dirty.current && value !== original.current) onCommit();
+    }
+    dirty.current = false;
+  }} onKeyDown={event => {
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); event.currentTarget.blur(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelled.current = true; event.currentTarget.blur(); }
+  }}/></label>;
 }
 export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate,editorGradient,onDraft,onOpenSwatches,onRegister}:{toolActive?:boolean;locale:Locale;document:DocumentSnapshot;enabled:boolean;onUpdate:(d:DocumentSnapshot)=>void;editorGradient?:Gradient;onDraft?:(g:Gradient)=>void;onOpenSwatches?:()=>void;onRegister?:(g:Gradient)=>void}) {
   const t=gradientLabels[locale];const [gradient,setGradient]=useState<Gradient>(()=>structuredClone(editorGradient??basicGradientSamples[0].gradient));const current=useRef(gradient);current.current=gradient;
@@ -58,7 +81,12 @@ export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate
   const changeStop=(patch:Partial<Gradient['stops'][number]>)=>{update({...current.current,stops:current.current.stops.map((s,i)=>i===stop?{...s,...patch}:s)});};
   const position=(clientX:number)=>{const rect=ramp.current!.getBoundingClientRect();return Math.max(0,Math.min(1,(clientX-rect.left)/rect.width));};
   const drag=(e:React.PointerEvent<HTMLButtonElement>,index:number,midpoint=false)=>{
-    if(!editable)return;e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);if(!midpoint)setStop(index);
+    if(!editable)return;
+    // Pointer capture prevents the normal focus change. Settle the old numeric
+    // edit before switching stops so an invalid draft cannot become paint.
+    const active=e.currentTarget.ownerDocument.activeElement;
+    if(active instanceof HTMLInputElement)active.blur();
+    e.preventDefault();e.stopPropagation();e.currentTarget.setPointerCapture(e.pointerId);if(!midpoint)setStop(index);
     const el=e.currentTarget;
     const move=(event:PointerEvent)=>{const g=current.current;const p=position(event.clientX);update({...g,stops:g.stops.map((s,i)=>i!==index?s:midpoint?{...s,midpoint:Math.max(.01,Math.min(.99,(p-s.position)/Math.max(.00001,g.stops[i+1].position-s.position)))}:{...s,position:Math.max(g.stops[i-1]?.position??0,Math.min(g.stops[i+1]?.position??1,p))})});};
     const end=()=>{el.removeEventListener('pointermove',move);el.removeEventListener('pointerup',end);el.removeEventListener('pointercancel',end);commit();};el.addEventListener('pointermove',move);el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
@@ -69,8 +97,8 @@ export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate
     {toolActive&&<p>{locale==='ja'?'キャンバス上をドラッグして適用。Shiftで角度を固定。':locale==='en'?'Drag on canvas to apply. Shift constrains the angle.':'在画布上拖动应用，Shift 约束角度。'}</p>}
     <fieldset disabled={!editable}><PanelBlock id="gradient.settings" title={panelBlockLabels[locale].settings}><div className="gradient-type-row"><div className="gradient-swatch" style={{background:gradientCss(gradient)}}/><div><label className="gradient-field"><span>{t.target}</span>{onDraft?<span>{t.fill}</span>:pixels?<span>{t.pixels}</span>:<select value={target} onChange={e=>setTarget(e.target.value as 'fill'|'stroke')}><option value="fill">{t.fill}</option><option value="stroke">{t.stroke}</option></select>}</label><div className="gradient-types"><span>{t.type}</span>{(['linear','radial'] as const).map(kind=><button aria-label={t[kind]} title={t[kind]} aria-pressed={!gradient.pixelStyle&&gradient.kind===kind} key={kind} onClick={()=>change({kind,pixelStyle:undefined},true)} style={{background:kind==='linear'?'linear-gradient(90deg,#fff,#222)':'radial-gradient(#fff,#222)'}}/>)}</div></div></div>
     {pixels&&<label className="gradient-field"><span>{t.type}</span><select value={gradient.pixelStyle??gradient.kind} onChange={e=>{const v=e.target.value;change(v==='linear'||v==='radial'?{kind:v,pixelStyle:undefined}:{pixelStyle:v as 'angular'|'reflected'|'diamond'},true);}}>{[['linear',t.linear],['radial',t.radial],['angular',locale==='ja'?'円錐形':locale==='en'?'Angle':'角度'],['reflected',locale==='ja'?'反射形':locale==='en'?'Reflected':'对称'],['diamond',locale==='ja'?'菱形':locale==='en'?'Diamond':'菱形']].map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>}
-    <NumberField label={`${t.angle} °`} value={gradient.angle} min={-360} max={360} onDraft={angle=>change({angle})} onCommit={commit}/>
-    {gradient.kind==='radial'&&<NumberField label={`${t.aspect} %`} value={gradient.aspect*100} min={1} max={1000} onDraft={n=>change({aspect:n/100})} onCommit={commit}/>}
+    <NumberField key={`${selectionKey}:${target}:angle`} label={`${t.angle} °`} value={gradient.angle} min={-360} max={360} onDraft={angle=>change({angle})} onCommit={commit}/>
+    {gradient.kind==='radial'&&<NumberField key={`${selectionKey}:${target}:aspect`} label={`${t.aspect} %`} value={gradient.aspect*100} min={1} max={1000} onDraft={n=>change({aspect:n/100})} onCommit={commit}/>}
     <label className="gradient-field"><span>{t.method}</span><select value={gradient.method} onChange={e=>change({method:e.target.value as Gradient['method']},true)}><option value="classic">{t.classic}</option><option value="perceptual">{t.perceptual}</option><option value="linear">{t.light}</option></select></label>
     <label className="gradient-dither"><input type="checkbox" checked={!!gradient.dither && (pixels||target==='fill')} disabled={!pixels&&target==='stroke'} onChange={e=>change({dither:e.target.checked},true)}/><span>{t.dither}</span></label>
 </PanelBlock><PanelBlock id="gradient.stops" title={t.color}>    <div className="gradient-ramp-wrap"><button title={t.reverse} aria-label={t.reverse} onClick={()=>{const stops=[...gradient.stops].reverse().map((s,i)=>({...s,position:1-s.position,midpoint:i<gradient.stops.length-1?1-gradient.stops[gradient.stops.length-2-i].midpoint:.5}));change({stops},true);setStop(gradient.stops.length-1-stop);}}>⇄</button><div className="gradient-ramp" ref={ramp} style={{background:gradientCss({...gradient,kind:'linear',angle:0})}} onClick={e=>{if(e.target!==e.currentTarget||gradient.stops.length>=64)return;const p=position(e.clientX);const next=[...gradient.stops,{position:p,color:sample(gradient,p),midpoint:.5}].sort((a,b)=>a.position-b.position);setStop(next.findIndex(x=>x.position===p));change({stops:next},true);}}>
@@ -78,9 +106,9 @@ export function GradientPanel({toolActive=false,locale,document,enabled,onUpdate
     {gradient.stops.slice(0,-1).map((v,i)=><button key={i} className="gradient-midpoint" title={t.midpoint} aria-label={`${t.midpoint} ${i+1}`} style={{left:`${(v.position+(gradient.stops[i+1].position-v.position)*v.midpoint)*100}%`}} onPointerDown={e=>drag(e,i,true)}/>)}
     </div><button title={t.remove} aria-label={t.remove} disabled={gradient.stops.length<=2} onClick={()=>{change({stops:gradient.stops.filter((_,i)=>i!==stop)},true);setStop(Math.max(0,stop-1));}}>⌫</button></div>
     <div className="gradient-field"><span>{t.color}</span><ColorPickerPopover key={`${selectionKey}-${target}`} locale={locale} color={[s.color[0],s.color[1],s.color[2]]} disabled={!editable} label={t.color} noColor={s.color[3] === 0} onNone={()=>{changeStop({color:[...current.current.stops[stop].color.slice(0,3),0] as [number,number,number,number]}); commit();}} onChange={color=>{changeStop({color:[...color,current.current.stops[stop].color[3] || 255]});}} onClose={commit}/></div>
-    <NumberField label={`${t.opacity} %`} value={s.color[3]/255*100} min={0} max={100} onDraft={n=>changeStop({color:[s.color[0],s.color[1],s.color[2],Math.round(n/100*255)]})} onCommit={commit}/>
-    <NumberField label={`${t.position} %`} value={s.position*100} min={(gradient.stops[stop-1]?.position??0)*100} max={(gradient.stops[stop+1]?.position??1)*100} onDraft={n=>changeStop({position:n/100})} onCommit={commit}/>
-    {stop<gradient.stops.length-1&&<NumberField label={`${t.midpoint} %`} value={s.midpoint*100} min={1} max={99} onDraft={n=>changeStop({midpoint:n/100})} onCommit={commit}/>}
+    <NumberField key={`${selectionKey}:${target}:${stop}:opacity`} label={`${t.opacity} %`} value={s.color[3]/255*100} min={0} max={100} onDraft={n=>changeStop({color:[s.color[0],s.color[1],s.color[2],Math.round(n/100*255)]})} onCommit={commit}/>
+    <NumberField key={`${selectionKey}:${target}:${stop}:position`} label={`${t.position} %`} value={s.position*100} min={(gradient.stops[stop-1]?.position??0)*100} max={(gradient.stops[stop+1]?.position??1)*100} onDraft={n=>changeStop({position:n/100})} onCommit={commit}/>
+    {stop<gradient.stops.length-1&&<NumberField key={`${selectionKey}:${target}:${stop}:midpoint`} label={`${t.midpoint} %`} value={s.midpoint*100} min={1} max={99} onDraft={n=>changeStop({midpoint:n/100})} onCommit={commit}/>}
 </PanelBlock>    {!onDraft&&pixels&&<button className="gradient-apply" disabled={!!gradient.pixelStyle} onClick={()=>{setBusy(true);setError('');void applyGradient([],'gradientLayer',current.current).then(onUpdate).catch(e=>setError(String(e))).finally(()=>setBusy(false));}}>{locale==='ja'?'非破壊グラデーションレイヤーを作成':locale==='en'?'Create editable gradient fill layer':'创建可编辑渐变填充图层'}</button>}
     {!onDraft&&pixels&&gradient.pixelStyle&&<p>{locale==='ja'?'非破壊レイヤーは線形・円形に対応しています。':locale==='en'?'Editable fill layers support linear and radial gradients.':'可编辑填充图层支持线性和径向渐变。'}</p>}
     {!onDraft&&<button className="gradient-apply" onClick={()=>void apply()}>{t.apply}</button>}</fieldset>

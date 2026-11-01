@@ -81,6 +81,13 @@ pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, Strin
             .remove(0),
     )
 }
+/// Small input proxy; histograms return bins, never raster data, to the UI.
+pub fn effect_histogram(document: &Document) -> Result<crate::histogram::Histogram, String> {
+    let pixels = render_sized_inner(document, 512., true, true)?
+        .channels
+        .remove(0);
+    Ok(crate::histogram::from_premultiplied(&pixels))
+}
 /// Export-quality host fallback for PDF effects. All pixels remain in Rust.
 pub fn document_png(document: &Document) -> Result<Vec<u8>, String> {
     let (w, h) = document.dimensions();

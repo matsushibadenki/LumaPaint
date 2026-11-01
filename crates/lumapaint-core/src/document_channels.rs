@@ -59,6 +59,35 @@ impl Document {
         }
         view
     }
+    /// Read-only, isolated input to layer color effects. Visibility, opacity,
+    /// masks and other layers do not obscure the input distribution.
+    pub fn effect_histogram_view(&self, id: &str) -> Result<Self, String> {
+        if id != "layer-1" && !self.svg_layers.iter().any(|layer| layer.id == id) {
+            return Err("Layer not found".into());
+        }
+        let mut view = self.clone_for_rendering();
+        view.layer_effects.clear();
+        view.layer_groups = Default::default();
+        view.clipping_path_id = None;
+        view.path_editing = None;
+        view.selected_vector_objects.clear();
+        view.layer_edit_selection = None;
+        view.selected_layer = (id != "layer-1").then(|| id.to_owned());
+        view.visible = id == "layer-1";
+        view.layer_opacity = 1.;
+        view.svg_layers.retain(|layer| layer.id == id);
+        for layer in &mut view.svg_layers {
+            layer.visible = true;
+            layer.opacity = 1.;
+        }
+        if id != "layer-1" {
+            view.canvas_color = CanvasColor::Transparent;
+            view.paint_source = None;
+            view.strokes.clear();
+            view.active = None;
+        }
+        Ok(view)
+    }
     /// A blank, clipped workspace for native channel brush coverage.
     pub fn channel_brush_workspace(&self) -> Self {
         Self {
