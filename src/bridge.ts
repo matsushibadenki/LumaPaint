@@ -720,3 +720,18 @@ export function publicationTextAction(documentId:number,request:PublicationTextR
 
 export interface LayerHistogram { channels: number[][]; samples: number }
 export function layerHistogram(id: string): Promise<LayerHistogram> { return invoke("layer_histogram", {id}); }
+
+
+export type EffectPresetSettings = Omit<LayerEffects, 'mask' | 'screentone'>;
+export interface EffectPreset { id:number; name:string; settings:EffectPresetSettings }
+export interface EffectPresetLibrary { revision:number; presets:EffectPreset[] }
+export async function effectPresetLibrary(action:'get'|'add'|'update'|'rename'|'remove', id?:number, name?:string, settings?:EffectPresetSettings):Promise<EffectPresetLibrary> {
+  if (!isTauri()) {
+    if (action === 'get') return {revision:0,presets:[]};
+    throw new Error('Desktop app required / デスクトップアプリで保存してください / 请在桌面应用中保存');
+  }
+  return invoke('effect_preset_library',{action,id:id??null,name:name??null,settings:settings??null});
+}
+export async function onEffectPresetsChanged(callback:(library:EffectPresetLibrary)=>void):Promise<()=>void> {
+  return isTauri()?listen<EffectPresetLibrary>('effect-presets-changed',event=>callback(event.payload)):()=>{};
+}

@@ -149,6 +149,7 @@ pub fn run() {
                 }
             }
         })
+        .manage(effect_presets::Store::default())
         .manage(shortcuts::Store::default())
         .manage(lut_editor::Store::default())
         .invoke_handler(tauri::generate_handler![
@@ -260,6 +261,7 @@ pub fn run() {
             canvas::apply_gradient,
             canvas::set_gradient_tool,
             gradient_presets::gradient_library,
+            effect_presets::effect_preset_library,
             swatches::swatch_library,
             color_history::color_history,
             brush_pressure::brush_pressure_preset,
@@ -385,6 +387,7 @@ mod brush_pressure;
 mod canvas;
 mod color_history;
 mod editor_windows;
+mod effect_presets;
 mod gradient_presets;
 mod lut_editor;
 mod modal_windows;

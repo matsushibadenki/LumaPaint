@@ -33,6 +33,7 @@ import type { DisplayChannel, BitDepth, Brush, ColorMode, ColorProfile, Document
 import { BrushPresets } from './BrushPresets';
 import { readPreference, savePreference, type Locale } from '../i18n';
 import { workspaceMessages } from '../workspace-i18n';
+import { BrushSizePresets } from './BrushSizePresets';
 import { HexInput, MAX_BRUSH_SIZE, PercentInput, SizeInput } from './BrushControls';
 import { Icon } from './Icon';
 import { LayerList } from './LayerList';
@@ -263,7 +264,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
       <button onClick={openSwatches}>{swatchLink}</button>
 <PanelBlock id="brush.basic" title={panelBlockLabels[locale].basic}>      <div className="diameter-row"><label htmlFor="brush-size">{t.diameter}</label><CompactSlider id="brush-size" min="1" max={MAX_BRUSH_SIZE} value={brush.size} onChange={event => onBrush({ ...brush, size: Number(event.target.value) })} /><SizeInput resolution={document.resolution} label={t.diameter} value={brush.size} onChange={size => onBrush({ ...brush, size })} /></div>
       <div className="diameter-row"><label htmlFor="brush-hardness">{t.hardness}</label><CompactSlider id="brush-hardness" min="0" max="100" value={Math.round(brush.hardness * 100)} onChange={event => onBrush({ ...brush, hardness: Number(event.target.value) / 100 })} /><PercentInput label={t.hardness} value={brush.hardness} onChange={hardness => onBrush({ ...brush, hardness })} /></div>
-</PanelBlock><PanelBlock id="brush.appearance" title={panelBlockLabels[locale].appearance}>      <BrushSettings brush={brush} locale={locale} enabled={enabled} onChange={onBrush} alphaLocked={selectedLayer?.alphaLocked}/>
+</PanelBlock><BrushSizePresets locale={locale} value={brush.size} resolution={document.resolution} disabled={!enabled} onChange={size=>onBrush({...brush,size})}/><PanelBlock id="brush.appearance" title={panelBlockLabels[locale].appearance}>      <BrushSettings brush={brush} locale={locale} enabled={enabled} onChange={onBrush} alphaLocked={selectedLayer?.alphaLocked}/>
 </PanelBlock><PressurePanel paper={document.paper} locale={locale} brush={brush} enabled={enabled} onChange={onBrush}/>      <PaperControls document={document} locale={locale} enabled={enabled} onUpdate={onTransformUpdate}/><PanelBlock id="brush.presets" title={panelBlockLabels[locale].presets}>      <BrushPresets locale={locale} brush={brush} enabled={enabled} onChange={onBrush} />
 </PanelBlock><PanelBlock id="brush.color" title={t.color}>      <HexInput noColor={foregroundNone} onNone={onForegroundNone} noneLabel={locale === 'ja' ? 'なし' : locale === 'en' ? 'None' : '无'} label={t.hex} invalid={t.invalidColor} color={brush.color} onChange={onForegroundChange} />
 </PanelBlock>    </section>)}

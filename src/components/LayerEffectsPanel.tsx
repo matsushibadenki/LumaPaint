@@ -1,3 +1,4 @@
+import { EffectPresetsPanel, captureEffectSettings } from './EffectPresetsPanel';
 import { NumberDraftInput } from './NumberDraftInput';
 import { useLayerHistogram } from './useLayerHistogram';
 import { PanelBlock } from './PanelBlock';
@@ -52,6 +53,7 @@ export function LayerEffectsPanel({ locale, layer, enabled, onCommit, histogramS
     return <div className="effect-control" key={`${inputScope}:${field}`}><span>{label.split(' · ').at(-1)}</span><EffectNumber label={label} min={min} limit={100} value={draft[field]} disabled={disabled || !draft.enabled} onCommit={v=>commit(update(v))}/><CompactSlider aria-label={label} min={min} max={100} disabled={disabled || !draft.enabled} value={draft[field]} onChange={e=>update(Number(e.currentTarget.value))} onPointerUp={e=>commit(update(Number(e.currentTarget.value)))} onKeyUp={()=>commit(draft)} onBlur={()=>commit(draft)}/></div>;
   };
   return <div className="layer-effects-panel"><header className="effect-header"><h3>{t.title}</h3><p className="effect-layer-name" title={layer.name}>{layer.name}</p></header><div className="effect-toolbar"><label className="effect-enable"><input type="checkbox" disabled={disabled} checked={draft.enabled} onChange={e => { const next={...draft,enabled:e.currentTarget.checked};setDraft(next);commit(next); }} />{t.preview}</label><button disabled={disabled} onClick={() => { const next={...defaultLayerEffects(),mask:draft.mask};setDraft(next);commit(next); }}>{t.reset}</button></div><p className="effect-hint">{t.hint.map(line=><span key={line}>{line}</span>)}</p>
+    <EffectPresetsPanel key={inputScope} locale={locale} effects={draft} disabled={disabled} onApply={settings=>{const next={...draft,...captureEffectSettings(settings)};setDraft(next);commit(next);}}/>
     <PanelBlock id="effects.light" title={<>{t.light}</>}>{rows(0,6)}</PanelBlock><PanelBlock id="effects.color" title={<>{t.color}</>}>{rows(6,10)}</PanelBlock>
     <PanelBlock id="effects.curves" title={<>{t.curve}<span title={t.histogram} aria-label={t.histogram}>ⓘ</span></>}><select aria-label={t.curve} disabled={disabled} value={channel} onChange={e=>setChannel(Number(e.currentTarget.value))}>{t.channel.map((name,i)=><option key={name} value={i}>{name}</option>)}</select>
       <CurveEditor key={`${layer.id}-${channel}`} locale={locale} channel={t.channel[channel]} histogram={histogram?.channels[channel]} histogramColor={['#aab4bf', '#ec6f6b', '#71c78c', '#6d9feb'][channel]} points={draft.curves[channel]} smooth={draft.curveSmooth[channel]} disabled={disabled || !draft.enabled}
