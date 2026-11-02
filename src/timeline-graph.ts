@@ -1,4 +1,4 @@
-import {DEFAULT_KEY_CURVE,type KeyCurve} from './key-curve.ts';
+import {DEFAULT_KEY_CURVE,linkedCurves,type KeyCurve} from './key-curve.ts';
 import type {TimelineKey} from './timeline-view';
 export const GRAPH={width:240,height:160,left:32,right:8,top:12,bottom:24};
 export type GraphRange={min:number;max:number};
@@ -36,8 +36,12 @@ export function graphFreeFrame(frame:number,from:number,keys:readonly TimelineKe
  return from;
 }
 
-export type KeyBatchEdit={kind:'curve';curve:KeyCurve}|{kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
+export type KeyBatchEdit={kind:'linkedCurve';curve:KeyCurve;control:1|2}|{kind:'curve';curve:KeyCurve}|{kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
 export function graphBatch(keys:readonly TimelineKey[],frames:readonly number[],edit:KeyBatchEdit):TimelineKey[]{
+ if(edit.kind==='linkedCurve'){
+  const changes=linkedCurves(keys,keys.findIndex(k=>k.frame===frames[0]),edit.curve,edit.control);
+  return keys.map((k,i)=>{const c=changes.find(c=>c.index===i);return c?{...k,interpolation:'cubic',curve:{x1:Math.fround(c.curve.x1),y1:Math.fround(c.curve.y1),x2:Math.fround(c.curve.x2),y2:Math.fround(c.curve.y2)}}:k;});
+ }
  const selected=new Set(frames);
  return keys.filter(k=>edit.kind!=='delete'||!selected.has(k.frame)).map(k=>!selected.has(k.frame)?k:edit.kind==='curve'?{...k,interpolation:'cubic' as const,curve:{x1:Math.fround(edit.curve.x1),y1:Math.fround(edit.curve.y1),x2:Math.fround(edit.curve.x2),y2:Math.fround(edit.curve.y2)}}:edit.kind==='move'?{...k,frame:k.frame+edit.frameDelta,value:Math.fround(Math.fround(k.value)+Math.fround(edit.valueDelta))}:edit.kind==='shiftTime'?{...k,frame:k.frame+edit.delta}:edit.kind==='shiftValue'?{...k,value:Math.fround(Math.fround(k.value)+Math.fround(edit.delta))}:edit.kind==='interpolation'?{...k,interpolation:edit.interpolation}:k).sort((a,b)=>a.frame-b.frame);
 }

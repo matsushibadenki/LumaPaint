@@ -1351,3 +1351,19 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-graph-tangent circle:focus{outline:none;stroke-width:3}
 
 .timeline-graph-tangents input::-webkit-inner-spin-button,.timeline-graph-tangents input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.timeline-graph-kind{display:flex;gap:3px;margin-bottom:4px}
+.timeline-graph-kind button{min-width:25px;height:22px;padding:0 5px}
+.timeline-graph-kind button[aria-pressed="true"]{color:var(--color-focus);background:var(--color-selected)}
+.timeline-graph-shell{min-width:0}
+.timeline-velocity-controls{display:flex;align-items:center;gap:4px;margin:4px 0}
+.timeline-velocity-controls button{width:23px;min-width:23px;height:23px;padding:0}
+.timeline-velocity-controls input[type=range]{min-width:0;flex:1;width:0;padding:0}
+.timeline-velocity>svg{cursor:grab}
+.timeline-velocity>svg:active{cursor:grabbing}
+.timeline-velocity-zero{stroke:var(--color-focus);stroke-width:.5;opacity:.5}
+.timeline-velocity-boundary{stroke:var(--color-muted);stroke-width:.7;stroke-dasharray:2 2}
+
+.timeline-graph-tangents button[aria-pressed="true"]{background:var(--color-selected);color:var(--color-focus)}
+.timeline-graph-linked{pointer-events:none;opacity:.6}
+.timeline-graph-linked line{stroke:var(--color-focus);stroke-width:1;stroke-dasharray:2 2}
+.timeline-graph-linked circle{fill:var(--color-panel);stroke:var(--color-focus);stroke-width:1}

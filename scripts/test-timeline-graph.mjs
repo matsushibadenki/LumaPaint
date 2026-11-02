@@ -120,3 +120,52 @@ assert.ok(graphPath(cubicKeys,101,{min:0,max:100},0).includes('C 52 36.8 112 12 
 const preview=graphBatch(group,[5],{kind:'curve',curve});assert.equal(preview[0].interpolation,'cubic');assert.ok(equalKeyCurve(preview[0].curve,curve));
 assert.deepEqual(graphBatch(preview,[5],{kind:'move',frameDelta:2,valueDelta:1})[0].curve,preview[0].curve);
 console.log('Custom tangents: easing inversion, exact curve geometry, constraints, f32 metadata and move retention passed');
+
+const {curveSlope,velocityData,velocityAt}=await import('../src/timeline-velocity.ts');
+const vk=(interpolation,curve)=>[{frame:0,value:0,interpolation,curve},{frame:20,value:100,interpolation:'linear'}];
+assert.equal(velocityAt(vk('linear'),24,5),120);
+assert.equal(velocityAt(vk('ease'),24,10),180);
+assert.equal(velocityAt(vk('ease'),24,5),135);
+assert.equal(velocityAt(vk('hold'),24,10),0);
+assert.equal(velocityAt(vk('hold'),24,20),null);
+assert.deepEqual(velocityData(vk('hold'),24,40).jumps,[20]);
+assert.equal(velocityAt(vk('linear'),24,0),null); // a derivative discontinuity, not a fabricated endpoint rate
+assert.equal(velocityAt(vk('linear'),24,21),0);
+assert.equal(velocityAt([{frame:10,value:5,interpolation:'ease'}],24,10),0);
+for(const c of [DEFAULT_KEY_CURVE,{x1:.1,y1:.8,x2:.4,y2:1},{x1:.2,y1:.2,x2:.8,y2:.8}]){
+ for(const time of [.1,.25,.5,.75,.9]){
+  const epsilon=.0001,expected=(sampleKeyCurve(c,time+epsilon)-sampleKeyCurve(c,time-epsilon))/(2*epsilon)*120;
+  assert.ok(Math.abs(velocityAt(vk('cubic',c),24,time*20)-expected)<.15);
+ }
+}
+assert.equal(curveSlope({x1:0,y1:1,x2:.5,y2:1},0),null);
+assert.equal(curveSlope({x1:0,y1:0,x2:.5,y2:.7},0),1.4);
+assert.equal(curveSlope({x1:0,y1:0,x2:0,y2:0},0),1);
+assert.deepEqual(velocityData(vk('cubic',{x1:0,y1:1,x2:.5,y2:1}),24,40).singular,[0]);
+const negative=vk('ease').map(k=>({...k,value:100-k.value}));assert.equal(velocityAt(negative,24,10),-180);
+assert.equal(velocityAt(vk('linear'),48,5),240);
+for(const data of [velocityData([],24,1),velocityData(negative,24,40),velocityData(vk('cubic',{x1:0,y1:1,x2:.5,y2:1}),24,40)]){
+ assert.ok(data.min<0&&data.max>0);assert.ok(data.lines.flat().every(p=>Number.isFinite(p.frame)&&Number.isFinite(p.value)));
+}
+const denseVelocity=velocityData(Array.from({length:4096},(_,frame)=>({frame,value:frame%2,interpolation:'cubic'})),24,4096);assert.ok(denseVelocity.lines.flat().length<=13000);
+const zoomedVelocity=velocityData(vk('ease'),24,40,9,11);assert.ok(zoomedVelocity.lines.flat().every(p=>p.frame>=9&&p.frame<=11));
+console.log('Velocity graph: signed units/second, fps, easing derivatives, cubic inversion, stationary/vertical tangents, jumps, boundaries, zoom and bounded samples passed');
+
+// Linked tangents preserve physical slope even with unequal time/value intervals.
+const linkKeys=[{frame:0,value:0,interpolation:'cubic'},{frame:10,value:20,interpolation:'cubic'},{frame:40,value:80,interpolation:'linear'}];
+const linkSlope=(keys,i,c)=>{const a=keys[i],b=keys[i+1],curve=a.curve;return (b.value-a.value)/(b.frame-a.frame)*(c===1?curve.y1/curve.x1:(1-curve.y2)/(1-curve.x2));};
+for(const [frame,control] of [[0,2],[10,1]]){
+ const curve={x1:.25,y1:.4,x2:.75,y2:.6},edited=graphBatch(linkKeys,[frame],{kind:'linkedCurve',curve,control});
+ assert.ok(Math.abs(linkSlope(edited,0,2)-linkSlope(edited,1,1))<1e-5);
+ assert.deepEqual(edited.map(k=>[k.frame,k.value]),[[0,0],[10,20],[40,80]]);
+ assert.deepEqual(graphBatch(edited,[frame],{kind:'linkedCurve',curve,control}),edited);
+}
+for(const end of [-20,20,80]){
+ const keys=linkKeys.map((k,i)=>i===2?{...k,value:end}:k),edited=graphBatch(keys,[0],{kind:'linkedCurve',control:2,curve:{x1:0,y1:1,x2:1,y2:0}});
+ assert.ok(Math.abs(linkSlope(edited,0,2)-linkSlope(edited,1,1))<.001*Math.max(1,Math.abs(linkSlope(edited,0,2))));
+ if(end<=20)assert.equal(linkSlope(edited,0,2),0);
+ for(const k of edited.filter(k=>k.curve)){assert.ok(k.curve.x1<=k.curve.x2);assert.ok(Object.values(k.curve).every(n=>n>=0&&n<=1));}
+}
+const unlinked=linkKeys.map((k,i)=>i===1?{...k,interpolation:'hold'}:k);
+assert.deepEqual(graphBatch(unlinked,[0],{kind:'linkedCurve',control:2,curve:DEFAULT_KEY_CURVE})[1],unlinked[1]);
+console.log('Linked tangents: unequal interval slopes, both directions, extrema, flat spans, vertical handles, bounds, idempotence and independent hold neighbors passed');

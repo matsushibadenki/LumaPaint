@@ -23,10 +23,95 @@ pub enum KeyBatchEdit {
     Curve {
         curve: KeyCurve,
     },
+    LinkedCurve {
+        curve: KeyCurve,
+        control: u8,
+    },
     Delete,
 }
 fn invalid() -> String {
     "Invalid keys, collision or output limit / キーの選択・重複・出力範囲を確認してください / 请检查关键帧选择、重叠和输出范围".into()
+}
+// Link existing cubic intervals in document units, not normalized percentages.
+// With bounded values, a local extremum must have a horizontal tangent.
+fn link_curve(
+    keys: &mut [Keyframe],
+    i: usize,
+    mut curve: KeyCurve,
+    control: u8,
+) -> Result<(), String> {
+    if i + 1 >= keys.len() || keys[i].interpolation != Interpolation::Cubic {
+        return Err(invalid());
+    }
+    let neighbor = if control == 1 {
+        i.checked_sub(1)
+    } else if i + 2 < keys.len() {
+        Some(i + 1)
+    } else {
+        None
+    };
+    if let Some(j) = neighbor.filter(|&j| keys[j].interpolation == Interpolation::Cubic) {
+        let mut other = keys[j].curve.unwrap_or_default();
+        let dt = f64::from(keys[i + 1].frame - keys[i].frame);
+        let dv = f64::from(keys[i + 1].value) - f64::from(keys[i].value);
+        let nt = f64::from(keys[j + 1].frame - keys[j].frame);
+        let nv = f64::from(keys[j + 1].value) - f64::from(keys[j].value);
+        let (x, mut y) = if control == 1 {
+            (curve.x1.max(0.0001), curve.y1)
+        } else {
+            ((1. - curve.x2).max(0.0001), 1. - curve.y2)
+        };
+        if dv * nv <= 0. {
+            y = 0.;
+        }
+        if control == 1 {
+            curve.x1 = x;
+            curve.x2 = curve.x2.max(x);
+            curve.y1 = y;
+        } else {
+            curve.x2 = 1. - x;
+            curve.x1 = curve.x1.min(curve.x2);
+            curve.y2 = 1. - y;
+        }
+        let (x, y) = if control == 1 {
+            (curve.x1, curve.y1)
+        } else {
+            (1. - curve.x2, 1. - curve.y2)
+        };
+        let slope = dv * f64::from(y) / (dt * f64::from(x));
+        let ratio = if nv == 0. {
+            0.
+        } else {
+            (slope * nt / nv).abs()
+        };
+        let wanted = if control == 1 {
+            1. - other.x2
+        } else {
+            other.x1
+        };
+        let x = f64::from(wanted.max(0.0001)).min(if ratio > 0. { 1. / ratio } else { 1. }) as f32;
+        let y = (ratio * f64::from(x)).min(1.) as f32;
+        if control == 1 {
+            other.x2 = 1. - x;
+            other.x1 = other.x1.min(other.x2);
+            other.y2 = 1. - y;
+        } else {
+            other.x1 = x;
+            other.x2 = other.x2.max(x);
+            other.y1 = y;
+        }
+        let dx = if control == 1 {
+            1. - other.x2
+        } else {
+            other.x1
+        };
+        if dx <= 0. || !other.valid() || !curve.valid() {
+            return Err(invalid());
+        }
+        keys[j].curve = Some(other);
+    }
+    keys[i].curve = Some(curve);
+    Ok(())
 }
 impl Document {
     pub fn edit_animation_keys(
@@ -51,6 +136,16 @@ impl Document {
             return Err(invalid());
         }
         let before = keys.clone();
+        if let KeyBatchEdit::LinkedCurve { curve, control } = edit {
+            if frames.len() != 1 || !curve.valid() || !(1..=2).contains(&control) {
+                return Err(invalid());
+            }
+            let index = keys
+                .iter()
+                .position(|k| k.frame == frames[0])
+                .ok_or_else(invalid)?;
+            link_curve(keys, index, curve, control)?;
+        }
         for key in keys.iter_mut().filter(|k| selected.contains(&k.frame)) {
             match edit {
                 KeyBatchEdit::Move {
@@ -91,7 +186,7 @@ impl Document {
                     key.interpolation = Interpolation::Cubic;
                     key.curve = Some(curve);
                 }
-                KeyBatchEdit::Delete => (),
+                KeyBatchEdit::Delete | KeyBatchEdit::LinkedCurve { .. } => (),
             }
         }
         if matches!(edit, KeyBatchEdit::Delete) {
@@ -362,5 +457,161 @@ mod tests {
         )
         .is_ok());
         assert!(serde_json::from_str::<KeyBatchEdit>(r#"{"kind":"move","frameDelta":1}"#).is_err());
+    }
+    fn slope(keys: &[Keyframe], i: usize, control: u8) -> f64 {
+        let c = keys[i].curve.unwrap();
+        let (x, y) = if control == 1 {
+            (c.x1, c.y1)
+        } else {
+            (1. - c.x2, 1. - c.y2)
+        };
+        (f64::from(keys[i + 1].value) - f64::from(keys[i].value)) * f64::from(y)
+            / (f64::from(keys[i + 1].frame - keys[i].frame) * f64::from(x))
+    }
+    #[test]
+    fn linked_tangents_match_document_slopes_and_commit_once() {
+        for (frame, control) in [(5, 2), (15, 1)] {
+            let (mut d, id) = fixture();
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[5, 15],
+                KeyBatchEdit::Interpolation {
+                    interpolation: Interpolation::Cubic,
+                },
+            )
+            .unwrap();
+            let before = encoded(&d);
+            let undo = d.undo_order.len();
+            let curve = KeyCurve {
+                x1: 0.25,
+                y1: 0.4,
+                x2: 0.75,
+                y2: 0.6,
+            };
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[frame],
+                KeyBatchEdit::LinkedCurve { curve, control },
+            )
+            .unwrap();
+            let keys = &d.animation.tracks[&id].channels[&Property::Opacity];
+            assert!((slope(keys, 0, 2) - slope(keys, 1, 1)).abs() < 0.00001);
+            assert_eq!(
+                keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
+                vec![(5, 10.), (15, 30.), (30, 80.)]
+            );
+            assert_eq!(d.undo_order.len(), undo + 1);
+            let after = encoded(&d);
+            d.undo();
+            assert_eq!(encoded(&d), before);
+            d.redo();
+            assert_eq!(encoded(&d), after);
+            let saved = serde_json::to_string(&d.animation).unwrap();
+            let restored: Animation = serde_json::from_str(&saved).unwrap();
+            assert_eq!(
+                restored.tracks[&id].channels[&Property::Opacity][0].curve,
+                keys_curve(&d, &id, 0)
+            );
+            let revision = d.revision();
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[frame],
+                KeyBatchEdit::LinkedCurve { curve, control },
+            )
+            .unwrap();
+            assert_eq!(d.revision(), revision);
+        }
+    }
+    fn keys_curve(d: &Document, id: &str, i: usize) -> Option<KeyCurve> {
+        d.animation.tracks[id].channels[&Property::Opacity][i].curve
+    }
+    #[test]
+    fn linked_extrema_plateaus_and_invalid_requests_are_bounded_and_atomic() {
+        for end in [10., 30., 80.] {
+            let (mut d, id) = fixture();
+            let mut keys = d.animation.tracks[&id].channels[&Property::Opacity].clone();
+            keys[2].value = end;
+            for key in &mut keys {
+                key.interpolation = Interpolation::Cubic;
+            }
+            link_curve(
+                &mut keys,
+                0,
+                KeyCurve {
+                    x1: 0.,
+                    y1: 1.,
+                    x2: 1.,
+                    y2: 0.,
+                },
+                2,
+            )
+            .unwrap();
+            assert!(keys.iter().all(|k| k.curve.is_none_or(KeyCurve::valid)));
+            assert!(
+                (slope(&keys, 0, 2) - slope(&keys, 1, 1)).abs()
+                    < 0.001 * slope(&keys, 0, 2).abs().max(1.)
+            );
+            if end <= 30. {
+                assert_eq!(slope(&keys, 0, 2), 0.);
+                assert_eq!(slope(&keys, 1, 1), 0.);
+            }
+            let before = encoded(&d);
+            let revision = d.revision();
+            for (frames, control, curve) in [
+                (vec![5, 15], 1, KeyCurve::default()),
+                (vec![30], 2, KeyCurve::default()),
+                (vec![5], 0, KeyCurve::default()),
+                (
+                    vec![5],
+                    1,
+                    KeyCurve {
+                        x1: f32::NAN,
+                        ..KeyCurve::default()
+                    },
+                ),
+            ] {
+                assert!(d
+                    .edit_animation_keys(
+                        &id,
+                        Property::Opacity,
+                        &frames,
+                        KeyBatchEdit::LinkedCurve { curve, control }
+                    )
+                    .is_err());
+                assert_eq!(encoded(&d), before);
+                assert_eq!(d.revision(), revision);
+            }
+        }
+        let (mut d, id) = fixture();
+        d.edit_animation_keys(
+            &id,
+            Property::Opacity,
+            &[5],
+            KeyBatchEdit::Interpolation {
+                interpolation: Interpolation::Cubic,
+            },
+        )
+        .unwrap();
+        let before = d.animation.tracks[&id].channels[&Property::Opacity][1].clone();
+        d.edit_animation_keys(
+            &id,
+            Property::Opacity,
+            &[5],
+            KeyBatchEdit::LinkedCurve {
+                curve: KeyCurve::default(),
+                control: 2,
+            },
+        )
+        .unwrap();
+        let other = &d.animation.tracks[&id].channels[&Property::Opacity][1];
+        assert_eq!(before.curve, other.curve);
+        assert_eq!(before.interpolation, other.interpolation);
+        assert!(serde_json::from_str::<KeyBatchEdit>(
+            r#"{"kind":"linkedCurve","curve":{"x1":0.2,"y1":0.4,"x2":0.8,"y2":0.6},"control":2}"#
+        )
+        .is_ok());
     }
 }
