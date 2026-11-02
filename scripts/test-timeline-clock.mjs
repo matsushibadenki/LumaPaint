@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {applyTimelineClock,mergeTimelineClock} from '../src/timeline-clock.ts';
+const clock=(sequence,frame,playing=true,overrides={})=>({sequence,frame,playing,preview:true,documentId:1,revision:3,...overrides});
+const state={frame:0,playing:false,preview:false,data:{documentId:1,revision:3,duration:120,layers:[{id:'a'}]},clock:clock(1,0,false)};
+const advanced=applyTimelineClock(state,clock(4,12));
+assert.equal(advanced.frame,12);assert.equal(advanced.playing,true);assert.equal(advanced.data,state.data);
+for(const packet of [clock(2,3),clock(4,20),clock(5,20,true,{documentId:2}),clock(5,20,true,{revision:2}),clock(5,20,true,{revision:4}),clock(5,120),clock(5,-1),clock(5,1.5),clock(NaN,5),clock(0,5),clock(5,10,'true')])assert.equal(applyTimelineClock(advanced,packet),advanced);
+const paused=applyTimelineClock(advanced,clock(6,12,false));assert.equal(paused.playing,false);assert.equal(paused.frame,12);
+const staleReply={...state,frame:5,playing:true,preview:true,clock:clock(3,5)};
+assert.equal(mergeTimelineClock(paused,staleReply).frame,12);assert.equal(mergeTimelineClock(paused,staleReply).playing,false);
+const stopReply={...state,clock:clock(7,12,false),frame:12,preview:false};assert.equal(mergeTimelineClock(paused,stopReply),stopReply);
+assert.equal(applyTimelineClock(stopReply,clock(6,11)),stopReply);
+const newDoc={...state,data:{...state.data,documentId:2},clock:clock(8,0,false,{documentId:2})};assert.equal(mergeTimelineClock(paused,newDoc),newDoc);
+assert.equal(applyTimelineClock(newDoc,clock(9,10)),newDoc);
+const newRevision={...state,data:{...state.data,revision:4},clock:clock(10,0,false,{revision:4})};assert.equal(mergeTimelineClock(newRevision,staleReply),newRevision);
+assert.equal(applyTimelineClock({...state,data:null},clock(5,10)).data,null);
+assert.equal(mergeTimelineClock(paused,{...state,clock:undefined}).frame,0,'legacy transports retain response behavior');
+console.log('Playback notification identity, metadata retention, ordering, late replies, pause/stop and legacy transport passed');

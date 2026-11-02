@@ -1,5 +1,5 @@
 use super::*;
-use crate::timeline::{Data, Layer, Request, Response};
+use crate::timeline::{Data, Layer, PlaybackClock, Request, Response};
 use lumapaint_core::document::animation::Keyframe;
 type OutlineCache =
     std::collections::HashMap<String, (usize, Vec<lumapaint_core::vector::VectorObject>)>;
@@ -53,6 +53,8 @@ pub(super) fn activate_document(id: u64) {
         runtime.gpu_frame = None;
         RUNTIMES.with(|r| r.borrow_mut().insert(current_label(), runtime));
     }
+    // A hidden parked document may have let the native timer stop.
+    pane_gpu::refresh_clock();
 }
 pub(super) fn retain_documents(ids: &[u64]) {
     let label = current_label();
@@ -68,16 +70,31 @@ pub(super) fn active_playing() -> bool {
             .is_some_and(|r| r.started.is_some())
     })
 }
-pub(super) fn tick_active_native() -> Result<(), String> {
-    let changed = RUNTIMES.with(|r| {
-        let mut runtimes = r.borrow_mut();
-        let Some(runtime) = runtimes.get_mut(&current_label()) else {
-            return false;
-        };
-        reset_stale(runtime);
-        let Some((start, first)) = runtime.started else {
-            return false;
-        };
+fn clock_state(runtime: &Runtime) -> (u64, u64, u32, bool, bool) {
+    (
+        runtime.document_id,
+        runtime.revision,
+        runtime.frame,
+        runtime.started.is_some(),
+        runtime.preview.is_some(),
+    )
+}
+fn clock_snapshot(runtime: &Runtime) -> PlaybackClock {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    PlaybackClock {
+        sequence: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        document_id: runtime.document_id,
+        revision: runtime.revision,
+        frame: runtime.frame,
+        playing: runtime.started.is_some(),
+        preview: runtime.preview.is_some(),
+    }
+}
+fn advance_native_clock(runtime: &mut Runtime) -> (bool, Option<PlaybackClock>) {
+    let before = clock_state(runtime);
+    reset_stale(runtime);
+    let mut redraw = false;
+    if let Some((start, first)) = runtime.started {
         let (frame, playing) = DOCUMENT.with(|d| {
             d.borrow()
                 .animation()
@@ -86,12 +103,26 @@ pub(super) fn tick_active_native() -> Result<(), String> {
         if !playing {
             runtime.started = None;
         }
-        if frame == runtime.frame {
-            return false;
+        if frame != runtime.frame {
+            runtime.frame = frame;
+            redraw = evaluate(runtime);
         }
-        runtime.frame = frame;
-        evaluate(runtime)
+    }
+    let notification = (before != clock_state(runtime)).then(|| clock_snapshot(runtime));
+    (redraw, notification)
+}
+pub(super) fn tick_active_native() -> Result<(), String> {
+    let (changed, notification) = RUNTIMES.with(|r| {
+        r.borrow_mut()
+            .get_mut(&current_label())
+            .map(advance_native_clock)
+            .unwrap_or((false, None))
     });
+    // Emit even if only playing changed on the final frame. Identical timer
+    // callbacks stay silent, and no authored metadata crosses this channel.
+    if let (Some(app), Some(clock)) = (APP.get(), notification) {
+        let _ = app.emit_to(current_label(), "timeline-clock", clock);
+    }
     if changed {
         request_redraw()?;
     }
@@ -767,6 +798,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
     | Request::DeleteCel { document_id, .. }
     | Request::ForkCel { document_id, .. }
     | Request::RemoveExposure { document_id, .. }
+    | Request::WorkArea { document_id, .. }
     | Request::StopMotion { document_id } = &request
     {
         if *document_id != identity().0 {
@@ -785,6 +817,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
     if !DOCUMENT_OPEN.with(|d| d.get()) {
         close(&current_label());
         return Ok(Response {
+            clock: None,
             exposure_selection: None,
             exposure_group_selection: None,
             frame: 0,
@@ -949,8 +982,9 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 }
             }
             Request::Play => {
-                if runtime.frame == duration - 1 {
-                    runtime.frame = 0;
+                let (start, end) = DOCUMENT.with(|d| d.borrow().animation().playback_bounds());
+                if runtime.frame < start || runtime.frame >= end - 1 {
+                    runtime.frame = start;
                 }
                 runtime.started = Some((Instant::now(), runtime.frame));
                 redraw_needed = evaluate(runtime);
@@ -1045,6 +1079,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                         Request::RemoveExposure { layer, frame, .. } => {
                             doc.remove_animation_key(&layer, frame, None)
                         }
+                        Request::WorkArea { area, .. } => doc.set_animation_work_area(area),
                         Request::Settings {
                             fps,
                             duration,
@@ -1231,12 +1266,14 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     fps: a.fps,
                     duration: a.duration,
                     looping: a.looping,
+                    work_area: a.work_area,
                     onion: a.onion.clone(),
                     layers,
                 }
             }))
         };
         Ok(Response {
+            clock: Some(clock_snapshot(runtime)),
             exposure_selection,
             exposure_group_selection,
             frame: runtime.frame,
@@ -1287,6 +1324,104 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn work_area_transport_restarts_outside_range_and_rejects_stale_document() {
+        let _restore = setup();
+        let id = identity().0;
+        let area = lumapaint_core::document::animation::WorkArea {
+            start: 12,
+            end: 24,
+            enabled: true,
+        };
+        assert!(command(Request::WorkArea {
+            document_id: id + 1,
+            area: Some(area)
+        })
+        .is_err());
+        command(Request::WorkArea {
+            document_id: id,
+            area: Some(area),
+        })
+        .unwrap();
+        assert_eq!(
+            command(Request::Get).unwrap().data.unwrap().work_area,
+            Some(area)
+        );
+        assert_eq!(command(Request::Play).unwrap().frame, 12);
+        command(Request::Seek { frame: 80 }).unwrap();
+        assert_eq!(command(Request::Play).unwrap().frame, 12);
+        command(Request::Seek { frame: 23 }).unwrap();
+        assert_eq!(command(Request::Play).unwrap().frame, 12);
+        command(Request::Seek { frame: 16 }).unwrap();
+        assert_eq!(command(Request::Play).unwrap().frame, 16);
+        command(Request::WorkArea {
+            document_id: id,
+            area: None,
+        })
+        .unwrap();
+        assert!(command(Request::Get)
+            .unwrap()
+            .data
+            .unwrap()
+            .work_area
+            .is_none());
+    }
+    #[test]
+    fn native_clock_notifies_only_changed_frames_and_final_stop() {
+        let _restore = setup();
+        command(Request::Settings {
+            fps: 24,
+            duration: 2,
+            looping: false,
+        })
+        .unwrap();
+        let started = command(Request::Play).unwrap();
+        let initial = started.clock.unwrap();
+        let (redraw, clock) = RUNTIMES.with(|r| {
+            let mut runtimes = r.borrow_mut();
+            let runtime = runtimes.get_mut(&current_label()).unwrap();
+            // Reaching the end must notify even when the frame was already shown.
+            runtime.frame = 1;
+            runtime.started = Some((Instant::now() - std::time::Duration::from_secs(1), 0));
+            advance_native_clock(runtime)
+        });
+        assert!(!redraw);
+        let clock = clock.unwrap();
+        assert_eq!(clock.frame, 1);
+        assert!(!clock.playing);
+        assert_eq!(clock.document_id, identity().0);
+        assert_eq!(clock.revision, identity().1);
+        assert!(clock.sequence > initial.sequence);
+        let packet = serde_json::to_value(&clock).unwrap();
+        assert_eq!(packet.as_object().unwrap().len(), 6);
+        assert!(serde_json::to_vec(&clock).unwrap().len() < 128);
+        assert!(packet.get("layers").is_none());
+        RUNTIMES.with(|r| {
+            let mut runtimes = r.borrow_mut();
+            let runtime = runtimes.get_mut(&current_label()).unwrap();
+            assert!(advance_native_clock(runtime).1.is_none());
+        });
+        let reply = command(Request::Get).unwrap().clock.unwrap();
+        assert!(reply.sequence > clock.sequence);
+        assert_eq!(reply.frame, clock.frame);
+    }
+    #[test]
+    fn native_clock_advances_without_transport_polling() {
+        let _restore = setup();
+        let first = command(Request::Play).unwrap().clock.unwrap();
+        let revision = identity().1;
+        let packet = RUNTIMES.with(|r| {
+            let mut runtimes = r.borrow_mut();
+            let runtime = runtimes.get_mut(&current_label()).unwrap();
+            runtime.started = Some((Instant::now() - std::time::Duration::from_millis(500), 0));
+            advance_native_clock(runtime).1.unwrap()
+        });
+        assert!(packet.frame > first.frame && packet.playing);
+        assert!(packet.sequence > first.sequence);
+        assert_eq!(revision, identity().1);
+        let paused = command(Request::Pause).unwrap().clock.unwrap();
+        assert!(!paused.playing && paused.sequence > packet.sequence);
     }
     #[test]
     fn parking_preserves_document_clock_preview_and_pause() {
@@ -1776,7 +1911,10 @@ mod tests {
             let response = command(request).unwrap();
             assert!(response.data.is_none());
             assert!(response.data_unchanged);
-            assert!(serde_json::to_vec(&response).unwrap().len() < 128);
+            // Command replies include the ordering watermark; the per-frame
+            // event stays smaller and never repeats timeline metadata.
+            assert!(response.clock.is_some());
+            assert!(serde_json::to_vec(&response).unwrap().len() < 256);
         }
         DOCUMENT.with(|d| {
             d.borrow_mut()

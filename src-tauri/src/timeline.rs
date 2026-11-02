@@ -26,6 +26,11 @@ pub enum Request {
         duration: u32,
         looping: bool,
     },
+    WorkArea {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        area: Option<lumapaint_core::document::animation::WorkArea>,
+    },
     Onion {
         #[serde(rename = "documentId")]
         document_id: u64,
@@ -150,9 +155,21 @@ pub enum Request {
         position: usize,
     },
 }
+/// View-only transport state; never contains drawings or timeline metadata.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackClock {
+    pub sequence: u64,
+    pub document_id: u64,
+    pub revision: u64,
+    pub frame: u32,
+    pub playing: bool,
+    pub preview: bool,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
+    pub clock: Option<PlaybackClock>,
     pub exposure_selection: Option<(String, Vec<u32>)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exposure_group_selection: Option<Vec<(String, Vec<u32>)>>,
@@ -173,6 +190,7 @@ pub struct Data {
     pub fps: u32,
     pub duration: u32,
     pub looping: bool,
+    pub work_area: Option<lumapaint_core::document::animation::WorkArea>,
     pub onion: lumapaint_core::document::animation::OnionSettings,
     pub layers: Vec<Layer>,
 }

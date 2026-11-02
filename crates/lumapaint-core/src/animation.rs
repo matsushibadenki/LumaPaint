@@ -15,6 +15,8 @@ pub struct Animation {
     pub fps: u32,
     pub duration: u32,
     pub looping: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_area: Option<WorkArea>,
     #[serde(default)]
     pub onion: OnionSettings,
     pub tracks: BTreeMap<String, Track>,
@@ -25,10 +27,19 @@ impl Default for Animation {
             fps: 24,
             duration: 120,
             looping: true,
+            work_area: None,
             onion: OnionSettings::default(),
             tracks: BTreeMap::new(),
         }
     }
+}
+/// Half-open authored playback range. Export and seeking keep the full timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkArea {
+    pub start: u32,
+    pub end: u32,
+    pub enabled: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -392,15 +403,25 @@ impl Track {
 impl Animation {
     /// Wall-clock playback skips overdue frames instead of accumulating timer drift.
     pub fn playback_frame(&self, first: u32, elapsed: std::time::Duration) -> (u32, bool) {
-        let elapsed = (elapsed.as_secs_f64() * self.fps as f64).floor() as u64 + first as u64;
-        if self.looping {
-            ((elapsed % self.duration as u64) as u32, true)
+        let (start, end) = self.playback_bounds();
+        let first = if first < start || first >= end {
+            start
         } else {
-            (
-                elapsed.min((self.duration - 1) as u64) as u32,
-                elapsed < (self.duration - 1) as u64,
-            )
+            first
+        };
+        let elapsed =
+            (elapsed.as_secs_f64() * self.fps as f64).floor() as u64 + (first - start) as u64;
+        let length = (end - start) as u64;
+        if self.looping {
+            (start + (elapsed % length) as u32, true)
+        } else {
+            (start + elapsed.min(length - 1) as u32, elapsed < length - 1)
         }
+    }
+    pub fn playback_bounds(&self) -> (u32, u32) {
+        self.work_area
+            .filter(|a| a.enabled)
+            .map_or((0, self.duration), |a| (a.start, a.end))
     }
     pub fn same_picture(&self, a: u32, b: u32) -> bool {
         self.tracks.values().all(|track| track.same_picture(a, b))
@@ -411,6 +432,15 @@ impl Animation {
     }
     fn validate_inner(&self, width: u32, height: u32, validate_cels: bool) -> Result<(), String> {
         self.onion.validate(self.duration)?;
+        if self
+            .work_area
+            .is_some_and(|a| a.start >= a.end || a.end > self.duration)
+        {
+            return Err(
+                "Invalid work area / ワークエリアの範囲を確認してください / 请检查工作区域范围"
+                    .into(),
+            );
+        }
         if !(1..=120).contains(&self.fps)
             || !(1..=18000).contains(&self.duration)
             || self.tracks.len() > 256
@@ -704,7 +734,19 @@ impl Document {
         next.fps = fps;
         next.duration = duration;
         next.looping = looping;
+        if let Some(area) = next.work_area.as_mut() {
+            area.end = area.end.min(duration);
+            area.start = area.start.min(area.end.saturating_sub(1));
+        }
         // Reject truncation of authored data; expanding always preserves keys.
+        self.commit_animation(next)
+    }
+    pub fn set_animation_work_area(&mut self, area: Option<WorkArea>) -> Result<(), String> {
+        if self.animation.work_area == area {
+            return Ok(());
+        }
+        let mut next = self.animation.as_ref().clone();
+        next.work_area = area;
         self.commit_animation(next)
     }
     fn animation_layer(&self, id: &str, pixel: bool) -> Result<(), String> {
@@ -1136,6 +1178,104 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn work_area_playback_bounds_loop_stop_and_single_frame() {
+        let mut a = Animation {
+            fps: 10,
+            duration: 100,
+            work_area: Some(WorkArea {
+                start: 20,
+                end: 30,
+                enabled: true,
+            }),
+            ..Default::default()
+        };
+        for first in [0, 20, 25, 29, 99] {
+            let origin = if (20..30).contains(&first) { first } else { 20 };
+            for frames in [0, 1, 9, 10, 2000] {
+                let elapsed = std::time::Duration::from_millis(frames * 100);
+                a.looping = true;
+                assert_eq!(
+                    a.playback_frame(first, elapsed),
+                    (20 + ((origin - 20 + frames as u32) % 10), true)
+                );
+                a.looping = false;
+                assert_eq!(
+                    a.playback_frame(first, elapsed),
+                    (
+                        (origin + frames as u32).min(29),
+                        origin + (frames as u32) < 29
+                    )
+                );
+            }
+        }
+        a.work_area = Some(WorkArea {
+            start: 7,
+            end: 8,
+            enabled: true,
+        });
+        assert_eq!(a.playback_frame(0, std::time::Duration::ZERO), (7, false));
+        a.looping = true;
+        assert_eq!(
+            a.playback_frame(0, std::time::Duration::from_secs(99)),
+            (7, true)
+        );
+        a.work_area.as_mut().unwrap().enabled = false;
+        assert_eq!(a.playback_bounds(), (0, 100));
+    }
+    #[test]
+    fn work_area_validation_undo_persistence_and_duration_shrink() {
+        let mut d = Document::default();
+        let area = WorkArea {
+            start: 10,
+            end: 30,
+            enabled: true,
+        };
+        d.set_animation_work_area(Some(area)).unwrap();
+        let revision = d.revision();
+        d.set_animation_work_area(Some(area)).unwrap();
+        assert_eq!(d.revision(), revision);
+        for area in [
+            WorkArea {
+                start: 20,
+                end: 20,
+                enabled: true,
+            },
+            WorkArea {
+                start: 0,
+                end: 121,
+                enabled: false,
+            },
+        ] {
+            assert!(d.set_animation_work_area(Some(area)).is_err());
+            assert_eq!(d.revision(), revision);
+        }
+        let saved = serde_json::to_value(d.animation()).unwrap();
+        let restored: Animation = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(restored.work_area, Some(area));
+        let mut legacy = saved;
+        legacy.as_object_mut().unwrap().remove("workArea");
+        assert!(serde_json::from_value::<Animation>(legacy)
+            .unwrap()
+            .work_area
+            .is_none());
+        d.undo();
+        assert!(d.animation().work_area.is_none());
+        d.redo();
+        assert_eq!(d.animation().work_area, Some(area));
+        d.set_animation_settings(24, 8, false).unwrap();
+        assert_eq!(
+            d.animation().work_area,
+            Some(WorkArea {
+                start: 7,
+                end: 8,
+                enabled: true
+            })
+        );
+        d.undo();
+        assert_eq!(d.animation().work_area, Some(area));
+        assert_eq!(d.animation().duration, 120);
+    }
     fn ink() -> Arc<Cel> {
         Arc::new(Cel { source:Some("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect x=\"4\" y=\"4\" width=\"8\" height=\"8\"/></svg>".into()), strokes:vec![] })
     }

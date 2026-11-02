@@ -162,9 +162,18 @@ export function snapTimelineFrame(raw:number,targets:number|readonly number[],zo
 
 // UI geometry only. Timing, selection and authored state remain in Rust.
 export const TIMELINE_RULER_HEIGHT = 26;
+export const TIMELINE_MOTION_ROW_HEIGHT = 38;
+// Uniform rows need no per-clip layout allocation or full-list scan on scroll.
+export function visibleTimelineMotionRows(count:number,top:number,height:number,retained:readonly number[]=[],overscan=76):number[]{
+ const start=Math.max(0,Math.min(count,Math.floor((top-overscan)/TIMELINE_MOTION_ROW_HEIGHT)));
+ const end=Math.max(start,Math.min(count,Math.ceil((top+Math.max(0,height)+overscan)/TIMELINE_MOTION_ROW_HEIGHT)));
+ const rows=new Set<number>();for(let i=start;i<end;i++)rows.add(i);
+ for(const i of retained)if(Number.isInteger(i)&&i>=0&&i<count)rows.add(i);
+ return [...rows].sort((a,b)=>a-b);
+}
 export function timelineLayerHeight(pixel:boolean,folded:boolean,thumbnailSize:number,motions:number,selected:boolean):number {
   if(folded)return 30;
-  return (pixel&&thumbnailSize?Math.max(44,thumbnailSize+26):44)+(pixel?0:motions*38+(selected?6*28:0));
+  return (pixel&&thumbnailSize?Math.max(44,thumbnailSize+26):44)+(pixel?0:motions*TIMELINE_MOTION_ROW_HEIGHT+(selected?6*28:0));
 }
 export function timelineLayerLayout<T extends {id:string}>(layers:readonly T[],height:(layer:T)=>number):{rows:Array<{item:T;top:number;height:number}>;height:number} {
   let top=TIMELINE_RULER_HEIGHT;

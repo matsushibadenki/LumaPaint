@@ -1302,3 +1302,26 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-snap-options[data-custom="true"] { color:var(--color-focus); }
 
 .timeline-snap-popover button { font:inherit; padding:3px 7px; }
+.timeline-work-controls {display:flex;align-items:center;gap:5px;flex-wrap:wrap;border:0;border-bottom:1px solid var(--color-rule);margin:0;padding:4px 8px;font-size:11px;min-width:0;}
+.timeline-work-controls input[type="number"] {width:62px;min-width:48px;padding:2px 4px;}
+.timeline-work-controls button {min-width:22px;padding:2px 5px;}
+.timeline-work-range {position:absolute;top:0;height:7px;background:color-mix(in srgb,var(--color-focus) 48%,transparent);z-index:2;pointer-events:none;}
+.timeline-work-range[data-enabled="false"] {opacity:.4;}
+.timeline-work-range .timeline-work-handle {position:absolute;top:0;width:10px;min-width:10px;height:10px;padding:0;border:1px solid var(--color-focus);background:var(--color-panel);pointer-events:auto;touch-action:none;border-radius:1px;}
+.timeline-work-handle[data-edge="start"] {left:0;cursor:ew-resize;}
+.timeline-work-handle[data-edge="end"] {right:0;cursor:ew-resize;}
+.timeline-work-controls .timeline-check {display:flex;align-items:center;gap:4px;white-space:nowrap;}
+.timeline-work-controls input[type="checkbox"] {width:14px;height:14px;margin:0;}
+.timeline-work-range .timeline-work-handle {min-height:10px;}
+.timeline-graph {border:1px solid var(--color-rule);border-radius:4px;padding:5px;min-width:0;}
+.timeline-graph:focus-visible {outline:2px solid var(--color-focus);outline-offset:1px;}
+.timeline-graph[aria-disabled="true"] {opacity:.55;}
+.timeline-graph-heading {display:flex;align-items:center;gap:5px;font-size:10px;}
+.timeline-graph-heading output {margin-left:auto;font-variant-numeric:tabular-nums;}
+.timeline-graph svg {display:block;width:100%;height:auto;touch-action:none;user-select:none;}
+.timeline-graph text {fill:var(--color-muted);font-size:8px;}
+.timeline-graph-grid {stroke:var(--color-rule);stroke-width:.5;}
+.timeline-graph-curve {fill:none;stroke:var(--color-focus);stroke-width:1.5;}
+.timeline-graph-playhead {stroke:var(--color-muted);stroke-dasharray:2 2;stroke-width:.6;}
+.timeline-graph circle {fill:var(--color-panel);stroke:var(--color-focus);stroke-width:1.5;}
+.timeline-graph circle[data-selected="true"] {fill:var(--color-focus);}

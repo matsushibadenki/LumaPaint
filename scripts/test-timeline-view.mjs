@@ -229,3 +229,16 @@ assert.deepEqual([...exposureGroupHoldPreview(holds,held,6,true).get('a').values
 assert.deepEqual([...exposureGroupHoldPreview(holds,held,6,true).get('b').values()].map(e=>[e.start,e.end]),[[8,14],[39,42]]);
 assert.deepEqual(exposureGroupHoldBounds([],{},120,false),{min:1,max:1});
 console.log('Shared hold bounds, mixed lengths, cross-track previews, cumulative ripple offsets and 18000-frame limit passed');
+
+const {visibleTimelineMotionRows,TIMELINE_MOTION_ROW_HEIGHT}=await import('../src/timeline-view.ts');
+assert.equal(TIMELINE_MOTION_ROW_HEIGHT,38);
+for(const count of [0,1,64,4096])for(const top of [-800,-76,0,38,777,155610])for(const height of [0,1,200,600]){
+ const keep=[0,count-1,-1,count,1.5];
+ const actual=visibleTimelineMotionRows(count,top,height,keep);
+ const expected=Array.from({length:count},(_,i)=>i).filter(i=>i*38<top+height+76&&(i+1)*38>Math.max(0,top-76)||keep.includes(i));
+ assert.deepEqual(actual,expected);
+ assert.ok(actual.length<=Math.ceil(height/38)+7);
+}
+assert.deepEqual(visibleTimelineMotionRows(64,38,38,[],0),[1]);
+assert.deepEqual(visibleTimelineMotionRows(64,38*64,100,[],0),[]);
+console.log('Motion row virtualization: empty/64/4096 rows, viewport edges, bounded DOM, focus/capture retention passed');

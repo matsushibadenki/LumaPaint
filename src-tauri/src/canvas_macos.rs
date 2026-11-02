@@ -6925,6 +6925,8 @@ fn sync_inner(parent: *mut c_void, request: CanvasRequest) -> Result<CanvasInfo,
     text_editor::layout()?;
     if result.is_ok() {
         timeline::schedule_onion();
+        // Resume the Rust transport clock after a hidden canvas is shown again.
+        pane_gpu::refresh_clock();
     }
     result
 }

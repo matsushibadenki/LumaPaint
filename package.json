@@ -16,6 +16,8 @@
     "test:measurements": "node scripts/test-measurements.mjs",
     "test:color-modes": "node scripts/test-color-modes.mjs",
     "test:tool-availability": "node --experimental-strip-types scripts/test-tool-availability.mjs",
+    "test:timeline-clock": "node --experimental-strip-types scripts/test-timeline-clock.mjs",
+    "test:timeline-graph": "node --experimental-strip-types scripts/test-timeline-graph.mjs",
     "test:timeline-view": "node --experimental-strip-types scripts/test-timeline-view.mjs"
   },
   "dependencies": {
