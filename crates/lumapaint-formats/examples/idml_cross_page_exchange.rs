@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..source.len() {
         let mut entry = source.by_index(i)?;
-        let name = entry.name().to_owned();
+        let name = entry.name()?.into_owned();
         let mut s = String::new();
         entry.read_to_string(&mut s)?;
         if name.starts_with("Spreads/") && s.contains("<Contents>") {

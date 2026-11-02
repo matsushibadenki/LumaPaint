@@ -1,0 +1,193 @@
+{
+  "date": "2026-11-02",
+  "adopted": {
+    "zip": "9.2.1",
+    "crc32fast": "1.5.4"
+  },
+  "retained": {
+    "skia-safe": "0.153.3",
+    "moxcms": "0.8.1"
+  },
+  "tests": {
+    "runtime_tests": [
+      {
+        "passed": 251,
+        "failed": 0,
+        "ignored": 2
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 474,
+        "failed": 0,
+        "ignored": 4
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 202,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 321,
+        "failed": 0,
+        "ignored": 79
+      },
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "workspace_doctests": [
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "blocks": [
+      {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "gpu": [
+      {
+        "passed": 42,
+        "failed": 2,
+        "ignored": 0
+      }
+    ],
+    "shared_metal": [
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "frontend_build_and_regressions": "passed",
+  "fmt": "passed",
+  "workspace_all_target_clippy": "passed",
+  "doctest_lookup_error": "resolved by package rebuild and workspace doc-test rerun; no source/test suppression",
+  "gpu_adapter": "Apple M4 / Metal",
+  "gpu_known_failures": [
+    {
+      "test": "gpu_brush_crossings_follow_normal_alpha_including_repeated_passes",
+      "current": {
+        "formula_max_difference": 2,
+        "pen_lift_max_difference": 7,
+        "allowed_pen_lift_difference": 4
+      },
+      "baseline": "same diagnostics with original HEAD and original lockfile"
+    },
+    {
+      "test": "gpu_grain_rotation_preserves_pixels",
+      "current": "DryBrush material=false at 739,240: 255 vs 203",
+      "baseline": "same diagnostics with original HEAD and original lockfile"
+    }
+  ],
+  "baseline_source_commit": "a2c0238574cfcae54728431d54f1ad484075f8fe",
+  "baseline_lock_sha256": "a424fa75cf6e77f2e83430d8a5dfe4c3d17868aa1c0889810bdbad8e24727230",
+  "native_stages": [
+    {
+      "stage": "metal",
+      "exit_code": 0,
+      "log": "/tmp/lumapaint-metal-verified-2026-11-02.log"
+    },
+    {
+      "stage": "build",
+      "exit_code": 0,
+      "log": "/tmp/lumapaint-build-verified-2026-11-02.log"
+    }
+  ],
+  "macos_bundle": "target/debug/bundle/macos/LumaPaint.app",
+  "bundle_mib": 221.76,
+  "pending": [
+    "full interactive GUI acceptance",
+    "signed/notarized Release",
+    "Windows/Linux native execution",
+    "user-deferred application input-latency comparisons"
+  ],
+  "frontend_scope": "Build and regressions passed for the observed tested snapshot; later parallel frontend edits are outside this run's verification.",
+  "parallel_frontend_edits_after_snapshot": [
+    "scripts/test-timeline-view.mjs",
+    "src/components/TimelinePanel.tsx",
+    "src/timeline-view.ts",
+    "src/workspace.css"
+  ]
+}

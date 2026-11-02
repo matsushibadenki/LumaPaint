@@ -1,0 +1,92 @@
+[
+  {
+    "package": "node_modules/@oxc-project/types",
+    "before": "0.155.0",
+    "after": "0.156.0"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-android-arm-eabi",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-android-arm64",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-darwin-arm64",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-darwin-x64",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-freebsd-x64",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-arm-gnueabihf",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-arm64-gnu",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-arm64-musl",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-ppc64-gnu",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-s390x-gnu",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-x64-gnu",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-linux-x64-musl",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-openharmony-arm64",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-win32-arm64-msvc",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/@rolldown/binding-win32-x64-msvc",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  },
+  {
+    "package": "node_modules/postcss",
+    "before": "8.5.31",
+    "after": "8.5.32"
+  },
+  {
+    "package": "node_modules/rolldown",
+    "before": "1.2.15",
+    "after": "1.2.16"
+  }
+]

@@ -100,13 +100,124 @@ export function exposureGroupMoveBounds(tracks:readonly ExposureTrack[],selectio
  return found?{min,max}:{min:0,max:0};
 }
 
+// A shared absolute hold length matches Rust ExposureBatchEdit::Hold.
+export function exposureGroupHoldBounds(tracks:readonly ExposureTrack[],selection:Record<string,readonly number[]>,duration:number,ripple:boolean):{min:number;max:number}{
+ let max=18000,found=false;
+ for(const track of tracks){
+  const frames=selection[track.id];if(!frames?.length)continue;
+  if(!track.pixel||track.locked)return {min:1,max:1};
+  const selected=new Set(frames);let count=0,oldLength=0;
+  for(let i=0;i<track.exposures.length;i++){const e=track.exposures[i];if(!selected.has(e.start))continue;found=true;count++;oldLength+=e.end-e.start;
+   if(!ripple)max=Math.min(max,(track.exposures[i+1]?.start??duration)-e.start);
+  }
+  if(ripple&&count)max=Math.min(max,Math.floor((18000-(track.exposures.at(-1)?.end??0)+oldLength)/count));
+ }
+ return {min:1,max:found?Math.max(1,max):1};
+}
+export function exposureGroupHoldPreview(tracks:readonly ExposureTrack[],selection:Record<string,readonly number[]>,length:number,ripple:boolean):Map<string,Map<number,ExposureRange>>{
+ const result=new Map<string,Map<number,ExposureRange>>();
+ for(const track of tracks){const frames=selection[track.id];if(!frames?.length)continue;const selected=new Set(frames),ranges=new Map<number,ExposureRange>();let offset=0;
+  for(const e of track.exposures){const hold=selected.has(e.start)?length:e.end-e.start;ranges.set(e.start,{...e,start:e.start+offset,end:e.start+offset+hold});if(ripple)offset+=hold-(e.end-e.start);}
+  result.set(track.id,ranges);
+ }
+ return result;
+}
+
 // Display preview uses the same frame bounds as the motion command.
 export function motionDragStart(start:number,duration:number,repeats:number,pointerDelta:number,scrollDelta:number,zoom:number):number {
  return Math.max(0,Math.min(Math.max(0,18000-duration*repeats),start+Math.round((pointerDelta+scrollDelta)/zoom)));
 }
 
-// Snap against a visible target in screen pixels before rounding to whole frames.
-export function snapTimelineFrame(raw:number,target:number,zoom:number,min:number,max:number,enabled:boolean,moved:boolean):{frame:number;snapped:boolean} {
- const snapped=enabled&&moved&&Number.isFinite(raw)&&Number.isFinite(target)&&zoom>0&&target>=min&&target<=max&&Math.abs(raw-target)*zoom<=8;
- return {frame:Math.max(min,Math.min(max,Math.round(snapped?target:raw))),snapped};
+// Sorted frame targets are captured once per gesture; authored edits remain in Rust.
+export type TimelineSnapFilters={playhead:boolean;keys:boolean;exposures:boolean;motions:boolean;bounds:boolean};
+export const defaultTimelineSnapFilters:Readonly<TimelineSnapFilters>=Object.freeze({playhead:true,keys:true,exposures:true,motions:true,bounds:true});
+export type TimelineSnapTrack={id:string;channels:Partial<Record<string,readonly TimelineKey[]>>;exposures:readonly ExposureRange[];motions:readonly {id:string;start:number;duration:number;repeats:number}[]};
+export function timelineSnapTargets(tracks:readonly TimelineSnapTrack[],playhead:number,duration:number,moving:{layer:string;property?:string;frame?:number;clip?:string;span?:number},filters:Readonly<TimelineSnapFilters>=defaultTimelineSnapFilters):number[] {
+ const targets=new Set<number>(filters.bounds?[0,duration]:[]);if(filters.playhead)targets.add(playhead);
+ const blocked=new Set<number>();
+ for(const track of tracks){
+  for(const [property,keys] of Object.entries(track.channels))for(const key of keys??[]){
+   const same=track.id===moving.layer&&property===moving.property;
+   if(same&&key.frame===moving.frame)continue;
+   if(same)blocked.add(key.frame);
+   if(filters.keys)targets.add(key.frame);
+  }
+  if(filters.exposures)for(const cel of track.exposures){targets.add(cel.start);targets.add(cel.end);}
+  if(filters.motions)for(const clip of track.motions){if(track.id===moving.layer&&clip.id===moving.clip)continue;targets.add(clip.start);targets.add(clip.start+clip.duration*clip.repeats);}
+ }
+ // A clip can align either edge; the returned value is always its new start.
+ if(moving.span)for(const target of [...targets])targets.add(target-moving.span);
+ return [...targets].filter(frame=>Number.isFinite(frame)&&!blocked.has(frame)).sort((a,b)=>a-b);
+}
+export function snapTimelineFrame(raw:number,targets:number|readonly number[],zoom:number,min:number,max:number,enabled:boolean,moved:boolean):{frame:number;snapped:boolean} {
+ const values=typeof targets==='number'?[targets]:targets;
+ const query=Math.max(min,Math.min(max,raw));
+ let low=0,high=values.length;
+ while(low<high){const middle=(low+high)>>>1;if(values[middle]<query)low=middle+1;else high=middle;}
+ let target:number|undefined;
+ for(const index of [low-1,low]){const value=values[index];if(Number.isFinite(value)&&value>=min&&value<=max&&(target===undefined||Math.abs(raw-value)<Math.abs(raw-target)))target=value;}
+ const snapped=enabled&&moved&&Number.isFinite(raw)&&target!==undefined&&zoom>0&&Math.abs(raw-target)*zoom<=8;
+ return {frame:Math.max(min,Math.min(max,Math.round(snapped?target!:raw))),snapped};
+}
+
+// UI geometry only. Timing, selection and authored state remain in Rust.
+export const TIMELINE_RULER_HEIGHT = 26;
+export function timelineLayerHeight(pixel:boolean,folded:boolean,thumbnailSize:number,motions:number,selected:boolean):number {
+  if(folded)return 30;
+  return (pixel&&thumbnailSize?Math.max(44,thumbnailSize+26):44)+(pixel?0:motions*38+(selected?6*28:0));
+}
+export function timelineLayerLayout<T extends {id:string}>(layers:readonly T[],height:(layer:T)=>number):{rows:Array<{item:T;top:number;height:number}>;height:number} {
+  let top=TIMELINE_RULER_HEIGHT;
+  const rows=layers.map(item=>{const size=height(item);const row={item,top,height:size};top+=size;return row;});
+  return {rows,height:top};
+}
+export function visibleTimelineLayers<T extends {id:string}>(rows:readonly {item:T;top:number;height:number}[],top:number,height:number,retained:readonly (string|null|undefined)[]=[],overscan=160):number[] {
+  const start=Math.max(0,top-overscan),end=top+Math.max(0,height)+overscan;
+  let low=0,high=rows.length;
+  while(low<high){const middle=(low+high)>>>1;if(rows[middle].top+rows[middle].height<=start)low=middle+1;else high=middle;}
+  const indices=new Set<number>();
+  for(let i=low;i<rows.length&&rows[i].top<end;i++)indices.add(i);
+  const keep=new Set(retained.filter(Boolean));
+  if(keep.size)rows.forEach((row,index)=>{if(keep.has(row.item.id))indices.add(index);});
+  return [...indices].sort((a,b)=>a-b);
+}
+
+export type ExposureSnapPlan={targets:number[];edges:number[]};
+// Moving group members (and ripple followers) must never attract each other.
+export function exposureSnapPlan(tracks:readonly TimelineSnapTrack[],playhead:number,duration:number,selection:Readonly<Record<string,readonly number[]>>,driver:{layer:string;start:number;end:number},mode:ExposureDragMode,ripple:boolean,filters:Readonly<TimelineSnapFilters>=defaultTimelineSnapFilters):ExposureSnapPlan {
+ const targets=new Set<number>(filters.bounds?[0,duration]:[]),edges=new Set<number>();if(filters.playhead)targets.add(playhead);
+ const chosen=mode!=='start'&&selection[driver.layer]?.includes(driver.start)?selection:{[driver.layer]:[driver.start]};
+ for(const track of tracks){
+  if(filters.keys)for(const keys of Object.values(track.channels))for(const key of keys??[])targets.add(key.frame);
+  if(filters.motions)for(const clip of track.motions){targets.add(clip.start);targets.add(clip.start+clip.duration*clip.repeats);}
+  const selected=new Set(chosen[track.id]??[]);let first=Infinity;for(const frame of selected)first=Math.min(first,frame);
+  for(const cel of track.exposures){
+   const source=track.id===driver.layer&&cel.start===driver.start;
+   const moving=mode==='move'&&(selected.has(cel.start)||ripple&&cel.start>=first);
+   const follower=mode==='end'&&ripple&&track.id===driver.layer&&cel.start>driver.start;
+   if(moving){if(selected.has(cel.start)){edges.add(cel.start);edges.add(cel.end);}}
+   else if(follower){/* Ripple followers move, but are not explicit alignment edges. */}
+   else if(source)edges.add(mode==='start'?cel.start:cel.end);
+   else if(mode==='end'&&selected.has(cel.start)){if(filters.exposures)targets.add(cel.start);}
+   else if(filters.exposures){targets.add(cel.start);targets.add(cel.end);}
+  }
+ }
+ const sorted=(set:Set<number>)=>[...set].filter(Number.isFinite).sort((a,b)=>a-b);
+ return {targets:sorted(targets),edges:sorted(edges)};
+}
+// One common delta preserves every selected interval and its relative timing.
+// Both lists are sorted at gesture start; the nearest-pair scan is linear.
+export function snapExposureDelta(raw:number,plan:ExposureSnapPlan,zoom:number,min:number,max:number,enabled:boolean,moved:boolean):{delta:number;snapped:boolean} {
+ const base={delta:Math.max(min,Math.min(max,Math.round(Number.isFinite(raw)?raw:0))),snapped:false};
+ if(!enabled||!moved||!Number.isFinite(raw)||zoom<=0)return base;
+ let index=0,best:number|undefined,distance=Infinity;
+ for(const edge of plan.edges){
+  const query=Math.max(min,Math.min(max,raw))+edge;
+  while(index<plan.targets.length&&plan.targets[index]<query)index++;
+  for(const i of [index-1,index]){
+   const delta=plan.targets[i]-edge,error=Math.abs(delta-raw);
+   if(delta>=min&&delta<=max&&error*zoom<=8&&(error<distance||error===distance&&(best===undefined||delta<best))){best=delta;distance=error;}
+  }
+ }
+ return best===undefined?base:{delta:best,snapped:true};
 }

@@ -32,7 +32,7 @@ fn exported(doc: &Document) -> ExportedDocument {
 }
 fn files(bytes: &[u8]) -> BTreeMap<String, String> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    assert_eq!(zip.by_index(0).unwrap().name(), "mimetype");
+    assert_eq!(zip.by_index(0).unwrap().name().unwrap(), "mimetype");
     assert_eq!(
         zip.by_index(0).unwrap().compression(),
         zip::CompressionMethod::Stored
@@ -44,10 +44,12 @@ fn files(bytes: &[u8]) -> BTreeMap<String, String> {
         let mut entry = zip.by_index(i).unwrap();
         let mut source = String::new();
         entry.read_to_string(&mut source).unwrap();
-        if entry.name() != "mimetype" {
+        if entry.name().unwrap() != "mimetype" {
             roxmltree::Document::parse(&source).unwrap();
         }
-        assert!(files.insert(entry.name().into(), source).is_none());
+        assert!(files
+            .insert(entry.name().unwrap().into_owned(), source)
+            .is_none());
     }
     assert_eq!(files["mimetype"], MIME);
     let design = roxmltree::Document::parse(&files["designmap.xml"]).unwrap();
@@ -505,7 +507,7 @@ fn rewrite_archive(source: &[u8], change: impl Fn(&str, &str) -> String) -> Vec<
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..source_zip.len() {
         let mut entry = source_zip.by_index(i).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut value = String::new();
         entry.read_to_string(&mut value).unwrap();
         zip.start_file(
@@ -903,7 +905,7 @@ fn external_image_resolver_is_cached_validated_and_preserves_native_link_path() 
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     for i in 0..z.len() {
         let mut e = z.by_index(i).unwrap();
-        if e.name().starts_with("Spreads/") {
+        if e.name().unwrap().starts_with("Spreads/") {
             let mut s = String::new();
             e.read_to_string(&mut s).unwrap();
             let r = roxmltree::Document::parse(&s).unwrap();
@@ -1585,4 +1587,25 @@ fn publication_panel_stamp_tracks_other_pages_and_is_exact_in_javascript() {
         before,
         crate::native::encode_state(&doc.document_state()).unwrap()
     );
+}
+
+#[test]
+fn invalid_utf8_archive_entry_name_is_rejected() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let name = "名前.xml";
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(b"<x/>").unwrap();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    let positions: Vec<_> = bytes
+        .windows(name.len())
+        .enumerate()
+        .filter_map(|(at, value)| (value == name.as_bytes()).then_some(at))
+        .collect();
+    assert_eq!(positions.len(), 2, "local and central entry names");
+    for at in positions {
+        bytes[at] = 0xff;
+    }
+    assert!(read::read(&bytes, Default::default()).is_err());
 }

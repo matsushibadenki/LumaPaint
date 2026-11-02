@@ -1,0 +1,27 @@
+{
+  "note": "This maintenance run never edited frontend sources. The hashes describe the frontend snapshot tested and bundled at the time. Parallel timeline work advanced afterward; later frontend edits are not claimed verified by that earlier bundle or regression run.",
+  "files": {
+    "scripts/test-timeline-view.mjs": {
+      "sha256": "25cd77648f18951069ba213ac4bd0be226e285e279df15365bee682b0680f8e7",
+      "mtime": 1793582599.7156787
+    },
+    "src/components/TimelinePanel.tsx": {
+      "sha256": "bda07e9a6cbe93a999589cb234e6fa5f1b52bc0739422634ccf84b6582c021df",
+      "mtime": 1793582717.6932027
+    },
+    "src/timeline-view.ts": {
+      "sha256": "96488ad71bfac00c97f96f808c66b0d7d32acafd81696fe782607fa28f1d2dec",
+      "mtime": 1793582599.7093153
+    },
+    "src/workspace.css": {
+      "sha256": "5b2c4c3d1a77330a723b11f922b21cba01acf75a98cf850b476ac7396a169705",
+      "mtime": 1793578639.49709
+    }
+  },
+  "parallel_changes_after_tested_snapshot": [
+    "scripts/test-timeline-view.mjs",
+    "src/components/TimelinePanel.tsx",
+    "src/timeline-view.ts",
+    "src/workspace.css"
+  ]
+}

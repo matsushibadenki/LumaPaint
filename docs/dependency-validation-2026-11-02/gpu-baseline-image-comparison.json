@@ -1,0 +1,17 @@
+{
+  "baseline_test_exit": 101,
+  "images": [
+    {
+      "file": "crossing-one-stroke.png",
+      "current_sha256": "6a13983b3977d006c829bc77f50540910e38767c5834bb306ec564b9ae4184b9",
+      "baseline_sha256": "6a13983b3977d006c829bc77f50540910e38767c5834bb306ec564b9ae4184b9",
+      "identical_png": true
+    },
+    {
+      "file": "crossing-six-passes.png",
+      "current_sha256": "e3ab64aaf25cba7d1d49b86da3006bf8ca1185371688ab2c927911076fc94492",
+      "baseline_sha256": "e3ab64aaf25cba7d1d49b86da3006bf8ca1185371688ab2c927911076fc94492",
+      "identical_png": true
+    }
+  ]
+}

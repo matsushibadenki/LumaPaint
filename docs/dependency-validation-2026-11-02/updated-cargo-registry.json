@@ -1,0 +1,218 @@
+[
+  {
+    "name": "aws-lc-rs",
+    "version": "1.19.0",
+    "source": "https://crates.io/api/v1/crates/aws-lc-rs/1.19.0",
+    "yanked": false,
+    "rust_version": "1.71.0",
+    "license": "ISC AND (Apache-2.0 OR ISC)",
+    "published": "2026-10-28T15:48:44.285686Z"
+  },
+  {
+    "name": "aws-lc-sys",
+    "version": "0.47.0",
+    "source": "https://crates.io/api/v1/crates/aws-lc-sys/0.47.0",
+    "yanked": false,
+    "rust_version": "1.71.0",
+    "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+    "published": "2026-10-28T15:43:12.261263Z"
+  },
+  {
+    "name": "brotli",
+    "version": "9.1.1",
+    "source": "https://crates.io/api/v1/crates/brotli/9.1.1",
+    "yanked": false,
+    "rust_version": "1.59.0",
+    "license": "BSD-3-Clause AND MIT",
+    "published": "2026-10-27T03:32:43.044576Z"
+  },
+  {
+    "name": "crc32fast",
+    "version": "1.5.4",
+    "source": "https://crates.io/api/v1/crates/crc32fast/1.5.4",
+    "yanked": false,
+    "rust_version": "1.63",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-11-01T20:23:57.281754Z"
+  },
+  {
+    "name": "encoding_rs",
+    "version": "0.8.44",
+    "source": "https://crates.io/api/v1/crates/encoding_rs/0.8.44",
+    "yanked": false,
+    "rust_version": "1.88",
+    "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+    "published": "2026-10-30T14:56:20.787583Z"
+  },
+  {
+    "name": "js-sys",
+    "version": "0.3.107",
+    "source": "https://crates.io/api/v1/crates/js-sys/0.3.107",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:06.268363Z"
+  },
+  {
+    "name": "libz-sys",
+    "version": "1.1.31",
+    "source": "https://crates.io/api/v1/crates/libz-sys/1.1.31",
+    "yanked": false,
+    "rust_version": null,
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-28T13:59:59.196705Z"
+  },
+  {
+    "name": "log",
+    "version": "0.4.35",
+    "source": "https://crates.io/api/v1/crates/log/0.4.35",
+    "yanked": false,
+    "rust_version": "1.71.0",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T21:36:19.748360Z"
+  },
+  {
+    "name": "nix",
+    "version": "0.31.3",
+    "source": "https://crates.io/api/v1/crates/nix/0.31.3",
+    "yanked": false,
+    "rust_version": "1.69",
+    "license": "MIT",
+    "published": "2026-05-11T07:01:18.650221Z"
+  },
+  {
+    "name": "openssl-probe",
+    "version": "0.2.2",
+    "source": "https://crates.io/api/v1/crates/openssl-probe/0.2.2",
+    "yanked": false,
+    "rust_version": "1.60.0",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-26T16:29:20.254627Z"
+  },
+  {
+    "name": "rustix",
+    "version": "1.1.6",
+    "source": "https://crates.io/api/v1/crates/rustix/1.1.6",
+    "yanked": false,
+    "rust_version": "1.65",
+    "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "published": "2026-10-27T00:49:03.146056Z"
+  },
+  {
+    "name": "typed-path",
+    "version": "0.13.0",
+    "source": "https://crates.io/api/v1/crates/typed-path/0.13.0",
+    "yanked": false,
+    "rust_version": "1.65.0",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-20T03:16:20.948151Z"
+  },
+  {
+    "name": "unicode-properties",
+    "version": "0.1.5",
+    "source": "https://crates.io/api/v1/crates/unicode-properties/0.1.5",
+    "yanked": false,
+    "rust_version": null,
+    "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "published": "2026-10-31T18:12:10.001920Z"
+  },
+  {
+    "name": "unicode-width",
+    "version": "0.2.3",
+    "source": "https://crates.io/api/v1/crates/unicode-width/0.2.3",
+    "yanked": false,
+    "rust_version": "1.66",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-28T00:24:47.852753Z"
+  },
+  {
+    "name": "utf8_iter",
+    "version": "1.1.0",
+    "source": "https://crates.io/api/v1/crates/utf8_iter/1.1.0",
+    "yanked": false,
+    "rust_version": "1.83",
+    "license": "Apache-2.0 OR MIT",
+    "published": "2026-10-29T18:47:53.966530Z"
+  },
+  {
+    "name": "utf_types",
+    "version": "1.0.0",
+    "source": "https://crates.io/api/v1/crates/utf_types/1.0.0",
+    "yanked": false,
+    "rust_version": "1.83",
+    "license": "Apache-2.0 OR MIT",
+    "published": "2026-10-29T18:41:43.673367Z"
+  },
+  {
+    "name": "wasm-bindgen",
+    "version": "0.2.130",
+    "source": "https://crates.io/api/v1/crates/wasm-bindgen/0.2.130",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:04.504224Z"
+  },
+  {
+    "name": "wasm-bindgen-futures",
+    "version": "0.4.80",
+    "source": "https://crates.io/api/v1/crates/wasm-bindgen-futures/0.4.80",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:11.833866Z"
+  },
+  {
+    "name": "wasm-bindgen-macro",
+    "version": "0.2.130",
+    "source": "https://crates.io/api/v1/crates/wasm-bindgen-macro/0.2.130",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:02.683402Z"
+  },
+  {
+    "name": "wasm-bindgen-macro-support",
+    "version": "0.2.130",
+    "source": "https://crates.io/api/v1/crates/wasm-bindgen-macro-support/0.2.130",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:00.831743Z"
+  },
+  {
+    "name": "wasm-bindgen-shared",
+    "version": "0.2.130",
+    "source": "https://crates.io/api/v1/crates/wasm-bindgen-shared/0.2.130",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:14:57.203710Z"
+  },
+  {
+    "name": "web-sys",
+    "version": "0.3.107",
+    "source": "https://crates.io/api/v1/crates/web-sys/0.3.107",
+    "yanked": false,
+    "rust_version": "1.81",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-30T06:15:08.844914Z"
+  },
+  {
+    "name": "xattr",
+    "version": "1.7.0",
+    "source": "https://crates.io/api/v1/crates/xattr/1.7.0",
+    "yanked": false,
+    "rust_version": "1.65",
+    "license": "MIT OR Apache-2.0",
+    "published": "2026-10-28T03:29:08.516131Z"
+  },
+  {
+    "name": "zip",
+    "version": "9.2.1",
+    "source": "https://crates.io/api/v1/crates/zip/9.2.1",
+    "yanked": false,
+    "rust_version": "1.88",
+    "license": "MIT",
+    "published": "2026-11-01T09:28:17.401574Z"
+  }
+]

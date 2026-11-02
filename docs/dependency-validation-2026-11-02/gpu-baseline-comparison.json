@@ -1,0 +1,32 @@
+{
+  "baseline_source_commit": "a2c0238574cfcae54728431d54f1ad484075f8fe",
+  "lock_identical_to_original_head": true,
+  "isolated_baseline_tests": [
+    {
+      "test": "gpu_brush_crossings_follow_normal_alpha_including_repeated_passes",
+      "exit_code": 101,
+      "log": "/tmp/lumapaint-gpu-baseline-crossing-2026-11-02.log"
+    },
+    {
+      "test": "gpu_grain_rotation_preserves_pixels",
+      "exit_code": 101,
+      "log": "/tmp/lumapaint-gpu-baseline-grain-2026-11-02.log"
+    }
+  ],
+  "diagnostics": [
+    {
+      "test": "gpu_brush_crossings_follow_normal_alpha_including_repeated_passes",
+      "current": {
+        "formula_max_difference": 2,
+        "pen_lift_max_difference": 7,
+        "allowed_pen_lift_difference": 4
+      },
+      "baseline": "same diagnostics with original HEAD and original lockfile"
+    },
+    {
+      "test": "gpu_grain_rotation_preserves_pixels",
+      "current": "DryBrush material=false at 739,240: 255 vs 203",
+      "baseline": "same diagnostics with original HEAD and original lockfile"
+    }
+  ]
+}

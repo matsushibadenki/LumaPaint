@@ -178,7 +178,7 @@ impl Package {
         let mut size = 0usize;
         for i in 0..zip.len() {
             let mut f = zip.by_index(i).map_err(|_| bad())?;
-            let name = f.name().to_owned();
+            let name = f.name().map_err(|_| bad())?.into_owned();
             if name.starts_with('/')
                 || name.contains('\\')
                 || name.contains(':')

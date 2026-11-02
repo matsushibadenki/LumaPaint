@@ -1,0 +1,20 @@
+{
+  "test": "psd::tests::photoshop_half_transparent_composite_is_checked_before_retaining_layers",
+  "pixels": 16384,
+  "existing_max_tolerance": 9,
+  "candidate": {
+    "version": "0.9.1",
+    "p3_premult_rgb_max": 10,
+    "p3_premult_rgb_mean": 0.23465983072916666,
+    "alpha_max": 1,
+    "result": "failed"
+  },
+  "retained": {
+    "version": "0.8.1",
+    "p3_premult_rgb_max": 9,
+    "p3_premult_rgb_mean": 0.23577880859375,
+    "alpha_max": 1,
+    "result": "passed"
+  },
+  "policy": "retain existing reference tolerance; reconsider a newer stable release passing this regression"
+}
