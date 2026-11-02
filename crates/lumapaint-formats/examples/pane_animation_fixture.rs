@@ -81,6 +81,7 @@ fn main() {
                 &layer,
                 Property::X,
                 Keyframe {
+                    curve: None,
                     frame,
                     value,
                     interpolation: Interpolation::Linear,

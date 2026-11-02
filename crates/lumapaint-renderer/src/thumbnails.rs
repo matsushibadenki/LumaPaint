@@ -533,6 +533,7 @@ mod tests {
                 &id,
                 Property::X,
                 Keyframe {
+                    curve: None,
                     frame,
                     value,
                     interpolation: Interpolation::Linear,

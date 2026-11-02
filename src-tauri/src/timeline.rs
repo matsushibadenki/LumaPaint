@@ -123,6 +123,8 @@ pub enum Request {
         property: Property,
         value: f32,
         interpolation: Interpolation,
+        #[serde(default)]
+        curve: Option<lumapaint_core::document::animation::KeyCurve>,
     },
     KeyBatch {
         #[serde(rename = "documentId")]

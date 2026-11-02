@@ -187,6 +187,7 @@ mod tests {
                 &id,
                 animation::Property::X,
                 animation::Keyframe {
+                    curve: None,
                     frame,
                     value,
                     interpolation: animation::Interpolation::Linear,

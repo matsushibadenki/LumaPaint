@@ -104,3 +104,19 @@ assert.deepEqual(graphDragEdit('time',10,5),{kind:'shiftTime',delta:10});
 assert.deepEqual(graphDragEdit('value',10,5),{kind:'shiftValue',delta:5});
 assert.deepEqual(graphBatch(group,[5,15],graphDragEdit('free',0,5)).map(k=>k.frame),[5,15,30]);
 console.log('Simultaneous graph edit: common time/value offsets, interpolation and single-axis mode isolation passed');
+
+const {DEFAULT_KEY_CURVE,sampleKeyCurve,curveControl,equalKeyCurve}=await import('../src/key-curve.ts');
+for(let i=0;i<=100;i++){
+ const t=i/100;assert.ok(Math.abs(sampleKeyCurve(DEFAULT_KEY_CURVE,t)-t*t*(3-2*t))<.00001);
+ assert.ok(Math.abs(sampleKeyCurve({x1:.1,y1:.1,x2:.8,y2:.8},t)-t)<.00001);
+}
+assert.equal(curveControl(DEFAULT_KEY_CURVE,1,1,-1).x1,DEFAULT_KEY_CURVE.x2);
+assert.equal(curveControl(DEFAULT_KEY_CURVE,2,-1,2).x2,DEFAULT_KEY_CURVE.x1);
+assert.equal(curveControl(DEFAULT_KEY_CURVE,1,.3,-1).y1,0);
+assert.equal(curveControl(DEFAULT_KEY_CURVE,2,.7,2).y2,1);
+const curve={x1:.1,y1:.8,x2:.4,y2:1},cubicKeys=[{frame:0,value:0,interpolation:'cubic',curve},{frame:100,value:100,interpolation:'linear'}];
+for(const frame of [0,1,10,25,50,90,99,100])assert.ok(Math.abs(sampleTimelineKey(cubicKeys,frame,0)-sampleKeyCurve(curve,frame/100)*100)<.006);
+assert.ok(graphPath(cubicKeys,101,{min:0,max:100},0).includes('C 52 36.8 112 12 232 12'));
+const preview=graphBatch(group,[5],{kind:'curve',curve});assert.equal(preview[0].interpolation,'cubic');assert.ok(equalKeyCurve(preview[0].curve,curve));
+assert.deepEqual(graphBatch(preview,[5],{kind:'move',frameDelta:2,valueDelta:1})[0].curve,preview[0].curve);
+console.log('Custom tangents: easing inversion, exact curve geometry, constraints, f32 metadata and move retention passed');

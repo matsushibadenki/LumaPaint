@@ -1342,3 +1342,12 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-graph[data-mode="pan"]>svg{cursor:grab}
 .timeline-graph[data-mode="pan"]>svg:active{cursor:grabbing}
 .timeline-graph[data-mode="free"]>svg{cursor:move}
+.timeline-graph-tangents{display:flex;align-items:center;gap:3px;margin-top:4px;min-width:0}
+.timeline-graph-tangents label{display:flex!important;flex-direction:column;flex-wrap:nowrap;gap:2px;flex:1;min-width:0;font-size:9px;text-align:center}
+.timeline-graph-tangents label>input{width:100%;min-width:0!important;padding:2px!important;height:24px;font-size:10px}
+.timeline-graph-tangents button{flex:none;width:21px;min-width:21px;height:24px;padding:0}
+.timeline-graph-tangent line{stroke:var(--color-focus);stroke-width:.8;stroke-dasharray:2 2;pointer-events:none}
+.timeline-graph .timeline-graph-tangent circle{fill:var(--color-panel);stroke:var(--color-focus);stroke-width:1.5;cursor:move}
+.timeline-graph-tangent circle:focus{outline:none;stroke-width:3}
+
+.timeline-graph-tangents input::-webkit-inner-spin-button,.timeline-graph-tangents input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}

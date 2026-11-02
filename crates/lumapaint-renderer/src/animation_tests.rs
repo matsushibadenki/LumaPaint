@@ -53,6 +53,7 @@ fn animation_vector_frames_render_the_expected_positions_and_restore_after_undo(
             &id,
             Property::X,
             Keyframe {
+                curve: None,
                 frame,
                 value,
                 interpolation: Interpolation::Linear,
@@ -64,6 +65,7 @@ fn animation_vector_frames_render_the_expected_positions_and_restore_after_undo(
         &id,
         Property::Opacity,
         Keyframe {
+            curve: None,
             frame: 10,
             value: 50.,
             interpolation: Interpolation::Linear,
@@ -148,6 +150,7 @@ fn animation_imported_svg_and_affine_scale_rotation_keep_original_artwork() {
             &id,
             property,
             Keyframe {
+                curve: None,
                 frame: 0,
                 value,
                 interpolation: Interpolation::Linear,
@@ -172,6 +175,7 @@ fn animation_imported_svg_and_affine_scale_rotation_keep_original_artwork() {
             &id,
             Property::X,
             Keyframe {
+                curve: None,
                 frame: 0,
                 value: 20.,
                 interpolation: Interpolation::Linear,
@@ -196,6 +200,7 @@ fn rendering_forks_match_full_clones_for_sampling_and_animation() {
         &id,
         Property::X,
         Keyframe {
+            curve: None,
             frame: 8,
             value: 12.,
             interpolation: Interpolation::Linear,
@@ -341,6 +346,7 @@ fn incremental_timeline_matches_full_frames_in_both_directions_and_after_edits()
                 layer,
                 property,
                 Keyframe {
+                    curve: None,
                     frame,
                     value,
                     interpolation,
@@ -402,6 +408,7 @@ fn incremental_timeline_matches_full_frames_in_both_directions_and_after_edits()
         &moving,
         Property::X,
         Keyframe {
+            curve: None,
             frame: 0,
             value: 12.,
             interpolation: Interpolation::Hold,

@@ -20,6 +20,9 @@ pub enum KeyBatchEdit {
     Interpolation {
         interpolation: Interpolation,
     },
+    Curve {
+        curve: KeyCurve,
+    },
     Delete,
 }
 fn invalid() -> String {
@@ -81,6 +84,13 @@ impl Document {
                     key.value = value;
                 }
                 KeyBatchEdit::Interpolation { interpolation } => key.interpolation = interpolation,
+                KeyBatchEdit::Curve { curve } => {
+                    if !curve.valid() {
+                        return Err(invalid());
+                    }
+                    key.interpolation = Interpolation::Cubic;
+                    key.curve = Some(curve);
+                }
                 KeyBatchEdit::Delete => (),
             }
         }
@@ -93,7 +103,10 @@ impl Document {
         }
         if keys.len() == before.len()
             && keys.iter().zip(&before).all(|(a, b)| {
-                a.frame == b.frame && a.value == b.value && a.interpolation == b.interpolation
+                a.frame == b.frame
+                    && a.value == b.value
+                    && a.interpolation == b.interpolation
+                    && a.curve == b.curve
             })
         {
             return Ok(());
@@ -113,6 +126,7 @@ mod tests {
                 &id,
                 Property::Opacity,
                 Keyframe {
+                    curve: None,
                     frame,
                     value,
                     interpolation: Interpolation::Ease,
@@ -225,6 +239,7 @@ mod tests {
             &id,
             Property::Y,
             Keyframe {
+                curve: None,
                 frame: 5,
                 value: 42.,
                 interpolation: Interpolation::Linear,

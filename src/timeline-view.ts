@@ -1,5 +1,6 @@
+import {sampleKeyCurve,DEFAULT_KEY_CURVE,type KeyCurve} from './key-curve.ts';
 // Display-only helpers. Authored timing and evaluated artwork remain in Rust.
-export type TimelineKey = {frame:number;value:number;interpolation:'linear'|'hold'|'ease'};
+export type TimelineKey = {frame:number;value:number;interpolation:'linear'|'hold'|'ease'|'cubic';curve?:KeyCurve};
 export type FrameRange = {from:number;to:number};
 export function visibleFrames(scrollLeft:number,width:number,zoom:number,duration:number):FrameRange {
   const from=Math.min(Math.max(0,duration-1),Math.max(0,Math.floor(scrollLeft/zoom)-12));
@@ -24,7 +25,7 @@ export function sampleTimelineKey(keys:readonly TimelineKey[],frame:number,base:
   const a=keys[right-1],b=keys[right];
   if(a.frame===frame)return a.value;
   let t=(frame-a.frame)/(b.frame-a.frame);
-  t=a.interpolation==='hold'?0:a.interpolation==='ease'?t*t*(3-2*t):t;
+  t=a.interpolation==='hold'?0:a.interpolation==='ease'?t*t*(3-2*t):a.interpolation==='cubic'?sampleKeyCurve(a.curve??DEFAULT_KEY_CURVE,t):t;
   return Math.round((a.value+(b.value-a.value)*t)*100)/100;
 }
 export function overlapsFrames(start:number,end:number,range:FrameRange):boolean {

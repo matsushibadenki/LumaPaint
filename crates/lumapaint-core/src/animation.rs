@@ -11,6 +11,9 @@ pub use exposure_batch::{ExposureBatchEdit, ExposureTrackEdit};
 #[path = "animation/key_batch.rs"]
 mod key_batch;
 pub use key_batch::KeyBatchEdit;
+#[path = "animation/key_curve.rs"]
+mod key_curve;
+pub use key_curve::KeyCurve;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -354,6 +357,7 @@ pub enum Interpolation {
     Linear,
     Hold,
     Ease,
+    Cubic,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -361,6 +365,8 @@ pub struct Keyframe {
     pub frame: u32,
     pub value: f32,
     pub interpolation: Interpolation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<KeyCurve>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EvaluationStats {
@@ -399,6 +405,7 @@ impl Track {
             Interpolation::Hold => 0.,
             Interpolation::Linear => t,
             Interpolation::Ease => t * t * (3. - 2. * t),
+            Interpolation::Cubic => a.curve.unwrap_or_default().sample(t),
         };
         a.value + (b.value - a.value) * t
     }
@@ -502,9 +509,11 @@ impl Animation {
                 if total_keys > 32768
                     || keys.len() > 4096
                     || keys.windows(2).any(|w| w[0].frame >= w[1].frame)
-                    || keys
-                        .iter()
-                        .any(|k| k.frame >= self.duration || !property.valid(k.value))
+                    || keys.iter().any(|k| {
+                        k.frame >= self.duration
+                            || !property.valid(k.value)
+                            || k.curve.is_some_and(|c| !c.valid())
+                    })
                 {
                     return Err("Invalid animation keyframe".into());
                 }
@@ -890,7 +899,7 @@ impl Document {
         &mut self,
         id: &str,
         property: Property,
-        key: Keyframe,
+        mut key: Keyframe,
     ) -> Result<(), String> {
         self.animation_layer(id, false)?;
         let mut next = self.animation.as_ref().clone();
@@ -902,6 +911,12 @@ impl Document {
             return Err("Layer already has pixel animation".into());
         }
         let keys = track.channels.entry(property).or_default();
+        if key.curve.is_none() {
+            key.curve = keys
+                .iter()
+                .find(|k| k.frame == key.frame)
+                .and_then(|k| k.curve);
+        }
         keys.retain(|k| k.frame != key.frame);
         keys.push(key);
         keys.sort_by_key(|k| k.frame);
@@ -1429,6 +1444,7 @@ mod tests {
     }
     fn key(frame: u32, value: f32, interpolation: Interpolation) -> Keyframe {
         Keyframe {
+            curve: None,
             frame,
             value,
             interpolation,
@@ -1593,6 +1609,7 @@ mod tests {
                 Interpolation::Linear => 25.,
                 Interpolation::Hold => 0.,
                 Interpolation::Ease => 15.625,
+                Interpolation::Cubic => unreachable!(),
             };
             assert_eq!(track.value(Property::X, 5), expected);
             assert_eq!(track.value(Property::Opacity, 5), 100.);

@@ -1369,6 +1369,7 @@ mod tests {
             &id,
             animation::Property::X,
             animation::Keyframe {
+                curve: None,
                 frame: 0,
                 value: 12.,
                 interpolation: animation::Interpolation::Linear,
@@ -1452,6 +1453,7 @@ mod tests {
                     &id,
                     property,
                     Keyframe {
+                        curve: None,
                         frame,
                         value,
                         interpolation: Interpolation::Linear,

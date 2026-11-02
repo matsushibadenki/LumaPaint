@@ -1142,11 +1142,12 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                             property,
                             value,
                             interpolation,
+                            curve,
                             ..
                         } => doc.set_animation_key(
                             &layer,
                             property,
-                            Keyframe {
+                            Keyframe { curve,
                                 frame,
                                 value,
                                 interpolation,
@@ -1346,6 +1347,89 @@ mod tests {
         }
     }
     #[test]
+    fn tangent_transport_validates_curve_and_preserves_value_edits() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyBatchEdit, KeyCurve, Property,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value) in [(0, 0.), (20, 100.)] {
+                d.set_animation_key(
+                    &id,
+                    Property::X,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Linear,
+                        curve: None,
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        let (id, revision) = identity();
+        let curve = KeyCurve {
+            x1: 0.1,
+            y1: 0.8,
+            x2: 0.4,
+            y2: 1.,
+        };
+        let request = |document_id, revision, curve| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::X,
+            frames: vec![0],
+            edit: KeyBatchEdit::Curve { curve },
+        };
+        assert!(command(request(id + 1, revision, curve)).is_err());
+        assert!(command(request(id, revision + 1, curve)).is_err());
+        assert!(command(request(
+            id,
+            revision,
+            KeyCurve {
+                x1: 0.9,
+                x2: 0.1,
+                ..curve
+            }
+        ))
+        .is_err());
+        assert_eq!(identity().1, revision);
+        assert!(command(request(id, revision, curve)).unwrap().preview);
+        assert!(command(request(id, revision, curve)).is_err());
+        command(Request::Key {
+            document_id: Some(id),
+            layer: layer.clone(),
+            frame: 0,
+            property: Property::X,
+            value: 1.,
+            interpolation: Interpolation::Cubic,
+            curve: None,
+        })
+        .unwrap();
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].curve,
+                Some(curve)
+            );
+            assert!(d.animation().tracks[&layer].value(Property::X, 5) > 60.);
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].value,
+                0.
+            );
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].interpolation,
+                Interpolation::Linear
+            );
+        });
+    }
+    #[test]
     fn simultaneous_graph_move_previews_both_axes_and_checks_identity() {
         use lumapaint_core::document::animation::{Interpolation, KeyBatchEdit, Property};
         let _restore = setup();
@@ -1357,6 +1441,7 @@ mod tests {
                     &id,
                     Property::X,
                     Keyframe {
+                        curve: None,
                         frame,
                         value,
                         interpolation: Interpolation::Ease,
@@ -1415,6 +1500,7 @@ mod tests {
                     &id,
                     Property::X,
                     Keyframe {
+                        curve: None,
                         frame,
                         value: frame as f32,
                         interpolation: Interpolation::Ease,
@@ -1470,6 +1556,7 @@ mod tests {
                     &layer,
                     lumapaint_core::document::animation::Property::X,
                     Keyframe {
+                        curve: None,
                         frame,
                         value,
                         interpolation: lumapaint_core::document::animation::Interpolation::Ease,
@@ -2079,6 +2166,7 @@ mod tests {
                 &layer,
                 lumapaint_core::document::animation::Property::X,
                 Keyframe {
+                    curve: None,
                     frame: 0,
                     value: 12.,
                     interpolation: lumapaint_core::document::animation::Interpolation::Hold,
@@ -2520,6 +2608,7 @@ mod tests {
         command(Request::Get).unwrap();
         let revision = identity().1;
         assert!(command(Request::Key {
+            curve: None,
             document_id: Some(identity().0.wrapping_add(1)),
             layer: layer.clone(),
             frame: 10,
@@ -2539,6 +2628,7 @@ mod tests {
         ] {
             for value in [first, second] {
                 let result = command(Request::Key {
+                    curve: None,
                     document_id: Some(identity().0),
                     layer: layer.clone(),
                     frame: 10,

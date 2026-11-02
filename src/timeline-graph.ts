@@ -1,3 +1,4 @@
+import {DEFAULT_KEY_CURVE,type KeyCurve} from './key-curve.ts';
 import type {TimelineKey} from './timeline-view';
 export const GRAPH={width:240,height:160,left:32,right:8,top:12,bottom:24};
 export type GraphRange={min:number;max:number};
@@ -17,6 +18,7 @@ export function graphPath(keys:readonly TimelineKey[],duration:number,range:Grap
  let path=`M ${point(0,keys[0].value)} L ${point(keys[0].frame,keys[0].value)}`;
  for(let i=1;i<keys.length;i++){const a=keys[i-1],b=keys[i];
   if(a.interpolation==='hold')path+=` L ${point(b.frame,a.value)} L ${point(b.frame,b.value)}`;
+  else if(a.interpolation==='cubic'){const c=a.curve??DEFAULT_KEY_CURVE,dt=b.frame-a.frame,dv=b.value-a.value;path+=` C ${point(a.frame+dt*c.x1,a.value+dv*c.y1)} ${point(a.frame+dt*c.x2,a.value+dv*c.y2)} ${point(b.frame,b.value)}`;}
   else if(a.interpolation==='ease')path+=` C ${point(a.frame+(b.frame-a.frame)/3,a.value)} ${point(a.frame+2*(b.frame-a.frame)/3,b.value)} ${point(b.frame,b.value)}`;
   else path+=` L ${point(b.frame,b.value)}`;
  }
@@ -34,10 +36,10 @@ export function graphFreeFrame(frame:number,from:number,keys:readonly TimelineKe
  return from;
 }
 
-export type KeyBatchEdit={kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
+export type KeyBatchEdit={kind:'curve';curve:KeyCurve}|{kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
 export function graphBatch(keys:readonly TimelineKey[],frames:readonly number[],edit:KeyBatchEdit):TimelineKey[]{
  const selected=new Set(frames);
- return keys.filter(k=>edit.kind!=='delete'||!selected.has(k.frame)).map(k=>!selected.has(k.frame)?k:edit.kind==='move'?{...k,frame:k.frame+edit.frameDelta,value:Math.fround(Math.fround(k.value)+Math.fround(edit.valueDelta))}:edit.kind==='shiftTime'?{...k,frame:k.frame+edit.delta}:edit.kind==='shiftValue'?{...k,value:Math.fround(Math.fround(k.value)+Math.fround(edit.delta))}:edit.kind==='interpolation'?{...k,interpolation:edit.interpolation}:k).sort((a,b)=>a.frame-b.frame);
+ return keys.filter(k=>edit.kind!=='delete'||!selected.has(k.frame)).map(k=>!selected.has(k.frame)?k:edit.kind==='curve'?{...k,interpolation:'cubic' as const,curve:{x1:Math.fround(edit.curve.x1),y1:Math.fround(edit.curve.y1),x2:Math.fround(edit.curve.x2),y2:Math.fround(edit.curve.y2)}}:edit.kind==='move'?{...k,frame:k.frame+edit.frameDelta,value:Math.fround(Math.fround(k.value)+Math.fround(edit.valueDelta))}:edit.kind==='shiftTime'?{...k,frame:k.frame+edit.delta}:edit.kind==='shiftValue'?{...k,value:Math.fround(Math.fround(k.value)+Math.fround(edit.delta))}:edit.kind==='interpolation'?{...k,interpolation:edit.interpolation}:k).sort((a,b)=>a.frame-b.frame);
 }
 export function graphTimeDelta(raw:number,frames:readonly number[],keys:readonly TimelineKey[],duration:number,direction=0):number{
  if(!frames.length)return 0;
