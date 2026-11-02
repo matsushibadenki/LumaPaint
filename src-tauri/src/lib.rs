@@ -2,6 +2,7 @@ mod cel_previews;
 mod diagnostic_jobs;
 mod document_previews;
 mod font_viewer;
+#[cfg(any(target_os = "macos", test))]
 mod idml_links;
 mod image_frames;
 mod measurement_units;

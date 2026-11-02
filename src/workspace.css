@@ -1325,3 +1325,20 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-graph-playhead {stroke:var(--color-muted);stroke-dasharray:2 2;stroke-width:.6;}
 .timeline-graph circle {fill:var(--color-panel);stroke:var(--color-focus);stroke-width:1.5;}
 .timeline-graph circle[data-selected="true"] {fill:var(--color-focus);}
+.timeline-graph-heading .timeline-graph-mode {min-width:20px;min-height:20px;padding:1px 4px;font-size:12px;}
+.timeline-graph-mode[aria-pressed="true"] {color:var(--color-focus);background:var(--color-selected);}
+.timeline-graph[data-mode="time"] svg {cursor:ew-resize;}
+.timeline-graph[data-mode="value"] svg {cursor:ns-resize;}
+.timeline-graph[data-snapped="true"] .timeline-graph-heading output {color:var(--color-focus);font-weight:600;}
+.timeline-graph-heading output {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;}
+.timeline-graph-batch{display:flex;align-items:center;gap:6px;margin:4px 0 2px;min-width:0}
+.timeline-graph-batch button{width:24px;height:24px;padding:0;flex:none}
+.timeline-graph-batch output{min-width:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--color-muted)}
+.timeline-graph-batch select{min-width:0;flex:1;height:24px}
+.timeline-graph-view{display:flex;align-items:center;gap:3px;margin:4px 0 2px;min-width:0}
+.timeline-graph-view button{flex:none;min-width:21px;width:21px;height:24px;padding:0}
+.timeline-graph-view select{flex:1;min-width:0;height:24px;font-size:10px}
+.timeline-graph-view button[aria-pressed="true"]{color:var(--color-focus);background:var(--color-selected)}
+.timeline-graph[data-mode="pan"]>svg{cursor:grab}
+.timeline-graph[data-mode="pan"]>svg:active{cursor:grabbing}
+.timeline-graph[data-mode="free"]>svg{cursor:move}

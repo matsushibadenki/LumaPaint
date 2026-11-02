@@ -785,6 +785,11 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         document_id: Some(document_id),
         ..
     }
+    | Request::MoveKey {
+        document_id: Some(document_id),
+        ..
+    }
+    | Request::KeyBatch { document_id, .. }
     | Request::SetMotion { document_id, .. }
     | Request::RemoveMotion { document_id, .. }
     | Request::MoveMotion { document_id, .. }
@@ -805,6 +810,16 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
             return Err(
                 "The document changed / ドキュメントが切り替わりました / 文档已切换".into(),
             );
+        }
+    }
+    if let Request::MoveKey {
+        revision: Some(revision),
+        ..
+    }
+    | Request::KeyBatch { revision, .. } = &request
+    {
+        if *revision != identity().1 {
+            return Err("The document was updated; refresh the key / 文書が更新されました。キーを選択し直してください / 文档已更新，请重新选择关键帧".into());
         }
     }
     if let Request::Onion { document_id, .. } = &request {
@@ -1017,6 +1032,8 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                 };
                 let next_frame = match &edit {
                     Request::ExposureBatch {frames,edit:lumapaint_core::document::animation::ExposureBatchEdit::Shift{delta,..},..}=>frames.iter().min().map(|f|(i64::from(*f)+i64::from(*delta)).clamp(0,17999) as u32),
+                    Request::KeyBatch {frames, edit: lumapaint_core::document::animation::KeyBatchEdit::Move {frame_delta:delta,..}, ..}
+                    | Request::KeyBatch {frames, edit: lumapaint_core::document::animation::KeyBatchEdit::ShiftTime {delta}, ..} => frames.iter().min().map(|f| (i64::from(*f)+i64::from(*delta)).clamp(0,17999) as u32),
                     Request::Key { frame, .. }
                     | Request::Duplicate { frame, .. }
                     | Request::MoveKey { frame, .. }
@@ -1033,6 +1050,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     edit,
                     Request::Key { .. }
                         | Request::MoveKey { .. }
+                        | Request::KeyBatch { .. }
                         | Request::Remove { .. }
                         | Request::Duplicate { .. }
                         | Request::SetMotion { .. }
@@ -1134,11 +1152,13 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                                 interpolation,
                             },
                         ),
+                        Request::KeyBatch {layer, property, frames, edit, ..} => doc.edit_animation_keys(&layer, property, &frames, edit),
                         Request::MoveKey {
                             layer,
                             property,
                             from,
                             frame,
+                            ..
                         } => doc.move_animation_key(&layer, property, from, frame),
                         Request::Remove {
                             layer,
@@ -1324,6 +1344,184 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn simultaneous_graph_move_previews_both_axes_and_checks_identity() {
+        use lumapaint_core::document::animation::{Interpolation, KeyBatchEdit, Property};
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value) in [(5, 0.), (30, 80.)] {
+                d.set_animation_key(
+                    &id,
+                    Property::X,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Ease,
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        let (id, revision) = identity();
+        let request = |document_id, revision| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::X,
+            frames: vec![5, 30],
+            edit: KeyBatchEdit::Move {
+                frame_delta: 10,
+                value_delta: 7.5,
+            },
+        };
+        assert!(command(request(id + 1, revision)).is_err());
+        assert!(command(request(id, revision + 1)).is_err());
+        let result = command(request(id, revision)).unwrap();
+        assert_eq!(result.frame, 15);
+        assert!(result.preview);
+        assert!(command(request(id, revision)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let keys = &d.animation().tracks[&layer].channels[&Property::X];
+            assert_eq!(
+                (keys[0].frame, keys[0].value, keys[1].frame, keys[1].value),
+                (15, 7.5, 40, 87.5)
+            );
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].frame,
+                5
+            );
+            d.redo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][1].value,
+                87.5
+            );
+        });
+    }
+    #[test]
+    fn graph_key_batches_require_current_document_and_revision() {
+        use lumapaint_core::document::animation::{Interpolation, KeyBatchEdit, Property};
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for frame in [5, 15] {
+                d.set_animation_key(
+                    &id,
+                    Property::X,
+                    Keyframe {
+                        frame,
+                        value: frame as f32,
+                        interpolation: Interpolation::Ease,
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        let (id, revision) = identity();
+        let request = |document_id, revision| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::X,
+            frames: vec![5, 15],
+            edit: KeyBatchEdit::ShiftTime { delta: 10 },
+        };
+        assert!(command(request(id + 1, revision)).is_err());
+        assert!(command(request(id, revision + 1)).is_err());
+        assert_eq!(identity().1, revision);
+        let result = command(request(id, revision)).unwrap();
+        assert_eq!(result.frame, 15);
+        assert!(result.preview);
+        assert!(command(request(id, revision)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][1].frame,
+                25
+            );
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][1].frame,
+                15
+            );
+            d.redo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][1].frame,
+                25
+            );
+        });
+        assert!(serde_json::from_value::<Request>(serde_json::json!({"action":"keyBatch","documentId":id,"layer":layer,"property":"x","frames":[5],"edit":{"kind":"delete"}})).is_err());
+    }
+    #[test]
+    fn graph_key_moves_preserve_values_and_reject_stale_or_occupied_targets() {
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let layer = doc.add_vector_layer().unwrap();
+            for (frame, value) in [(5, 12.), (30, 80.)] {
+                doc.set_animation_key(
+                    &layer,
+                    lumapaint_core::document::animation::Property::X,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: lumapaint_core::document::animation::Interpolation::Ease,
+                    },
+                )
+                .unwrap();
+            }
+            layer
+        });
+        let (id, revision) = identity();
+        let request = |document_id, revision, frame| Request::MoveKey {
+            document_id: Some(document_id),
+            revision: Some(revision),
+            layer: layer.clone(),
+            property: lumapaint_core::document::animation::Property::X,
+            from: 5,
+            frame,
+        };
+        assert!(command(request(id + 1, revision, 12)).is_err());
+        assert!(command(request(id, revision + 1, 12)).is_err());
+        assert!(command(request(id, revision, 30)).is_err());
+        assert_eq!(identity().1, revision);
+        let response = command(request(id, revision, 12)).unwrap();
+        assert_eq!(response.frame, 12);
+        DOCUMENT.with(|d| {
+            let mut doc = d.borrow_mut();
+            let keys = &doc.animation().tracks[&layer].channels
+                [&lumapaint_core::document::animation::Property::X];
+            assert_eq!(
+                (keys[0].frame, keys[0].value, keys[0].interpolation),
+                (
+                    12,
+                    12.,
+                    lumapaint_core::document::animation::Interpolation::Ease
+                )
+            );
+            doc.undo();
+            assert_eq!(
+                doc.animation().tracks[&layer].channels
+                    [&lumapaint_core::document::animation::Property::X][0]
+                    .frame,
+                5
+            );
+            doc.redo();
+            assert_eq!(
+                doc.animation().tracks[&layer].channels
+                    [&lumapaint_core::document::animation::Property::X][0]
+                    .frame,
+                12
+            );
+        });
+        assert!(serde_json::from_value::<Request>(serde_json::json!({"action":"moveKey","layer":layer,"property":"x","from":12,"frame":13})).is_ok());
     }
     #[test]
     fn work_area_transport_restarts_outside_range_and_rejects_stale_document() {

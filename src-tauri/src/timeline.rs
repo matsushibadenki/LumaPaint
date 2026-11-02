@@ -124,7 +124,20 @@ pub enum Request {
         value: f32,
         interpolation: Interpolation,
     },
+    KeyBatch {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        revision: u64,
+        layer: String,
+        property: Property,
+        frames: Vec<u32>,
+        edit: lumapaint_core::document::animation::KeyBatchEdit,
+    },
     MoveKey {
+        #[serde(default, rename = "documentId")]
+        document_id: Option<u64>,
+        #[serde(default)]
+        revision: Option<u64>,
         layer: String,
         property: Property,
         from: u32,

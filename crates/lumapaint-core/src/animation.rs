@@ -8,6 +8,9 @@ pub use exposures::{Exposure, NamedCel};
 #[path = "animation/exposure_batch.rs"]
 mod exposure_batch;
 pub use exposure_batch::{ExposureBatchEdit, ExposureTrackEdit};
+#[path = "animation/key_batch.rs"]
+mod key_batch;
+pub use key_batch::KeyBatchEdit;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
