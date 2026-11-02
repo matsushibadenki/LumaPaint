@@ -790,6 +790,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         ..
     }
     | Request::KeyBatch { document_id, .. }
+    | Request::KeyGroup { document_id, .. }
     | Request::SetMotion { document_id, .. }
     | Request::RemoveMotion { document_id, .. }
     | Request::MoveMotion { document_id, .. }
@@ -816,6 +817,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
         revision: Some(revision),
         ..
     }
+    | Request::KeyGroup { revision, .. }
     | Request::KeyBatch { revision, .. } = &request
     {
         if *revision != identity().1 {
@@ -1031,6 +1033,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     _ => None,
                 };
                 let next_frame = match &edit {
+                    Request::KeyGroup{selections,edit:lumapaint_core::document::animation::KeyGroupEdit::ShiftTime{delta},..}=>selections.iter().flat_map(|s|s.frames.iter()).min().map(|f|(i64::from(*f)+i64::from(*delta)).clamp(0,17999) as u32),
                     Request::ExposureBatch {frames,edit:lumapaint_core::document::animation::ExposureBatchEdit::Shift{delta,..},..}=>frames.iter().min().map(|f|(i64::from(*f)+i64::from(*delta)).clamp(0,17999) as u32),
                     Request::KeyBatch {frames, edit: lumapaint_core::document::animation::KeyBatchEdit::Move {frame_delta:delta,..}, ..}
                     | Request::KeyBatch {frames, edit: lumapaint_core::document::animation::KeyBatchEdit::ShiftTime {delta}, ..} => frames.iter().min().map(|f| (i64::from(*f)+i64::from(*delta)).clamp(0,17999) as u32),
@@ -1051,6 +1054,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                     Request::Key { .. }
                         | Request::MoveKey { .. }
                         | Request::KeyBatch { .. }
+                        | Request::KeyGroup { .. }
                         | Request::Remove { .. }
                         | Request::Duplicate { .. }
                         | Request::SetMotion { .. }
@@ -1153,6 +1157,7 @@ pub(crate) fn command(request: Request) -> Result<Response, String> {
                                 interpolation,
                             },
                         ),
+                        Request::KeyGroup {layer,selections,edit,..}=>doc.edit_animation_key_group(&layer,&selections,edit),
                         Request::KeyBatch {layer, property, frames, edit, ..} => doc.edit_animation_keys(&layer, property, &frames, edit),
                         Request::MoveKey {
                             layer,
@@ -1345,6 +1350,67 @@ mod tests {
             document: Some(previous),
             open,
         }
+    }
+    #[test]
+    fn property_group_transport_guards_revision_and_updates_preview_atomically() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyGroupEdit, Property, PropertyKeys,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for property in [Property::X, Property::Y] {
+                for (frame, value) in [(0, 0.), (20, 100.)] {
+                    d.set_animation_key(
+                        &id,
+                        property,
+                        Keyframe {
+                            frame,
+                            value,
+                            interpolation: Interpolation::Ease,
+                            curve: None,
+                        },
+                    )
+                    .unwrap();
+                }
+            }
+            id
+        });
+        let (id, revision) = identity();
+        let request = |document_id, revision| Request::KeyGroup {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            selections: vec![
+                PropertyKeys {
+                    property: Property::X,
+                    frames: vec![0],
+                },
+                PropertyKeys {
+                    property: Property::Y,
+                    frames: vec![0],
+                },
+            ],
+            edit: KeyGroupEdit::ShiftTime { delta: 3 },
+        };
+        assert!(command(request(id + 1, revision)).is_err());
+        assert!(command(request(id, revision + 1)).is_err());
+        assert_eq!(identity().1, revision);
+        let reply = command(request(id, revision)).unwrap();
+        assert!(reply.preview);
+        assert_eq!(reply.frame, 3);
+        assert!(command(request(id, revision)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            for p in [Property::X, Property::Y] {
+                assert_eq!(d.animation().tracks[&layer].channels[&p][0].frame, 3);
+            }
+            d.undo();
+            for p in [Property::X, Property::Y] {
+                assert_eq!(d.animation().tracks[&layer].channels[&p][0].frame, 0);
+            }
+        });
     }
     #[test]
     fn tangent_transport_validates_curve_and_preserves_value_edits() {

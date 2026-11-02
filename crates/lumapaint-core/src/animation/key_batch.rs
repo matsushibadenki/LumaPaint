@@ -113,6 +113,107 @@ fn link_curve(
     keys[i].curve = Some(curve);
     Ok(())
 }
+
+fn apply_keys(
+    keys: &mut Vec<Keyframe>,
+    property: Property,
+    duration: u32,
+    frames: &[u32],
+    edit: KeyBatchEdit,
+) -> Result<bool, String> {
+    let selected: BTreeSet<_> = frames.iter().copied().collect();
+    if frames.is_empty() || frames.len() > 4096 || selected.len() != frames.len() {
+        return Err(invalid());
+    }
+    if selected.iter().any(|f| !keys.iter().any(|k| k.frame == *f)) {
+        return Err(invalid());
+    }
+    let before = keys.clone();
+    if let KeyBatchEdit::LinkedCurve { curve, control } = edit {
+        if frames.len() != 1 || !curve.valid() || !(1..=2).contains(&control) {
+            return Err(invalid());
+        }
+        let index = keys
+            .iter()
+            .position(|k| k.frame == frames[0])
+            .ok_or_else(invalid)?;
+        link_curve(keys, index, curve, control)?;
+    }
+    for key in keys.iter_mut().filter(|k| selected.contains(&k.frame)) {
+        match edit {
+            KeyBatchEdit::Move {
+                frame_delta,
+                value_delta,
+            } => {
+                let frame = i64::from(key.frame) + i64::from(frame_delta);
+                let value = key.value + value_delta;
+                if frame < 0
+                    || frame >= i64::from(duration)
+                    || !value_delta.is_finite()
+                    || !property.valid(value)
+                {
+                    return Err(invalid());
+                }
+                key.frame = frame as u32;
+                key.value = value;
+            }
+            KeyBatchEdit::ShiftTime { delta } => {
+                let frame = i64::from(key.frame) + i64::from(delta);
+                if frame < 0 || frame >= i64::from(duration) {
+                    return Err(invalid());
+                }
+                key.frame = frame as u32;
+            }
+            KeyBatchEdit::ShiftValue { delta } => {
+                let value = key.value + delta;
+                if !delta.is_finite() || !property.valid(value) {
+                    return Err(invalid());
+                }
+                key.value = value;
+            }
+            KeyBatchEdit::Interpolation { interpolation } => key.interpolation = interpolation,
+            KeyBatchEdit::Curve { curve } => {
+                if !curve.valid() {
+                    return Err(invalid());
+                }
+                key.interpolation = Interpolation::Cubic;
+                key.curve = Some(curve);
+            }
+            KeyBatchEdit::Delete | KeyBatchEdit::LinkedCurve { .. } => (),
+        }
+    }
+    if matches!(edit, KeyBatchEdit::Delete) {
+        keys.retain(|k| !selected.contains(&k.frame));
+    }
+    keys.sort_by_key(|k| k.frame);
+    if keys.windows(2).any(|w| w[0].frame == w[1].frame) {
+        return Err(invalid());
+    }
+    if keys.len() == before.len()
+        && keys.iter().zip(&before).all(|(a, b)| {
+            a.frame == b.frame
+                && a.value == b.value
+                && a.interpolation == b.interpolation
+                && a.curve == b.curve
+        })
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropertyKeys {
+    pub property: Property,
+    pub frames: Vec<u32>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum KeyGroupEdit {
+    ShiftTime { delta: i32 },
+    Interpolation { interpolation: Interpolation },
+    Delete,
+}
 impl Document {
     pub fn edit_animation_keys(
         &mut self,
@@ -122,91 +223,59 @@ impl Document {
         edit: KeyBatchEdit,
     ) -> Result<(), String> {
         self.animation_layer(id, false)?;
-        let selected: BTreeSet<_> = frames.iter().copied().collect();
-        if frames.is_empty() || frames.len() > 4096 || selected.len() != frames.len() {
-            return Err(invalid());
-        }
         let mut next = self.animation.as_ref().clone();
+        let duration = next.duration;
         let keys = next
             .tracks
             .get_mut(id)
             .and_then(|t| t.channels.get_mut(&property))
             .ok_or_else(invalid)?;
-        if selected.iter().any(|f| !keys.iter().any(|k| k.frame == *f)) {
+        if apply_keys(keys, property, duration, frames, edit)? {
+            self.commit_animation(next)
+        } else {
+            Ok(())
+        }
+    }
+    pub fn edit_animation_key_group(
+        &mut self,
+        id: &str,
+        selections: &[PropertyKeys],
+        edit: KeyGroupEdit,
+    ) -> Result<(), String> {
+        self.animation_layer(id, false)?;
+        if selections.is_empty()
+            || selections.len() > 6
+            || selections.iter().map(|s| s.frames.len()).sum::<usize>() > 4096
+        {
             return Err(invalid());
         }
-        let before = keys.clone();
-        if let KeyBatchEdit::LinkedCurve { curve, control } = edit {
-            if frames.len() != 1 || !curve.valid() || !(1..=2).contains(&control) {
+        let mut seen = BTreeSet::new();
+        let mut next = self.animation.as_ref().clone();
+        let duration = next.duration;
+        let mut changed = false;
+        for selection in selections {
+            if !seen.insert(selection.property) {
                 return Err(invalid());
             }
-            let index = keys
-                .iter()
-                .position(|k| k.frame == frames[0])
+            let keys = next
+                .tracks
+                .get_mut(id)
+                .and_then(|t| t.channels.get_mut(&selection.property))
                 .ok_or_else(invalid)?;
-            link_curve(keys, index, curve, control)?;
-        }
-        for key in keys.iter_mut().filter(|k| selected.contains(&k.frame)) {
-            match edit {
-                KeyBatchEdit::Move {
-                    frame_delta,
-                    value_delta,
-                } => {
-                    let frame = i64::from(key.frame) + i64::from(frame_delta);
-                    let value = key.value + value_delta;
-                    if frame < 0
-                        || frame >= i64::from(next.duration)
-                        || !value_delta.is_finite()
-                        || !property.valid(value)
-                    {
-                        return Err(invalid());
-                    }
-                    key.frame = frame as u32;
-                    key.value = value;
+            let edit = match edit {
+                KeyGroupEdit::ShiftTime { delta } => KeyBatchEdit::ShiftTime { delta },
+                KeyGroupEdit::Interpolation { interpolation } => {
+                    KeyBatchEdit::Interpolation { interpolation }
                 }
-                KeyBatchEdit::ShiftTime { delta } => {
-                    let frame = i64::from(key.frame) + i64::from(delta);
-                    if frame < 0 || frame >= i64::from(next.duration) {
-                        return Err(invalid());
-                    }
-                    key.frame = frame as u32;
-                }
-                KeyBatchEdit::ShiftValue { delta } => {
-                    let value = key.value + delta;
-                    if !delta.is_finite() || !property.valid(value) {
-                        return Err(invalid());
-                    }
-                    key.value = value;
-                }
-                KeyBatchEdit::Interpolation { interpolation } => key.interpolation = interpolation,
-                KeyBatchEdit::Curve { curve } => {
-                    if !curve.valid() {
-                        return Err(invalid());
-                    }
-                    key.interpolation = Interpolation::Cubic;
-                    key.curve = Some(curve);
-                }
-                KeyBatchEdit::Delete | KeyBatchEdit::LinkedCurve { .. } => (),
-            }
+                KeyGroupEdit::Delete => KeyBatchEdit::Delete,
+            };
+            changed |= apply_keys(keys, selection.property, duration, &selection.frames, edit)?;
         }
-        if matches!(edit, KeyBatchEdit::Delete) {
-            keys.retain(|k| !selected.contains(&k.frame));
+        if changed {
+            self.commit_animation(next)
+        } else {
+            Ok(())
         }
-        keys.sort_by_key(|k| k.frame);
-        if keys.windows(2).any(|w| w[0].frame == w[1].frame) {
-            return Err(invalid());
-        }
-        if keys.len() == before.len()
-            && keys.iter().zip(&before).all(|(a, b)| {
-                a.frame == b.frame
-                    && a.value == b.value
-                    && a.interpolation == b.interpolation
-                    && a.curve == b.curve
-            })
-        {
-            return Ok(());
-        }
-        self.commit_animation(next)
     }
 }
 
@@ -613,5 +682,138 @@ mod tests {
             r#"{"kind":"linkedCurve","curve":{"x1":0.2,"y1":0.4,"x2":0.8,"y2":0.6},"control":2}"#
         )
         .is_ok());
+    }
+    fn group_fixture() -> (Document, String, Vec<PropertyKeys>) {
+        let (mut d, id) = fixture();
+        for (frame, value) in [(15, 100.), (30, 200.)] {
+            d.set_animation_key(
+                &id,
+                Property::X,
+                Keyframe {
+                    frame,
+                    value,
+                    interpolation: Interpolation::Cubic,
+                    curve: Some(KeyCurve::default()),
+                },
+            )
+            .unwrap();
+        }
+        (
+            d,
+            id,
+            vec![
+                PropertyKeys {
+                    property: Property::Opacity,
+                    frames: vec![5],
+                },
+                PropertyKeys {
+                    property: Property::X,
+                    frames: vec![15],
+                },
+            ],
+        )
+    }
+    #[test]
+    fn property_group_edits_preserve_values_curves_and_one_undo() {
+        let (mut d, id, mut selection) = group_fixture();
+        let before = encoded(&d);
+        let undo = d.undo_order.len();
+        d.edit_animation_key_group(&id, &selection, KeyGroupEdit::ShiftTime { delta: 3 })
+            .unwrap();
+        assert_eq!(d.undo_order.len(), undo + 1);
+        let after = encoded(&d);
+        assert_eq!(
+            d.animation.tracks[&id].channels[&Property::Opacity][0].frame,
+            8
+        );
+        let x = &d.animation.tracks[&id].channels[&Property::X][0];
+        assert_eq!((x.frame, x.value), (18, 100.));
+        assert_eq!(x.curve, Some(KeyCurve::default()));
+        d.undo();
+        assert_eq!(encoded(&d), before);
+        d.redo();
+        assert_eq!(encoded(&d), after);
+        selection[0].frames = vec![8];
+        selection[1].frames = vec![18];
+        let revision = d.revision();
+        d.edit_animation_key_group(&id, &selection, KeyGroupEdit::ShiftTime { delta: 0 })
+            .unwrap();
+        assert_eq!(d.revision(), revision);
+        d.edit_animation_key_group(
+            &id,
+            &selection,
+            KeyGroupEdit::Interpolation {
+                interpolation: Interpolation::Hold,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            d.animation.tracks[&id].channels[&Property::X][0].curve,
+            Some(KeyCurve::default())
+        );
+        let held = encoded(&d);
+        let undo = d.undo_order.len();
+        d.edit_animation_key_group(&id, &selection, KeyGroupEdit::Delete)
+            .unwrap();
+        assert_eq!(d.undo_order.len(), undo + 1);
+        assert_eq!(d.animation.tracks[&id].channels[&Property::X].len(), 1);
+        d.undo();
+        assert_eq!(encoded(&d), held);
+        let saved = serde_json::to_string(&d.animation).unwrap();
+        let restored: Animation = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.tracks[&id].channels[&Property::X][0].frame, 18);
+        assert!(serde_json::from_str::<KeyGroupEdit>(r#"{"kind":"shiftTime","delta":2}"#).is_ok());
+        assert!(
+            serde_json::from_str::<KeyGroupEdit>(r#"{"kind":"shiftValue","delta":2}"#).is_err()
+        );
+    }
+    #[test]
+    fn property_group_rejections_do_not_partially_edit_any_channel() {
+        let (mut d, id, selection) = group_fixture();
+        let before = encoded(&d);
+        let revision = d.revision();
+        let undo = d.undo_order.len();
+        for delta in [15, -6, 18000] {
+            assert!(d
+                .edit_animation_key_group(&id, &selection, KeyGroupEdit::ShiftTime { delta })
+                .is_err());
+            assert_eq!(encoded(&d), before);
+        }
+        for invalid_selection in [
+            vec![],
+            vec![selection[0].clone(), selection[0].clone()],
+            vec![
+                selection[0].clone(),
+                PropertyKeys {
+                    property: Property::X,
+                    frames: vec![99],
+                },
+            ],
+            vec![PropertyKeys {
+                property: Property::X,
+                frames: vec![],
+            }],
+            vec![PropertyKeys {
+                property: Property::X,
+                frames: vec![15, 15],
+            }],
+            vec![PropertyKeys {
+                property: Property::X,
+                frames: vec![15; 4097],
+            }],
+        ] {
+            assert!(d
+                .edit_animation_key_group(&id, &invalid_selection, KeyGroupEdit::Delete)
+                .is_err());
+            assert_eq!(encoded(&d), before);
+        }
+        assert_eq!(d.revision(), revision);
+        assert_eq!(d.undo_order.len(), undo);
+        d.locked_artwork_layers.insert(id.clone());
+        let before = encoded(&d);
+        assert!(d
+            .edit_animation_key_group(&id, &selection, KeyGroupEdit::Delete)
+            .is_err());
+        assert_eq!(encoded(&d), before);
     }
 }

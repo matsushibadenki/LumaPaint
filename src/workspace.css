@@ -1367,3 +1367,10 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .timeline-graph-linked{pointer-events:none;opacity:.6}
 .timeline-graph-linked line{stroke:var(--color-focus);stroke-width:1;stroke-dasharray:2 2}
 .timeline-graph-linked circle{fill:var(--color-panel);stroke:var(--color-focus);stroke-width:1}
+
+.timeline-property-batch{display:flex;align-items:center;flex-wrap:wrap;gap:3px;margin:5px 0;padding:4px 0;border-block:1px solid var(--color-border);min-width:0}
+.timeline-property-batch button{height:23px;width:23px;min-width:23px;padding:0;flex:none}
+.timeline-property-batch output{min-width:15px;text-align:center;font-variant-numeric:tabular-nums}
+.timeline-property-batch input{width:48px!important;min-width:36px!important;flex:1;padding:2px!important;height:23px}
+.timeline-property-batch select{min-width:50px;flex:1;height:23px;font-size:10px}
+.timeline-key[data-selected="true"]{color:var(--color-focus);background:var(--color-selected);outline:1px solid var(--color-focus);border-radius:2px}

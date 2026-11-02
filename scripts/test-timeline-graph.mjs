@@ -169,3 +169,21 @@ for(const end of [-20,20,80]){
 const unlinked=linkKeys.map((k,i)=>i===1?{...k,interpolation:'hold'}:k);
 assert.deepEqual(graphBatch(unlinked,[0],{kind:'linkedCurve',control:2,curve:DEFAULT_KEY_CURVE})[1],unlinked[1]);
 console.log('Linked tangents: unequal interval slopes, both directions, extrema, flat spans, vertical handles, bounds, idempotence and independent hold neighbors passed');
+
+const {allPropertyKeys,selectPropertyKeys,propertyKeyGroups,keyGroupDelta,propertyKeysOwnKey}=await import('../src/timeline-key-group.ts');
+const channels={x:[{frame:5},{frame:15},{frame:30}],y:[{frame:5},{frame:18}],rotation:[{frame:10},{frame:40}]};
+const anchor={property:'x',frame:5},other={property:'rotation',frame:10};
+let picked=selectPropertyKeys(channels,[],anchor,null,false,false);
+picked=selectPropertyKeys(channels,picked,other,anchor,true,false);assert.equal(picked.length,2);
+assert.deepEqual(selectPropertyKeys(channels,picked,other,anchor,true,false),[anchor]);
+assert.deepEqual(selectPropertyKeys(channels,[],other,anchor,false,true),[{property:'x',frame:5},{property:'y',frame:5},{property:'rotation',frame:10}]);
+assert.equal(allPropertyKeys(channels).length,7);assert.equal(propertyKeyGroups(picked).length,2);
+assert.equal(keyGroupDelta(5,channels,picked,48),5);
+assert.equal(keyGroupDelta(10,channels,picked,48,1),11); // x's unselected frame15 blocks10 for the whole group.
+assert.equal(keyGroupDelta(-99,channels,picked,48),-5);assert.equal(keyGroupDelta(100,channels,picked,48),37);
+assert.equal(keyGroupDelta(1,{x:[{frame:0},{frame:1}]},[{property:'x',frame:0}],2,1),0);
+assert.equal(selectPropertyKeys({x:Array.from({length:5000},(_,frame)=>({frame}))},[],{property:'x',frame:4999},{property:'x',frame:0},false,true).length,4096);
+for(const key of ['ArrowLeft','ArrowRight','Delete','Escape'])assert.equal(propertyKeysOwnKey(key,false,false),true);
+for(const key of ['z','s','f'])assert.equal(propertyKeysOwnKey(key,true,false),false);
+assert.equal(propertyKeysOwnKey('a',true,false),true);assert.equal(propertyKeysOwnKey('ArrowLeft',false,true),false);
+console.log('Cross-property keys: toggle/range/all selection, common collision-free time offset, bounds, capacity and shortcut ownership passed');

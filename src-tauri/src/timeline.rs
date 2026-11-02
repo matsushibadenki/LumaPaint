@@ -135,6 +135,14 @@ pub enum Request {
         frames: Vec<u32>,
         edit: lumapaint_core::document::animation::KeyBatchEdit,
     },
+    KeyGroup {
+        #[serde(rename = "documentId")]
+        document_id: u64,
+        revision: u64,
+        layer: String,
+        selections: Vec<lumapaint_core::document::animation::PropertyKeys>,
+        edit: lumapaint_core::document::animation::KeyGroupEdit,
+    },
     MoveKey {
         #[serde(default, rename = "documentId")]
         document_id: Option<u64>,
