@@ -219,9 +219,6 @@ fn push_path(
     set_path(&mut object, &path);
     if request.kind == ConversionKind::Expand && request.fill {
         if let Some(g) = object.fill_gradient.clone() {
-            if g.kind != GradientKind::Linear {
-                return Err("Expand radial gradients with Expand Appearance, or Rasterize / 円形グラデーションにはアピアランスを分割またはラスタライズを使用してください / 径向渐变请使用扩展外观或栅格化".into());
-            }
             let m = g.geometry.unwrap();
             let bounds = path.bounds();
             let points = [
@@ -242,6 +239,9 @@ fn push_path(
                 .collect();
             let lo = local.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min) - 1.;
             let hi = local.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max) + 1.;
+            let opaque_radial =
+                g.kind == GradientKind::Radial && g.stops.iter().all(|stop| stop.color[3] == 255);
+            let output_start = output.len();
             for i in 0..request.colors {
                 let a = if i == 0 {
                     local.iter().map(|p| p[0]).fold(0., f32::min) - 1.
@@ -263,8 +263,50 @@ fn push_path(
                     }
                 }
                 band.close();
-                let p = skia_safe::op(&path, &band.detach(), PathOp::Intersect)
-                    .ok_or("Gradient expansion failed")?;
+                let p = if g.kind == GradientKind::Radial {
+                    // Work in gradient coordinates so rotation, shear and unequal
+                    // radii remain part of the ordinary output geometry.
+                    let disk = |radius: f32| {
+                        let map = |x: f32, y: f32| {
+                            (
+                                m[0] * x * radius + m[2] * y * radius + m[4],
+                                m[1] * x * radius + m[3] * y * radius + m[5],
+                            )
+                        };
+                        let mut b = skia_safe::PathBuilder::new();
+                        let k = 0.552_284_8;
+                        b.move_to(map(1., 0.));
+                        b.cubic_to(map(1., k), map(k, 1.), map(0., 1.));
+                        b.cubic_to(map(-k, 1.), map(-1., k), map(-1., 0.));
+                        b.cubic_to(map(-1., -k), map(-k, -1.), map(0., -1.));
+                        b.cubic_to(map(k, -1.), map(1., -k), map(1., 0.));
+                        b.close();
+                        b.detach()
+                    };
+                    let outer = if i + 1 == request.colors {
+                        path.clone() // Pad the final color beyond radius one.
+                    } else {
+                        skia_safe::op(
+                            &path,
+                            &disk((i + 1) as f32 / request.colors as f32),
+                            PathOp::Intersect,
+                        )
+                        .ok_or("Radial gradient expansion failed")?
+                    };
+                    if i == 0 || opaque_radial {
+                        outer
+                    } else {
+                        skia_safe::op(
+                            &outer,
+                            &disk(i as f32 / request.colors as f32),
+                            PathOp::Difference,
+                        )
+                        .ok_or("Radial gradient expansion failed")?
+                    }
+                } else {
+                    skia_safe::op(&path, &band.detach(), PathOp::Intersect)
+                        .ok_or("Gradient expansion failed")?
+                };
                 if p.is_empty() {
                     continue;
                 }
@@ -280,6 +322,10 @@ fn push_path(
                     return Err("Too many gradient paths".into());
                 }
                 output.push(o);
+            }
+            if opaque_radial {
+                // Paint outer disks first, covering antialiased shared edges.
+                output[output_start..].reverse();
             }
             return Ok(());
         }
@@ -671,6 +717,110 @@ mod tests {
         });
     }
     #[test]
+    fn translucent_gradient_solid_bands_preserve_alpha_and_backdrop() {
+        crate::vector::with_compatibility_renderer(|| {
+            let mut d = text(None);
+            let r = request(ConversionKind::Appearance);
+            d.convert_selected_objects(false, |s, o, dpi| convert(s, o, dpi, &r))
+                .unwrap();
+            let mut original = d.svg_layers().next().unwrap().vector_objects[0].clone();
+            original.path.data = "M10 10H190V190H10Z".into();
+            original.stroke = None;
+            for kind in [GradientKind::Linear, GradientKind::Radial] {
+                for alpha in [[128, 128], [0, 255], [255, 0]] {
+                    original.fill_gradient = Some(Gradient {
+                        geometry: Some([65., 25., -20., 45., 90., 90.]),
+                        pixel_style: None,
+                        kind,
+                        angle: 0.,
+                        aspect: 1.,
+                        dither: false,
+                        method: GradientMethod::Classic,
+                        stops: vec![
+                            GradientStop {
+                                position: 0.,
+                                color: [240, 30, 100, alpha[0]],
+                                midpoint: 0.5,
+                            },
+                            GradientStop {
+                                position: 1.,
+                                color: [20, 190, 240, alpha[1]],
+                                midpoint: 0.5,
+                            },
+                        ],
+                    });
+                    let source = vector_svg(200, 200, &[original.clone()]);
+                    for colors in [2, 32, 256] {
+                        let mut r = request(ConversionKind::Expand);
+                        r.colors = colors;
+                        let expanded = convert(&source, &[original.clone()], 72, &r).unwrap();
+                        assert_eq!(expanded.len(), colors as usize);
+                        assert!(expanded
+                            .iter()
+                            .all(|o| o.image_frame.is_none() && o.fill_gradient.is_none()));
+                        let g = original.fill_gradient.as_ref().unwrap();
+                        let band_at = |x: f32, y: f32| {
+                            ((g.position_at(x, y).clamp(0., 1.) * colors as f32).floor() as u32)
+                                .min(colors - 1)
+                        };
+                        for backdrop in [None, Some([30, 80, 20, 255]), Some([180, 20, 200, 100])] {
+                            let mut objects = vec![];
+                            if let Some(color) = backdrop {
+                                let mut bg = original.clone();
+                                bg.id = "background".into();
+                                bg.fill_gradient = None;
+                                bg.fill = Some(VectorPaint {
+                                    registration: false,
+                                    color,
+                                });
+                                objects.push(bg);
+                            }
+                            objects.extend(expanded.clone());
+                            let actual = crate::vector::rasterize_svg(
+                                &vector_svg(200, 200, &objects),
+                                200,
+                                200,
+                            )
+                            .unwrap();
+                            let mut checked = 0;
+                            for y in 20..180 {
+                                for x in 20..180 {
+                                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                                    let band = band_at(px, py);
+                                    // Compare interiors. Shared-edge antialiasing is a
+                                    // viewer-dependent display artifact, not overlap.
+                                    if [(-1., 0.), (1., 0.), (0., -1.), (0., 1.)]
+                                        .iter()
+                                        .any(|(dx, dy)| band_at(px + dx, py + dy) != band)
+                                    {
+                                        continue;
+                                    }
+                                    let c = g.sample((band as f32 + 0.5) / colors as f32);
+                                    let bg = backdrop.unwrap_or([0; 4]);
+                                    let alpha = c[3] as f32 / 255.;
+                                    let ba = bg[3] as f32 / 255.;
+                                    let mut expected = [0.; 4];
+                                    for channel in 0..3 {
+                                        expected[channel] = c[channel] as f32 * alpha
+                                            + bg[channel] as f32 * ba * (1. - alpha);
+                                    }
+                                    expected[3] = 255. * (alpha + ba * (1. - alpha));
+                                    let pixel =
+                                        &actual.pixels[(y * 200 + x) * 4..(y * 200 + x + 1) * 4];
+                                    for channel in 0..4 {
+                                        assert!((pixel[channel] as f32-expected[channel]).abs()<=3.,"band alpha/composite {kind:?} {colors} ({x},{y}) {pixel:?} != {expected:?}");
+                                    }
+                                    checked += 1;
+                                }
+                            }
+                            assert!(checked > 100);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    #[test]
     fn object_conversion_expands_fill_strokes_and_keeps_disabled_strokes() {
         crate::vector::with_compatibility_renderer(|| {
             let mut d = text(None);
@@ -704,18 +854,43 @@ mod tests {
                     },
                 ],
             });
-            let source = vector_svg(960, 640, &[o.clone()]);
-            let mut r = request(ConversionKind::Expand);
-            let expanded = convert(&source, &[o.clone()], 72, &r).unwrap();
-            assert!(expanded
-                .iter()
-                .all(|o| o.stroke.is_none() && o.fill_gradient.is_none()));
-            assert!(difference(&source, &vector_svg(960, 640, &expanded)) < 0.13);
-            r.stroke = false;
-            r.fill = false;
-            let expanded = convert(&source, &[o], 72, &r).unwrap();
-            assert!(expanded.iter().any(|o| o.stroke.is_some()));
-            assert!(difference(&source, &vector_svg(960, 640, &expanded)) < 0.05);
+            for kind in [GradientKind::Linear, GradientKind::Radial] {
+                o.fill_gradient.as_mut().unwrap().kind = kind;
+                o.fill_gradient.as_mut().unwrap().geometry = Some([60., 12., -15., 35., 70., 80.]);
+                if kind == GradientKind::Radial {
+                    let mut rectangle = o.clone();
+                    rectangle.stroke = None;
+                    rectangle.path.data = "M0 0H200V200H0Z".into();
+                    let source = vector_svg(200, 200, &[rectangle.clone()]);
+                    let expanded =
+                        convert(&source, &[rectangle], 72, &request(ConversionKind::Expand))
+                            .unwrap();
+                    let pixels =
+                        crate::vector::rasterize_svg(&vector_svg(200, 200, &expanded), 200, 200)
+                            .unwrap();
+                    for y in 1..199 {
+                        for x in 1..199 {
+                            assert_eq!(
+                                pixels.pixels[(y * 200 + x) * 4 + 3],
+                                255,
+                                "opaque radial expansion must not expose the background at {x},{y}"
+                            );
+                        }
+                    }
+                }
+                let source = vector_svg(960, 640, &[o.clone()]);
+                let mut r = request(ConversionKind::Expand);
+                let expanded = convert(&source, &[o.clone()], 72, &r).unwrap();
+                assert!(expanded
+                    .iter()
+                    .all(|o| o.stroke.is_none() && o.fill_gradient.is_none()));
+                assert!(difference(&source, &vector_svg(960, 640, &expanded)) < 0.13);
+                r.stroke = false;
+                r.fill = false;
+                let expanded = convert(&source, &[o.clone()], 72, &r).unwrap();
+                assert!(expanded.iter().any(|o| o.stroke.is_some()));
+                assert!(difference(&source, &vector_svg(960, 640, &expanded)) < 0.05);
+            }
         });
     }
 }
