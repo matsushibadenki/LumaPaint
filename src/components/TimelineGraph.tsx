@@ -34,7 +34,7 @@ export function TimelineGraph({locale,keys,duration,frame,base,min,max,disabled,
  async function commit(frames:number[],edit:KeyBatchEdit){
   if(blocked||!frames.length)return;
   if((edit.kind==='shiftTime'||edit.kind==='shiftValue')&&!edit.delta)return;
-  const next=graphBatch(keys,frames,edit),nextFrames=edit.kind==='delete'?[]:frames.map(f=>f+graphEditTimeDelta(edit)),nextActive=edit.kind==='delete'?null:(activeFrame??frames[0])+graphEditTimeDelta(edit);
+  const next=graphBatch(keys,frames,edit,fps),nextFrames=edit.kind==='delete'?[]:frames.map(f=>f+graphEditTimeDelta(edit)),nextActive=edit.kind==='delete'?null:(activeFrame??frames[0])+graphEditTimeDelta(edit);
   if(equalKeys(keys,next))return;
   const current={keys:next,frames:nextFrames,active:nextActive,seek:edit.kind==='shiftTime'||edit.kind==='move'?Math.min(...nextFrames):null};plan.current=current;setPending(true);
   try{await onBatch(frames,edit);}catch{if(alive.current){plan.current=null;setSelected([]);setActive(null);}}
@@ -93,7 +93,7 @@ export function TimelineGraph({locale,keys,duration,frame,base,min,max,disabled,
  }
  const viewing=!!draft||panning||pending,tickDigits=Math.min(5,Math.max(0,2-Math.floor(Math.log10(range.max-range.min))));
  const switcher=<div className="timeline-graph-kind" role="toolbar" aria-label={t.title}><button type="button" title={t.valueGraph} aria-label={t.valueGraph} aria-pressed={graphKind==='value'} disabled={viewing} onClick={()=>{cancel();setGraphKind('value');}}>∿</button><button type="button" title={t.velocityGraph} aria-label={t.velocityGraph} aria-pressed={graphKind==='velocity'} disabled={viewing} onClick={()=>{cancel();setGraphKind('velocity');}}>v</button></div>;
- if(graphKind==='velocity')return <div className="timeline-graph-shell">{switcher}<TimelineVelocityGraph locale={locale} keys={keys} duration={duration} fps={fps} frame={frame} property={property} unit={velocityUnit} onSelect={onSelect}/></div>;
+ if(graphKind==='velocity')return <div className="timeline-graph-shell">{switcher}<TimelineVelocityGraph locale={locale} keys={keys} duration={duration} fps={fps} frame={frame} property={property} unit={velocityUnit} disabled={blocked} revision={revision} onBatch={commit} onSelect={onSelect}/></div>;
  return <div className="timeline-graph-shell">{switcher}<div className="timeline-graph" ref={root} tabIndex={0} role="group" aria-label={`${t.title} · ${property}`} aria-disabled={blocked} data-shortcut-scope="timeline-graph" data-mode={mode} data-snapped={snapped} data-selection-count={selected.length} data-view-start={view.start} data-view-end={view.end} data-view-min={view.min} data-view-max={view.max} onKeyDown={e=>{
   if(e.target instanceof HTMLInputElement||e.target instanceof HTMLSelectElement||e.target instanceof HTMLButtonElement)return;
   if(e.key==='Escape'){cancel();e.stopPropagation();return;}

@@ -297,12 +297,13 @@ mod tests {
     use super::*;
     #[test]
     fn workspace_metadata_rejects_corruption_and_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
         let mut s = Session {
             version: 1,
             layout: serde_json::json!({"rows":1,"columns":1,"focused":0,"rowSizes":[1],"columnSizes":[1],"panes":[{"tabs":[2],"selected":2}]}),
             documents: vec![SavedDocument {
                 id: 2,
-                path: Some(PathBuf::from("/tmp/a.lumapaint")),
+                path: Some(dir.path().join("a.lumapaint")),
                 view: None,
             }],
             active_id: Some(2),
@@ -313,6 +314,10 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+        s.documents[0].path = Some(PathBuf::from("relative.lumapaint"));
+        assert!(s.validate().is_err());
+        s.documents[0].path = Some(dir.path().join("a.lumapaint"));
+        s.validate().unwrap();
         s.layout["rowSizes"] = serde_json::json!([-1]);
         assert!(s.validate().is_err());
         s.layout["rowSizes"] = serde_json::json!([1]);

@@ -27,6 +27,10 @@ pub enum KeyBatchEdit {
         curve: KeyCurve,
         control: u8,
     },
+    Velocity {
+        control: u8,
+        value: f64,
+    },
     Delete,
 }
 fn invalid() -> String {
@@ -114,10 +118,60 @@ fn link_curve(
     Ok(())
 }
 
+// Edit one side of an interval in units/second, preserving its time handles.
+fn velocity_curve(
+    a: &Keyframe,
+    b: &Keyframe,
+    fps: u32,
+    control: u8,
+    value: f64,
+) -> Result<KeyCurve, String> {
+    if !(1..=2).contains(&control)
+        || !value.is_finite()
+        || fps == 0
+        || b.frame <= a.frame
+        || a.interpolation == Interpolation::Hold
+    {
+        return Err(invalid());
+    }
+    let mut c = match a.interpolation {
+        Interpolation::Linear => KeyCurve {
+            x1: 1. / 3.,
+            y1: 1. / 3.,
+            x2: 2. / 3.,
+            y2: 2. / 3.,
+        },
+        Interpolation::Ease => KeyCurve::default(),
+        _ => a.curve.unwrap_or_default(),
+    };
+    let x = if control == 1 {
+        f64::from(c.x1)
+    } else {
+        1. - f64::from(c.x2)
+    };
+    let rate =
+        (f64::from(b.value) - f64::from(a.value)) * f64::from(fps) / f64::from(b.frame - a.frame);
+    if !c.valid() || x <= 0. || rate == 0. {
+        return Err(invalid());
+    }
+    let limit = rate / x;
+    if value < limit.min(0.) || value > limit.max(0.) {
+        return Err(invalid());
+    }
+    let y = (value / rate * x).clamp(0., 1.);
+    if control == 1 {
+        c.y1 = y as f32;
+    } else {
+        c.y2 = (1. - y) as f32;
+    }
+    Ok(c)
+}
+
 fn apply_keys(
     keys: &mut Vec<Keyframe>,
     property: Property,
     duration: u32,
+    fps: u32,
     frames: &[u32],
     edit: KeyBatchEdit,
 ) -> Result<bool, String> {
@@ -138,6 +192,19 @@ fn apply_keys(
             .position(|k| k.frame == frames[0])
             .ok_or_else(invalid)?;
         link_curve(keys, index, curve, control)?;
+    }
+    if let KeyBatchEdit::Velocity { control, value } = edit {
+        if frames.len() != 1 {
+            return Err(invalid());
+        }
+        let i = keys
+            .iter()
+            .position(|k| k.frame == frames[0])
+            .ok_or_else(invalid)?;
+        let b = keys.get(i + 1).ok_or_else(invalid)?;
+        let curve = velocity_curve(&keys[i], b, fps, control, value)?;
+        keys[i].interpolation = Interpolation::Cubic;
+        keys[i].curve = Some(curve);
     }
     for key in keys.iter_mut().filter(|k| selected.contains(&k.frame)) {
         match edit {
@@ -179,7 +246,9 @@ fn apply_keys(
                 key.interpolation = Interpolation::Cubic;
                 key.curve = Some(curve);
             }
-            KeyBatchEdit::Delete | KeyBatchEdit::LinkedCurve { .. } => (),
+            KeyBatchEdit::Delete
+            | KeyBatchEdit::LinkedCurve { .. }
+            | KeyBatchEdit::Velocity { .. } => (),
         }
     }
     if matches!(edit, KeyBatchEdit::Delete) {
@@ -207,11 +276,27 @@ pub struct PropertyKeys {
     pub property: Property,
     pub frames: Vec<u32>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerPropertyKeys {
+    pub layer: String,
+    pub selections: Vec<PropertyKeys>,
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum KeyGroupEdit {
-    ShiftTime { delta: i32 },
-    Interpolation { interpolation: Interpolation },
+    ShiftValues {
+        position: f32,
+        rotation: f32,
+        scale: f32,
+        opacity: f32,
+    },
+    ShiftTime {
+        delta: i32,
+    },
+    Interpolation {
+        interpolation: Interpolation,
+    },
     Delete,
 }
 impl Document {
@@ -225,12 +310,13 @@ impl Document {
         self.animation_layer(id, false)?;
         let mut next = self.animation.as_ref().clone();
         let duration = next.duration;
+        let fps = next.fps;
         let keys = next
             .tracks
             .get_mut(id)
             .and_then(|t| t.channels.get_mut(&property))
             .ok_or_else(invalid)?;
-        if apply_keys(keys, property, duration, frames, edit)? {
+        if apply_keys(keys, property, duration, fps, frames, edit)? {
             self.commit_animation(next)
         } else {
             Ok(())
@@ -242,34 +328,98 @@ impl Document {
         selections: &[PropertyKeys],
         edit: KeyGroupEdit,
     ) -> Result<(), String> {
-        self.animation_layer(id, false)?;
-        if selections.is_empty()
-            || selections.len() > 6
-            || selections.iter().map(|s| s.frames.len()).sum::<usize>() > 4096
+        self.edit_animation_key_tracks(
+            &[LayerPropertyKeys {
+                layer: id.to_string(),
+                selections: selections.to_vec(),
+            }],
+            edit,
+        )
+    }
+    pub fn edit_animation_key_tracks(
+        &mut self,
+        tracks: &[LayerPropertyKeys],
+        edit: KeyGroupEdit,
+    ) -> Result<(), String> {
+        if let KeyGroupEdit::ShiftValues {
+            position,
+            rotation,
+            scale,
+            opacity,
+        } = edit
+        {
+            if ![position, rotation, scale, opacity]
+                .iter()
+                .all(|v| v.is_finite())
+            {
+                return Err(invalid());
+            }
+        }
+        if tracks.is_empty()
+            || tracks.len() > 4096
+            || tracks
+                .iter()
+                .flat_map(|t| &t.selections)
+                .map(|s| s.frames.len())
+                .sum::<usize>()
+                > 4096
         {
             return Err(invalid());
         }
-        let mut seen = BTreeSet::new();
-        let mut next = self.animation.as_ref().clone();
-        let duration = next.duration;
-        let mut changed = false;
-        for selection in selections {
-            if !seen.insert(selection.property) {
+        let mut layers = BTreeSet::new();
+        for track in tracks {
+            self.animation_layer(&track.layer, false)?;
+            if !layers.insert(&track.layer)
+                || track.selections.is_empty()
+                || track.selections.len() > 6
+            {
                 return Err(invalid());
             }
-            let keys = next
-                .tracks
-                .get_mut(id)
-                .and_then(|t| t.channels.get_mut(&selection.property))
-                .ok_or_else(invalid)?;
-            let edit = match edit {
-                KeyGroupEdit::ShiftTime { delta } => KeyBatchEdit::ShiftTime { delta },
-                KeyGroupEdit::Interpolation { interpolation } => {
-                    KeyBatchEdit::Interpolation { interpolation }
+        }
+        let mut next = self.animation.as_ref().clone();
+        let duration = next.duration;
+        let fps = next.fps;
+        let mut changed = false;
+        for track in tracks {
+            let mut seen = BTreeSet::new();
+            for selection in &track.selections {
+                if !seen.insert(selection.property) {
+                    return Err(invalid());
                 }
-                KeyGroupEdit::Delete => KeyBatchEdit::Delete,
-            };
-            changed |= apply_keys(keys, selection.property, duration, &selection.frames, edit)?;
+                let keys = next
+                    .tracks
+                    .get_mut(&track.layer)
+                    .and_then(|t| t.channels.get_mut(&selection.property))
+                    .ok_or_else(invalid)?;
+                let edit = match edit {
+                    KeyGroupEdit::ShiftValues {
+                        position,
+                        rotation,
+                        scale,
+                        opacity,
+                    } => KeyBatchEdit::ShiftValue {
+                        delta: match selection.property {
+                            Property::X | Property::Y => position,
+                            Property::Rotation => rotation,
+                            Property::ScaleX | Property::ScaleY => scale,
+                            Property::Opacity => opacity,
+                        },
+                    },
+                    KeyGroupEdit::ShiftTime { delta } => KeyBatchEdit::ShiftTime { delta },
+                    KeyGroupEdit::Interpolation { interpolation } => {
+                        KeyBatchEdit::Interpolation { interpolation }
+                    }
+                    KeyGroupEdit::Delete => KeyBatchEdit::Delete,
+                };
+                changed |= apply_keys(
+                    keys,
+                    selection.property,
+                    duration,
+                    fps,
+                    &selection.frames,
+                    edit,
+                )?;
+            }
         }
         if changed {
             self.commit_animation(next)
@@ -282,6 +432,186 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn velocity_edits_preserve_endpoints_time_handles_and_history() {
+        for (values, fps, control, speed) in [
+            ([10., 90.], 24, 1, 48.),
+            ([90., 10.], 60, 2, -120.),
+            ([10., 90.], 12, 2, 0.),
+        ] {
+            let mut d = Document::default();
+            let id = d.add_vector_layer().unwrap();
+            Arc::make_mut(&mut d.animation).fps = fps;
+            for (frame, value) in [(5, values[0]), (25, values[1])] {
+                d.set_animation_key(
+                    &id,
+                    Property::Opacity,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Linear,
+                        curve: None,
+                    },
+                )
+                .unwrap();
+            }
+            let before = serde_json::to_string(&d.document_state()).unwrap();
+            let revision = d.revision();
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[5],
+                KeyBatchEdit::Velocity {
+                    control,
+                    value: speed,
+                },
+            )
+            .unwrap();
+            let keys = &d.animation.tracks[&id].channels[&Property::Opacity];
+            let c = keys[0].curve.unwrap();
+            assert_eq!(
+                keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
+                vec![(5, values[0]), (25, values[1])]
+            );
+            assert_eq!((c.x1, c.x2), (1. / 3., 2. / 3.));
+            let rate = f64::from(values[1] - values[0]) * f64::from(fps) / 20.;
+            let actual = if control == 1 {
+                rate * f64::from(c.y1) / f64::from(c.x1)
+            } else {
+                rate * (1. - f64::from(c.y2)) / (1. - f64::from(c.x2))
+            };
+            assert!((actual - speed).abs() < 0.0001);
+            assert_eq!(d.revision(), revision + 1);
+            let saved = serde_json::to_string(&d.document_state()).unwrap();
+            d.undo();
+            assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), before);
+            d.redo();
+            assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+            let restored =
+                Document::from_document_state(serde_json::from_str(&saved).unwrap()).unwrap();
+            assert_eq!(
+                restored.animation.tracks[&id].channels[&Property::Opacity][0].curve,
+                Some(c)
+            );
+            let revision = d.revision();
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[5],
+                KeyBatchEdit::Velocity {
+                    control,
+                    value: speed,
+                },
+            )
+            .unwrap();
+            assert_eq!(d.revision(), revision);
+            for (frames, control, value) in [
+                (vec![5, 25], 1, 0.),
+                (vec![25], 1, 0.),
+                (vec![5], 0, 0.),
+                (vec![5], 3, 0.),
+                (vec![5], 1, f64::NAN),
+                (vec![5], 2, f64::INFINITY),
+                (vec![5], 1, rate * 100.),
+                (vec![5], 2, -rate),
+            ] {
+                assert!(d
+                    .edit_animation_keys(
+                        &id,
+                        Property::Opacity,
+                        &frames,
+                        KeyBatchEdit::Velocity { control, value }
+                    )
+                    .is_err());
+                assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+            }
+        }
+    }
+    #[test]
+    fn velocity_preserves_other_handle_and_rejects_hold_flat_vertical() {
+        let b = Keyframe {
+            frame: 20,
+            value: 100.,
+            interpolation: Interpolation::Linear,
+            curve: None,
+        };
+        let a = Keyframe {
+            frame: 0,
+            value: 0.,
+            interpolation: Interpolation::Cubic,
+            curve: Some(KeyCurve {
+                x1: 0.2,
+                y1: 0.4,
+                x2: 0.7,
+                y2: 0.8,
+            }),
+        };
+        let c = velocity_curve(&a, &b, 24, 1, 60.).unwrap();
+        assert_eq!((c.x1, c.x2, c.y2), (0.2, 0.7, 0.8));
+        assert!((c.y1 - 0.1).abs() < 0.00001);
+        let ease = Keyframe {
+            interpolation: Interpolation::Ease,
+            ..a.clone()
+        };
+        assert_eq!(velocity_curve(&ease, &b, 24, 1, 60.).unwrap().y2, 1.);
+        assert!(velocity_curve(
+            &Keyframe {
+                interpolation: Interpolation::Hold,
+                ..a.clone()
+            },
+            &b,
+            24,
+            1,
+            0.
+        )
+        .is_err());
+        assert!(velocity_curve(
+            &a,
+            &Keyframe {
+                value: 0.,
+                ..b.clone()
+            },
+            24,
+            1,
+            0.
+        )
+        .is_err());
+        assert!(velocity_curve(
+            &Keyframe {
+                curve: Some(KeyCurve {
+                    x1: 0.,
+                    ..KeyCurve::default()
+                }),
+                ..a.clone()
+            },
+            &b,
+            24,
+            1,
+            0.
+        )
+        .is_err());
+        assert!(velocity_curve(
+            &Keyframe {
+                curve: Some(KeyCurve {
+                    x2: 1.,
+                    ..KeyCurve::default()
+                }),
+                ..a
+            },
+            &b,
+            24,
+            2,
+            0.
+        )
+        .is_err());
+        assert!(serde_json::from_str::<KeyBatchEdit>(
+            r#"{"kind":"velocity","control":1,"value":60}"#
+        )
+        .is_ok());
+        assert!(
+            serde_json::from_str::<KeyBatchEdit>(r#"{"kind":"velocity","control":1}"#).is_err()
+        );
+    }
     fn fixture() -> (Document, String) {
         let mut d = Document::default();
         let id = d.add_vector_layer().unwrap();
@@ -815,5 +1145,239 @@ mod tests {
             .edit_animation_key_group(&id, &selection, KeyGroupEdit::Delete)
             .is_err());
         assert_eq!(encoded(&d), before);
+    }
+    #[test]
+    fn cross_layer_keys_commit_once_and_reject_partial_changes() {
+        let (mut d, id, selection) = group_fixture();
+        let other = d.add_vector_layer().unwrap();
+        for frame in [0, 20] {
+            d.set_animation_key(
+                &other,
+                Property::X,
+                Keyframe {
+                    frame,
+                    value: frame as f32,
+                    interpolation: Interpolation::Cubic,
+                    curve: Some(KeyCurve::default()),
+                },
+            )
+            .unwrap();
+        }
+        let tracks = vec![
+            LayerPropertyKeys {
+                layer: id.clone(),
+                selections: selection,
+            },
+            LayerPropertyKeys {
+                layer: other.clone(),
+                selections: vec![PropertyKeys {
+                    property: Property::X,
+                    frames: vec![0],
+                }],
+            },
+        ];
+        let before = encoded(&d);
+        let revision = d.revision();
+        let undo = d.undo_order.len();
+        assert!(d
+            .edit_animation_key_tracks(&tracks, KeyGroupEdit::ShiftTime { delta: 20 })
+            .is_err());
+        assert_eq!(encoded(&d), before);
+        assert_eq!(d.revision(), revision);
+        assert!(d
+            .edit_animation_key_tracks(
+                &[tracks[0].clone(), tracks[0].clone()],
+                KeyGroupEdit::Delete
+            )
+            .is_err());
+        assert_eq!(encoded(&d), before);
+        d.locked_artwork_layers.insert(other.clone());
+        let locked = encoded(&d);
+        assert!(d
+            .edit_animation_key_tracks(&tracks, KeyGroupEdit::Delete)
+            .is_err());
+        assert_eq!(encoded(&d), locked);
+        d.locked_artwork_layers.remove(&other);
+        d.edit_animation_key_tracks(&tracks, KeyGroupEdit::ShiftTime { delta: 3 })
+            .unwrap();
+        assert_eq!(d.undo_order.len(), undo + 1);
+        assert_eq!(
+            d.animation.tracks[&id].channels[&Property::Opacity][0].frame,
+            8
+        );
+        assert_eq!(
+            d.animation.tracks[&other].channels[&Property::X][0].frame,
+            3
+        );
+        assert_eq!(
+            d.animation.tracks[&other].channels[&Property::X][0].curve,
+            Some(KeyCurve::default())
+        );
+        let after = encoded(&d);
+        d.undo();
+        assert_eq!(encoded(&d), before);
+        d.redo();
+        assert_eq!(encoded(&d), after);
+        let moved = tracks
+            .iter()
+            .map(|t| LayerPropertyKeys {
+                layer: t.layer.clone(),
+                selections: t
+                    .selections
+                    .iter()
+                    .map(|s| PropertyKeys {
+                        property: s.property,
+                        frames: s.frames.iter().map(|f| f + 3).collect(),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let rev = d.revision();
+        d.edit_animation_key_tracks(&moved, KeyGroupEdit::ShiftTime { delta: 0 })
+            .unwrap();
+        assert_eq!(d.revision(), rev);
+        d.edit_animation_key_tracks(
+            &moved,
+            KeyGroupEdit::Interpolation {
+                interpolation: Interpolation::Hold,
+            },
+        )
+        .unwrap();
+        let held = encoded(&d);
+        d.edit_animation_key_tracks(&moved, KeyGroupEdit::Delete)
+            .unwrap();
+        d.undo();
+        assert_eq!(encoded(&d), held);
+        let saved = serde_json::to_string(&d.animation).unwrap();
+        let restored: Animation = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.tracks[&other].channels[&Property::X][0].frame, 3);
+    }
+    #[test]
+    fn unit_offsets_edit_all_layers_once_and_preserve_timing_and_curves() {
+        let mut d = Document::default();
+        let mut tracks = Vec::new();
+        for _ in 0..2 {
+            let layer = d.add_vector_layer().unwrap();
+            let mut selections = Vec::new();
+            for (property, value) in [
+                (Property::X, 1.),
+                (Property::Y, 20.),
+                (Property::Rotation, 90.),
+                (Property::ScaleX, 100.),
+                (Property::ScaleY, 50.),
+                (Property::Opacity, 40.),
+            ] {
+                d.set_animation_key(
+                    &layer,
+                    property,
+                    Keyframe {
+                        frame: 5,
+                        value,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(KeyCurve::default()),
+                    },
+                )
+                .unwrap();
+                selections.push(PropertyKeys {
+                    property,
+                    frames: vec![5],
+                });
+            }
+            tracks.push(LayerPropertyKeys { layer, selections });
+        }
+        let before = encoded(&d);
+        let undo = d.undo_order.len();
+        d.edit_animation_key_tracks(
+            &tracks,
+            KeyGroupEdit::ShiftValues {
+                position: 5.,
+                rotation: -15.,
+                scale: 10.,
+                opacity: -5.,
+            },
+        )
+        .unwrap();
+        assert_eq!(d.undo_order.len(), undo + 1);
+        for track in &tracks {
+            for (p, v) in [
+                (Property::X, 6.),
+                (Property::Y, 25.),
+                (Property::Rotation, 75.),
+                (Property::ScaleX, 110.),
+                (Property::ScaleY, 60.),
+                (Property::Opacity, 35.),
+            ] {
+                let k = &d.animation.tracks[&track.layer].channels[&p][0];
+                assert_eq!((k.frame, k.value), (5, v));
+                assert_eq!(k.interpolation, Interpolation::Cubic);
+                assert_eq!(k.curve, Some(KeyCurve::default()));
+            }
+        }
+        let after = encoded(&d);
+        d.undo();
+        assert_eq!(encoded(&d), before);
+        d.redo();
+        assert_eq!(encoded(&d), after);
+        let rev = d.revision();
+        d.edit_animation_key_tracks(
+            &tracks,
+            KeyGroupEdit::ShiftValues {
+                position: 0.,
+                rotation: 0.,
+                scale: 0.,
+                opacity: 0.,
+            },
+        )
+        .unwrap();
+        assert_eq!(d.revision(), rev);
+        let saved = serde_json::to_string(&d.animation).unwrap();
+        let restored: Animation = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            restored.tracks[&tracks[1].layer].channels[&Property::Opacity][0].value,
+            35.
+        );
+        for edit in [
+            KeyGroupEdit::ShiftValues {
+                position: 1.,
+                rotation: 0.,
+                scale: 0.,
+                opacity: 66.,
+            },
+            KeyGroupEdit::ShiftValues {
+                position: 1.,
+                rotation: 0.,
+                scale: -60.,
+                opacity: 0.,
+            },
+            KeyGroupEdit::ShiftValues {
+                position: 1.,
+                rotation: 36000.,
+                scale: 0.,
+                opacity: 0.,
+            },
+            KeyGroupEdit::ShiftValues {
+                position: f32::INFINITY,
+                rotation: 0.,
+                scale: 0.,
+                opacity: 0.,
+            },
+            KeyGroupEdit::ShiftValues {
+                position: 0.,
+                rotation: f32::NAN,
+                scale: 0.,
+                opacity: 0.,
+            },
+        ] {
+            assert!(d.edit_animation_key_tracks(&tracks, edit).is_err());
+            assert_eq!(encoded(&d), after);
+            assert_eq!(d.revision(), rev);
+        }
+        assert!(serde_json::from_str::<KeyGroupEdit>(
+            r#"{"kind":"shiftValues","position":1,"rotation":2,"scale":3,"opacity":4}"#
+        )
+        .is_ok());
+        assert!(
+            serde_json::from_str::<KeyGroupEdit>(r#"{"kind":"shiftValues","position":1}"#).is_err()
+        );
     }
 }

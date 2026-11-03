@@ -27,12 +27,97 @@ pub fn import(name: String, source: String) -> Result<Document, String> {
     Ok(document)
 }
 
+// fontdb's default generic names can be absent on Linux (e.g. Arial).
+// Keep a working OS/fontconfig mapping; only repair unresolved generic aliases.
+fn resolve_generic_families(db: &mut usvg::fontdb::Database) {
+    use usvg::fontdb::{Family, Query};
+    for (family, preferred) in [
+        (
+            Family::SansSerif,
+            &[
+                "Arial",
+                "Helvetica",
+                "DejaVu Sans",
+                "Liberation Sans",
+                "Noto Sans",
+            ][..],
+        ),
+        (
+            Family::Serif,
+            &[
+                "Times New Roman",
+                "Times",
+                "DejaVu Serif",
+                "Liberation Serif",
+                "Noto Serif",
+            ][..],
+        ),
+        (
+            Family::Monospace,
+            &[
+                "Courier New",
+                "Courier",
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+            ][..],
+        ),
+        (
+            Family::Cursive,
+            &["Comic Sans MS", "Apple Chancery", "URW Chancery L"][..],
+        ),
+        (Family::Fantasy, &["Impact", "Papyrus"][..]),
+    ] {
+        if db
+            .query(&Query {
+                families: &[family],
+                ..Default::default()
+            })
+            .is_some()
+        {
+            continue;
+        }
+        let name = preferred
+            .iter()
+            .find_map(|wanted| {
+                db.faces()
+                    .flat_map(|f| &f.families)
+                    .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                    .map(|(name, _)| name.clone())
+            })
+            .or_else(|| {
+                db.faces()
+                    .filter(|f| family != Family::Monospace || f.monospaced)
+                    .flat_map(|f| &f.families)
+                    .map(|(name, _)| name.clone())
+                    .min()
+            })
+            .or_else(|| {
+                db.faces()
+                    .flat_map(|f| &f.families)
+                    .map(|(name, _)| name.clone())
+                    .min()
+            });
+        if let Some(name) = name {
+            match family {
+                Family::SansSerif => db.set_sans_serif_family(name),
+                Family::Serif => db.set_serif_family(name),
+                Family::Monospace => db.set_monospace_family(name),
+                Family::Cursive => db.set_cursive_family(name),
+                Family::Fantasy => db.set_fantasy_family(name),
+                Family::Name(_) => unreachable!(),
+            }
+        }
+    }
+}
+
 pub(crate) fn font_database() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
+            resolve_generic_families(&mut db);
             Arc::new(db)
         })
         .clone()
@@ -277,6 +362,100 @@ impl DocumentExporter for SvgExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unresolved_generic_fonts_keep_svg_text_and_pdf_unicode() {
+        use usvg::fontdb::{Database, Family, Query};
+        let mut db = Database::new();
+        db.load_font_data(include_bytes!("../tests/fixtures/lp-pdf-test.ttf").to_vec());
+        for family in [
+            Family::SansSerif,
+            Family::Serif,
+            Family::Monospace,
+            Family::Cursive,
+            Family::Fantasy,
+        ] {
+            assert!(db
+                .query(&Query {
+                    families: &[family],
+                    ..Default::default()
+                })
+                .is_none());
+        }
+        let source = r#"<svg width="180" height="100"><text x="10" y="40" font-family="sans-serif" font-size="24">ABC</text></svg>"#;
+        let before = usvg::Tree::from_str(
+            source,
+            &usvg::Options {
+                fontdb: Arc::new(db.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!before.has_text_nodes());
+        resolve_generic_families(&mut db);
+        for family in [
+            Family::SansSerif,
+            Family::Serif,
+            Family::Monospace,
+            Family::Cursive,
+            Family::Fantasy,
+        ] {
+            assert!(db
+                .query(&Query {
+                    families: &[family],
+                    ..Default::default()
+                })
+                .is_some());
+        }
+        let tree = usvg::Tree::from_str(
+            source,
+            &usvg::Options {
+                fontdb: Arc::new(db),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(tree.has_text_nodes());
+        assert!(tree
+            .to_string(&usvg::WriteOptions {
+                preserve_text: true,
+                ..Default::default()
+            })
+            .contains("ABC"));
+        let bytes = svg2pdf::to_pdf(
+            &tree,
+            svg2pdf::ConversionOptions {
+                embed_text: true,
+                ..Default::default()
+            },
+            svg2pdf::PageOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            lopdf::Document::load_mem(&bytes)
+                .unwrap()
+                .extract_text(&[1])
+                .unwrap()
+                .trim(),
+            "ABC"
+        );
+    }
+    #[test]
+    fn generic_font_repair_preserves_existing_choices_and_handles_no_fonts() {
+        use usvg::fontdb::{Database, Family};
+        let mut db = Database::new();
+        resolve_generic_families(&mut db);
+        assert!(db.is_empty());
+        db.load_font_data(include_bytes!("../tests/fixtures/lp-pdf-test.ttf").to_vec());
+        let family = db.faces().next().unwrap().families[0].0.clone();
+        db.set_sans_serif_family(family.clone());
+        db.set_serif_family(family.clone());
+        db.set_monospace_family(family.clone());
+        resolve_generic_families(&mut db);
+        for generic in [Family::SansSerif, Family::Serif, Family::Monospace] {
+            assert_eq!(db.family_name(&generic), family);
+        }
+    }
+
     use crate::export::export;
     #[test]
     fn natural_media_paper_requires_report_and_composite() {

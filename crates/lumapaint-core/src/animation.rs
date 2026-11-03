@@ -10,7 +10,7 @@ mod exposure_batch;
 pub use exposure_batch::{ExposureBatchEdit, ExposureTrackEdit};
 #[path = "animation/key_batch.rs"]
 mod key_batch;
-pub use key_batch::{KeyBatchEdit, KeyGroupEdit, PropertyKeys};
+pub use key_batch::{KeyBatchEdit, KeyGroupEdit, LayerPropertyKeys, PropertyKeys};
 #[path = "animation/key_curve.rs"]
 mod key_curve;
 pub use key_curve::KeyCurve;

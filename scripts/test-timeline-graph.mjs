@@ -187,3 +187,76 @@ for(const key of ['ArrowLeft','ArrowRight','Delete','Escape'])assert.equal(prope
 for(const key of ['z','s','f'])assert.equal(propertyKeysOwnKey(key,true,false),false);
 assert.equal(propertyKeysOwnKey('a',true,false),true);assert.equal(propertyKeysOwnKey('ArrowLeft',false,true),false);
 console.log('Cross-property keys: toggle/range/all selection, common collision-free time offset, bounds, capacity and shortcut ownership passed');
+
+const {propertyKeyDragPlan,propertyKeyDragDelta,propertyKeySnapTargets,visiblePropertyKeys}=await import('../src/timeline-key-group.ts');
+const groupChannels={x:[{frame:5,value:0},{frame:25,value:1}],y:[{frame:10,value:0},{frame:30,value:1}]},groupPicked=[{property:'x',frame:5},{property:'y',frame:10}];
+let groupPlan=propertyKeyDragPlan(groupChannels,groupPicked,48,[20]);
+assert.deepEqual(propertyKeyDragDelta(9.7,groupPlan,16,true,true),{delta:10,snapped:true}); // the non-driver edge at10 reaches20
+assert.deepEqual(propertyKeyDragDelta(9.7,groupPlan,16,false,true),{delta:10,snapped:false});
+assert.deepEqual(propertyKeyDragDelta(.3,groupPlan,16,true,false),{delta:0,snapped:false});
+assert.deepEqual(propertyKeyDragDelta(-99,groupPlan,16,true,true),{delta:-5,snapped:false});
+assert.deepEqual(propertyKeyDragDelta(99,groupPlan,16,true,true),{delta:37,snapped:false});
+groupPlan=propertyKeyDragPlan({x:[{frame:5},{frame:15}],y:[{frame:10}]},groupPicked,48,[20,21]);
+assert.deepEqual(propertyKeyDragDelta(9.7,groupPlan,4,true,true),{delta:11,snapped:true}); // nearest snap collides; next valid candidate wins
+assert.deepEqual(propertyKeyDragDelta(10,groupPlan,16,false,true),{delta:9,snapped:false});
+const snapTracks=[{id:'a',channels:groupChannels,exposures:[],motions:[]},{id:'b',channels:{rotation:[{frame:16,value:0}]},exposures:[{start:12,end:24}],motions:[{id:'clip',start:40,duration:3,repeats:2}]}];
+const filters={playhead:false,keys:true,exposures:false,motions:false,bounds:false};
+assert.deepEqual(propertyKeySnapTargets(snapTracks,'a',groupPicked,7,48,filters),[16,25,30]);
+for(let mask=0;mask<32;mask++){
+ const names=['playhead','keys','exposures','motions','bounds'],f=Object.fromEntries(names.map((n,i)=>[n,!!(mask&(1<<i))])),targets=new Set(propertyKeySnapTargets(snapTracks,'a',groupPicked,7,48,f));
+ for(const [name,values] of Object.entries({playhead:[7],keys:[16,25,30],exposures:[12,24],motions:[40,46],bounds:[0,47,48]}))for(const v of values)assert.equal(targets.has(v),f[name]);
+ assert.ok(!targets.has(5)&&!targets.has(10));
+}
+assert.deepEqual(visiblePropertyKeys([{frame:1},{frame:8},{frame:90}],{from:0,to:10},new Set([90]),-85,90).map(k=>k.frame),[1,8,90]);
+assert.deepEqual(visiblePropertyKeys([{frame:1},{frame:8},{frame:90}],{from:0,to:10},new Set([1]),20,1).map(k=>k.frame),[1,8]);
+const many=Array.from({length:4096},(_,frame)=>({frame})),manyPicked=many.map(k=>({property:'x',frame:k.frame})),manyPlan=propertyKeyDragPlan({x:many},manyPicked,18000,[12000]);
+assert.deepEqual(propertyKeyDragDelta(7905.1,manyPlan,4,true,true),{delta:7905,snapped:true});
+assert.ok(manyPlan.free.size<=18000);
+console.log('Property group drag: non-driver snap, collision-safe candidates, bounds, threshold, bypass, all target filters, moving-key exclusion, virtual preview/capture and 4096-key plan passed');
+const radiusPlan=propertyKeyDragPlan({x:[{frame:0}]},[{property:'x',frame:0}],48,[10]);
+assert.deepEqual(propertyKeyDragDelta(8,radiusPlan,4,true,true),{delta:10,snapped:true});
+assert.deepEqual(propertyKeyDragDelta(7.99,radiusPlan,4,true,true),{delta:8,snapped:false});
+const tiePlan=propertyKeyDragPlan({x:[{frame:0}]},[{property:'x',frame:0}],48,[8,10]);
+assert.deepEqual(propertyKeyDragDelta(9,tiePlan,4,true,true),{delta:8,snapped:true});
+
+const {allLayerKeys,selectLayerKeys,layerKeyGroups,layerKeyDragPlan,layerKeyDelta,layerKeySnapTargets}=await import('../src/timeline-key-tracks.ts');
+const crossTracks=[{id:'one',pixel:false,locked:false,channels:{x:[{frame:5},{frame:15}]}},{id:'locked',pixel:false,locked:true,channels:{x:[{frame:5}]}},{id:'two',pixel:false,locked:false,channels:{x:[{frame:5},{frame:20}]}}];
+const crossPicked=[{layer:'one',property:'x',frame:5},{layer:'two',property:'x',frame:5}];
+assert.equal(allLayerKeys(crossTracks).length,4);assert.equal(layerKeyGroups(crossPicked).length,2);
+assert.deepEqual(selectLayerKeys(crossTracks,[crossPicked[0]],crossPicked[1],crossPicked[0],true,false),crossPicked);
+assert.deepEqual(selectLayerKeys(crossTracks,[],crossPicked[1],crossPicked[0],false,true),crossPicked);
+const crossPlan=layerKeyDragPlan(crossTracks,crossPicked,48,[16]);assert.equal(layerKeyDelta(15,crossPlan,1),16); // second layer's frame20 blocks15 for all layers
+assert.deepEqual(propertyKeyDragDelta(10.8,crossPlan,16,true,true),{delta:11,snapped:true});
+const crossTargets=layerKeySnapTargets(crossTracks.map(l=>({...l,exposures:[],motions:[]})),crossPicked,7,48,{playhead:false,keys:true,exposures:false,motions:false,bounds:false});assert.deepEqual(crossTargets,[5,15,20]); // unselected locked-layer key remains a valid target
+assert.equal(allLayerKeys([{id:'many',pixel:false,locked:false,channels:{x:Array.from({length:5000},(_,frame)=>({frame}))}}]).length,4096);
+console.log('Cross-layer keys: distinct identities, toggle/range/all, locked exclusion, atomic group plans, common collision offset, snapping and bounded selection passed');
+
+const {selectedValueBounds,valueOffsetsValid,keyValueUnit}=await import('../src/timeline-key-values.ts');
+const valueTracks=[{id:'a',pixel:false,locked:false,channels:{x:[{frame:0,value:10}],y:[{frame:0,value:65530}],rotation:[{frame:0,value:90}],scaleX:[{frame:0,value:100}],opacity:[{frame:0,value:40}]}},{id:'b',pixel:false,locked:false,channels:{opacity:[{frame:5,value:90}],scaleY:[{frame:5,value:.5}]}}];
+const valueSelection=allLayerKeys(valueTracks),unitBounds=selectedValueBounds(valueTracks,valueSelection),zeroOffsets={position:0,rotation:0,scale:0,opacity:0};
+assert.deepEqual([unitBounds.position.min,unitBounds.position.max,unitBounds.position.count],[-65546,6,2]);assert.deepEqual([unitBounds.opacity.min,unitBounds.opacity.max,unitBounds.opacity.count],[-40,10,2]);assert.equal(unitBounds.scale.count,2);assert.equal(unitBounds.scale.min,-.4);
+assert.equal(keyValueUnit('x'),'position');assert.equal(keyValueUnit('scaleY'),'scale');assert.equal(keyValueUnit('opacity'),'opacity');
+assert.ok(valueOffsetsValid(unitBounds,{position:5,rotation:-15,scale:10,opacity:-5}));
+for(const offsets of [{...zeroOffsets,position:7},{...zeroOffsets,scale:-.5},{...zeroOffsets,opacity:11},{...zeroOffsets,rotation:NaN}])assert.equal(valueOffsetsValid(unitBounds,offsets),false);
+assert.equal(selectedValueBounds(valueTracks,[{layer:'a',property:'x',frame:0}]).opacity.count,0);
+console.log('Unit value batches: px/degree/scale/opacity separation, cross-layer intersection limits, bounds and nonfinite rejection passed');
+
+const smallScaleBounds=selectedValueBounds([{id:'f32',pixel:false,locked:false,channels:{scaleX:[{frame:0,value:50}]}}],[{layer:'f32',property:'scaleX',frame:0}]);
+assert.equal(valueOffsetsValid(smallScaleBounds,{...zeroOffsets,scale:-49.9}),false); // f32 addition would fall below0.1
+
+const {valueOffsetsChanged}=await import('../src/timeline-key-values.ts');
+assert.equal(valueOffsetsChanged(unitBounds,{...zeroOffsets,rotation:1e-8}),false);
+assert.equal(valueOffsetsChanged(unitBounds,{...zeroOffsets,rotation:1}),true);
+
+const {velocityControl,velocityCurve}=await import('../src/timeline-velocity.ts');
+for(const fps of [12,24,60])for(const sign of [-1,1])for(const interpolation of ['linear','ease','cubic'])for(const control of [1,2]){
+ const keys=[{frame:5,value:sign>0?10:90,interpolation,curve:{x1:Math.fround(.2),y1:Math.fround(.4),x2:Math.fround(.7),y2:Math.fround(.8)}},{frame:25,value:sign>0?90:10,interpolation:'linear'}];
+ const info=velocityControl(...keys,fps,control);assert.ok(info);const value=sign*24,c=velocityCurve(...keys,fps,control,value);assert.ok(c);
+ const next=graphBatch(keys,[5],{kind:'velocity',control,value},fps),updated=velocityControl(...next,fps,control);
+ assert.ok(Math.abs(updated.value-value)<.0001);assert.deepEqual(next.map(k=>[k.frame,k.value]),keys.map(k=>[k.frame,k.value]));
+ assert.deepEqual([c.x1,c.x2],[info.curve.x1,info.curve.x2]);assert.equal(control===1?c.y2:c.y1,control===1?info.curve.y2:info.curve.y1);
+ assert.equal(velocityCurve(...keys,fps,control,-sign),null);assert.equal(velocityCurve(...keys,fps,control,sign*1e6),null);assert.equal(velocityCurve(...keys,fps,control,NaN),null);
+}
+const va={frame:0,value:0,interpolation:'cubic',curve:{x1:0,y1:.4,x2:1,y2:.6}},vb={frame:20,value:100,interpolation:'linear'};
+for(const control of [1,2]){assert.equal(velocityControl(va,vb,24,control),null);assert.equal(velocityControl({...va,interpolation:'hold'},vb,24,control),null);assert.equal(velocityControl({...va,interpolation:'linear'},{...vb,value:0},24,control),null);}
+console.log('Velocity editing: signed units, fps, both endpoints, linear/ease conversion, fixed time/opposite handles, bounded output and hold/flat/vertical guards passed');

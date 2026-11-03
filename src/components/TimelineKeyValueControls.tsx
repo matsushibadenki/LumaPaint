@@ -1,0 +1,16 @@
+import {useState} from 'react';
+import type {Locale} from '../i18n';
+import type {KeyGroupEdit,KeyValueOffsets} from '../timeline-key-group';
+import {KEY_VALUE_UNITS,valueOffsetsValid,valueOffsetsChanged,type KeyValueBounds,type KeyValueUnit} from '../timeline-key-values';
+const labels={
+ ja:{title:'選択キーの値を単位別に一括編集',hint:'選択キーへ単位別の差分を加算します。位置X／Yはpx、回転は°、倍率X／Yと不透明度は別々のパーセントポイントです（倍率100%＋10→110%）。範囲外のキーが1つでもあれば適用できません。未選択の単位は変更せず、時刻・補間・接線は保持。1回のUndoで戻します。Enterで適用、Escapeで入力を0に戻します。',position:'位置の差分 (px)',rotation:'回転の差分 (°)',scale:'倍率の差分 (ポイント)',opacity:'不透明度の差分 (ポイント)',apply:'選択キーの値差分を適用',range:'選択キーの出力範囲を超えています',invalid:'有限の数値を入力してください'},
+ en:{title:'Edit selected key values by unit',hint:'Add offsets by unit: X / Y in px, rotation in degrees, scale X / Y and opacity in separate percentage points (100% scale + 10 → 110%). Every selected key must stay within its output limits. Unselected units, timing, interpolation and tangents are preserved. One Undo restores the batch. Enter applies; Escape resets an input to zero.',position:'Position offset (px)',rotation:'Rotation offset (°)',scale:'Scale offset (percentage points)',opacity:'Opacity offset (percentage points)',apply:'Apply selected key value offsets',range:'A selected key would exceed its output limits',invalid:'Enter finite numbers'},
+ 'zh-CN':{title:'按单位批量编辑所选关键帧数值',hint:'按单位增加偏移：X／Y为px，旋转为°，缩放X／Y和不透明度分别使用百分点（缩放100%＋10→110%）。任一关键帧超出范围时无法应用。未选择的单位、时间、插值和切线保持不变。一次撤销可恢复整批编辑。Enter应用，Escape将输入重置为0。',position:'位置偏移 (px)',rotation:'旋转偏移 (°)',scale:'缩放偏移 (百分点)',opacity:'不透明度偏移 (百分点)',apply:'应用所选关键帧数值偏移',range:'所选关键帧将超出输出范围',invalid:'请输入有限数值'}
+};
+export function TimelineKeyValueControls({locale,bounds,disabled,onEdit}:{locale:Locale;bounds:KeyValueBounds;disabled:boolean;onEdit:(edit:KeyGroupEdit)=>void}){
+ const t=labels[locale],[inputs,setInputs]=useState<Record<KeyValueUnit,string>>({position:'0',rotation:'0',scale:'0',opacity:'0'});
+ const offsets=Object.fromEntries(KEY_VALUE_UNITS.map(unit=>[unit,bounds[unit].count?Number(inputs[unit]):0])) as KeyValueOffsets;
+ const numeric=KEY_VALUE_UNITS.every(unit=>!bounds[unit].count||inputs[unit].trim()!==''&&Number.isFinite(offsets[unit])),valid=numeric&&valueOffsetsValid(bounds,offsets),changed=valueOffsetsChanged(bounds,offsets),reason=!numeric?t.invalid:!valid?t.range:t.apply;
+ function apply(){if(!disabled&&valid&&changed)onEdit({kind:'shiftValues',...offsets});}
+ return <div className="timeline-key-values" role="group" aria-label={t.title}><span className="timeline-info" title={t.hint} aria-label={t.hint}>ⓘ</span>{KEY_VALUE_UNITS.map(unit=><label key={unit} title={`${t[unit]} · ${bounds[unit].count}`}><span>{({position:'px',rotation:'°',scale:'S %',opacity:'α %'})[unit]}</span><input type="number" step="0.1" min={bounds[unit].count?bounds[unit].min:undefined} max={bounds[unit].count?bounds[unit].max:undefined} aria-label={t[unit]} value={bounds[unit].count?inputs[unit]:'0'} disabled={disabled||!bounds[unit].count} onChange={e=>setInputs(old=>({...old,[unit]:e.target.value}))} onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setInputs(old=>({...old,[unit]:'0'}));}else if(e.key==='Enter'){e.preventDefault();apply();}}}/></label>)}<button type="button" title={reason} aria-label={t.apply} disabled={disabled||!valid||!changed} onClick={apply}>±</button></div>;
+}
