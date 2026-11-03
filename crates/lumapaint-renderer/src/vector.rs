@@ -5,6 +5,7 @@ pub mod kerning;
 mod parsed_text;
 #[cfg(feature = "skia")]
 pub mod pathfinder;
+use lumapaint_fonts::resolve_generic_families;
 #[cfg(test)]
 use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};
@@ -21,6 +22,9 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
             let started = std::time::Instant::now();
             let mut fonts = usvg::fontdb::Database::new();
             lumapaint_fonts::load_system_fonts(&mut fonts);
+            // Resolve against the same desktop fonts as SVG/PDF I/O before
+            // renderer-only bundled families can influence the fallback.
+            resolve_generic_families(&mut fonts);
             if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
                 eprintln!(
                     "lumapaint-onion-stage stage=system_font_scan elapsed_us={}",
@@ -55,7 +59,7 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
                     fonts.push_face_info(face);
                 }
             }
-            configure_generic_font_families(&mut fonts);
+            resolve_generic_families(&mut fonts);
             if std::env::var_os("LUMAPAINT_ONION_METRICS").is_some() {
                 eprintln!(
                     "lumapaint-onion-stage stage=bundled_fonts elapsed_us={}",
@@ -65,42 +69,6 @@ pub(crate) fn system_fonts() -> Arc<usvg::fontdb::Database> {
             Arc::new(fonts)
         })
         .clone()
-}
-
-fn configure_generic_font_families(fonts: &mut usvg::fontdb::Database) {
-    use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
-    let has_family = |fonts: &usvg::fontdb::Database, family| {
-        fonts
-            .query(&Query {
-                families: &[family],
-                weight: Weight::NORMAL,
-                stretch: Stretch::Normal,
-                style: Style::Normal,
-            })
-            .is_some()
-    };
-    let installed_family = |fonts: &usvg::fontdb::Database, needle: &str| {
-        fonts
-            .faces()
-            .flat_map(|face| face.families.iter())
-            .find(|(name, _)| name.to_ascii_lowercase().contains(needle))
-            .map(|(name, _)| name.clone())
-    };
-    if !has_family(fonts, Family::SansSerif) {
-        if let Some(name) = installed_family(fonts, "sans") {
-            fonts.set_sans_serif_family(name);
-        }
-    }
-    if !has_family(fonts, Family::Serif) {
-        if let Some(name) = installed_family(fonts, "serif") {
-            fonts.set_serif_family(name);
-        }
-    }
-    if !has_family(fonts, Family::Monospace) {
-        if let Some(name) = installed_family(fonts, "mono") {
-            fonts.set_monospace_family(name);
-        }
-    }
 }
 
 /// May run on a worker at startup so the first text edit avoids a system font scan.
@@ -2041,7 +2009,7 @@ mod tests {
             })
         };
         assert!(generic_sans(&fonts).is_none());
-        configure_generic_font_families(&mut fonts);
+        resolve_generic_families(&mut fonts);
         assert!(generic_sans(&fonts).is_some());
     }
 

@@ -87,6 +87,91 @@ pub fn load_system_fonts(db: &mut fontdb::Database) {
     }
 }
 
+/// Repair missing generic aliases identically for rendering and document I/O.
+/// Keep working OS/fontconfig mappings and use an explicit preference order
+/// instead of filesystem discovery order (which differs across hosts).
+pub fn resolve_generic_families(db: &mut fontdb::Database) {
+    use fontdb::{Family, Query};
+    for (family, preferred) in [
+        (
+            Family::SansSerif,
+            &[
+                "Arial",
+                "Helvetica",
+                "DejaVu Sans",
+                "Liberation Sans",
+                "Noto Sans",
+            ][..],
+        ),
+        (
+            Family::Serif,
+            &[
+                "Times New Roman",
+                "Times",
+                "DejaVu Serif",
+                "Liberation Serif",
+                "Noto Serif",
+            ][..],
+        ),
+        (
+            Family::Monospace,
+            &[
+                "Courier New",
+                "Courier",
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+            ][..],
+        ),
+        (
+            Family::Cursive,
+            &["Comic Sans MS", "Apple Chancery", "URW Chancery L"][..],
+        ),
+        (Family::Fantasy, &["Impact", "Papyrus"][..]),
+    ] {
+        if db
+            .query(&Query {
+                families: &[family],
+                ..Default::default()
+            })
+            .is_some()
+        {
+            continue;
+        }
+        let name = preferred
+            .iter()
+            .find_map(|wanted| {
+                db.faces()
+                    .flat_map(|f| &f.families)
+                    .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                    .map(|(name, _)| name.clone())
+            })
+            .or_else(|| {
+                db.faces()
+                    .filter(|f| family != Family::Monospace || f.monospaced)
+                    .flat_map(|f| &f.families)
+                    .map(|(name, _)| name.clone())
+                    .min()
+            })
+            .or_else(|| {
+                db.faces()
+                    .flat_map(|f| &f.families)
+                    .map(|(name, _)| name.clone())
+                    .min()
+            });
+        if let Some(name) = name {
+            match family {
+                Family::SansSerif => db.set_sans_serif_family(name),
+                Family::Serif => db.set_serif_family(name),
+                Family::Monospace => db.set_monospace_family(name),
+                Family::Cursive => db.set_cursive_family(name),
+                Family::Fantasy => db.set_fantasy_family(name),
+                Family::Name(_) => unreachable!(),
+            }
+        }
+    }
+}
+
 /// Register only in this process so AppKit's native editor uses the same fonts.
 #[cfg(target_os = "macos")]
 pub fn register_native_fonts() {
@@ -139,6 +224,64 @@ pub fn register_native_fonts() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_repair_is_independent_of_font_discovery_order() {
+        use fontdb::{Database, Family, Query};
+        let mut fixture = Database::new();
+        fixture.load_font_data(
+            include_bytes!("../../lumapaint-formats/tests/fixtures/lp-pdf-test.ttf").to_vec(),
+        );
+        let face = fixture.faces().next().unwrap().clone();
+        let families = [
+            "Noto Sans CJK JP",
+            "Liberation Sans",
+            "DejaVu Sans",
+            "Noto Serif CJK JP",
+            "DejaVu Serif",
+            "Liberation Mono",
+            "DejaVu Sans Mono",
+        ];
+        for reverse in [false, true] {
+            let mut db = Database::new();
+            let mut ordered = families.to_vec();
+            if reverse {
+                ordered.reverse();
+            }
+            for name in ordered {
+                let mut aliased = face.clone();
+                aliased.families = vec![(name.into(), face.families[0].1)];
+                aliased.post_script_name = name.replace(' ', "");
+                aliased.monospaced = name.contains("Mono");
+                db.push_face_info(aliased);
+            }
+            // Simulate Linux without Arial/Times New Roman/Courier New.
+            // Picking the first family containing "sans" previously chose CJK
+            // or Mono in the renderer, unlike the PDF exporter's DejaVu Sans.
+            db.set_sans_serif_family("Missing Sans");
+            db.set_serif_family("Missing Serif");
+            db.set_monospace_family("Missing Mono");
+            resolve_generic_families(&mut db);
+            for (generic, expected) in [
+                (Family::SansSerif, "DejaVu Sans"),
+                (Family::Serif, "DejaVu Serif"),
+                (Family::Monospace, "DejaVu Sans Mono"),
+            ] {
+                assert_eq!(db.family_name(&generic), expected);
+                assert!(db
+                    .query(&Query {
+                        families: &[generic],
+                        ..Default::default()
+                    })
+                    .is_some());
+            }
+            // A valid user/fontconfig selection must not be overridden.
+            db.set_sans_serif_family("Liberation Sans");
+            resolve_generic_families(&mut db);
+            assert_eq!(db.family_name(&Family::SansSerif), "Liberation Sans");
+        }
+    }
+
     #[test]
     fn hidden_fonts_are_detected_by_signature() {
         let root = tempfile::tempdir().unwrap();

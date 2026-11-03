@@ -5,6 +5,7 @@ use crate::export::{
 use crate::{CompatibilityTier, ConversionIssue, ConversionReport};
 use base64::Engine;
 use lumapaint_core::document::{vector_svg, CanvasColor, Document};
+use lumapaint_fonts::resolve_generic_families;
 use std::sync::{Arc, OnceLock};
 
 fn mode_svg(source: String, mode: lumapaint_core::document::ColorMode) -> String {
@@ -27,96 +28,12 @@ pub fn import(name: String, source: String) -> Result<Document, String> {
     Ok(document)
 }
 
-// fontdb's default generic names can be absent on Linux (e.g. Arial).
-// Keep a working OS/fontconfig mapping; only repair unresolved generic aliases.
-fn resolve_generic_families(db: &mut usvg::fontdb::Database) {
-    use usvg::fontdb::{Family, Query};
-    for (family, preferred) in [
-        (
-            Family::SansSerif,
-            &[
-                "Arial",
-                "Helvetica",
-                "DejaVu Sans",
-                "Liberation Sans",
-                "Noto Sans",
-            ][..],
-        ),
-        (
-            Family::Serif,
-            &[
-                "Times New Roman",
-                "Times",
-                "DejaVu Serif",
-                "Liberation Serif",
-                "Noto Serif",
-            ][..],
-        ),
-        (
-            Family::Monospace,
-            &[
-                "Courier New",
-                "Courier",
-                "DejaVu Sans Mono",
-                "Liberation Mono",
-                "Noto Sans Mono",
-            ][..],
-        ),
-        (
-            Family::Cursive,
-            &["Comic Sans MS", "Apple Chancery", "URW Chancery L"][..],
-        ),
-        (Family::Fantasy, &["Impact", "Papyrus"][..]),
-    ] {
-        if db
-            .query(&Query {
-                families: &[family],
-                ..Default::default()
-            })
-            .is_some()
-        {
-            continue;
-        }
-        let name = preferred
-            .iter()
-            .find_map(|wanted| {
-                db.faces()
-                    .flat_map(|f| &f.families)
-                    .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
-                    .map(|(name, _)| name.clone())
-            })
-            .or_else(|| {
-                db.faces()
-                    .filter(|f| family != Family::Monospace || f.monospaced)
-                    .flat_map(|f| &f.families)
-                    .map(|(name, _)| name.clone())
-                    .min()
-            })
-            .or_else(|| {
-                db.faces()
-                    .flat_map(|f| &f.families)
-                    .map(|(name, _)| name.clone())
-                    .min()
-            });
-        if let Some(name) = name {
-            match family {
-                Family::SansSerif => db.set_sans_serif_family(name),
-                Family::Serif => db.set_serif_family(name),
-                Family::Monospace => db.set_monospace_family(name),
-                Family::Cursive => db.set_cursive_family(name),
-                Family::Fantasy => db.set_fantasy_family(name),
-                Family::Name(_) => unreachable!(),
-            }
-        }
-    }
-}
-
 pub(crate) fn font_database() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
-            db.load_system_fonts();
+            lumapaint_fonts::load_system_fonts(&mut db);
             resolve_generic_families(&mut db);
             Arc::new(db)
         })
