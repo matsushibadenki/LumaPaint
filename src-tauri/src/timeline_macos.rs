@@ -1358,6 +1358,285 @@ mod tests {
     }
 
     #[test]
+    fn linked_velocity_transport_is_atomic_and_keeps_preview() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyBatchEdit, KeyCurve, Property,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value) in [(5, 20.), (15, 60.), (45, 20.)] {
+                d.set_animation_key(
+                    &id,
+                    Property::Opacity,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(KeyCurve {
+                            x1: 0.25,
+                            y1: 0.,
+                            x2: 0.75,
+                            y2: 1.,
+                        }),
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        command(Request::Seek { frame: 10 }).unwrap();
+        let (id, revision) = identity();
+        let request = |document_id, revision| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::Opacity,
+            frames: vec![5],
+            edit: KeyBatchEdit::LinkedVelocity {
+                control: 2,
+                value: 120.,
+                overshoot: true,
+            },
+        };
+        assert!(command(request(id + 1, revision)).is_err());
+        assert!(command(request(id, revision + 1)).is_err());
+        assert_eq!(identity().1, revision);
+        let response = command(request(id, revision)).unwrap();
+        assert!(response.preview);
+        assert_eq!(response.frame, 10);
+        assert!(command(request(id, revision)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let curves = |d: &Document| {
+                d.animation().tracks[&layer].channels[&Property::Opacity]
+                    .iter()
+                    .map(|k| k.curve.unwrap())
+                    .collect::<Vec<_>>()
+            };
+            let after = curves(&d);
+            assert_eq!(after[0].y2, 0.6875);
+            assert_eq!(after[1].y1, -0.9375);
+            d.undo();
+            let before = curves(&d);
+            assert_eq!(before[0].y2, 1.);
+            assert_eq!(before[1].y1, 0.);
+            d.redo();
+            assert_eq!(curves(&d), after);
+        });
+    }
+
+    #[test]
+    fn overshoot_link_transport_is_atomic_and_keeps_preview() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyBatchEdit, KeyCurve, Property,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value) in [(5, 20.), (15, 100.), (45, 20.)] {
+                d.set_animation_key(
+                    &id,
+                    Property::X,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(KeyCurve {
+                            x1: 0.25,
+                            y1: 0.,
+                            x2: 0.75,
+                            y2: 1.,
+                        }),
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        command(Request::Seek { frame: 10 }).unwrap();
+        let (id, revision) = identity();
+        let request = |document_id, revision| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::X,
+            frames: vec![5],
+            edit: KeyBatchEdit::OvershootLinkedCurve {
+                control: 2,
+                curve: KeyCurve {
+                    x1: 0.25,
+                    y1: 0.,
+                    x2: 0.75,
+                    y2: 0.5,
+                },
+            },
+        };
+        assert!(command(request(id + 1, revision)).is_err());
+        assert!(command(request(id, revision + 1)).is_err());
+        assert_eq!(identity().1, revision);
+        let response = command(request(id, revision)).unwrap();
+        assert!(response.preview);
+        assert_eq!(response.frame, 10);
+        assert!(command(request(id, revision)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let curves = |d: &Document| {
+                d.animation().tracks[&layer].channels[&Property::X]
+                    .iter()
+                    .map(|k| k.curve.unwrap())
+                    .collect::<Vec<_>>()
+            };
+            let after = curves(&d);
+            assert_eq!(after[0].y2, 0.5);
+            assert_eq!(after[1].y1, -1.5);
+            d.undo();
+            let before = curves(&d);
+            assert_eq!(before[0].y2, 1.);
+            assert_eq!(before[1].y1, 0.);
+            d.redo();
+            assert_eq!(curves(&d), after);
+        });
+    }
+
+    #[test]
+    fn overshoot_velocity_transport_guards_and_preserves_preview() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyBatchEdit, KeyCurve, Property,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value) in [(5, 20.), (25, 40.)] {
+                d.set_animation_key(
+                    &id,
+                    Property::Opacity,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(KeyCurve {
+                            x1: 0.25,
+                            y1: 1.5,
+                            x2: 0.75,
+                            y2: 1.5,
+                        }),
+                    },
+                )
+                .unwrap();
+            }
+            id
+        });
+        command(Request::Seek { frame: 15 }).unwrap();
+        let (id, revision) = identity();
+        let request = |document_id, revision, value| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property: Property::Opacity,
+            frames: vec![5],
+            edit: KeyBatchEdit::OvershootVelocity { control: 1, value },
+        };
+        assert!(command(request(id + 1, revision, -24.)).is_err());
+        assert!(command(request(id, revision + 1, -24.)).is_err());
+        assert!(command(request(id, revision, -100.)).is_err());
+        assert_eq!(identity().1, revision);
+        let response = command(request(id, revision, -24.)).unwrap();
+        assert!(response.preview);
+        assert_eq!(response.frame, 15);
+        assert!(command(request(id, revision, -24.)).is_err());
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let c = d.animation().tracks[&layer].channels[&Property::Opacity][0]
+                .curve
+                .unwrap();
+            assert_eq!(c.y1, -0.25);
+            assert_eq!(c.y2, 1.5);
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::Opacity][0]
+                    .curve
+                    .unwrap()
+                    .y1,
+                1.5
+            );
+            d.redo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::Opacity][0].curve,
+                Some(c)
+            );
+        });
+    }
+
+    #[test]
+    fn overshoot_transport_preserves_time_and_rejects_unsafe_output() {
+        use lumapaint_core::document::animation::{
+            Interpolation, KeyBatchEdit, KeyCurve, Property,
+        };
+        let _restore = setup();
+        let layer = DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            let id = d.add_vector_layer().unwrap();
+            for property in [Property::X, Property::Opacity] {
+                for (frame, value) in [(5, 20.), (25, 80.)] {
+                    d.set_animation_key(
+                        &id,
+                        property,
+                        Keyframe {
+                            frame,
+                            value,
+                            interpolation: Interpolation::Linear,
+                            curve: None,
+                        },
+                    )
+                    .unwrap();
+                }
+            }
+            id
+        });
+        command(Request::Seek { frame: 15 }).unwrap();
+        let (id, revision) = identity();
+        let curve = KeyCurve {
+            y1: 2.,
+            y2: 2.,
+            ..KeyCurve::default()
+        };
+        let request = |document_id, revision, property| Request::KeyBatch {
+            document_id,
+            revision,
+            layer: layer.clone(),
+            property,
+            frames: vec![5],
+            edit: KeyBatchEdit::Curve { curve },
+        };
+        assert!(command(request(id + 1, revision, Property::X)).is_err());
+        assert!(command(request(id, revision + 1, Property::X)).is_err());
+        assert!(command(request(id, revision, Property::Opacity)).is_err());
+        assert_eq!(identity().1, revision);
+        let response = command(request(id, revision, Property::X)).unwrap();
+        assert!(response.preview);
+        assert_eq!(response.frame, 15);
+        DOCUMENT.with(|d| {
+            let mut d = d.borrow_mut();
+            assert!(d.animation().tracks[&layer].value(Property::X, 15) > 80.);
+            d.undo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].interpolation,
+                Interpolation::Linear
+            );
+            d.redo();
+            assert_eq!(
+                d.animation().tracks[&layer].channels[&Property::X][0].curve,
+                Some(curve)
+            );
+        });
+        assert!(command(request(id, revision, Property::X)).is_err());
+    }
+
+    #[test]
     fn velocity_transport_guards_revision_and_keeps_preview_time() {
         use lumapaint_core::document::animation::{Interpolation, KeyBatchEdit, Property};
         let _restore = setup();

@@ -142,7 +142,10 @@ export function CanvasPreview({ locale, theme, brush, tool, zoom, zoomCommand, c
       // Treat missing scale-event permissions as an explicit integration failure.
       fail(cause);
     });
-    requestRender();
+    // WebView animation frames may be suspended while a restored window is
+    // opening or backgrounded. Bootstrap once without waiting for a frame;
+    // subsequent layout/settings updates still coalesce through requestRender.
+    void render();
     return () => {
       active = false;
       schedule.current = () => {};

@@ -18,6 +18,7 @@ pub(crate) enum Kind {
     NewDocument,
     ColorSettings,
     Transform,
+    ObjectConversion,
     DirectControls,
     ImportImage,
     PdfImport,
@@ -40,6 +41,7 @@ impl Kind {
             Self::ColorSettings => (620., 380.),
             Self::DirectControls => (440., 600.),
             Self::Transform => (400., 360.),
+            Self::ObjectConversion => (400., 420.),
             Self::ImportImage => (480., 360.),
             Self::PdfImport => (740., 680.),
             Self::ToolSettings => (440., 580.),
@@ -64,6 +66,7 @@ impl Kind {
             Self::NewDocument => ["New Document", "新規ドキュメント", "新建文档"],
             Self::ColorSettings => ["Color Settings", "カラー設定", "颜色设置"],
             Self::Transform => ["Transform", "変形", "变换"],
+            Self::ObjectConversion => ["Convert Objects", "オブジェクトの変換", "转换对象"],
             Self::DirectControls => [
                 "Controls & Live Corners",
                 "節点・ライブコーナー",

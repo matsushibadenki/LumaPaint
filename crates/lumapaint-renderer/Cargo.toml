@@ -9,6 +9,7 @@ heap-profile = ["lumapaint-core/heap-profile"]
 skia = ["dep:skia-safe", "dep:metal"]
 
 [dependencies]
+base64 = "=0.23.1"
 serde.workspace = true
 lumapaint-fonts = { path = "../lumapaint-fonts" }
 pollster = "=1.0.1"

@@ -151,6 +151,7 @@ pub fn run() {
             }
         })
         .manage(effect_presets::Store::default())
+        .manage(text_appearance_presets::Store::default())
         .manage(shortcuts::Store::default())
         .manage(lut_editor::Store::default())
         .invoke_handler(tauri::generate_handler![
@@ -248,6 +249,7 @@ pub fn run() {
             canvas::clipping_path,
             canvas::compound_path,
             canvas::outline_text,
+            canvas::convert_objects,
             canvas::saved_path_action,
             canvas::panel_thumbnails,
             canvas::layer_histogram,
@@ -263,6 +265,8 @@ pub fn run() {
             canvas::set_gradient_tool,
             gradient_presets::gradient_library,
             effect_presets::effect_preset_library,
+            text_appearance_presets::text_appearance_preset_library,
+            text_appearance_presets::transfer_text_appearance_presets,
             swatches::swatch_library,
             color_history::color_history,
             brush_pressure::brush_pressure_preset,
@@ -395,6 +399,7 @@ mod modal_windows;
 #[cfg(any(target_os = "macos", test))]
 mod render_queue;
 mod swatches;
+mod text_appearance_presets;
 mod tool_menu;
 
 #[cfg(any(target_os = "macos", test))]

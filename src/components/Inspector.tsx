@@ -1,3 +1,5 @@
+import {TextAppearancePanel,headlineLabels} from './TextAppearancePanel';
+import {setTextObject} from '../bridge';
 import { LayerCompsPanel } from './LayerCompsPanel';
 import { PressurePanel } from './PressurePanel';
 import { PanelBlock, panelBlockLabels } from './PanelBlock';
@@ -46,7 +48,7 @@ const panelGroups = [
   { id: 'layers', panels: ['layers', 'effects'] },
   { id: 'color', panels: ['color', 'swatches', 'gradient'] },
   { id: 'drawing', panels: ['brush', 'stroke', 'screentone'] },
-  { id: 'text', panels: ['text'] },
+  { id: 'text', panels: ['text', 'headline'] },
   { id: 'size', panels: ['transform', 'align', 'pathfinder'] },
   { id: 'layout', panels: ['pages', 'links'] },
   { id: 'animation', panels: ['motion'] },
@@ -91,7 +93,7 @@ function initialPanelOrder(): PanelId[] {
   return [...panelIds];
 }
 
-const panelIcons = { align:'align', motion: 'timeline', screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
+const panelIcons = { headline:'textEffects', align:'align', motion: 'timeline', screentone: 'screentone', effects: 'effects', pages:'document', links:'links', swatches: 'swatches', gradient: 'gradient', brush: 'brush', color: 'palette', document: 'document', layers: 'layers', text: 'text', stroke: 'stroke', transform: 'transformEach', pathfinder: 'pathfinder' } as const;
 
 export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerMask, onLayerEffects, rasterEnabled, onRasterBlendMode, onLayerGroupEdit, layerPanelRequest=0, linksPanelRequest, gradientTool, gradientPanelRequest, onTransformUpdate, thumbnailDocumentKey, onSavedPathAction, vectorColors, channel, onChannel, onStrokeStyle, onStrokeWidth, textPanelRequest, textSettings, textEditing, textEnabled, onTextChange, onTextBegin, onTextFinish, locale, brush, backgroundColor, activeColor, onSelectColor, colorPanelRequest, onBrush, onForegroundChange, onBackgroundChange, foregroundNone = false, backgroundNone = false, onForegroundNone, onBackgroundNone, onSwapColors, document, onDocumentSettings, onColorMode, onBitDepth, onColorProfile, onToggleLayer, onLayerSettings, onDeleteLayer, onAddLayer, onAddVectorLayer, onReorderLayer, onSelectLayer, onSelectObject, onToggleObject, onReorderObjects, enabled }: {
   documentAvailable: boolean;
@@ -167,7 +169,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
       setLayerPanelMode(mode);
     } catch (cause) { setPathTabError(String(cause)); }
   };
-  const labels: Record<PanelId, string> = { align:alignmentLabels[locale].title, motion: ({ja:'モーション',en:'Motion','zh-CN':'动效'})[locale], screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
+  const labels: Record<PanelId, string> = { headline:headlineLabels[locale].title, align:alignmentLabels[locale].title, motion: ({ja:'モーション',en:'Motion','zh-CN':'动效'})[locale], screentone: screentoneLabels[locale].title, effects: effectLabels[locale].title, pages:pagesLabels[locale].title, links:linkLabels[locale].title, swatches: swatchLabels[locale].title, gradient: gradientLabels[locale].title, brush: t.brush, color: colorPanelLabels[locale].color, document: t.document, layers: t.layers, text: textPanelMessages[locale].title, stroke: strokeLabels[locale].title, transform: transformLabels[locale].title, pathfinder: pathfinderLabels[locale].title };
 
   useEffect(() => savePreference('inspectorOrder-grouped-v2', JSON.stringify(order)), [order]);
   useEffect(() => {
@@ -252,6 +254,7 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
     {panelView('pathfinder',<section className="inspector-panel" role="tabpanel" id="inspector-panel-pathfinder" aria-labelledby="inspector-tab-pathfinder"><PathfinderPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
     {panelView('transform',<section className="inspector-panel" role="tabpanel" id="inspector-panel-transform" aria-labelledby="inspector-tab-transform"><TransformPanel locale={locale} document={document} enabled={enabled && !textEditing} onUpdate={onTransformUpdate} /></section>)}
     {panelView('stroke',<section className="inspector-panel" role="tabpanel" id="inspector-panel-stroke" aria-labelledby="inspector-tab-stroke"><StrokePanel locale={locale} document={document} enabled={enabled} onChange={onStrokeWidth} onStyle={onStrokeStyle} /></section>)}
+    {panelView('headline',<section className="inspector-panel" role="tabpanel" id="inspector-panel-headline" aria-labelledby="inspector-tab-headline"><TextAppearancePanel locale={locale} settings={textSettings} enabled={textEnabled} onChange={async next=>{if(textEditing){await onTextChange(next);onTextFinish(true);}else{onTransformUpdate(await setTextObject(next));}}}/></section>)}
     {panelView('text',<section className="inspector-panel" role="tabpanel" id="inspector-panel-text" aria-labelledby="inspector-tab-text">
       <TextPanel usedFonts={[...new Set(document.textObjects.flatMap(object=>[object.text.fontFamily,...(object.text.runs??[]).map(run=>run.style.fontFamily)]))]} locale={locale} settings={textSettings} resolution={document.resolution} enabled={textEnabled} editing={textEditing} onChange={onTextChange} onBegin={onTextBegin} onFinish={onTextFinish} />
     </section>)}

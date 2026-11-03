@@ -60,7 +60,9 @@ fn objects(layers: &[SvgLayer]) -> impl Iterator<Item = &VectorObject> {
         .flat_map(|l| &l.vector_objects)
 }
 fn appearance_equal(a: &VectorObject, b: &VectorObject) -> bool {
-    a.fill == b.fill
+    a.text.as_ref().and_then(|t| t.appearance.as_ref())
+        == b.text.as_ref().and_then(|t| t.appearance.as_ref())
+        && a.fill == b.fill
         && a.stroke == b.stroke
         && a.fill_gradient == b.fill_gradient
         && a.stroke_gradient == b.stroke_gradient
@@ -92,6 +94,7 @@ fn copy_appearance(to: &mut VectorObject, from: &VectorObject) {
     // Explicit per-character colors take precedence in text. Applying a style
     // changes those paint attributes without replacing font or text content.
     if let Some(text) = &mut to.text {
+        text.appearance = from.text.as_ref().and_then(|t| t.appearance.clone());
         text.no_color = from.fill.is_none() && from.fill_gradient.is_none();
         for run in &mut text.runs {
             run.style.no_color = text.no_color;

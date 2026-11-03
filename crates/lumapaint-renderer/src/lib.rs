@@ -7534,3 +7534,6 @@ mod detailed_motion_tests {
 }
 
 pub mod selection_menu;
+
+#[cfg(feature = "skia")]
+pub mod object_conversion;

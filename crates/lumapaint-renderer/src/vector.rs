@@ -1135,6 +1135,111 @@ pub fn clipboard_png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn headline_appearances_render_and_release_without_flattening_text() {
+        use lumapaint_core::{
+            document::{Document, TextSettings},
+            text_appearance::{presets, TextAppearance},
+            vector::VectorText,
+        };
+        use std::hash::{Hash, Hasher};
+        let mut doc = Document::default();
+        let mut text = VectorText {
+            content: "Title".into(),
+            font_size: 64.,
+            bold: true,
+            point_text: true,
+            ..Default::default()
+        };
+        super::reflow_text_with_system_fonts(&mut text, [25, 50, 75]).unwrap();
+        let mut settings = TextSettings {
+            id: None,
+            text,
+            position: [50., 50.],
+            color: [25, 50, 75],
+        };
+        doc.set_text_object(settings.clone()).unwrap();
+        settings.id = Some(doc.snapshot().text_objects[0].id.clone());
+        let render = |doc: &Document| {
+            super::rasterize_svg(
+                &doc.svg_layers()
+                    .find(|l| !l.vector_objects.is_empty())
+                    .unwrap()
+                    .source,
+                960,
+                640,
+            )
+            .unwrap()
+            .pixels
+        };
+        let base = render(&doc);
+        let coverage = |pixels: &[u8]| {
+            pixels
+                .iter()
+                .skip(3)
+                .step_by(4)
+                .filter(|alpha| **alpha > 0)
+                .count()
+        };
+        let mut hashes = std::collections::BTreeSet::new();
+        for preset in presets() {
+            let preset = &preset.id;
+            settings.text.appearance = Some(TextAppearance {
+                preset: preset.clone(),
+                enabled: true,
+                amount: 1.,
+                custom: None,
+            });
+            doc.set_text_object(settings.clone()).unwrap();
+            let pixels = render(&doc);
+            assert!(coverage(&pixels) > coverage(&base));
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            pixels.hash(&mut hash);
+            assert!(
+                hashes.insert(hash.finish()),
+                "duplicate appearance {preset}"
+            );
+            assert_eq!(doc.snapshot().text_objects[0].text.content, "Title");
+        }
+        // Each independently edited paint must change real raster output.
+        let mut appearance = TextAppearance {
+            preset: "gold".into(),
+            enabled: true,
+            amount: 1.,
+            custom: None,
+        };
+        settings.text.appearance = Some(appearance.clone());
+        doc.set_text_object(settings.clone()).unwrap();
+        let gold = render(&doc);
+        let default_paint = appearance.paint().clone();
+        for field in 0..19 {
+            let mut paint = default_paint.clone();
+            match field {
+                0..=4 => paint.fill.colors[field] = "#24bb78".into(),
+                5 => paint.fill.gradient = false,
+                6 => paint.fill.angle = 90.,
+                7..=9 => paint.outlines[field - 7].color = "#24bb78".into(),
+                10..=12 => paint.outlines[field - 10].width = 0.,
+                13 => paint.shadow.color = "#24bb78".into(),
+                14 => paint.shadow.width = 0.,
+                15 => paint.shadow.blur = 0.,
+                16 => paint.shadow.offset_x = -20.,
+                17 => paint.shadow.offset_y = 30.,
+                _ => paint.shadow.opacity = 0.,
+            }
+            appearance.custom = Some(paint);
+            settings.text.appearance = Some(appearance.clone());
+            doc.set_text_object(settings.clone()).unwrap();
+            assert!(render(&doc) != gold, "paint field {field} has no effect");
+        }
+        appearance.enabled = false;
+        settings.text.appearance = Some(appearance);
+        doc.set_text_object(settings.clone()).unwrap();
+        assert_eq!(render(&doc), base);
+        settings.text.appearance = None;
+        doc.set_text_object(settings).unwrap();
+        assert_eq!(render(&doc), base);
+    }
+    #[test]
     fn vector_assets_linked_text_uses_system_fonts_and_preserves_paints_through_reflow() {
         use lumapaint_core::document::{Document, TextSettings, VectorSelectionRequest};
         use lumapaint_core::vector::VectorText;

@@ -260,3 +260,65 @@ for(const fps of [12,24,60])for(const sign of [-1,1])for(const interpolation of 
 const va={frame:0,value:0,interpolation:'cubic',curve:{x1:0,y1:.4,x2:1,y2:.6}},vb={frame:20,value:100,interpolation:'linear'};
 for(const control of [1,2]){assert.equal(velocityControl(va,vb,24,control),null);assert.equal(velocityControl({...va,interpolation:'hold'},vb,24,control),null);assert.equal(velocityControl({...va,interpolation:'linear'},{...vb,value:0},24,control),null);}
 console.log('Velocity editing: signed units, fps, both endpoints, linear/ease conversion, fixed time/opposite handles, bounded output and hold/flat/vertical guards passed');
+
+const {curveOvershoots,curveValueBounds}=await import('../src/key-curve.ts');
+for(const y of [-1,2]){
+ const curve={x1:Math.fround(1/3),y1:y,x2:Math.fround(2/3),y2:y};assert.ok(curveOvershoots(curve));
+ const keys=[{frame:0,value:20,interpolation:'cubic',curve},{frame:20,value:40,interpolation:'linear'}];
+ assert.ok(y>0?sampleTimelineKey(keys,10,0)>40:sampleTimelineKey(keys,10,0)<20);
+ const range=graphRange(keys,0);assert.ok(range.min<=20+20*y&&range.max>=20+20*y);
+ assert.equal(velocityControl(...keys,24,1),null);
+ const time=8/20,h=1e-4,derivative=(sampleKeyCurve(curve,time+h)-sampleKeyCurve(curve,time-h))/(2*h)*24;
+ assert.ok(Math.abs(velocityAt(keys,24,8)-derivative)<.1);
+}
+for(const [a,b,min,max] of [[20,40,0,100],[40,20,0,100],[1,5,.1,10000],[5,1,.1,10000],[65000,65536,-65536,65536]]){
+ const bounds=curveValueBounds(a,b,min,max,true);
+ for(const y of [bounds.min,bounds.max]){const f=Math.fround,point=f(f(a)+f(f(b-a)*f(y)));assert.ok(point>=f(min)&&point<=f(max));}
+ assert.ok(bounds.min>=-2&&bounds.max<=3&&bounds.min<=0&&bounds.max>=1);
+ assert.deepEqual(curveValueBounds(a,b,min,max,false),{min:0,max:1});
+}
+assert.deepEqual(curveValueBounds(20,20,0,100,true),{min:0,max:1});
+const ob=curveValueBounds(20,40,0,100,true);assert.equal(curveControl(DEFAULT_KEY_CURVE,1,.3,-3,ob).y1,ob.min);
+console.log('Overshoot: unclipped sampling, signed derivative, handle-inclusive fit, physical control-point bounds for both directions/f32, flat spans and unsupported velocity/link guards passed');
+
+for(const fps of [12,24,60])for(const reverse of [false,true])for(const control of [1,2])for(const limits of [{min:-65536,max:65536},{min:0,max:100},{min:.1,max:10000},{min:-36000,max:36000}]){
+ const keys=[{frame:5,value:reverse?40:20,interpolation:'cubic',curve:{x1:.25,y1:1.5,x2:.75,y2:1.5}},{frame:25,value:reverse?20:40,interpolation:'linear'}],speed=reverse?fps:-fps;
+ assert.equal(velocityControl(...keys,fps,control),null);
+ const info=velocityControl(...keys,fps,control,limits,true);assert.ok(info.min<0&&info.max>0);
+ const next=graphBatch(keys,[5],{kind:'overshootVelocity',control,value:speed},fps,limits),c=next[0].curve;
+ assert.equal(control===1?c.y1:c.y2,control===1?-.25:1.25);assert.deepEqual([c.x1,c.x2],[.25,.75]);assert.equal(control===1?c.y2:c.y1,1.5);
+ assert.deepEqual(next.map(k=>[k.frame,k.value]),keys.map(k=>[k.frame,k.value]));
+ assert.ok(Math.abs(velocityControl(...next,fps,control,limits,true).value-speed)<1e-5);
+ for(const value of [info.min,info.max]){const curve=velocityCurve(...keys,fps,control,value,limits,true);assert.ok(curve);const y=control===1?curve.y1:curve.y2,f=Math.fround,v=f(keys[0].value+f(f(keys[1].value-keys[0].value)*y));assert.ok(v>=f(limits.min)&&v<=f(limits.max));}
+ assert.equal(velocityCurve(...keys,fps,control,1e10,limits,true),null);
+}
+console.log('Overshoot velocity: signed/fps/unit bounds, both endpoints, physical f32 limits, fixed time/opposite handles, endpoint retention and bounded-mode compatibility passed');
+
+for(const values of [[20,60,20],[60,20,60],[20,60,60],[20,100,20]])for(const [index,control] of [[0,2],[1,1]])for(const y of [-.5,.5,1.5]){
+ const base={x1:.25,y1:0,x2:.75,y2:1},keys=[5,15,45].map((frame,i)=>({frame,value:values[i],interpolation:'cubic',curve:base})),curve={...base,[control===1?'y1':'y2']:y},edit={kind:'overshootLinkedCurve',control,curve};
+ const next=graphBatch(keys,[keys[index].frame],edit,24,{min:-65536,max:65536});
+ const slope=(i,c)=>{const k=next[i],n=next[i+1],curve=k.curve;return (n.value-k.value)/(n.frame-k.frame)*(c===1?curve.y1/curve.x1:Math.fround(1-curve.y2)/Math.fround(1-curve.x2));};
+ const a=slope(0,2),b=slope(1,1);assert.ok(Math.abs(a-b)<1e-4*Math.max(1,Math.abs(a)),`${a} != ${b}`);
+ assert.deepEqual(next.map(k=>[k.frame,k.value]),keys.map(k=>[k.frame,k.value]));
+ assert.deepEqual(graphBatch(next,[keys[index].frame],edit,24,{min:-65536,max:65536}),next);
+}
+console.log('Overshoot links: signed peaks/valleys, unequal spans, both sides, flat intervals, endpoint retention and idempotence passed');
+
+{
+ const base={x1:.25,y1:0,x2:.75,y2:1},values=[69.88863372802734,.45222821831703186,68.77879333496094],keys=[0,100,1000].map((frame,i)=>({frame,value:values[i],interpolation:'cubic',curve:base})),next=graphBatch(keys,[100],{kind:'overshootLinkedCurve',control:1,curve:{...base,y1:.8238574266433716}},24,{min:0,max:100}),f=Math.fround;
+ assert.ok(f(values[0]+f(f(values[1]-values[0])*next[0].curve.y2))>=0);
+}
+
+for(const fps of [12,24,60])for(const overshoot of [false,true])for(const interpolation of ['cubic','linear','ease'])for(const [i,control] of [[0,2],[1,1]]){
+ const base={x1:.25,y1:0,x2:.75,y2:1},keys=[5,15,45].map((frame,j)=>({frame,value:[20,60,overshoot?20:80][j],interpolation:j===i?interpolation:'cubic',curve:base})),edit={kind:'linkedVelocity',control,value:fps,overshoot},next=graphBatch(keys,[keys[i].frame],edit,fps,{min:0,max:100}),expected=velocityCurve(keys[i],keys[i+1],fps,control,fps,{min:0,max:100},overshoot),c=next[i].curve;
+ assert.deepEqual([c.x1,c.x2],[expected.x1,expected.x2]);assert.equal(control===1?c.y2:c.y1,control===1?expected.y2:expected.y1);
+ assert.ok(Math.abs(velocityControl(next[0],next[1],fps,2,{min:0,max:100},true).value-velocityControl(next[1],next[2],fps,1,{min:0,max:100},true).value)<.001);
+ assert.deepEqual(next.map(k=>[k.frame,k.value]),keys.map(k=>[k.frame,k.value]));assert.deepEqual(graphBatch(next,[keys[i].frame],edit,fps,{min:0,max:100}),next);
+ assert.deepEqual(graphBatch(keys,[5,15],edit,fps),keys);
+}
+console.log('Linked velocity: both sides, signed/normal modes, fps, conversion, fixed source time/opposite handles, matching neighbor speed and idempotence passed');
+
+{
+ const keys=[0,1,1000].map((frame,i)=>({frame,value:[6691.23046875,7432.3212890625,4323.689453125][i],interpolation:'cubic',curve:{x1:.25,y1:0,x2:.75,y2:1}})),edit={kind:'linkedVelocity',control:1,value:-.25648759293983403,overshoot:true},limits={min:.1,max:10000},next=graphBatch(keys,[1],edit,12,limits),a=velocityControl(next[0],next[1],12,2,limits,true),b=velocityControl(next[1],next[2],12,1,limits,true);
+ assert.ok(Math.abs(a.value-b.value)<1e-5);assert.deepEqual(graphBatch(next,[1],edit,12,limits),next);
+}

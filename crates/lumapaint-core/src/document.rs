@@ -1,5 +1,7 @@
 #[path = "document_filters.rs"]
 mod filters;
+#[path = "document_object_conversion.rs"]
+mod object_conversion;
 #[path = "document_recovery.rs"]
 mod recovery;
 pub use filters::{FilterCategory, FilterPreset};
@@ -10187,14 +10189,37 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 } else {
                     "nonzero"
                 };
-                let _ = write!(
-                    svg,
-                    r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><defs><clipPath id="lp-image-frame-{object_index}"><path d="{data}" clip-rule="{rule}"/></clipPath></defs><g clip-path="url(#lp-image-frame-{object_index})"><image width="{}" height="{}" transform="matrix({ia} {ib} {ic} {id} {ie} {iff})" href="{}"/></g></g>"#,
-                    image.encoded_width, image.encoded_height, image.data_uri
-                );
+                // A rasterized rectangle that fully contains its embedded pixels needs
+                // no clipping path. Avoid redundant masks in portable SVG artwork.
+                let uncut = object.kind == VectorObjectKind::Rectangle
+                    && crate::stroke::path_bounds(&object.path.data).is_some_and(|[x, y, r, b]| {
+                        object.path.data == format!("M{x} {y}H{r}V{b}H{x}Z")
+                            && ib == 0.
+                            && ic == 0.
+                            && ia > 0.
+                            && id > 0.
+                            && ie >= x - 0.0001
+                            && iff >= y - 0.0001
+                            && ie + ia * image.encoded_width as f32 <= r + 0.0001
+                            && iff + id * image.encoded_height as f32 <= b + 0.0001
+                    });
+                if uncut {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><image width="{}" height="{}" transform="matrix({ia} {ib} {ic} {id} {ie} {iff})" href="{}"/></g>"#,
+                        image.encoded_width, image.encoded_height, image.data_uri
+                    );
+                } else {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="matrix({a} {b} {c} {d} {e} {f})"><defs><clipPath id="lp-image-frame-{object_index}"><path d="{data}" clip-rule="{rule}"/></clipPath></defs><g clip-path="url(#lp-image-frame-{object_index})"><image width="{}" height="{}" transform="matrix({ia} {ib} {ic} {id} {ie} {iff})" href="{}"/></g></g>"#,
+                        image.encoded_width, image.encoded_height, image.data_uri
+                    );
+                }
             }
         }
         if let Some(text) = &object.text {
+            let text_svg_start = svg.len();
             let anchor = match text.alignment {
                 crate::vector::TextAlignment::Left => "start",
                 crate::vector::TextAlignment::Center => "middle",
@@ -10214,6 +10239,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     .map_or([0, 0, 0], |p| [p.color[0], p.color[1], p.color[2]]);
                 write_vertical_character_options(&mut svg, text, color, object_index);
                 svg.push_str("</g>");
+                crate::text_appearance::decorate_svg(&mut svg, text_svg_start, text, object_index);
                 for _ in 0..clips {
                     svg.push_str("</g>");
                 }
@@ -10227,6 +10253,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 });
                 write_transformed_text(&mut svg, text, color, object_index);
                 svg.push_str("</g>");
+                crate::text_appearance::decorate_svg(&mut svg, text_svg_start, text, object_index);
                 for _ in 0..clips {
                     svg.push_str("</g>");
                 }
@@ -10301,6 +10328,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                     svg.push_str("</g>");
                 }
                 svg.push_str("</g>");
+                crate::text_appearance::decorate_svg(&mut svg, text_svg_start, text, object_index);
                 for _ in 0..clips {
                     svg.push_str("</g>");
                 }
@@ -10475,6 +10503,7 @@ pub fn vector_svg(width: u32, height: u32, objects: &[VectorObject]) -> String {
                 svg.push_str("</tspan>");
             }
             svg.push_str("</text></g>");
+            crate::text_appearance::decorate_svg(&mut svg, text_svg_start, text, object_index);
             for _ in 0..clips {
                 svg.push_str("</g>");
             }

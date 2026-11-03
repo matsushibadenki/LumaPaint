@@ -23,9 +23,22 @@ pub enum KeyBatchEdit {
     Curve {
         curve: KeyCurve,
     },
+    OvershootLinkedCurve {
+        curve: KeyCurve,
+        control: u8,
+    },
     LinkedCurve {
         curve: KeyCurve,
         control: u8,
+    },
+    LinkedVelocity {
+        control: u8,
+        value: f64,
+        overshoot: bool,
+    },
+    OvershootVelocity {
+        control: u8,
+        value: f64,
     },
     Velocity {
         control: u8,
@@ -44,7 +57,7 @@ fn link_curve(
     mut curve: KeyCurve,
     control: u8,
 ) -> Result<(), String> {
-    if i + 1 >= keys.len() || keys[i].interpolation != Interpolation::Cubic {
+    if i + 1 >= keys.len() || keys[i].interpolation != Interpolation::Cubic || curve.overshoots() {
         return Err(invalid());
     }
     let neighbor = if control == 1 {
@@ -56,6 +69,9 @@ fn link_curve(
     };
     if let Some(j) = neighbor.filter(|&j| keys[j].interpolation == Interpolation::Cubic) {
         let mut other = keys[j].curve.unwrap_or_default();
+        if other.overshoots() {
+            return Err(invalid());
+        }
         let dt = f64::from(keys[i + 1].frame - keys[i].frame);
         let dv = f64::from(keys[i + 1].value) - f64::from(keys[i].value);
         let nt = f64::from(keys[j + 1].frame - keys[j].frame);
@@ -118,6 +134,229 @@ fn link_curve(
     Ok(())
 }
 
+// Signed linking in document units. Both control polygons remain inside the
+// property's physical limits, including the continuous values between frames.
+fn link_overshoot_curve(
+    keys: &mut [Keyframe],
+    i: usize,
+    curve: KeyCurve,
+    control: u8,
+    property: Property,
+) -> Result<(), String> {
+    link_constrained_curve(keys, i, curve, control, property, true, false)
+}
+fn link_constrained_curve(
+    keys: &mut [Keyframe],
+    i: usize,
+    mut curve: KeyCurve,
+    control: u8,
+    property: Property,
+    overshoot: bool,
+    preserve_time: bool,
+) -> Result<(), String> {
+    if i + 1 >= keys.len()
+        || keys[i].interpolation != Interpolation::Cubic
+        || !curve.valid()
+        || !curve.output_valid(keys[i].value, keys[i + 1].value, property)
+    {
+        return Err(invalid());
+    }
+    let neighbor = if control == 1 {
+        i.checked_sub(1)
+    } else if i + 2 < keys.len() {
+        Some(i + 1)
+    } else {
+        None
+    };
+    if let Some(j) = neighbor.filter(|&j| keys[j].interpolation == Interpolation::Cubic) {
+        let mut other = keys[j].curve.unwrap_or_default();
+        if !other.valid()
+            || (!overshoot && other.overshoots())
+            || !other.output_valid(keys[j].value, keys[j + 1].value, property)
+        {
+            return Err(invalid());
+        }
+        let dt = f64::from(keys[i + 1].frame - keys[i].frame);
+        let dv = f64::from(keys[i + 1].value) - f64::from(keys[i].value);
+        let nt = f64::from(keys[j + 1].frame - keys[j].frame);
+        let nv = f64::from(keys[j + 1].value) - f64::from(keys[j].value);
+        let minimum = 0.0001_f32;
+        if !preserve_time && control == 1 {
+            curve.x1 = curve.x1.max(minimum);
+            curve.x2 = curve.x2.max(curve.x1);
+        } else if !preserve_time {
+            curve.x2 = 1. - (1. - curve.x2).max(minimum);
+            curve.x1 = curve.x1.min(curve.x2);
+        }
+        let sx = f64::from(if control == 1 {
+            curve.x1
+        } else {
+            1. - curve.x2
+        });
+        let sy = f64::from(if control == 1 {
+            curve.y1
+        } else {
+            1. - curve.y2
+        });
+        if sx <= 0. {
+            return Err(invalid());
+        }
+        if preserve_time {
+            let (ox, oy) = if control == 1 {
+                (1. - other.x2, 1. - other.y2)
+            } else {
+                (other.x1, other.y1)
+            };
+            let desired = dv * sy / (dt * sx);
+            let existing = nv * f64::from(oy) / (nt * f64::from(ox));
+            let (stored_x, stored_y) = if control == 1 {
+                (other.x2, other.y2)
+            } else {
+                (other.x1, other.y1)
+            };
+            let precision = (nv / nt).abs()
+                * f64::from(f32::EPSILON)
+                * (f64::from(stored_y.abs()) / f64::from(ox)
+                    + f64::from(oy.abs()) * f64::from(stored_x.abs()) / f64::from(ox).powi(2));
+            if ox > 0.
+                && (desired - existing).abs()
+                    <= 1e-6 * desired.abs().max(existing.abs()).max(1e-6) + 2. * precision
+            {
+                keys[i].curve = Some(curve);
+                return Ok(());
+            }
+        }
+        let (lower, upper) = if overshoot {
+            overshoot_handle_bounds(keys[j].value, keys[j + 1].value, property)
+        } else {
+            (0., 1.)
+        };
+        // The incoming side stores 1-x / 1-y, so reserve its actual f32 width.
+        let min_x = f64::from(if control == 1 {
+            1. - (1. - minimum)
+        } else {
+            minimum
+        });
+        let (ny_low, ny_high) = if control == 1 {
+            (1. - upper, 1. - lower)
+        } else {
+            (lower, upper)
+        };
+        let requested = if dv == 0. || nv == 0. {
+            0.
+        } else {
+            dv * sy / (dt * sx)
+        };
+        let r0 = nv * ny_low / (nt * min_x);
+        let r1 = nv * ny_high / (nt * min_x);
+        // Keep a small inward margin for rounding the time handle and y value.
+        let slope = requested.clamp(r0.min(r1) * (1. - 1e-5), r0.max(r1) * (1. - 1e-5));
+        let source_y = if dv == 0. { 0. } else { slope * dt * sx / dv };
+        if !preserve_time || slope != requested || dv == 0. || nv == 0. {
+            if control == 1 {
+                curve.y1 = source_y as f32;
+            } else {
+                curve.y2 = (1. - source_y) as f32;
+            }
+        }
+        let actual_y = f64::from(if control == 1 {
+            curve.y1
+        } else {
+            1. - curve.y2
+        });
+        let actual_slope = if dv == 0. {
+            0.
+        } else {
+            dv * actual_y / (dt * sx)
+        };
+        let ratio = if nv == 0. { 0. } else { actual_slope * nt / nv };
+        let capacity = if ratio < 0. { -ny_low } else { ny_high };
+        let wanted = f64::from(if control == 1 {
+            (1. - other.x2).max(minimum)
+        } else {
+            other.x1.max(minimum)
+        });
+        let nx = wanted
+            .min(if ratio == 0. {
+                1.
+            } else {
+                capacity / ratio.abs()
+            })
+            .max(min_x) as f32;
+        if control == 1 {
+            other.x2 = 1. - nx;
+            other.x1 = other.x1.min(other.x2);
+        } else {
+            other.x1 = nx;
+            other.x2 = other.x2.max(other.x1);
+        }
+        let actual_x = f64::from(if control == 1 {
+            1. - other.x2
+        } else {
+            other.x1
+        });
+        let ny = (ratio * actual_x).clamp(ny_low, ny_high);
+        if control == 1 {
+            other.y2 = (1. - ny) as f32;
+        } else {
+            other.y1 = ny as f32;
+        }
+        // A near-horizontal incoming handle stores 1-y in f32. Refine its
+        // time width after rounding y so the requested velocity is preserved.
+        if preserve_time && ratio != 0. {
+            let encoded_y = f64::from(if control == 1 {
+                1. - other.y2
+            } else {
+                other.y1
+            });
+            let width = encoded_y / ratio;
+            if (min_x..=1.).contains(&width) {
+                if control == 1 {
+                    other.x2 = 1. - width as f32;
+                    other.x1 = other.x1.min(other.x2);
+                } else {
+                    other.x1 = width as f32;
+                    other.x2 = other.x2.max(other.x1);
+                }
+            }
+        }
+        if actual_x <= 0.
+            || !curve.valid()
+            || !other.valid()
+            || !curve.output_valid(keys[i].value, keys[i + 1].value, property)
+            || !other.output_valid(keys[j].value, keys[j + 1].value, property)
+        {
+            return Err(invalid());
+        }
+        keys[j].curve = Some(other);
+    }
+    keys[i].curve = Some(curve);
+    Ok(())
+}
+fn overshoot_handle_bounds(a: f32, b: f32, property: Property) -> (f64, f64) {
+    if a == b {
+        return (0., 1.);
+    }
+    let (min, max) = property.limits();
+    let dv = f64::from(b) - f64::from(a);
+    let p = (f64::from(min) - f64::from(a)) / dv;
+    let q = (f64::from(max) - f64::from(a)) / dv;
+    let low = p.min(q).max(-2.);
+    let high = p.max(q).min(3.);
+    (
+        if low > -2. {
+            (low + 1e-6 * low.abs().max(1.)).min(0.)
+        } else {
+            low
+        },
+        if high < 3. {
+            (high - 1e-6 * high.abs().max(1.)).max(1.)
+        } else {
+            high
+        },
+    )
+}
+
 // Edit one side of an interval in units/second, preserving its time handles.
 fn velocity_curve(
     a: &Keyframe,
@@ -125,6 +364,16 @@ fn velocity_curve(
     fps: u32,
     control: u8,
     value: f64,
+) -> Result<KeyCurve, String> {
+    velocity_curve_with_limits(a, b, fps, control, value, None)
+}
+fn velocity_curve_with_limits(
+    a: &Keyframe,
+    b: &Keyframe,
+    fps: u32,
+    control: u8,
+    value: f64,
+    property: Option<Property>,
 ) -> Result<KeyCurve, String> {
     if !(1..=2).contains(&control)
         || !value.is_finite()
@@ -151,18 +400,47 @@ fn velocity_curve(
     };
     let rate =
         (f64::from(b.value) - f64::from(a.value)) * f64::from(fps) / f64::from(b.frame - a.frame);
-    if !c.valid() || x <= 0. || rate == 0. {
+    if !c.valid() || (property.is_none() && c.overshoots()) || x <= 0. || rate == 0. {
         return Err(invalid());
     }
-    let limit = rate / x;
-    if value < limit.min(0.) || value > limit.max(0.) {
-        return Err(invalid());
-    }
-    let y = (value / rate * x).clamp(0., 1.);
-    if control == 1 {
-        c.y1 = y as f32;
+    let (low, high) = if let Some(property) = property {
+        let (min, max) = property.limits();
+        let dv = f64::from(b.value) - f64::from(a.value);
+        let lo = (f64::from(min) - f64::from(a.value)) / dv;
+        let hi = (f64::from(max) - f64::from(a.value)) / dv;
+        (lo.min(hi).max(-2.), lo.max(hi).min(3.))
     } else {
-        c.y2 = (1. - y) as f32;
+        (0., 1.)
+    };
+    let speeds = if control == 1 {
+        (rate * low / x, rate * high / x)
+    } else {
+        (rate * (1. - high) / x, rate * (1. - low) / x)
+    };
+    let current =
+        rate * if control == 1 {
+            f64::from(c.y1)
+        } else {
+            1. - f64::from(c.y2)
+        } / x;
+    if value == current && property.is_none_or(|p| c.output_valid(a.value, b.value, p)) {
+        return Ok(c);
+    }
+    if value < speeds.0.min(speeds.1) || value > speeds.0.max(speeds.1) {
+        return Err(invalid());
+    }
+    let y = if control == 1 {
+        value / rate * x
+    } else {
+        1. - value / rate * x
+    };
+    if control == 1 {
+        c.y1 = y.clamp(low, high) as f32;
+    } else {
+        c.y2 = y.clamp(low, high) as f32;
+    }
+    if !c.valid() || property.is_some_and(|p| !c.output_valid(a.value, b.value, p)) {
+        return Err(invalid());
     }
     Ok(c)
 }
@@ -183,7 +461,9 @@ fn apply_keys(
         return Err(invalid());
     }
     let before = keys.clone();
-    if let KeyBatchEdit::LinkedCurve { curve, control } = edit {
+    if let KeyBatchEdit::LinkedCurve { curve, control }
+    | KeyBatchEdit::OvershootLinkedCurve { curve, control } = edit
+    {
         if frames.len() != 1 || !curve.valid() || !(1..=2).contains(&control) {
             return Err(invalid());
         }
@@ -191,9 +471,16 @@ fn apply_keys(
             .iter()
             .position(|k| k.frame == frames[0])
             .ok_or_else(invalid)?;
-        link_curve(keys, index, curve, control)?;
+        if matches!(edit, KeyBatchEdit::OvershootLinkedCurve { .. }) {
+            link_overshoot_curve(keys, index, curve, control, property)?;
+        } else {
+            link_curve(keys, index, curve, control)?;
+        }
     }
-    if let KeyBatchEdit::Velocity { control, value } = edit {
+    if let KeyBatchEdit::Velocity { control, value }
+    | KeyBatchEdit::OvershootVelocity { control, value }
+    | KeyBatchEdit::LinkedVelocity { control, value, .. } = edit
+    {
         if frames.len() != 1 {
             return Err(invalid());
         }
@@ -202,9 +489,23 @@ fn apply_keys(
             .position(|k| k.frame == frames[0])
             .ok_or_else(invalid)?;
         let b = keys.get(i + 1).ok_or_else(invalid)?;
-        let curve = velocity_curve(&keys[i], b, fps, control, value)?;
+        let curve = if matches!(
+            edit,
+            KeyBatchEdit::OvershootVelocity { .. }
+                | KeyBatchEdit::LinkedVelocity {
+                    overshoot: true,
+                    ..
+                }
+        ) {
+            velocity_curve_with_limits(&keys[i], b, fps, control, value, Some(property))?
+        } else {
+            velocity_curve(&keys[i], b, fps, control, value)?
+        };
         keys[i].interpolation = Interpolation::Cubic;
         keys[i].curve = Some(curve);
+        if let KeyBatchEdit::LinkedVelocity { overshoot, .. } = edit {
+            link_constrained_curve(keys, i, curve, control, property, overshoot, true)?;
+        }
     }
     for key in keys.iter_mut().filter(|k| selected.contains(&k.frame)) {
         match edit {
@@ -248,7 +549,10 @@ fn apply_keys(
             }
             KeyBatchEdit::Delete
             | KeyBatchEdit::LinkedCurve { .. }
-            | KeyBatchEdit::Velocity { .. } => (),
+            | KeyBatchEdit::OvershootLinkedCurve { .. }
+            | KeyBatchEdit::Velocity { .. }
+            | KeyBatchEdit::OvershootVelocity { .. }
+            | KeyBatchEdit::LinkedVelocity { .. } => (),
         }
     }
     if matches!(edit, KeyBatchEdit::Delete) {
@@ -432,6 +736,689 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn linked_velocity_refines_near_horizontal_incoming_precision() {
+        let mut d = Document::default();
+        let id = d.add_vector_layer().unwrap();
+        Arc::make_mut(&mut d.animation).fps = 12;
+        Arc::make_mut(&mut d.animation).duration = 1200;
+        for (frame, value) in [(0, 6691.2305), (1, 7432.3213), (1000, 4323.6895)] {
+            d.set_animation_key(
+                &id,
+                Property::ScaleX,
+                Keyframe {
+                    frame,
+                    value,
+                    interpolation: Interpolation::Cubic,
+                    curve: Some(KeyCurve {
+                        x1: 0.25,
+                        y1: 0.,
+                        x2: 0.75,
+                        y2: 1.,
+                    }),
+                },
+            )
+            .unwrap();
+        }
+        let edit = KeyBatchEdit::LinkedVelocity {
+            control: 1,
+            value: -0.25648759293983403,
+            overshoot: true,
+        };
+        d.edit_animation_keys(&id, Property::ScaleX, &[1], edit.clone())
+            .unwrap();
+        let keys = &d.animation.tracks[&id].channels[&Property::ScaleX];
+        assert!((slope(keys, 0, 2) - slope(keys, 1, 1)).abs() * 12. < 0.00001);
+        let revision = d.revision();
+        d.edit_animation_keys(&id, Property::ScaleX, &[1], edit)
+            .unwrap();
+        assert_eq!(d.revision(), revision);
+    }
+    #[test]
+    fn linked_velocity_preserves_source_time_and_commits_both_curves_once() {
+        for fps in [12, 24, 60] {
+            for overshoot in [false, true] {
+                for interpolation in [
+                    Interpolation::Cubic,
+                    Interpolation::Linear,
+                    Interpolation::Ease,
+                ] {
+                    for (i, control) in [(0, 2), (1, 1)] {
+                        let mut d = Document::default();
+                        let id = d.add_vector_layer().unwrap();
+                        Arc::make_mut(&mut d.animation).fps = fps;
+                        let base = KeyCurve {
+                            x1: 0.25,
+                            y1: 0.,
+                            x2: 0.75,
+                            y2: 1.,
+                        };
+                        for (j, (frame, value)) in
+                            [(5, 20.), (15, 60.), (45, if overshoot { 20. } else { 80. })]
+                                .into_iter()
+                                .enumerate()
+                        {
+                            d.set_animation_key(
+                                &id,
+                                Property::Opacity,
+                                Keyframe {
+                                    frame,
+                                    value,
+                                    interpolation: if j == i {
+                                        interpolation
+                                    } else {
+                                        Interpolation::Cubic
+                                    },
+                                    curve: Some(base),
+                                },
+                            )
+                            .unwrap();
+                        }
+                        let before = encoded(&d);
+                        let revision = d.revision();
+                        let source =
+                            d.animation.tracks[&id].channels[&Property::Opacity][i].clone();
+                        let expected = velocity_curve_with_limits(
+                            &source,
+                            &d.animation.tracks[&id].channels[&Property::Opacity][i + 1],
+                            fps,
+                            control,
+                            f64::from(fps),
+                            overshoot.then_some(Property::Opacity),
+                        )
+                        .unwrap();
+                        let edit = KeyBatchEdit::LinkedVelocity {
+                            control,
+                            value: f64::from(fps),
+                            overshoot,
+                        };
+                        d.edit_animation_keys(
+                            &id,
+                            Property::Opacity,
+                            &[source.frame],
+                            edit.clone(),
+                        )
+                        .unwrap();
+                        let keys = &d.animation.tracks[&id].channels[&Property::Opacity];
+                        let c = keys[i].curve.unwrap();
+                        assert_eq!((c.x1, c.x2), (expected.x1, expected.x2));
+                        assert_eq!(
+                            if control == 1 { c.y2 } else { c.y1 },
+                            if control == 1 {
+                                expected.y2
+                            } else {
+                                expected.y1
+                            }
+                        );
+                        assert!((slope(keys, 0, 2) - slope(keys, 1, 1)).abs() < 0.0001);
+                        assert!(slope(keys, i, control) > 0.);
+                        for j in 0..2 {
+                            assert!(keys[j].curve.unwrap().output_valid(
+                                keys[j].value,
+                                keys[j + 1].value,
+                                Property::Opacity
+                            ));
+                        }
+                        assert_eq!(d.revision(), revision + 1);
+                        let after = encoded(&d);
+                        d.undo();
+                        assert_eq!(encoded(&d), before);
+                        d.redo();
+                        assert_eq!(encoded(&d), after);
+                        let revision = d.revision();
+                        d.edit_animation_keys(&id, Property::Opacity, &[source.frame], edit)
+                            .unwrap();
+                        assert_eq!(d.revision(), revision);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn linked_velocity_preserves_tiny_source_handles_and_rejects_atomically() {
+        let (mut d, id) = fixture();
+        d.edit_animation_keys(
+            &id,
+            Property::Opacity,
+            &[5, 15],
+            KeyBatchEdit::Interpolation {
+                interpolation: Interpolation::Cubic,
+            },
+        )
+        .unwrap();
+        let c = KeyCurve {
+            x1: 0.00001,
+            y1: 0.,
+            x2: 0.75,
+            y2: 1.,
+        };
+        d.edit_animation_keys(
+            &id,
+            Property::Opacity,
+            &[15],
+            KeyBatchEdit::Curve { curve: c },
+        )
+        .unwrap();
+        d.edit_animation_keys(
+            &id,
+            Property::Opacity,
+            &[15],
+            KeyBatchEdit::LinkedVelocity {
+                control: 1,
+                value: 240.,
+                overshoot: false,
+            },
+        )
+        .unwrap();
+        let keys = &d.animation.tracks[&id].channels[&Property::Opacity];
+        assert_eq!(keys[1].curve.unwrap().x1, c.x1);
+        assert!((slope(keys, 0, 2) - slope(keys, 1, 1)).abs() < 0.001);
+        let before = encoded(&d);
+        let revision = d.revision();
+        for (frames, control, value) in [
+            (vec![5, 15], 1, 10.),
+            (vec![5], 0, 10.),
+            (vec![5], 1, f64::NAN),
+            (vec![5], 1, -100.),
+            (vec![5], 2, 1e20),
+            (vec![30], 1, 10.),
+        ] {
+            assert!(d
+                .edit_animation_keys(
+                    &id,
+                    Property::Opacity,
+                    &frames,
+                    KeyBatchEdit::LinkedVelocity {
+                        control,
+                        value,
+                        overshoot: false
+                    }
+                )
+                .is_err());
+            assert_eq!(encoded(&d), before);
+            assert_eq!(d.revision(), revision);
+        }
+    }
+    #[test]
+    fn linked_velocity_limits_flat_extrema_and_preserves_non_custom_neighbors() {
+        let base = KeyCurve {
+            x1: 0.25,
+            y1: 0.,
+            x2: 0.75,
+            y2: 1.,
+        };
+        for (end, neighbor) in [
+            (20., Interpolation::Cubic),
+            (100., Interpolation::Cubic),
+            (20., Interpolation::Hold),
+            (20., Interpolation::Linear),
+            (20., Interpolation::Ease),
+        ] {
+            let mut d = Document::default();
+            let id = d.add_vector_layer().unwrap();
+            for (frame, value, interpolation) in [
+                (5, 20., Interpolation::Cubic),
+                (15, 100., neighbor),
+                (45, end, Interpolation::Linear),
+            ] {
+                d.set_animation_key(
+                    &id,
+                    Property::Opacity,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation,
+                        curve: Some(base),
+                    },
+                )
+                .unwrap();
+            }
+            d.edit_animation_keys(
+                &id,
+                Property::Opacity,
+                &[5],
+                KeyBatchEdit::LinkedVelocity {
+                    control: 2,
+                    value: 120.,
+                    overshoot: true,
+                },
+            )
+            .unwrap();
+            let keys = &d.animation.tracks[&id].channels[&Property::Opacity];
+            if neighbor == Interpolation::Cubic {
+                assert_eq!(slope(keys, 0, 2), 0.);
+                assert_eq!(slope(keys, 1, 1), 0.);
+            } else {
+                assert!((slope(keys, 0, 2) * 24. - 120.).abs() < 0.001);
+                assert_eq!(keys[1].curve, Some(base));
+                assert_eq!(keys[1].interpolation, neighbor);
+            }
+        }
+    }
+    #[test]
+    fn overshoot_link_reserves_f32_space_near_physical_endpoints() {
+        let base = KeyCurve {
+            x1: 0.25,
+            y1: 0.,
+            x2: 0.75,
+            y2: 1.,
+        };
+        let mut keys = vec![
+            Keyframe {
+                frame: 0,
+                value: 69.888_63,
+                interpolation: Interpolation::Cubic,
+                curve: Some(base),
+            },
+            Keyframe {
+                frame: 100,
+                value: 0.452_228_22,
+                interpolation: Interpolation::Cubic,
+                curve: Some(base),
+            },
+            Keyframe {
+                frame: 1000,
+                value: 68.778_79,
+                interpolation: Interpolation::Linear,
+                curve: None,
+            },
+        ];
+        link_overshoot_curve(
+            &mut keys,
+            1,
+            KeyCurve {
+                y1: 0.823_857_4,
+                ..base
+            },
+            1,
+            Property::Opacity,
+        )
+        .unwrap();
+        assert!(keys[0].curve.unwrap().output_valid(
+            keys[0].value,
+            keys[1].value,
+            Property::Opacity
+        ));
+        assert!((slope(&keys, 0, 2) - slope(&keys, 1, 1)).abs() < 0.0001);
+    }
+    #[test]
+    fn overshoot_links_signed_slopes_history_and_limits() {
+        for property in [Property::X, Property::Opacity, Property::ScaleX] {
+            for values in [
+                [20., 60., 20.],
+                [60., 20., 60.],
+                [20., 60., 60.],
+                [20., 100., 20.],
+            ] {
+                for (index, control) in [(0, 2), (1, 1)] {
+                    for y in [-0.5, 0.5, 1.5] {
+                        let mut d = Document::default();
+                        let id = d.add_vector_layer().unwrap();
+                        let base = KeyCurve {
+                            x1: 0.25,
+                            y1: 0.,
+                            x2: 0.75,
+                            y2: 1.,
+                        };
+                        for (frame, value) in [5, 15, 45].into_iter().zip(values) {
+                            d.set_animation_key(
+                                &id,
+                                property,
+                                Keyframe {
+                                    frame,
+                                    value,
+                                    interpolation: Interpolation::Cubic,
+                                    curve: Some(base),
+                                },
+                            )
+                            .unwrap();
+                        }
+                        let mut curve = base;
+                        if control == 1 {
+                            curve.y1 = y;
+                        } else {
+                            curve.y2 = y;
+                        }
+                        // Invalid physical control points must leave both intervals untouched.
+                        let before = encoded(&d);
+                        let revision = d.revision();
+                        let edit = KeyBatchEdit::OvershootLinkedCurve { curve, control };
+                        let result =
+                            d.edit_animation_keys(&id, property, &[[5, 15][index]], edit.clone());
+                        if !curve.output_valid(values[index], values[index + 1], property) {
+                            assert!(result.is_err());
+                            assert_eq!(encoded(&d), before);
+                            assert_eq!(d.revision(), revision);
+                            continue;
+                        }
+                        result.unwrap();
+                        let keys = &d.animation.tracks[&id].channels[&property];
+                        let a = slope(keys, 0, 2);
+                        let b = slope(keys, 1, 1);
+                        assert!(
+                            (a - b).abs() <= 0.0001 * a.abs().max(1.),
+                            "{property:?} {values:?} {control} {y}: {a} != {b}"
+                        );
+                        assert_eq!(
+                            keys.iter().map(|k| (k.frame, k.value)).collect::<Vec<_>>(),
+                            vec![(5, values[0]), (15, values[1]), (45, values[2])]
+                        );
+                        for i in 0..2 {
+                            assert!(keys[i].curve.unwrap().output_valid(
+                                keys[i].value,
+                                keys[i + 1].value,
+                                property
+                            ));
+                        }
+                        let after = encoded(&d);
+                        if after == before {
+                            assert_eq!(d.revision(), revision);
+                            continue;
+                        }
+                        assert_eq!(d.revision(), revision + 1);
+                        d.undo();
+                        assert_eq!(encoded(&d), before);
+                        d.redo();
+                        assert_eq!(encoded(&d), after);
+                        let saved = serde_json::to_string(&d.animation).unwrap();
+                        let restored: Animation = serde_json::from_str(&saved).unwrap();
+                        assert_eq!(serde_json::to_string(&restored).unwrap(), saved);
+                        let revision = d.revision();
+                        d.edit_animation_keys(&id, property, &[[5, 15][index]], edit)
+                            .unwrap();
+                        assert_eq!(d.revision(), revision);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn overshoot_link_handles_vertical_flat_and_non_custom_neighbors() {
+        let base = KeyCurve {
+            x1: 0.25,
+            y1: 0.,
+            x2: 0.75,
+            y2: 1.,
+        };
+        for control in [1, 2] {
+            for end in [20., 60.] {
+                let mut keys = vec![
+                    Keyframe {
+                        frame: 5,
+                        value: 20.,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(base),
+                    },
+                    Keyframe {
+                        frame: 15,
+                        value: 60.,
+                        interpolation: Interpolation::Cubic,
+                        curve: Some(base),
+                    },
+                    Keyframe {
+                        frame: 45,
+                        value: end,
+                        interpolation: Interpolation::Linear,
+                        curve: None,
+                    },
+                ];
+                let i = if control == 1 { 1 } else { 0 };
+                let mut curve = base;
+                if control == 1 {
+                    curve.x1 = 0.;
+                    curve.y1 = -0.5;
+                } else {
+                    curve.x2 = 1.;
+                    curve.y2 = 0.5;
+                }
+                link_overshoot_curve(&mut keys, i, curve, control, Property::Opacity).unwrap();
+                assert!((slope(&keys, 0, 2) - slope(&keys, 1, 1)).abs() < 0.01);
+                if end == 60. {
+                    assert_eq!(slope(&keys, 0, 2), 0.);
+                }
+                for k in keys.iter().take(2) {
+                    assert!(k.curve.unwrap().valid());
+                }
+                keys[if control == 1 { 0 } else { 1 }].interpolation = Interpolation::Hold;
+                link_overshoot_curve(&mut keys, i, base, control, Property::Opacity).unwrap();
+                assert_eq!(keys[i].curve, Some(base));
+            }
+        }
+    }
+    #[test]
+    fn overshoot_velocity_edits_preserve_handles_history_and_output_limits() {
+        for fps in [12, 24, 60] {
+            for property in [
+                Property::X,
+                Property::Opacity,
+                Property::ScaleX,
+                Property::Rotation,
+            ] {
+                for reverse in [false, true] {
+                    let mut d = Document::default();
+                    let id = d.add_vector_layer().unwrap();
+                    Arc::make_mut(&mut d.animation).fps = fps;
+                    let curve = KeyCurve {
+                        x1: 0.25,
+                        y1: 1.5,
+                        x2: 0.75,
+                        y2: 1.5,
+                    };
+                    let values = if reverse { [40., 20.] } else { [20., 40.] };
+                    for (frame, value) in [(5, values[0]), (25, values[1])] {
+                        d.set_animation_key(
+                            &id,
+                            property,
+                            Keyframe {
+                                frame,
+                                value,
+                                interpolation: Interpolation::Cubic,
+                                curve: Some(curve),
+                            },
+                        )
+                        .unwrap();
+                    }
+                    let rate = if reverse { -(fps as f64) } else { fps as f64 };
+                    for control in [1, 2] {
+                        let before = serde_json::to_string(&d.document_state()).unwrap();
+                        let revision = d.revision();
+                        d.edit_animation_keys(
+                            &id,
+                            property,
+                            &[5],
+                            KeyBatchEdit::OvershootVelocity {
+                                control,
+                                value: -rate,
+                            },
+                        )
+                        .unwrap();
+                        let c = d.animation.tracks[&id].channels[&property][0]
+                            .curve
+                            .unwrap();
+                        assert_eq!((c.x1, c.x2), (curve.x1, curve.x2));
+                        if control == 1 {
+                            assert_eq!(c.y1, -0.25);
+                            assert_eq!(c.y2, curve.y2);
+                        } else {
+                            assert_eq!(c.y1, curve.y1);
+                            assert_eq!(c.y2, 1.25);
+                        }
+                        assert!(c.output_valid(values[0], values[1], property));
+                        assert_eq!(d.revision(), revision + 1);
+                        let saved = serde_json::to_string(&d.document_state()).unwrap();
+                        d.undo();
+                        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), before);
+                        d.redo();
+                        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+                        let restored =
+                            Document::from_document_state(serde_json::from_str(&saved).unwrap())
+                                .unwrap();
+                        assert_eq!(
+                            restored.animation.tracks[&id].channels[&property][0].curve,
+                            Some(c)
+                        );
+                        let revision = d.revision();
+                        d.edit_animation_keys(
+                            &id,
+                            property,
+                            &[5],
+                            KeyBatchEdit::OvershootVelocity {
+                                control,
+                                value: -rate,
+                            },
+                        )
+                        .unwrap();
+                        assert_eq!(d.revision(), revision);
+                        for (frames, control, value) in [
+                            (vec![5], 1, rate * 1e5),
+                            (vec![5], 2, f64::NAN),
+                            (vec![5], 3, 0.),
+                            (vec![25], 1, 0.),
+                            (vec![5, 25], 1, 0.),
+                        ] {
+                            assert!(d
+                                .edit_animation_keys(
+                                    &id,
+                                    property,
+                                    &frames,
+                                    KeyBatchEdit::OvershootVelocity { control, value }
+                                )
+                                .is_err());
+                            assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+                        }
+                        d.undo();
+                    }
+                }
+            }
+        }
+        assert!(serde_json::from_str::<KeyBatchEdit>(
+            r#"{"kind":"overshootVelocity","control":1,"value":-24}"#
+        )
+        .is_ok());
+        assert!(serde_json::from_str::<KeyBatchEdit>(
+            r#"{"kind":"overshootVelocity","control":1}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn overshoot_curve_history_output_guards_and_saved_evaluation() {
+        let mut d = Document::default();
+        let id = d.add_vector_layer().unwrap();
+        for property in [
+            Property::X,
+            Property::Opacity,
+            Property::ScaleX,
+            Property::Rotation,
+        ] {
+            for (frame, value) in [(0, 20.), (20, 40.)] {
+                d.set_animation_key(
+                    &id,
+                    property,
+                    Keyframe {
+                        frame,
+                        value,
+                        interpolation: Interpolation::Linear,
+                        curve: None,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        let before = serde_json::to_string(&d.document_state()).unwrap();
+        let curve = KeyCurve {
+            y1: 2.,
+            y2: 2.,
+            ..KeyCurve::default()
+        };
+        let revision = d.revision();
+        d.edit_animation_keys(&id, Property::Opacity, &[0], KeyBatchEdit::Curve { curve })
+            .unwrap();
+        assert!(d.animation.tracks[&id].value(Property::Opacity, 10) > 40.);
+        assert_eq!(d.revision(), revision + 1);
+        let saved = serde_json::to_string(&d.document_state()).unwrap();
+        d.undo();
+        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), before);
+        d.redo();
+        assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+        let restored =
+            Document::from_document_state(serde_json::from_str(&saved).unwrap()).unwrap();
+        assert_eq!(
+            restored.animation().tracks[&id].value(Property::Opacity, 10),
+            d.animation().tracks[&id].value(Property::Opacity, 10)
+        );
+        let revision = d.revision();
+        d.edit_animation_keys(&id, Property::Opacity, &[0], KeyBatchEdit::Curve { curve })
+            .unwrap();
+        assert_eq!(d.revision(), revision);
+        for edit in [
+            KeyBatchEdit::ShiftValue { delta: 50. },
+            KeyBatchEdit::Move {
+                frame_delta: 0,
+                value_delta: 50.,
+            },
+            KeyBatchEdit::Velocity {
+                control: 1,
+                value: 20.,
+            },
+            KeyBatchEdit::LinkedCurve { control: 1, curve },
+        ] {
+            assert!(d
+                .edit_animation_keys(
+                    &id,
+                    Property::Opacity,
+                    &[0, 20][..if matches!(
+                        edit,
+                        KeyBatchEdit::ShiftValue { .. } | KeyBatchEdit::Move { .. }
+                    ) {
+                        2
+                    } else {
+                        1
+                    }],
+                    edit
+                )
+                .is_err());
+            assert_eq!(serde_json::to_string(&d.document_state()).unwrap(), saved);
+        }
+        let mut invalid = d.document_state();
+        invalid
+            .animation
+            .tracks
+            .get_mut(&id)
+            .unwrap()
+            .channels
+            .get_mut(&Property::Opacity)
+            .unwrap()[0]
+            .curve = Some(KeyCurve {
+            y1: 3.,
+            y2: 3.,
+            ..curve
+        });
+        invalid
+            .animation
+            .tracks
+            .get_mut(&id)
+            .unwrap()
+            .channels
+            .get_mut(&Property::Opacity)
+            .unwrap()[1]
+            .value = 100.;
+        assert!(Document::from_document_state(invalid).is_err());
+        for property in [Property::X, Property::ScaleX, Property::Rotation] {
+            d.edit_animation_keys(&id, property, &[0], KeyBatchEdit::Curve { curve })
+                .unwrap();
+            assert!(d.animation.tracks[&id].value(property, 10) > 40.);
+        }
+        let curve = KeyCurve {
+            y1: -1.,
+            y2: -1.,
+            ..curve
+        };
+        d.edit_animation_keys(&id, Property::Opacity, &[0], KeyBatchEdit::Curve { curve })
+            .unwrap();
+        assert!(d.animation.tracks[&id].value(Property::Opacity, 10) < 20.);
+    }
+
     #[test]
     fn velocity_edits_preserve_endpoints_time_handles_and_history() {
         for (values, fps, control, speed) in [

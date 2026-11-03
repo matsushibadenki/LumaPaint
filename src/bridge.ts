@@ -143,7 +143,14 @@ export interface TextStyle { noColor?: boolean; fontFamily: string; fontSize: nu
 export interface TextRun { start: number; end: number; style: TextStyle }
 export interface TextGlyphCluster { start: number; end: number; x: number }
 export interface TextSelection { start: number; length: number; characters: number; style: TextStyle; mixed: (keyof TextStyle)[] }
-export interface VectorText { noColor?: boolean;
+export interface TextAppearancePaint {
+  fill: { colors: string[]; gradient: boolean; angle: number };
+  outlines: { color: string; width: number }[];
+  shadow: { color: string; width: number; blur: number; offsetX: number; offsetY: number; opacity: number };
+}
+export interface TextAppearance {preset:string;enabled:boolean;amount:number;custom?:TextAppearancePaint|null}
+export interface VectorText {
+  appearance?: TextAppearance|null; noColor?: boolean;
   pointText?: boolean;
   changeGeneration: number;
   updatedAtMs: number;
@@ -735,3 +742,23 @@ export async function effectPresetLibrary(action:'get'|'add'|'update'|'rename'|'
 export async function onEffectPresetsChanged(callback:(library:EffectPresetLibrary)=>void):Promise<()=>void> {
   return isTauri()?listen<EffectPresetLibrary>('effect-presets-changed',event=>callback(event.payload)):()=>{};
 }
+
+export interface TextAppearancePreset { id:number; name:string; settings:TextAppearance }
+export interface TextAppearancePresetLibrary { revision:number; presets:TextAppearancePreset[] }
+export const textAppearancePresetApi = {
+  async transfer(exportFile:boolean):Promise<TextAppearancePresetLibrary>{return invoke("transfer_text_appearance_presets",{export:exportFile});},
+  async change(action:'get'|'add'|'update'|'rename'|'remove', id?:number, name?:string, settings?:TextAppearance):Promise<TextAppearancePresetLibrary> {
+    if(!isTauri()) {
+      if(action==='get') return {revision:0,presets:[]};
+      throw new Error('Desktop app required / デスクトップアプリで保存してください / 请在桌面应用中保存');
+    }
+    return invoke('text_appearance_preset_library',{action,id:id??null,name:name??null,settings:settings??null});
+  },
+  async subscribe(callback:(library:TextAppearancePresetLibrary)=>void):Promise<()=>void> {
+    return isTauri()?listen<TextAppearancePresetLibrary>('text-appearance-presets-changed',event=>callback(event.payload)):()=>{};
+  },
+};
+
+export type ConversionKind='expand'|'appearance'|'rasterize'|'flatten';
+export interface ObjectConversion {kind:ConversionKind;object:boolean;fill:boolean;stroke:boolean;colors:number;resolution:number;transparent:boolean;grayscale:boolean;preserveVectors:boolean}
+export const convertObjects=(request:ObjectConversion):Promise<DocumentSnapshot>=>invoke('convert_objects',{request});

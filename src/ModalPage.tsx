@@ -1,3 +1,5 @@
+import {ObjectConversionDialog} from './components/ObjectConversionDialog';
+import {convertObjects,type ConversionKind} from './bridge';
 import {ImageResolutionDialog} from './components/ImageResolutionDialog';
 import {CanvasSizeDialog} from './components/CanvasSizeDialog';
 import {PixelSelectionDialog} from './components/PixelSelectionDialog';
@@ -92,6 +94,7 @@ export function ModalPage() {
     case 'newDocument': content = <NewDocumentDialog locale={context.locale} onClose={close} onCreate={settings => run(async () => { await createDocument(settings); await invoke('modal_change', { change: { type: 'createdDocument' } }); })}/>; break;
     case 'pdfImport': content = <PdfImportDialog locale={context.locale} onClose={close} onApply={(token, pageIndex, dpi, allPages, selectedPages) => run(() => invoke<boolean>('pdf_import_apply', { token, pageIndex, dpi, allPages, selectedPages }))}/>; break;
     case 'importImage': content = <ImportImageDialog locale={context.locale} onClose={close} onImport={format => run(async () => { await importRasterLayer(format); })}/>; break;
+    case 'objectConversion': content=<ObjectConversionDialog kind={context.action as ConversionKind} locale={context.locale} resolution={context.document?.resolution??72} onClose={close} onApply={request=>run(async()=>{await convertObjects(request);})}/>;break;
     case 'transform': content = <TransformDialog resolution={context.document?.resolution ?? 72} locale={context.locale} action={context.action as TransformAction} onClose={close} onApply={values => run(async () => { await transformObjects(context.action as TransformAction, values); })}/>; break;
     case 'directControls': content = context.document && <DirectControlDialog locale={context.locale} doc={context.document} onApply={() => {}} onBusyChange={busy => invoke('modal_busy', { busy })} onClose={close}/>; break;
     case 'colorSettings': content = context.document && <ColorSettingsDialog locale={context.locale} document={context.document} enabled={!working} onClose={() => { if (!working) close(); }} onProfile={profile => { void run(async () => { const document = await changeColorProfile(profile); setContext(previous => previous && { ...previous, document }); }).catch(cause => setError(String(cause))); }}/>;

@@ -593,7 +593,9 @@ fn same(k: &str, l: &SvgLayer, a: &VectorObject, rl: &SvgLayer, b: &VectorObject
         "blendMode" => a.blend_mode == b.blend_mode,
         "strokeWidth" => (a.stroke_width - b.stroke_width).abs() < 0.00001,
         "appearance" => {
-            same("fillStroke", l, a, rl, b)
+            a.text.as_ref().and_then(|t| t.appearance.as_ref())
+                == b.text.as_ref().and_then(|t| t.appearance.as_ref())
+                && same("fillStroke", l, a, rl, b)
                 && same("opacity", l, a, rl, b)
                 && same("blendMode", l, a, rl, b)
                 && (a.stroke.is_none() && a.stroke_gradient.is_none()

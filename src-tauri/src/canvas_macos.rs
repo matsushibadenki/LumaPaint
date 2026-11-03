@@ -10188,6 +10188,24 @@ pub fn set_vector_paint(
     Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
 }
 
+pub fn convert_objects(
+    request: lumapaint_core::object_conversion::ObjectConversion,
+) -> Result<DocumentSnapshot, String> {
+    ensure_document_open()?;
+    text_editor::finish(true)?;
+    DOCUMENT.with(|d| {
+        let mut document = d.borrow_mut();
+        document.convert_selected_objects(request.combine(), |source, originals, resolution| {
+            lumapaint_renderer::object_conversion::convert(source, originals, resolution, &request)
+        })?;
+        hold_vector_commit_frame(&document);
+        Ok::<_, String>(())
+    })?;
+    redraw()?;
+    emit_document();
+    Ok(DOCUMENT.with(|d| d.borrow().snapshot()))
+}
+
 pub fn outline_text() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     text_editor::finish(true)?;

@@ -6,7 +6,10 @@ use lumapaint_formats::native::NativeDocumentCodec;
 use resvg::{tiny_skia, usvg};
 use skia_safe::{Path, PathBuilder, PathFillType, PathOp};
 
-fn geometry(path: &tiny_skia::Path, transform: tiny_skia::Transform) -> Result<Path, String> {
+pub(crate) fn geometry(
+    path: &tiny_skia::Path,
+    transform: tiny_skia::Transform,
+) -> Result<Path, String> {
     let path = path
         .clone()
         .transform(transform)
@@ -33,7 +36,10 @@ fn geometry(path: &tiny_skia::Path, transform: tiny_skia::Transform) -> Result<P
     }
     Ok(builder.detach())
 }
-fn clip_geometry(group: &usvg::Group, transform: tiny_skia::Transform) -> Result<Path, String> {
+pub(crate) fn clip_geometry(
+    group: &usvg::Group,
+    transform: tiny_skia::Transform,
+) -> Result<Path, String> {
     let transform = transform.pre_concat(group.transform());
     let mut result = Path::default();
     for node in group.children() {

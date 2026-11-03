@@ -1,0 +1,1058 @@
+[
+  {
+    "id": "gold",
+    "names": {
+      "en": "Gold",
+      "ja": "ゴールド",
+      "zh-CN": "黄金"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fffbd5",
+          "#ffcd38",
+          "#fff6ae",
+          "#b86309",
+          "#ffdf61"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#512706",
+          "width": 4
+        },
+        {
+          "color": "#ffdb62",
+          "width": 3.5
+        },
+        {
+          "color": "#8d4307",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#452000",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "silver",
+    "names": {
+      "en": "Silver",
+      "ja": "シルバー",
+      "zh-CN": "白银"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#a7b4c6",
+          "#faffff",
+          "#52657d",
+          "#dde9f1"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#263447",
+          "width": 4
+        },
+        {
+          "color": "#eefaff",
+          "width": 3.5
+        },
+        {
+          "color": "#596779",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#182532",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "ice",
+    "names": {
+      "en": "Ice",
+      "ja": "アイス",
+      "zh-CN": "冰晶"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#a5faff",
+          "#30d9ed",
+          "#0b7fd1",
+          "#e2ffff"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#125580",
+          "width": 4
+        },
+        {
+          "color": "#c9ffff",
+          "width": 3.5
+        },
+        {
+          "color": "#218bc0",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#004a89",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "fire",
+    "names": {
+      "en": "Fire",
+      "ja": "炎",
+      "zh-CN": "火焰"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffb4",
+          "#ffe23d",
+          "#ff9e20",
+          "#eb311b",
+          "#a51123"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#4c0c21",
+          "width": 4
+        },
+        {
+          "color": "#ffca42",
+          "width": 3.5
+        },
+        {
+          "color": "#8b1823",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#6b0e13",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "candy",
+    "names": {
+      "en": "Candy",
+      "ja": "キャンディ",
+      "zh-CN": "糖果"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff1fc",
+          "#ffb8ec",
+          "#fa79d2",
+          "#bc72f5",
+          "#8e66e0"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#744395",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#d561ba",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#703b88",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "rainbow",
+    "names": {
+      "en": "Rainbow",
+      "ja": "虹色",
+      "zh-CN": "彩虹"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fe80bf",
+          "#ffd865",
+          "#a1f1be",
+          "#70d9f9",
+          "#bc9bf5"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#ffffff",
+          "width": 4
+        },
+        {
+          "color": "#74bcd9",
+          "width": 3.5
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#596d97",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "sunset",
+    "names": {
+      "en": "Sunset",
+      "ja": "夕焼け",
+      "zh-CN": "晚霞"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff2bf",
+          "#ffc27f",
+          "#ff8997",
+          "#d77db5",
+          "#9166ad"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#ffffff",
+          "width": 4
+        },
+        {
+          "color": "#be527d",
+          "width": 3.5
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#9c4c78",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "mint",
+    "names": {
+      "en": "Mint",
+      "ja": "ミント",
+      "zh-CN": "薄荷"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fcffde",
+          "#c9f7b0",
+          "#8be9cf",
+          "#39babf",
+          "#208fae"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#226a85",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#4396a6",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#175c73",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "pop",
+    "names": {
+      "en": "Pop",
+      "ja": "ポップ",
+      "zh-CN": "波普"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff77a",
+          "#fff264",
+          "#ffe24b",
+          "#ffb33a",
+          "#ff8c31"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#263784",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#263784",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#14225c",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "ink",
+    "names": {
+      "en": "Ink",
+      "ja": "インク",
+      "zh-CN": "墨色"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#f6f6f6",
+          "#efefef",
+          "#dddddd",
+          "#ffffff"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#20242d",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#20242d",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#171b22",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "neon",
+    "names": {
+      "en": "Neon",
+      "ja": "ネオン",
+      "zh-CN": "霓虹"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#e4ceff",
+          "#d385ff",
+          "#955cff",
+          "#ff9af6"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#f4d6ff",
+          "width": 4
+        },
+        {
+          "color": "#9737d1",
+          "width": 3.5
+        },
+        {
+          "color": "#e887ff",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#c83dff",
+        "width": 18,
+        "blur": 9,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "sticker",
+    "names": {
+      "en": "Sticker",
+      "ja": "ステッカー",
+      "zh-CN": "贴纸"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#ffffff",
+          "#fffaff",
+          "#ffe8f3",
+          "#ffd6e9"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#ffffff",
+          "width": 4
+        },
+        {
+          "color": "#eb649e",
+          "width": 3.5
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#b63e75",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "roseGold",
+    "names": {
+      "en": "Rose gold",
+      "ja": "ローズゴールド",
+      "zh-CN": "玫瑰金"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff1df",
+          "#eda98c",
+          "#fff5eb",
+          "#a55356",
+          "#f9bdb0"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#713c3e",
+          "width": 4
+        },
+        {
+          "color": "#ffe2d3",
+          "width": 3.5
+        },
+        {
+          "color": "#ac6560",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#663639",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "bronze",
+    "names": {
+      "en": "Bronze",
+      "ja": "ブロンズ",
+      "zh-CN": "青铜"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffdfac",
+          "#bc814d",
+          "#ffe2b6",
+          "#683e24",
+          "#d99b61"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#39281c",
+          "width": 4
+        },
+        {
+          "color": "#edc58a",
+          "width": 3.5
+        },
+        {
+          "color": "#895a30",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#392415",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "sapphire",
+    "names": {
+      "en": "Sapphire",
+      "ja": "サファイア",
+      "zh-CN": "蓝宝石"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#e5faff",
+          "#59d4ff",
+          "#1674e7",
+          "#232b92",
+          "#aebeff"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#172869",
+          "width": 4
+        },
+        {
+          "color": "#b9e8ff",
+          "width": 3.5
+        },
+        {
+          "color": "#417bc4",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#101b61",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "emerald",
+    "names": {
+      "en": "Emerald",
+      "ja": "エメラルド",
+      "zh-CN": "祖母绿"
+    },
+    "group": "metal",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#edffe2",
+          "#8ff2a8",
+          "#1dbd88",
+          "#146852",
+          "#b6ffcc"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#124c41",
+          "width": 4
+        },
+        {
+          "color": "#d8ffe3",
+          "width": 3.5
+        },
+        {
+          "color": "#228563",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#0d493f",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "lavender",
+    "names": {
+      "en": "Lavender",
+      "ja": "ラベンダー",
+      "zh-CN": "薰衣草"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff0ff",
+          "#e5c7ff",
+          "#c497eb",
+          "#9374cb",
+          "#cdbaff"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#6f578e",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#b690d6",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#6c548d",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "peach",
+    "names": {
+      "en": "Peach",
+      "ja": "ピーチ",
+      "zh-CN": "蜜桃"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff5d9",
+          "#ffd7b7",
+          "#ffb9ac",
+          "#eb869b",
+          "#ffc2c9"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#b86683",
+          "width": 4
+        },
+        {
+          "color": "#fff5e9",
+          "width": 3.5
+        },
+        {
+          "color": "#e8a0a9",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#b76586",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "ocean",
+    "names": {
+      "en": "Ocean",
+      "ja": "オーシャン",
+      "zh-CN": "海洋"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#e6ffed",
+          "#7cefe6",
+          "#24b9d1",
+          "#2470b4",
+          "#183c88"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#16456d",
+          "width": 4
+        },
+        {
+          "color": "#caffff",
+          "width": 3.5
+        },
+        {
+          "color": "#2891b9",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#123e6a",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "berry",
+    "names": {
+      "en": "Berry",
+      "ja": "ベリー",
+      "zh-CN": "莓果"
+    },
+    "group": "color",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffebf5",
+          "#ff9ec7",
+          "#e64791",
+          "#8d317b",
+          "#d07cbc"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#5b2758",
+          "width": 4
+        },
+        {
+          "color": "#ffe3f1",
+          "width": 3.5
+        },
+        {
+          "color": "#ad407d",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#51234d",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "comic",
+    "names": {
+      "en": "Comic",
+      "ja": "コミック",
+      "zh-CN": "漫画"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff581",
+          "#ffe852",
+          "#ffbc2d",
+          "#ff8e2b",
+          "#ff5d39"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#161d40",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#e53f56",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#172140",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "retro",
+    "names": {
+      "en": "Retro",
+      "ja": "レトロ",
+      "zh-CN": "复古"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#fff1ce",
+          "#f9d99c",
+          "#e9b675",
+          "#c88759",
+          "#efbd7b"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#275c67",
+          "width": 4
+        },
+        {
+          "color": "#d16d54",
+          "width": 3.5
+        },
+        {
+          "color": "#f9e3b7",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#275c67",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "electric",
+    "names": {
+      "en": "Electric",
+      "ja": "エレクトリック",
+      "zh-CN": "电光"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#f3ffcc",
+          "#d6ff56",
+          "#9fec38",
+          "#31c8ba",
+          "#47b8ff"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#25367a",
+          "width": 4
+        },
+        {
+          "color": "#d9ff89",
+          "width": 3.5
+        },
+        {
+          "color": "#4458bc",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#5850e6",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  },
+  {
+    "id": "cherry",
+    "names": {
+      "en": "Cherry",
+      "ja": "さくら",
+      "zh-CN": "樱花"
+    },
+    "group": "outline",
+    "paint": {
+      "fill": {
+        "colors": [
+          "#ffffff",
+          "#fff0f6",
+          "#ffdae9",
+          "#f7b2ce",
+          "#fbd5e6"
+        ],
+        "gradient": true,
+        "angle": 0
+      },
+      "outlines": [
+        {
+          "color": "#aa597e",
+          "width": 4
+        },
+        {
+          "color": "#ffffff",
+          "width": 3.5
+        },
+        {
+          "color": "#e38db6",
+          "width": 3.5
+        }
+      ],
+      "shadow": {
+        "color": "#ae678e",
+        "width": 18,
+        "blur": 3.5,
+        "offsetX": 4.5,
+        "offsetY": 6.5,
+        "opacity": 50
+      }
+    }
+  }
+]

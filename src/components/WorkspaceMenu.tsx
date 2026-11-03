@@ -1,3 +1,4 @@
+import {conversionLabels} from './ObjectConversionDialog';
 import {filterLabels,filterPresets,filterAvailability,type FilterCategory,type FilterPreset} from '../filter-presets';
 import {pixelSelectionLabels,pixelModifyKinds} from '../pixel-selection-i18n';
 import {vectorAssetLabels} from '../vector-assets-i18n';
@@ -50,6 +51,7 @@ type Props = {
   onArrange: (action: ArrangeAction) => void;
   onTransform: (action: TransformAction) => void;
   onOutlineText: () => void;
+  onConversion: (kind:import("../bridge").ConversionKind)=>void;
   onWritingMode: (mode: 'horizontal' | 'vertical') => void;
   onCompound: (release: boolean) => void;
   onClipping: (action: 'create' | 'release' | 'edit') => void;
@@ -135,6 +137,7 @@ export function WorkspaceMenu(props: Props) {
       { id: 'menu.hideArtworkAbove', label: t.hideArtworkAbove, enabled: doc.selectedVectorObjects.length > 0, action: () => onEdit('hideArtworkAbove') },
       { id: 'menu.hideOtherLayers', label: t.hideOtherLayers, enabled: doc.layers.length > 1, action: () => onEdit('hideOtherLayers') },
     ]}, { id: 'menu.showAllObjects', label: t.showAllObjects, enabled: canEdit && !doc.activeSavedPath && doc.hasHiddenObjects, shortcut: 'CmdOrCtrl+Alt+3', action: () => onEdit('showAllObjects') }, null,
+    ...(['expand','appearance','rasterize','flatten'] as const).map(kind=>({id:`object.${kind}`,label:conversionLabels[locale][kind],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.every(({object})=>object.visible&&!object.locked)&&(kind!=='expand'||!selectedTexts.some(t=>t.text.appearance?.enabled))&&(kind!=='appearance'||selectedTexts.some(t=>t.text.appearance?.enabled)),action:()=>props.onConversion(kind)})),null,
     {id:'command.create-trim-marks',label: {ja:'トリムマークを作成',en:'Create Trim Marks','zh-CN':'创建裁切标记'}[locale],enabled:canArrange&&!doc.activeSavedPath&&selectedObjects.length===1&&selectedObjects[0].object.kind==='rectangle'&&!selectedObjects[0].object.locked,action:()=>onEdit('createTrimMarks')}, null,
     {id:'menu.align',label:alignmentLabels[locale].title,children:[...alignActions.map((action,i)=>({id:`align.${action}`,label:alignmentLabels[locale].actions[i],enabled:canArrange&&selectedObjects.every(({object})=>object.visible&&!object.locked)&&!doc.activeSavedPath&&(doc.alignment?.target!=='keyObject'||!!doc.alignment?.keyObject),action:()=>props.onAlignment({action})})),null,...(['selection','keyObject','artboard'] as const).map(target=>({id:`align.target.${target}`,label:alignmentLabels[locale][target],checked:(doc.alignment?.target??'selection')===target,enabled:canEdit&&(target!=='keyObject'||selectedEntities.size>=2),action:()=>props.onAlignment({target})}))]},
     { label: arrangeLabels[0], enabled: canArrange, children: (['front', 'forward', 'backward', 'back', 'moveToLayer'] as const).map((action, index) => ({

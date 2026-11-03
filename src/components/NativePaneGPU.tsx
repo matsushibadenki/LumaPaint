@@ -26,7 +26,9 @@ export function NativePaneGPU({id,epoch,locale,theme,visible,paused,onActivate,f
   const resize=new ResizeObserver(schedule);resize.observe(element);
   const scroll=(event:Event)=>{if(event.target instanceof Element&&event.target.contains(element))schedule();};
   window.addEventListener('resize',schedule);window.addEventListener('scroll',scroll,true);window.addEventListener('panel-layout-change',schedule);document.addEventListener('visibilitychange',schedule);media.addEventListener('change',schedule);
-  let stop=()=>{};void getCurrentWebviewWindow().listen('documents-changed',schedule).then(fn=>{if(live)stop=fn;else fn();});schedule();
+  let stop=()=>{};void getCurrentWebviewWindow().listen('documents-changed',schedule).then(fn=>{if(live)stop=fn;else fn();});
+  // Restored inactive panes must not depend on the first WebView animation frame.
+  void run();
   return()=>{live=false;resize.disconnect();stop();cancelAnimationFrame(frame);clearTimeout(retry);window.removeEventListener('resize',schedule);window.removeEventListener('scroll',scroll,true);window.removeEventListener('panel-layout-change',schedule);document.removeEventListener('visibilitychange',schedule);media.removeEventListener('change',schedule);void hide();};
  },[id,epoch,theme,visible,paused]);
  const label={ja:'このドキュメントを編集（GPU表示）',en:'Edit this document (GPU view)','zh-CN':'编辑此文档（GPU视图）'}[locale];

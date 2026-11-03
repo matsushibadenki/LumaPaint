@@ -341,6 +341,14 @@ impl Property {
             _ => 0.,
         }
     }
+    fn limits(self) -> (f32, f32) {
+        match self {
+            Self::Opacity => (0., 100.),
+            Self::ScaleX | Self::ScaleY => (0.1, 10000.),
+            Self::Rotation => (-36000., 36000.),
+            _ => (-65536., 65536.),
+        }
+    }
     fn valid(self, value: f32) -> bool {
         value.is_finite()
             && match self {
@@ -407,7 +415,15 @@ impl Track {
             Interpolation::Ease => t * t * (3. - 2. * t),
             Interpolation::Cubic => a.curve.unwrap_or_default().sample(t),
         };
-        a.value + (b.value - a.value) * t
+        let value = a.value + (b.value - a.value) * t;
+        // Float32 cancellation can move a bounded Bezier a fraction below a
+        // physical limit (e.g. a descending scale ending at 0.1%).
+        match property {
+            Property::Opacity => value.clamp(0., 100.),
+            Property::ScaleX | Property::ScaleY => value.clamp(0.1, 10000.),
+            Property::Rotation => value.clamp(-36000., 36000.),
+            _ => value.clamp(-65536., 65536.),
+        }
     }
 }
 impl Animation {
@@ -516,6 +532,14 @@ impl Animation {
                     })
                 {
                     return Err("Invalid animation keyframe".into());
+                }
+                if keys.windows(2).any(|w| {
+                    w[0].interpolation == Interpolation::Cubic
+                        && w[0].curve.is_some_and(|c| {
+                            c.overshoots() && !c.output_valid(w[0].value, w[1].value, *property)
+                        })
+                }) {
+                    return Err("Tangent output exceeds property limits / 接線の出力範囲を超えています / 切线输出超出属性范围".into());
                 }
             }
             total_motions += track.motions.len();

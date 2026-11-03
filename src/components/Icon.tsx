@@ -1,5 +1,5 @@
 type Name = 'blur' | 'sharpen' | 'smudge' | 'crop' | 'links' | 'imageFrameRectangle' | 'imageFrameEllipse' | 'eyedropper' | 'transformMove' | 'transformReflect' | 'transformShear' | 'transformEach' | 'transformReset' | 'chevronDown' | 'chevronRight' | 'lock' | 'unlock' | 'pixels' | 'image' | 'zoomIn' | 'zoomOut' | 'hand' | 'layout' | 'animation' | 'text' | 'textVertical' | 'textFrame' | 'textFrameVertical' | 'timeline' | 'rectangle' | 'ellipse' | 'portrait' | 'landscape' | 'open' | 'save' | 'saveAs' | 'lasso' | 'polygonLasso' | 'magneticLasso' | 'objectSelection' | 'quickSelection' | 'magicWand' | 'selectionBrush' | 'paintBucket' | 'cloneStamp' | 'brush' | 'vector' | 'vectorSelect' | 'vectorDirectSelect' | 'vectorScale' | 'vectorRotate' | 'vectorPen' | 'vectorPencil' | 'vectorAnchorAdd' | 'vectorAnchorDelete' | 'vectorAnchorConvert' | 'vectorRectangle' | 'vectorEllipse' | 'importVector' | 'zoom' | 'undo' | 'redo' | 'eye' | 'eyeOff' | 'panels' | 'minus' | 'plus';
-type PanelIconName = 'lut' | 'align' | 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
+type PanelIconName = 'textEffects' | 'lut' | 'align' | 'screentone' | 'animationRecord' | 'animationDuplicate' | 'animationDelete' | 'animationKey' | 'effects' | 'folder' | 'swatches' | 'gradient' | 'pathfinder' | 'stroke' | 'eraser' | 'palette' | 'document' | 'layers';
 export const iconPaths: Record<Name | PanelIconName, string> = {
   lut: 'M12 2l9 5v10l-9 5-9-5V7z M3 7l9 5 9-5 M12 12v10 M7.5 4.5l9 5v10 M7.5 9.5v10 M3 12l9 5 9-5',
   animationRecord: 'M4 4h16v16H4z M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
@@ -47,6 +47,7 @@ export const iconPaths: Record<Name | PanelIconName, string> = {
   layout: 'M3 3h18v18H3z M3 9h18 M10 9v12',
   animation: 'M3 4h18v16H3z M3 8h18 M7 4v4 M13 4v4 M19 4v4 M10 11l5 3-5 3z',
   textVertical: 'M16 3v18 M12 5h8 M12 19h8 M5 5v14 M3 16l2 3 2-3',
+  textEffects: 'M4 5h12 M10 5v15 M6 20h8 M3 5v3 M17 5v3 M20 10l1 3 3 1-3 1-1 3-1-3-3-1 3-1z',
   text: 'M4 4h16 M12 4v16 M8 20h8 M4 4v3 M20 4v3',
   textFrameVertical: 'M3 4h18v16H3z M16 7v10 M12 7v10 M8 7v10',
   textFrame: 'M3 4h18v16H3z M7 8h10 M12 8v8 M9 16h6 M7 8v2 M17 8v2',

@@ -1,11 +1,13 @@
 import {velocityCurve} from './timeline-velocity.ts';
-import {DEFAULT_KEY_CURVE,linkedCurves,type KeyCurve} from './key-curve.ts';
+import {DEFAULT_KEY_CURVE,linkedCurves,overshootLinkedCurves,type KeyCurve} from './key-curve.ts';
 import type {TimelineKey} from './timeline-view';
 export const GRAPH={width:240,height:160,left:32,right:8,top:12,bottom:24};
 export type GraphRange={min:number;max:number};
 export function graphRange(keys:readonly TimelineKey[],base:number):GraphRange {
  let min=keys.length?Infinity:base,max=keys.length?-Infinity:base;
- for(const key of keys){min=Math.min(min,key.value);max=Math.max(max,key.value);}
+ for(let i=0;i<keys.length;i++){const key=keys[i];min=Math.min(min,key.value);max=Math.max(max,key.value);
+  if(key.interpolation==='cubic'&&key.curve&&keys[i+1]){const dv=keys[i+1].value-key.value;for(const y of [key.curve.y1,key.curve.y2]){const v=key.value+dv*y;min=Math.min(min,v);max=Math.max(max,v);}}
+ }
  const pad=Math.max(1,(max-min)*.15);return {min:min-pad,max:max+pad};
 }
 export function graphPoint(frame:number,value:number,duration:number,range:GraphRange,time={start:0,end:Math.max(1,duration-1)}){return {x:GRAPH.left+(frame-time.start)/Math.max(.000001,time.end-time.start)*(GRAPH.width-GRAPH.left-GRAPH.right),y:GRAPH.top+(range.max-value)/(range.max-range.min)*(GRAPH.height-GRAPH.top-GRAPH.bottom)};}
@@ -37,14 +39,19 @@ export function graphFreeFrame(frame:number,from:number,keys:readonly TimelineKe
  return from;
 }
 
-export type KeyBatchEdit={kind:'velocity';control:1|2;value:number}|{kind:'linkedCurve';curve:KeyCurve;control:1|2}|{kind:'curve';curve:KeyCurve}|{kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
-export function graphBatch(keys:readonly TimelineKey[],frames:readonly number[],edit:KeyBatchEdit,fps=24):TimelineKey[]{
- if(edit.kind==='velocity'){
-  const i=keys.findIndex(k=>k.frame===frames[0]),c=frames.length===1&&i>=0&&keys[i+1]?velocityCurve(keys[i],keys[i+1],fps,edit.control,edit.value):null;
-  return c?keys.map((k,j)=>j===i?{...k,interpolation:'cubic',curve:c}:k):[...keys];
+export type KeyBatchEdit={kind:'linkedVelocity';control:1|2;value:number;overshoot:boolean}|{kind:'overshootLinkedCurve';curve:KeyCurve;control:1|2}|{kind:'overshootVelocity';control:1|2;value:number}|{kind:'velocity';control:1|2;value:number}|{kind:'linkedCurve';curve:KeyCurve;control:1|2}|{kind:'curve';curve:KeyCurve}|{kind:'move';frameDelta:number;valueDelta:number}|{kind:'shiftTime';delta:number}|{kind:'shiftValue';delta:number}|{kind:'interpolation';interpolation:TimelineKey['interpolation']}|{kind:'delete'};
+export function graphBatch(keys:readonly TimelineKey[],frames:readonly number[],edit:KeyBatchEdit,fps=24,limits={min:-65536,max:65536}):TimelineKey[]{
+ if(edit.kind==='velocity'||edit.kind==='overshootVelocity'||edit.kind==='linkedVelocity'){
+  const i=keys.findIndex(k=>k.frame===frames[0]),c=frames.length===1&&i>=0&&keys[i+1]?velocityCurve(keys[i],keys[i+1],fps,edit.control,edit.value,limits,edit.kind==='overshootVelocity'||(edit.kind==='linkedVelocity'&&edit.overshoot)):null;
+  if(!c)return [...keys];
+  const next=keys.map((k,j)=>j===i?{...k,interpolation:'cubic' as const,curve:c}:k);
+  if(edit.kind!=='linkedVelocity')return next;
+  const changes=overshootLinkedCurves(next,i,c,edit.control,limits,edit.overshoot,true);
+  return changes.length?next.map((k,j)=>{const change=changes.find(c=>c.index===j);return change?{...k,curve:change.curve}:k;}):[...keys];
  }
- if(edit.kind==='linkedCurve'){
-  const changes=linkedCurves(keys,keys.findIndex(k=>k.frame===frames[0]),edit.curve,edit.control);
+ if(edit.kind==='linkedCurve'||edit.kind==='overshootLinkedCurve'){
+  if(frames.length!==1)return [...keys];
+  const index=keys.findIndex(k=>k.frame===frames[0]),changes=edit.kind==='overshootLinkedCurve'?overshootLinkedCurves(keys,index,edit.curve,edit.control,limits):linkedCurves(keys,index,edit.curve,edit.control);
   return keys.map((k,i)=>{const c=changes.find(c=>c.index===i);return c?{...k,interpolation:'cubic',curve:{x1:Math.fround(c.curve.x1),y1:Math.fround(c.curve.y1),x2:Math.fround(c.curve.x2),y2:Math.fround(c.curve.y2)}}:k;});
  }
  const selected=new Set(frames);

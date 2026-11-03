@@ -1956,6 +1956,23 @@ pub async fn set_vector_paint(
 }
 
 #[tauri::command]
+pub async fn convert_objects(
+    window: tauri::WebviewWindow,
+    request: lumapaint_core::object_conversion::ObjectConversion,
+) -> Result<DocumentSnapshot, String> {
+    request.validate()?;
+    #[cfg(target_os = "macos")]
+    {
+        on_main(window, move || platform::convert_objects(request)).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, request);
+        Err("Object conversion is pending on this platform / このOSのオブジェクト変換は未対応です / 此系统尚不支持对象转换".into())
+    }
+}
+
+#[tauri::command]
 pub async fn outline_text(window: tauri::WebviewWindow) -> Result<DocumentSnapshot, String> {
     #[cfg(target_os = "macos")]
     {

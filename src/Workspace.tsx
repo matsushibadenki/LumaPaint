@@ -1,3 +1,5 @@
+import {ObjectConversionDialog,conversionDefaults} from './components/ObjectConversionDialog';
+import {convertObjects,type ConversionKind} from './bridge';
 import { pressurePreset } from './bridge';
 import { ColorUsageProvider } from './color-history';
 import type { LayerGroupEdit } from './bridge';
@@ -129,6 +131,7 @@ export function Workspace() {
   const [toolSettings,setToolSettings]=useState<CanvasTool|null>(null);
   const openToolSettings=(tool:string)=>{if(tool==="gradient"){showGradientPanel();}else if(tool==="vectorScale"||tool==="vectorRotate"){setTransformAction(tool==="vectorScale"?"scale":"rotate");}else if(tool==="vectorSelect"){setTransformAction("move");}else if(tool==="vectorDirectSelect"||tool.startsWith("vectorAnchor")){setDirectControlOpen(true);}else{setToolSettings(tool as CanvasTool);}};
   const [directControlOpen,setDirectControlOpen] = useState(false);
+  const [conversionKind,setConversionKind]=useState<ConversionKind|null>(null);
   const [transformAction, setTransformAction] = useState<TransformAction | null>(null);
   const [lastTransformTool, setLastTransformTool] = useState<'vectorScale' | 'vectorRotate'>('vectorScale');
   const [lastVectorSelectTool, setLastVectorSelectTool] = useState<'vectorSelect' | 'vectorDirectSelect'>('vectorSelect');
@@ -204,6 +207,8 @@ export function Workspace() {
   const closeColorSettings = useCallback(() => setColorSettingsOpen(false), []);
   const t = workspaceMessages[locale];
   const common = messages[locale];
+  // Authored history belongs to the Rust document, not the GPU surface.
+  const canHistory = documentAvailable && !placingImage && !busy && !fileBusy;
   const documentEditable = !placingImage && documentAvailable && documents.find(document => document.id === activeDocumentId)?.format !== 'tiled';
   const toolReason = useCallback((tool: CanvasTool) => toolUnavailableReason(tool, {
     document: documentState, available: documentAvailable && ready,
@@ -481,11 +486,11 @@ export function Workspace() {
   };
 
   const edit = useCallback(async (action: DocumentEditAction) => {
-    if (!ready || busy) return;
+    if (action === 'undo' || action === 'redo' ? !canHistory : !ready || busy) return;
     setBusy(true); setError('');
     try { updateDocument(await editDocument(action)); } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
-  }, [ready, busy, updateDocument]);
+  }, [ready, busy, canHistory, updateDocument]);
 
   const combineVectors = useCallback(async (operation: PathOperation) => {
     if (!ready || busy || (documentState.selectedVectorObjects.length < 2 || documentState.selectedVectorObjects.length > 64)) return;
@@ -609,7 +614,7 @@ export function Workspace() {
     finally { setBusy(false); }
   }, [ready, busy, fileBusy, updateDocument]);
 
-  useShortcutInputBlocked(placingImage||mediaBrowserOpen||toneStudioOpen||lutStudioOpen||settingsOpen||colorSettingsOpen||newDocumentOpen||importImageOpen||directControlOpen||!!transformAction||shortcutsOpen||!!toolSettings||!!layerMaskTarget||!!savedSelectionDialog||!!pixelSelectionDialog);
+  useShortcutInputBlocked(!!conversionKind||placingImage||mediaBrowserOpen||toneStudioOpen||lutStudioOpen||settingsOpen||colorSettingsOpen||newDocumentOpen||importImageOpen||directControlOpen||!!transformAction||shortcutsOpen||!!toolSettings||!!layerMaskTarget||!!savedSelectionDialog||!!pixelSelectionDialog);
   useShortcutCommands('tools',[
     ...toolCommands(locale,documentAvailable&&ready&&!placingImage&&!shortcutsOpen,tool=>{setTool(tool);if(tool==='text')showTextPanel();if(tool==='gradient')showGradientPanel();}, tool=>!toolReason(tool)),
     {id:'layer.addPaint',label:{ja:'新規ピクセルレイヤー',en:'New Pixel Layer','zh-CN':'新建像素图层'}[locale],category:t.layers,defaultKey:'Primary+Alt+Shift+KeyN',enabled:documentEditable,action:()=>void createLayer('paint')},
@@ -627,7 +632,7 @@ export function Workspace() {
         if (event.key === 'Enter' || event.key === 'Escape') void finishPlacement(event.key === 'Enter');
         return;
       }
-      if (mediaBrowserOpen || toneStudioOpen || lutStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
+      if (conversionKind || mediaBrowserOpen || toneStudioOpen || lutStudioOpen || newDocumentOpen || importImageOpen || directControlOpen || transformAction) return;
 
       const target = event.target as HTMLElement;
       if (event.defaultPrevented || directControlOpen || target.closest('dialog[open], [role=menu]')) return;
@@ -650,7 +655,7 @@ export function Workspace() {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [shortcutsOpen, documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, lutStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
+  }, [conversionKind,shortcutsOpen, documentState.layerGroups, locale, documentState.guides.selected, documentState.guides.nudge, documentEditable, updateDocument, placeLinkedImage, mediaBrowserOpen, toneStudioOpen, lutStudioOpen, activeDocumentId, documentAction, edit, file, documentAvailable, settingsOpen, colorSettingsOpen, newDocumentOpen, importImageOpen, directControlOpen, transformAction, placingImage, finishPlacement, swapColors, toolMode, showTextPanel, inlineText, changeGroup]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -672,11 +677,11 @@ export function Workspace() {
   return <ColorUsageProvider colorMode={documentState.colorMode} colorProfile={documentState.colorProfile} alpha={brush.alpha ?? 1} onError={setError}><div className="workspace" data-tool-mode={toolMode} data-panels={panels ? 'open' : 'closed'}>
     <header className="application-bar">
       <AppMenu locale={locale} onSettings={openSettings} onError={setError} />
-      <WorkspaceMenu onRotateImage={turns=>{if(activeDocumentId!==null)void invoke<DocumentSnapshot>('rotate_image_menu',{documentId:activeDocumentId,revision:documentState.revision,turns}).then(updateDocument).catch(error=>setError(String(error)));}} onImageResolution={()=>setImageResolutionOpen(true)} onCanvasSize={()=>setCanvasSizeOpen(true)} onFilter={(category,preset)=>{
+      <WorkspaceMenu onConversion={kind=>{if(kind==='appearance'){void convertObjects(conversionDefaults(kind,horizontalResolution)).then(updateDocument).catch(cause=>setError(String(cause)));}else setConversionKind(kind);}} onRotateImage={turns=>{if(activeDocumentId!==null)void invoke<DocumentSnapshot>('rotate_image_menu',{documentId:activeDocumentId,revision:documentState.revision,turns}).then(updateDocument).catch(error=>setError(String(error)));}} onImageResolution={()=>setImageResolutionOpen(true)} onCanvasSize={()=>setCanvasSizeOpen(true)} onFilter={(category,preset)=>{
           if(activeDocumentId===null||!documentEditable||!ready||busy||fileBusy)return;
           setBusy(true);setError('');
           void applyFilter(activeDocumentId,documentState.revision,documentState.layerId,category,preset).then(updateDocument).catch(cause=>setError(String(cause))).finally(()=>setBusy(false));
-        }} onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{if(['selectAll','deselectAll','isolate'].includes(edit.action)){setPanels(true);setLayerPanelRequest(n=>n+1);}changeLayerGroups(edit);}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={documentAvailable && !placingImage && ready && !busy && !fileBusy} canEdit={documentEditable && ready && !busy && !fileBusy}
+        }} onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{if(['selectAll','deselectAll','isolate'].includes(edit.action)){setPanels(true);setLayerPanelRequest(n=>n+1);}changeLayerGroups(edit);}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={canHistory} canEdit={documentEditable && ready && !busy && !fileBusy}
         zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -726,6 +731,7 @@ export function Workspace() {
       {savedSelectionDialog&&<NativeModal kind={savedSelectionDialog==='bulk'?'bulkVectorSelection':savedSelectionDialog==='assets'?'vectorAssets':savedSelectionDialog==='attribute'?'appearanceAttribute':'vectorSelections'} action={savedSelectionDialog} locale={locale} theme={theme} onClose={()=>setSavedSelectionDialog(null)} onError={setError}>{savedSelectionDialog==='assets'?<VectorAssetsDialog locale={locale} document={documentState} onClose={()=>setSavedSelectionDialog(null)} onUpdate={updateDocument}/>:(savedSelectionDialog==='bulk'||savedSelectionDialog==='attribute')?<BulkVectorSelectionDialog attributeOnly={savedSelectionDialog==='attribute'} locale={locale} document={documentState} onClose={()=>setSavedSelectionDialog(null)} onUpdate={updateDocument}/>:<SavedSelectionsDialog locale={locale} document={documentState} mode={savedSelectionDialog} onClose={()=>setSavedSelectionDialog(null)} onUpdate={updateDocument}/>}</NativeModal>}
       {toolSettings && <NativeModal kind="toolSettings" action={toolSettings} locale={locale} theme={theme} onClose={()=>setToolSettings(null)} onError={setError}><ToolSettingsDialog tool={toolSettings} locale={locale} document={documentState} brush={brush} onBrush={setBrush} onZoom={changeZoom} onUpdate={updateDocument} onClose={()=>setToolSettings(null)}/></NativeModal>}
       {directControlOpen && <NativeModal kind="directControls" locale={locale} theme={theme} onClose={()=>setDirectControlOpen(false)} onError={setError}><DirectControlDialog locale={locale} doc={documentState} onApply={updateDocument} onClose={()=>setDirectControlOpen(false)} /></NativeModal>}
+      {conversionKind&&<NativeModal kind="objectConversion" locale={locale} theme={theme} action={conversionKind} onClose={()=>setConversionKind(null)} onError={setError}><ObjectConversionDialog kind={conversionKind} locale={locale} resolution={horizontalResolution} onClose={()=>setConversionKind(null)} onApply={async request=>{updateDocument(await convertObjects(request));}}/></NativeModal>}
       {transformAction && <NativeModal kind="transform" locale={locale} theme={theme} onClose={()=>setTransformAction(null)} onError={setError} action={transformAction}><TransformDialog resolution={horizontalResolution} key={transformAction} action={transformAction} locale={locale} onClose={()=>setTransformAction(null)} onApply={async values=>{updateDocument(await transformObjects(transformAction,values));}} /></NativeModal>}
       <nav className="tool-rail" aria-label={t.tools} title={toolSettingsLabels[locale].hint}>
         <div className="tool-columns">

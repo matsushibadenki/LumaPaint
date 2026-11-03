@@ -1,4 +1,4 @@
-//! Normalized, monotone cubic easing for the interval after a key.
+//! Cubic easing with monotone time and bounded, optional value overshoot.
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,10 +20,29 @@ impl Default for KeyCurve {
 }
 impl KeyCurve {
     pub fn valid(self) -> bool {
-        [self.x1, self.y1, self.x2, self.y2]
+        [self.x1, self.x2]
             .iter()
             .all(|v| v.is_finite() && (0. ..=1.).contains(v))
+            && [self.y1, self.y2]
+                .iter()
+                .all(|v| v.is_finite() && (-2. ..=3.).contains(v))
             && self.x1 <= self.x2
+    }
+    pub fn overshoots(self) -> bool {
+        !(0. ..=1.).contains(&self.y1) || !(0. ..=1.).contains(&self.y2)
+    }
+    pub(super) fn output_valid(self, a: f32, b: f32, property: super::Property) -> bool {
+        // The Bezier convex hull keeps the entire continuous interval within
+        // the property limits, including between integer preview frames.
+        [self.y1, self.y2].iter().all(|y| {
+            property.valid(if *y == 0. {
+                a
+            } else if *y == 1. {
+                b
+            } else {
+                a + (b - a) * y
+            })
+        })
     }
     pub fn sample(self, time: f32) -> f32 {
         if time <= 0. {
@@ -45,7 +64,7 @@ impl KeyCurve {
                 high = u;
             }
         }
-        bezier((low + high) * 0.5, self.y1, self.y2).clamp(0., 1.)
+        bezier((low + high) * 0.5, self.y1, self.y2)
     }
 }
 
@@ -56,6 +75,48 @@ mod tests {
         animation::{Interpolation, KeyBatchEdit, Keyframe, Property},
         Document,
     };
+    #[test]
+    fn overshoot_samples_are_not_clipped_and_time_stays_monotone() {
+        for (y, sign) in [(2., 1.), (-1., -1.)] {
+            let c = KeyCurve {
+                y1: y,
+                y2: y,
+                ..KeyCurve::default()
+            };
+            assert!(c.valid() && c.overshoots());
+            assert_eq!(c.sample(0.), 0.);
+            assert_eq!(c.sample(1.), 1.);
+            assert!(if sign > 0. {
+                c.sample(0.5) > 1.
+            } else {
+                c.sample(0.5) < 0.
+            });
+            for i in 0..=1000 {
+                assert!(c.sample(i as f32 / 1000.).is_finite());
+            }
+            assert!(c.output_valid(20., 40., Property::Opacity));
+            assert!(!c.output_valid(0., 100., Property::Opacity));
+        }
+        for c in [
+            KeyCurve {
+                y1: -2.01,
+                ..KeyCurve::default()
+            },
+            KeyCurve {
+                y2: 3.01,
+                ..KeyCurve::default()
+            },
+            KeyCurve {
+                x1: 0.9,
+                x2: 0.1,
+                ..KeyCurve::default()
+            },
+        ] {
+            assert!(!c.valid());
+        }
+        assert!(!KeyCurve::default().overshoots());
+    }
+
     #[test]
     fn cubic_curve_matches_linear_and_ease_and_stays_bounded() {
         for i in 0..=100 {
@@ -109,7 +170,7 @@ mod tests {
                 ..KeyCurve::default()
             },
             KeyCurve {
-                y2: 1.1,
+                y2: 3.1,
                 ..KeyCurve::default()
             },
         ] {

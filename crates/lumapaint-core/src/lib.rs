@@ -21,6 +21,7 @@ pub mod screentone;
 pub mod selection;
 pub mod stroke;
 pub mod svg_backend;
+pub mod text_appearance;
 pub mod tiles;
 pub mod vector;
 
@@ -55,3 +56,5 @@ pub mod selection_raster;
 mod selection_transform;
 
 pub mod natural_media;
+
+pub mod object_conversion;

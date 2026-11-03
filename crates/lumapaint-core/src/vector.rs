@@ -226,6 +226,8 @@ pub enum WritingMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(default)]
 pub struct VectorText {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<crate::text_appearance::TextAppearance>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub font_axes: std::collections::BTreeMap<String, f32>,
     #[serde(default)]
@@ -341,6 +343,7 @@ pub enum MojikumiMode {
 impl Default for VectorText {
     fn default() -> Self {
         Self {
+            appearance: None,
             font_axes: Default::default(),
             no_color: false,
             change_generation: 0,
@@ -896,6 +899,9 @@ impl VectorText {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(appearance) = &self.appearance {
+            appearance.validate()?;
+        }
         if self.content.chars().take(MAX_TEXT_CHARACTERS + 1).count() > MAX_TEXT_CHARACTERS
             || self
                 .content

@@ -1,6 +1,6 @@
 // Derivatives of the authored property curves, in units / second.
 import type {TimelineKey} from './timeline-view';
-import {DEFAULT_KEY_CURVE,type KeyCurve} from './key-curve.ts';
+import {DEFAULT_KEY_CURVE,curveOvershoots,curveValueBounds,type KeyCurve} from './key-curve.ts';
 export type VelocityPoint={frame:number;value:number};
 export type VelocityData={lines:VelocityPoint[][];jumps:number[];singular:number[];min:number;max:number};
 const cubic=(u:number,a:number,b:number)=>3*(1-u)**2*u*a+3*(1-u)*u*u*b+u*u*u;
@@ -62,16 +62,18 @@ function intervalVelocity(a:TimelineKey,b:TimelineKey,fps:number,time:number):nu
 }
 
 // Mirrors Rust's Velocity edit; returned handles are the authored float32 values.
-export function velocityCurve(a:TimelineKey,b:TimelineKey,fps:number,control:1|2,value:number):KeyCurve|null{
- const info=velocityControl(a,b,fps,control);if(!info||!Number.isFinite(value)||value<info.min||value>info.max)return null;
- const c={...info.curve},y=Math.max(0,Math.min(1,value/info.rate*info.x));
- if(control===1)c.y1=Math.fround(y);else c.y2=Math.fround(1-y);return c;
+export function velocityCurve(a:TimelineKey,b:TimelineKey,fps:number,control:1|2,value:number,limits={min:-65536,max:65536},overshoot=false):KeyCurve|null{
+ const info=velocityControl(a,b,fps,control,limits,overshoot);if(!info||!Number.isFinite(value)||value<info.min||value>info.max)return null;
+ const c={...info.curve};if(value===info.value)return c;
+ const y=control===1?value/info.rate*info.x:1-value/info.rate*info.x;
+ if(control===1)c.y1=Math.fround(y);else c.y2=Math.fround(y);return c;
 }
-export function velocityControl(a:TimelineKey|undefined,b:TimelineKey|undefined,fps:number,control:1|2){
+export function velocityControl(a:TimelineKey|undefined,b:TimelineKey|undefined,fps:number,control:1|2,limits={min:-65536,max:65536},overshoot=false){
  if(!a||!b||b.frame<=a.frame||!Number.isFinite(fps)||fps<=0||a.interpolation==='hold')return null;
  const f=Math.fround,c=a.interpolation==='linear'?{x1:f(1/3),y1:f(1/3),x2:f(2/3),y2:f(2/3)}:a.interpolation==='ease'?{x1:f(1/3),y1:0,x2:f(2/3),y2:1}:a.curve??{x1:f(1/3),y1:0,x2:f(2/3),y2:1};
  const x=control===1?c.x1:1-c.x2,rate=(b.value-a.value)*fps/(b.frame-a.frame);
- if(x<=0||rate===0||!Number.isFinite(rate))return null;
- const limit=rate/x,value=rate*(control===1?c.y1:1-c.y2)/x;
- return {curve:c,x,rate,value,min:Math.min(0,limit),max:Math.max(0,limit)};
+ if((!overshoot&&curveOvershoots(c))||x<=0||rate===0||!Number.isFinite(rate))return null;
+ const value=rate*(control===1?c.y1:1-c.y2)/x,bounds=curveValueBounds(a.value,b.value,f(limits.min),f(limits.max),overshoot),rates=control===1?[rate*bounds.min/x,rate*bounds.max/x]:[rate*(1-bounds.max)/x,rate*(1-bounds.min)/x];
+ // Include an existing valid boundary handle without quantizing it again.
+ return {curve:c,x,rate,value,min:Math.min(value,...rates),max:Math.max(value,...rates)};
 }
