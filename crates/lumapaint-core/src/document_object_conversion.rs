@@ -55,17 +55,14 @@ impl Document {
                 if object.blend_mode != "normal" {
                     return Err("Use Normal blending before conversion / 描画モードを通常にしてから変換してください / 请将混合模式设为正常后再转换".into());
                 }
+                if object.clipping_group.is_some() {
+                    return Err("Select artwork inside the clipping group, not its clipping path / クリッピング枠ではなく内側のオブジェクトを選択してください / 请选择剪切组内的对象，而不是剪切路径".into());
+                }
                 if !object.visible
                     || self.object_is_locked(&object.id)
                     || self.is_publication_text_frame(&object.id)
-                    || object.clipping_group.is_some()
-                    || layer.vector_objects.iter().any(|o| {
-                        o.clipping_group
-                            .as_ref()
-                            .is_some_and(|g| object.group_path.contains(g))
-                    })
                 {
-                    return Err("Release clipping and unlock selected objects first / クリッピングとロックを解除してから変換してください / 请先释放剪切并解锁所选对象".into());
+                    return Err("Unlock and show editable artwork first / 編集可能なオブジェクトを表示しロックを解除してください / 请先显示并解锁可编辑对象".into());
                 }
             }
             if combine
@@ -92,6 +89,10 @@ impl Document {
                     .iter()
                     .cloned()
                     .map(|mut o| {
+                        // Convert the unclipped member and keep its original
+                        // ancestor groups on replacement. The existing mask
+                        // must be applied once, after conversion, not baked
+                        // into each output path or raster edge.
                         o.group_path.clear();
                         o
                     })

@@ -1,0 +1,58 @@
+{
+  "before": {
+    "runs": [
+      {
+        "real_seconds": 1.32,
+        "cpu_seconds": 1.1,
+        "rss_bytes": 167067648,
+        "instructions": 9389921258
+      },
+      {
+        "real_seconds": 2.04,
+        "cpu_seconds": 1.31,
+        "rss_bytes": 163201024,
+        "instructions": 9433426139
+      },
+      {
+        "real_seconds": 2.11,
+        "cpu_seconds": 1.31,
+        "rss_bytes": 163987456,
+        "instructions": 9449734508
+      }
+    ],
+    "median": {
+      "real_seconds": 2.04,
+      "cpu_seconds": 1.31,
+      "rss_bytes": 163987456,
+      "instructions": 9433426139
+    }
+  },
+  "after": {
+    "runs": [
+      {
+        "real_seconds": 1.22,
+        "cpu_seconds": 1.06,
+        "rss_bytes": 155697152,
+        "instructions": 8638728611
+      },
+      {
+        "real_seconds": 1.58,
+        "cpu_seconds": 1.07,
+        "rss_bytes": 158990336,
+        "instructions": 8647692242
+      },
+      {
+        "real_seconds": 2.46,
+        "cpu_seconds": 1.1300000000000001,
+        "rss_bytes": 158564352,
+        "instructions": 8635427152
+      }
+    ],
+    "median": {
+      "real_seconds": 1.58,
+      "cpu_seconds": 1.07,
+      "rss_bytes": 158564352,
+      "instructions": 8638728611
+    }
+  }
+}

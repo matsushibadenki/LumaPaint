@@ -39,15 +39,26 @@ pub(super) fn pointer(
         }
         let retained_source = image
             && selection.is_none()
-            && doc.translated_pixel_layer_source(0., 0., copy)?.is_some();
+            && doc
+                .svg_layers()
+                .any(|layer| layer.id == snapshot.layer_id && !layer.vector_layer);
         let content_bounds = if retained_source {
             let source = doc
                 .svg_layers()
                 .find(|l| l.id == snapshot.layer_id)
                 .ok_or("Image layer not found")?;
-            Some(lumapaint_renderer::vector::pixel_source_bounds(
-                &source.source,
-            )?)
+            Some(
+                CANVAS
+                    .with(|canvas| {
+                        canvas.borrow().as_ref().and_then(|canvas| {
+                            canvas.renderer.pixel_drag_bounds(doc, &snapshot.layer_id)
+                        })
+                    })
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        lumapaint_renderer::vector::pixel_source_bounds(&source.source)
+                    })?,
+            )
         } else {
             None
         };
@@ -86,6 +97,7 @@ pub(super) fn pointer(
                     return Ok(());
                 }
                 if d.retained_source {
+                    let previous_revision = doc.revision();
                     let source = doc
                         .translated_pixel_layer_source(dx as f32, dy as f32, d.copy)?
                         .ok_or("Image layer changed")?;
@@ -95,6 +107,18 @@ pub(super) fn pointer(
                         [1., 0., 0., 1., dx as f32, dy as f32],
                         !d.copy,
                     )?;
+                    if !d.copy {
+                        CANVAS.with(|canvas| {
+                            if let Some(canvas) = canvas.borrow_mut().as_mut() {
+                                canvas.renderer.commit_pixel_drag(
+                                    doc,
+                                    &d.layer,
+                                    previous_revision,
+                                    [dx as f32, dy as f32],
+                                );
+                            }
+                        });
+                    }
                 } else if let Some(pixels) = d.pixels {
                     let (w, h) = d.dimensions;
                     let moved = move_pixels(&pixels, w, h, d.selection.as_ref(), dx, dy, d.copy);
@@ -121,9 +145,25 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
         let slot = slot.borrow();
         let drag = slot.as_ref().filter(|d| d.retained_source)?;
         Some((|| {
-            let mut preview = DOCUMENT.with(|d| d.borrow().clone_for_rendering());
+            let _timer = input_timing::Stage::new("pixel_drag_preview");
             let dx = (drag.current.x - drag.start.x).round();
             let dy = (drag.current.y - drag.start.y).round();
+            canvas.renderer.set_frame_overlay(overlay());
+            // The document remains the committed source throughout the gesture.
+            // Reposition its retained GPU image instead of rebuilding SVG/PNG per event.
+            let retained = DOCUMENT.with(|d| {
+                canvas.renderer.render_pixel_drag(
+                    canvas.viewport,
+                    &d.borrow(),
+                    &drag.layer,
+                    [dx, dy],
+                    drag.copy,
+                )
+            })?;
+            if retained {
+                return Ok(());
+            }
+            let mut preview = DOCUMENT.with(|d| d.borrow().clone_for_rendering());
             if dx != 0. || dy != 0. {
                 let source = preview
                     .translated_pixel_layer_source(dx, dy, drag.copy)?

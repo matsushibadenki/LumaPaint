@@ -717,6 +717,89 @@ mod tests {
         });
     }
     #[test]
+    fn conversion_inside_clipping_keeps_mask_history_and_composition() {
+        crate::vector::with_compatibility_renderer(|| {
+            let mut seed = text(None);
+            let r = request(ConversionKind::Appearance);
+            seed.convert_selected_objects(false, |s, o, dpi| convert(s, o, dpi, &r))
+                .unwrap();
+            let template = seed.svg_layers().next().unwrap().vector_objects[0].clone();
+            for kind in [
+                ConversionKind::Expand,
+                ConversionKind::Rasterize,
+                ConversionKind::Flatten,
+            ] {
+                let mut d = Document::default();
+                let layer = d.add_vector_layer().unwrap();
+                for (id, path, color) in [
+                    ("art-a", "M0 0H160V160H0Z", [240, 30, 80, 128]),
+                    ("art-b", "M50 20H180V180H50Z", [20, 180, 220, 150]),
+                    ("mask", "M40 40H120V120H40Z", [0, 0, 0, 255]),
+                ] {
+                    let mut o = template.clone();
+                    o.id = id.into();
+                    o.name = id.into();
+                    o.group_path.clear();
+                    o.path.data = path.into();
+                    o.fill_gradient = None;
+                    o.stroke = None;
+                    o.fill = Some(VectorPaint {
+                        registration: false,
+                        color,
+                    });
+                    d.upsert_vector_object(&layer, o).unwrap();
+                }
+                d.select_vector_objects(vec!["art-a".into(), "art-b".into(), "mask".into()])
+                    .unwrap();
+                d.clipping_path("create").unwrap();
+                d.select_direct_objects(vec!["art-a".into(), "art-b".into()])
+                    .unwrap();
+                let before = d.encode().unwrap();
+                let source = d.svg_layers().next().unwrap().source.clone();
+                let mask = d
+                    .svg_layers()
+                    .next()
+                    .unwrap()
+                    .vector_objects
+                    .iter()
+                    .find(|o| o.id == "mask")
+                    .unwrap()
+                    .clone();
+                let r = request(kind);
+                d.convert_selected_objects(kind == ConversionKind::Flatten, |s, o, dpi| {
+                    convert(s, o, dpi, &r)
+                })
+                .unwrap();
+                let objects = &d.svg_layers().next().unwrap().vector_objects;
+                assert_eq!(objects.iter().find(|o| o.id == "mask").unwrap(), &mask);
+                assert!(objects
+                    .iter()
+                    .all(|o| o.group_path.contains(mask.clipping_group.as_ref().unwrap())));
+                let after = d.encode().unwrap();
+                let actual = &d.svg_layers().next().unwrap().source;
+                assert!(difference(&source, actual) < 0.01);
+                let pixels = crate::vector::rasterize_svg(actual, 960, 640).unwrap();
+                assert_eq!(pixels.pixels[(30 * 960 + 60) * 4 + 3], 0);
+                assert!(pixels.pixels[(60 * 960 + 60) * 4 + 3] > 0);
+                let reopened = Document::decode(&after).unwrap();
+                assert_eq!(
+                    reopened.svg_layers().next().unwrap().source,
+                    actual.as_str()
+                );
+                d.undo();
+                assert_eq!(d.encode().unwrap(), before);
+                d.redo();
+                assert_eq!(d.encode().unwrap(), after);
+                d.select_direct_objects(vec!["mask".into()]).unwrap();
+                let before = d.encode().unwrap();
+                assert!(d
+                    .convert_selected_objects(false, |s, o, dpi| convert(s, o, dpi, &r))
+                    .is_err());
+                assert_eq!(d.encode().unwrap(), before);
+            }
+        });
+    }
+    #[test]
     fn translucent_gradient_solid_bands_preserve_alpha_and_backdrop() {
         crate::vector::with_compatibility_renderer(|| {
             let mut d = text(None);

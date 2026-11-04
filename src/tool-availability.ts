@@ -47,13 +47,15 @@ export function toolUnavailableReason(tool: CanvasTool, context: ToolContext, lo
   if (layer.locked || member?.locked || groups.some(group => group.locked)) return reason('locked');
   if (!layer.visible || member?.visible === false || groups.some(group => !group.visible)) return reason('hidden');
   if (doc.layerEditTarget === 'mask') return maskTools.has(tool) ? undefined : reason('mask');
+  // Native selection also moves whole pixel layers and selects imported SVG paths.
+  if (tool === 'vectorSelect' || tool === 'vectorDirectSelect') return undefined;
   const vectorTool = tool.startsWith('vector') || tool.startsWith('text') || tool.startsWith('imageFrame');
   if (vectorTool) return layer.kind === 'vector' ? undefined : reason('vector');
   if (tool === 'gradient') return layer.kind === 'paint' || layer.kind === 'vector' ? undefined : reason('paint');
   return layer.kind === 'paint' ? undefined : reason('paint');
 }
 
-// Each toolbar menu contains tools with the same layer requirements.
+// Map toolbar groups to the capability checked for their primary tool.
 export function toolbarTool(item: string): CanvasTool {
   return ({ selection: 'rectangle', vectorSelection: 'vectorSelect', transform: 'vectorScale', zoom: 'zoomIn' } as Record<string, CanvasTool>)[item] ?? item as CanvasTool;
 }

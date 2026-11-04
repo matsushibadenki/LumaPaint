@@ -626,10 +626,25 @@ pub fn pixel_source_bounds(source: &str) -> Result<[f32; 4], String> {
     if source.len() > 4 * 1024 * 1024 {
         return Err("Invalid image source size".into());
     }
-    let options = parsed_text::svg_options();
-    let tree = usvg::Tree::from_str(source, &options).map_err(|e| e.to_string())?;
+    let tree = parsed_text::parse(source)?;
     let bounds = tree.root().abs_layer_bounding_box();
     Ok([bounds.x(), bounds.y(), bounds.width(), bounds.height()])
+}
+
+pub(crate) fn pixel_source_document_bounds(
+    source: &str,
+    document: (u32, u32),
+) -> Result<[f32; 4], String> {
+    let tree = parsed_text::parse(source)?;
+    let bounds = tree.root().abs_layer_bounding_box();
+    let scale =
+        (document.0 as f32 / tree.size().width()).min(document.1 as f32 / tree.size().height());
+    Ok([
+        bounds.x() * scale + (document.0 as f32 - tree.size().width() * scale) * 0.5,
+        bounds.y() * scale + (document.1 as f32 - tree.size().height() * scale) * 0.5,
+        bounds.width() * scale,
+        bounds.height() * scale,
+    ])
 }
 
 pub(crate) struct SvgRegionRaster {

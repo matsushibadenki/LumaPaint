@@ -1,0 +1,6 @@
+{
+  "outside_patch": [
+    "crates/lumapaint-core/examples/clipped_qa.rs",
+    "crates/lumapaint-renderer/src/object_conversion.rs"
+  ]
+}

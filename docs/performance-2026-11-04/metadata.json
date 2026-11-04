@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-04",
+  "timezone": "Asia/Tokyo",
+  "initial_head": "d693ada8cfdf8c0e339344f9487f96204f879e09",
+  "final_head": "d693ada8cfdf8c0e339344f9487f96204f879e09",
+  "initial_status": " M crates/lumapaint-core/src/document_object_conversion.rs\n M crates/lumapaint-renderer/src/object_conversion.rs\n M src/components/ObjectConversionDialog.tsx\n?? crates/lumapaint-core/examples/clipped_qa.rs\n",
+  "final_status": " M crates/lumapaint-core/src/document.rs\n M crates/lumapaint-core/src/document_object_conversion.rs\n M crates/lumapaint-renderer/src/object_conversion.rs\n M crates/lumapaint-renderer/src/thumbnails.rs\n M docs/roadmap.md\n M src/components/ObjectConversionDialog.tsx\n?? crates/lumapaint-renderer/examples/bench_native_reference.rs\n",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B123",
+  "architecture": "arm64",
+  "profile": "Release, opt-level=3, thin LTO, codegen-units=1; renderer default features",
+  "binaries": {
+    "native-before": "1790fa4a76851f7ab7891771a72d192e61f03a43a3d230b26549e70590707709",
+    "native-after": "264faad1bbc05795de3ef529f1931742a0ab33092318bc7bac453ea18f66bfaa",
+    "scene-before": "2af844198a6054535277afa6b14b45e53b7fdf01aa39e1a531a6ed8705faf5b3",
+    "scene-after": "df2ea3d97c2137441c0d86e5b66b11a9487ef70d5674c45e96a59495b69b96a9"
+  },
+  "benchmark_source_sha256": "549ef2f9e0484006fd12cdefc0595ab126145c36997f0b411f9f08904fe0a53f",
+  "source_sha256": {
+    "crates/lumapaint-core/src/document.rs": "f0cfba70977ba1add2e87d1cad550deb13f9f33df775935bf81092327bf6a319",
+    "crates/lumapaint-renderer/src/thumbnails.rs": "93a2a13b7fab2ff330944398c316c473d31152c179b5154f101cd3adf922e76a",
+    "docs/images/illust.svg": "5d405e8dc3480eac836207c246e44513ae9b7ceffd6bef237ac0985505f1dce8"
+  },
+  "flags": {
+    "LUMAPAINT_RENDER_METRICS": null,
+    "LUMAPAINT_PARALLEL_TEXT_CACHE": null,
+    "LUMAPAINT_ONION_GPU_BASELINE": null,
+    "LUMAPAINT_WORKSPACE_GPU_BASELINE": null
+  },
+  "notes": [
+    "Concurrent object-conversion/QA edits were preserved; see initial.json and concurrent-source-changes.json.",
+    "Builds/tests preceded primary timing. A small/medium confirmation overlapping Clippy was excluded and repeated after the Clippy process completed.",
+    "Small confirmation processes were intentionally stopped only after the complete 32/600-object cohorts, to avoid rerunning later stress cases. Correctness is covered by complete separate runs.",
+    "Background system activity was not isolated. No process belonging to another task was stopped.",
+    "A queued regression cargo from this run was terminated to avoid the shared target lock; regression and Clippy used an independent temporary target."
+  ]
+}

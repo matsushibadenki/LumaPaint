@@ -172,10 +172,11 @@ fn render_sized_ink(
     } else {
         rasterize_svg
     };
-    let snapshot = document.snapshot();
-    let scale = (max_side / snapshot.width.max(snapshot.height) as f32).min(1.);
-    let width = (snapshot.width as f32 * scale).round().max(1.) as u32;
-    let height = (snapshot.height as f32 * scale).round().max(1.) as u32;
+    let (doc_width, doc_height) = document.dimensions();
+    let canvas_color = document.canvas_color();
+    let scale = (max_side / doc_width.max(doc_height) as f32).min(1.);
+    let width = (doc_width as f32 * scale).round().max(1.) as u32;
+    let height = (doc_height as f32 * scale).round().max(1.) as u32;
     let mut tiles = TiledRasterDocument::new(width, height)?;
     tiles.add_layer("thumb".into(), "Thumbnail".into())?;
     if let Some(source) = document.paint_source() {
@@ -241,16 +242,16 @@ fn render_sized_ink(
             let pixel = crate::root_paint::composite(
                 input,
                 [
-                    (x as f32 + 0.5) * snapshot.width as f32 / width as f32,
-                    (y as f32 + 0.5) * snapshot.height as f32 / height as f32,
+                    (x as f32 + 0.5) * doc_width as f32 / width as f32,
+                    (y as f32 + 0.5) * doc_height as f32 / height as f32,
                 ],
                 &effects,
                 mask.as_ref(),
-                snapshot.canvas_color == CanvasColor::White && !ink_only,
+                canvas_color == CanvasColor::White && !ink_only,
                 document.paper(),
                 [
-                    snapshot.width as f32 / width as f32,
-                    snapshot.height as f32 / height as f32,
+                    doc_width as f32 / width as f32,
+                    doc_height as f32 / height as f32,
                 ],
             );
             let index = ((y * width + x) * 4) as usize;
@@ -267,16 +268,13 @@ fn render_sized_ink(
     } else {
         vec![("layer-1".into(), clipboard_png(width, height, background)?)]
     };
-    for layer in document
-        .svg_layers()
-        .filter(|layer| snapshot.layers.iter().any(|l| l.id == layer.id))
-    {
+    for layer in document.artwork_svg_layers() {
         let mut pixels = rasterize(&layer.source, width, height)?.pixels;
         crate::screentone::apply(
             &mut pixels,
             &document.layer_effects(&layer.id),
             width,
-            [0., 0., snapshot.width as f32, snapshot.height as f32],
+            [0., 0., doc_width as f32, doc_height as f32],
         );
         if layer.visible {
             over(&mut composite, &pixels, layer.effective_opacity());
@@ -466,6 +464,50 @@ mod tests {
         let image = resvg::tiny_skia::Pixmap::decode_png(png).unwrap();
         let offset = ((y * image.width() + x) * 4) as usize;
         image.data()[offset..offset + 4].try_into().unwrap()
+    }
+    #[test]
+    fn scene_reference_does_not_build_ui_object_summaries() {
+        use lumapaint_core::{document::TextSettings, vector::VectorText};
+        let mut doc = Document::default();
+        doc.set_text_object(TextSettings {
+            id: None,
+            text: VectorText {
+                content: "English 日本語 简体中文".into(),
+                ..Default::default()
+            },
+            position: [30., 40.],
+            color: [20, 40, 80],
+        })
+        .unwrap();
+        let before = doc.encode().unwrap();
+        let expected = scene_pixels(&doc, 64).unwrap();
+        crate::performance::take();
+        let actual = scene_pixels(&doc, 64).unwrap();
+        let stats = crate::performance::take();
+        assert_eq!(actual.pixels, expected.pixels);
+        assert_eq!(doc.encode().unwrap(), before);
+        if crate::performance::enabled() {
+            assert!(!stats
+                .counts
+                .contains_key("document_snapshot_default_stroke_styles_elided"));
+        }
+        // A full-canvas editing guide would visibly cover the authored text if included.
+        let mut guide_shape = doc.svg_layers().next().unwrap().vector_objects[0].clone();
+        guide_shape.id = "editing-guide".into();
+        guide_shape.kind = lumapaint_core::vector::VectorObjectKind::Rectangle;
+        guide_shape.text = None;
+        guide_shape.path.data = "M0 0H960V640H0Z".into();
+        guide_shape.control_points = vec![[0., 0.], [960., 640.]];
+        guide_shape.fill = Some(lumapaint_core::vector::VectorPaint {
+            registration: false,
+            color: [255, 0, 0, 255],
+        });
+        doc.saved_path_action("new", None, "Editing guide").unwrap();
+        let guide = doc.selected_vector_target().unwrap().unwrap();
+        doc.upsert_vector_object(&guide, guide_shape).unwrap();
+        let state = doc.encode().unwrap();
+        assert_eq!(scene_pixels(&doc, 64).unwrap().pixels, expected.pixels);
+        assert_eq!(doc.encode().unwrap(), state);
     }
     #[test]
     fn scene_reference_preserves_reduced_dabs_between_pixel_centers() {

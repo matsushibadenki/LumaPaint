@@ -7783,6 +7783,13 @@ impl Document {
     pub fn svg_layers(&self) -> impl Iterator<Item = &SvgLayer> {
         self.svg_layers.iter()
     }
+    /// Authored layers, including hidden ones, without transient path-edit guides.
+    /// Does not construct UI object/text/page summaries.
+    pub fn artwork_svg_layers(&self) -> impl Iterator<Item = &SvgLayer> {
+        self.svg_layers
+            .iter()
+            .filter(|layer| !self.is_path_edit_layer(layer))
+    }
     pub fn editable_vector_layer_id(&self) -> Option<String> {
         self.svg_layers
             .iter()
@@ -13210,6 +13217,31 @@ mod transform_menu_tests {
 
 #[cfg(test)]
 mod independent_saved_path_tests {
+    #[test]
+    fn artwork_layers_match_ui_membership_without_path_guides() {
+        let mut doc = Document::default();
+        let first = doc.add_vector_layer().unwrap();
+        let hidden = doc.add_vector_layer().unwrap();
+        doc.toggle_layer(&hidden).unwrap();
+        doc.saved_path_action("new", None, "Transient guide")
+            .unwrap();
+        let guide = doc.selected_vector_target().unwrap().unwrap();
+        doc.upsert_vector_object(&guide, square("guide-shape"))
+            .unwrap();
+        assert_eq!(doc.svg_layers().count(), 3);
+        let actual: Vec<_> = doc.artwork_svg_layers().map(|l| l.id.clone()).collect();
+        assert_eq!(actual, vec![first, hidden]);
+        let ui: Vec<_> = doc
+            .snapshot()
+            .layers
+            .into_iter()
+            .filter(|l| l.id != "layer-1")
+            .map(|l| l.id)
+            .collect();
+        assert_eq!(actual, ui);
+        doc.saved_path_action("deactivate", None, "").unwrap();
+        assert_eq!(doc.artwork_svg_layers().count(), 2);
+    }
     use super::*;
     use crate::vector::{FillRule, VectorObjectKind, VectorPaint, VectorPath};
 

@@ -10,11 +10,20 @@ for (const tool of ['brush', 'eraser', 'blur', 'sharpen', 'smudge', 'cloneStamp'
   assert.ok(!allowed(tool, context('svg')));
   assert.ok(!allowed(tool, context('paint', { locked: true })));
 }
-for (const tool of ['vectorPen', 'vectorDirectSelect', 'vectorScale', 'vectorRectangle', 'text', 'textVertical', 'textFrame', 'imageFrameRectangle']) {
+for (const tool of ['vectorPen', 'vectorScale', 'vectorRectangle', 'text', 'textVertical', 'textFrame', 'imageFrameRectangle']) {
   assert.ok(allowed(tool, context('vector')));
   assert.ok(!allowed(tool, context()));
   assert.ok(!allowed(tool, context('svg')));
   assert.ok(!allowed(tool, context('vector', {}, { layerEditTarget: 'mask' })));
+}
+for (const tool of ['vectorSelect', 'vectorDirectSelect']) {
+  for (const kind of ['paint', 'svg', 'vector']) {
+    assert.ok(allowed(tool, context(kind)));
+    assert.ok(!allowed(tool, context(kind, { locked: true })));
+    assert.ok(!allowed(tool, context(kind, { visible: false })));
+    assert.ok(!allowed(tool, context(kind, {}, { layerEditTarget: 'mask' })));
+    assert.ok(!allowed(tool, context(kind, {}, { layerEditTarget: 'none' })));
+  }
 }
 for (const tool of ['hand', 'zoomIn', 'zoomOut', 'eyedropper']) {
   assert.ok(allowed(tool, { ...context('paint', { locked: true }), editable: false, busy: true }));

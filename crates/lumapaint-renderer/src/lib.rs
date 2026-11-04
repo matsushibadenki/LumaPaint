@@ -27,6 +27,7 @@ mod native_bezier;
 mod native_composite;
 mod object_cache_state;
 pub mod performance;
+mod pixel_drag;
 pub mod portable_paths;
 mod process_memory;
 pub mod resample;
@@ -1707,6 +1708,7 @@ pub struct Renderer {
     object_pipeline: wgpu::RenderPipeline,
     object_layout: wgpu::BindGroupLayout,
     object_cache: HashMap<String, ObjectLayerCache>,
+    pixel_drag_cache: Option<pixel_drag::Cache>,
     text_clear_buffer: Option<wgpu::Buffer>,
     #[cfg(feature = "skia")]
     native_geometry: native_bezier::Cache,
@@ -3597,7 +3599,21 @@ impl Renderer {
         layer: &SvgLayer,
         shared_only: bool,
     ) -> Result<ObjectLayerCache, String> {
-        let size = document.dimensions();
+        self.prepare_object_cache_at_density(document, layer, shared_only, 1.)
+    }
+
+    fn prepare_object_cache_at_density(
+        &self,
+        document: &Document,
+        layer: &SvgLayer,
+        shared_only: bool,
+        density: f32,
+    ) -> Result<ObjectLayerCache, String> {
+        let document_size = document.dimensions();
+        let size = (
+            (document_size.0 as f32 * density) as u32,
+            (document_size.1 as f32 * density) as u32,
+        );
         let selected_ids = layer_selected_ids(document, layer);
         let has_selection = layer
             .vector_objects
@@ -3613,7 +3629,15 @@ impl Renderer {
         if runs.len() > 64 {
             return Err("Too many object runs".into());
         }
-        let in_use: usize = self.object_cache.values().map(|cache| cache.bytes).sum();
+        let in_use: usize = self
+            .object_cache
+            .values()
+            .map(|cache| cache.bytes)
+            .sum::<usize>()
+            + self
+                .pixel_drag_cache
+                .as_ref()
+                .map_or(0, |cache| cache.image.bytes);
         let mut bytes = 0;
         let mut upload_bytes = 0;
         let mut prepared = Vec::new();
@@ -3664,6 +3688,7 @@ impl Renderer {
                 })?;
                 (cached, rect, allocation, allocation)
             };
+            let rect = rect.map(|v| v / density);
             bytes += allocation;
             upload_bytes += uploaded;
             if bytes + in_use > 64 * 1024 * 1024 {
@@ -3700,7 +3725,7 @@ impl Renderer {
             source: layer.source.clone(),
             selected_ids,
             opacity: layer.effective_opacity(),
-            document_size: size,
+            document_size,
             runs: prepared,
             bytes,
             upload_bytes,
@@ -4127,6 +4152,7 @@ impl Renderer {
             object_pipeline,
             object_layout,
             object_cache: HashMap::new(),
+            pixel_drag_cache: None,
             text_clear_buffer: None,
             #[cfg(feature = "skia")]
             native_geometry,
@@ -4305,7 +4331,7 @@ impl Renderer {
         viewport: Viewport,
         document: &Document,
     ) -> Result<(), String> {
-        self.render_vector_drag_inner(viewport, document, [0.0, 0.0], true)
+        self.render_vector_drag_inner(viewport, document, [0.0, 0.0], true, None)
     }
 
     /// Transient drag offset in document pixels; no document edit or text shaping per frame
@@ -4319,9 +4345,9 @@ impl Renderer {
         if offset != [0., 0.] && document.selected_vectors_have_mask() {
             let mut preview = document.clone_for_rendering();
             preview.move_selected_vectors_preview(offset[0], offset[1])?;
-            return self.render_vector_drag_inner(viewport, &preview, [0., 0.], false);
+            return self.render_vector_drag_inner(viewport, &preview, [0., 0.], false, None);
         }
-        self.render_vector_drag_inner(viewport, document, offset, false)
+        self.render_vector_drag_inner(viewport, document, offset, false, None)
     }
 
     fn render_vector_drag_inner(
@@ -4330,6 +4356,7 @@ impl Renderer {
         document: &Document,
         offset: [f32; 2],
         defer_svg: bool,
+        pixel_drag: Option<pixel_drag::Request<'_>>,
     ) -> Result<(), String> {
         self.surface_retry_pending = false;
         // Direct release previews also present frames. Capture their current
@@ -4384,6 +4411,19 @@ impl Renderer {
         } else {
             (document, offset, defer_svg)
         };
+        let retained_pixel_layer = if pixel_drag.is_none() && offset == [0., 0.] {
+            self.retained_pixel_layer(document, viewport)
+        } else {
+            None
+        };
+        let pixel_drag = pixel_drag.or_else(|| {
+            retained_pixel_layer
+                .as_deref()
+                .map(|layer| pixel_drag::Request {
+                    layer,
+                    offset: [0., 0.],
+                })
+        });
         if document.has_layer_effects("layer-1")
             || document.paint_source().is_some()
             || document
@@ -4656,6 +4696,15 @@ impl Renderer {
         self.object_cache
             .retain(|id, _| document.visible_svg_layers().any(|layer| &layer.id == id));
         let mut object_layers = std::collections::HashSet::new();
+        if let Some(drag) = pixel_drag {
+            object_layers.insert(drag.layer);
+        } else if self
+            .pixel_drag_cache
+            .as_ref()
+            .is_some_and(|cache| !cache.matches(document))
+        {
+            self.pixel_drag_cache = None;
+        }
         #[cfg(feature = "skia")]
         let mut native_layers = std::collections::HashSet::<String>::new();
         #[cfg(not(feature = "skia"))]
@@ -4756,6 +4805,9 @@ impl Renderer {
         );
         let high_zoom = viewport.screen_zoom() > 1.5;
         for original in document.visible_svg_layers() {
+            if pixel_drag.is_some_and(|drag| drag.layer == original.id) {
+                continue;
+            }
             if document.has_layer_effects(&original.id) {
                 continue;
             }
@@ -5120,7 +5172,8 @@ impl Renderer {
                 .and_then(|input| input.stage("encode_brush")),
             performance::time("encode_brush_host"),
         );
-        let translated_uniforms = if offset == [0.0, 0.0]
+        let display_offset = pixel_drag.map_or(offset, |drag| drag.offset);
+        let translated_uniforms = if display_offset == [0.0, 0.0]
             || (translated_layers.is_empty()
                 && partial_layers.is_empty()
                 && object_layers.is_empty())
@@ -5128,8 +5181,8 @@ impl Renderer {
             None
         } else {
             let mut moved = uniforms;
-            moved.document[2] = offset[0];
-            moved.document[3] = offset[1];
+            moved.document[2] = display_offset[0];
+            moved.document[3] = display_offset[1];
             let buffer = crate::gpu_metrics::create_buffer_init!(
                 self.device,
                 &wgpu::util::BufferInitDescriptor {
@@ -5431,6 +5484,21 @@ impl Renderer {
                 #[cfg(feature = "skia")]
                 if native_layers.contains(&layer.id) {
                     self.native_geometry.draw(&mut pass, layer);
+                    continue;
+                }
+                if pixel_drag.is_some_and(|drag| drag.layer == layer.id) {
+                    let cache = self.pixel_drag_cache.as_ref().expect("prepared pixel drag");
+                    pass.set_pipeline(&self.object_pipeline);
+                    for run in &cache.image.runs {
+                        pass.set_bind_group(1, &run.cached.bind_group, &[]);
+                        pass.set_bind_group(2, &run.geometry, &[]);
+                        pass.set_bind_group(
+                            0,
+                            translated_uniforms.as_ref().unwrap_or(&self.bind_group),
+                            &[],
+                        );
+                        pass.draw(0..6, 0..1);
+                    }
                     continue;
                 }
                 if object_layers.contains(layer.id.as_str()) {
