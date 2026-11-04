@@ -207,6 +207,11 @@ impl Renderer {
             cache.layer == layer_id && cache.density == density && cache.matches(document)
         }) {
             self.pixel_drag_cache = None;
+            // Legacy nested SVG viewports are unwrapped by the compatibility
+            // move path. Reusing their clipped display would lose hidden pixels.
+            if layer.source.match_indices("<svg").nth(1).is_some() {
+                return Ok(false);
+            }
             let _timer = performance::time("pixel_drag_cache_prepare_host");
             let bounds =
                 vector::pixel_source_document_bounds(&layer.source, document.dimensions())?;
@@ -233,6 +238,9 @@ impl Renderer {
                 image,
             });
         }
+        // Selection-only revisions do not change the image, but the eventual
+        // commit must be certified against this gesture's current revision.
+        self.pixel_drag_cache.as_mut().unwrap().revision = document.revision();
         performance::count("pixel_drag_retained_frames", 1);
         // Other layers are rendered against the unmodified document; only the
         // selected image receives a transient GPU offset at its original depth.

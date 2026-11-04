@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-04",
+  "image": {
+    "name": "illust.png",
+    "width": 1672,
+    "height": 941,
+    "sha256": "f768ef967b2ecf704f8bfebb3d8d683079690686cfcb64306e57757e2d71054b"
+  },
+  "environment": {
+    "gpu": "Apple M4 / Metal",
+    "build": "Tauri debug, core/renderer opt-level=2",
+    "viewport_pixels": [
+      800,
+      554
+    ],
+    "screen_zoom_percent": 44.98,
+    "backing_scale": 1
+  },
+  "scope": "Native UI, 80 x 50 screen-point alternating translations; four gestures per cohort. Host durations only, not physical display latency or FPS. Baseline forces the previous raster-preview path in the initial build; after also includes bounds/commit reuse. Background workload was not isolated. After excludes the first cold gesture.",
+  "before": {
+    "pointer_down": {
+      "samples_ms": [
+        470.527458,
+        305.704917,
+        385.85375,
+        387.488292
+      ],
+      "median_ms": 386.671021,
+      "max_ms": 470.527458
+    },
+    "pointer_up": {
+      "samples_ms": [
+        632.919542,
+        470.515042,
+        521.001583,
+        517.512875
+      ],
+      "median_ms": 519.257229,
+      "max_ms": 632.919542
+    },
+    "release_redraw": {
+      "samples_ms": [
+        480.470167,
+        361.019,
+        394.64325,
+        392.328167
+      ],
+      "median_ms": 393.4857085,
+      "max_ms": 480.470167
+    },
+    "release_workspace": {
+      "samples_ms": [
+        476.1865,
+        356.87125,
+        390.355583,
+        388.082834
+      ],
+      "median_ms": 389.21920850000004,
+      "max_ms": 476.1865
+    }
+  },
+  "after": {
+    "pointer_down": {
+      "samples_ms": [
+        9.328833,
+        6.511584,
+        6.514375,
+        6.630834
+      ],
+      "median_ms": 6.572604500000001,
+      "max_ms": 9.328833
+    },
+    "pointer_up": {
+      "samples_ms": [
+        60.930541,
+        59.402333,
+        61.118667,
+        60.466375
+      ],
+      "median_ms": 60.698458,
+      "max_ms": 61.118667
+    },
+    "release_redraw": {
+      "samples_ms": [
+        2.105,
+        1.620958,
+        2.773375,
+        2.168584
+      ],
+      "median_ms": 2.136792,
+      "max_ms": 2.773375
+    },
+    "release_workspace": {
+      "samples_ms": [
+        0.002542,
+        0.000958,
+        0.001084,
+        0.001042
+      ],
+      "median_ms": 0.001063,
+      "max_ms": 0.002542
+    }
+  },
+  "after_cold": {
+    "pointer_down_ms": 252.016709,
+    "pixel_cache_prepare_ms": 122.574125,
+    "pixel_upload_bytes": 0,
+    "retained_display_texture_transferred": true
+  }
+}
