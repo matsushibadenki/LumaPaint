@@ -8,14 +8,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  release-state:
+    runs-on: ubuntu-24.04
+    outputs:
+      published: ${{ steps.release.outputs.published }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" > "$RUNNER_TEMP/releases.json"
+          PUBLISHED=$(jq --arg tag "v$VERSION" 'any(.[]; .tag_name == $tag and .draft == false)' "$RUNNER_TEMP/releases.json")
+          echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
   checks:
     uses: ./.github/workflows/ci.yml
   build:
-    needs: checks
+    needs: [checks, release-state]
+    if: needs.release-state.outputs.published != 'true'
     runs-on: macos-latest
     permissions:
       contents: write
