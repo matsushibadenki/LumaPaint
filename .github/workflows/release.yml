@@ -54,11 +54,25 @@ jobs:
 
             macOS Apple Silicon. Install 0.0.2 manually once when upgrading from 0.0.1; subsequent versions can use in-app updates.
           releaseDraft: true
+          uploadUpdaterJson: false
           args: --target aarch64-apple-darwin --bundles app,dmg
-      - name: Validate update manifest
+      - name: Publish validated update manifest to draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          gh release download "v$VERSION" --pattern latest.json --dir /tmp/lumapaint-update
-          python3 scripts/check-update-manifest.py /tmp/lumapaint-update/latest.json
+          TAG="v$VERSION"
+          DIR="$RUNNER_TEMP/lumapaint-update"
+          mkdir -p "$DIR"
+          gh release view "$TAG" --json assets,body,isDraft > "$DIR/release.json"
+          jq -e '.isDraft' "$DIR/release.json" > /dev/null
+          ARCHIVE=$(jq -er '[.assets[].name | select(endswith("_aarch64.app.tar.gz"))] | select(length == 1) | first' "$DIR/release.json")
+          gh release download "$TAG" --pattern "$ARCHIVE.sig" --dir "$DIR"
+          jq --arg version "$VERSION" --rawfile signature "$DIR/$ARCHIVE.sig" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$ARCHIVE" \
+            '{version: $version, notes: .body, pub_date: (now | todateiso8601),
+              platforms: ({"darwin-aarch64": {url: $url, signature: ($signature | rtrimstr("\n"))}}
+                | .["darwin-aarch64-app"] = .["darwin-aarch64"])}' \
+            "$DIR/release.json" > "$DIR/latest.json"
+          python3 scripts/check-update-manifest.py "$DIR/latest.json"
+          gh release upload "$TAG" "$DIR/latest.json" --clobber
