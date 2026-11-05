@@ -1409,3 +1409,5 @@ button.channel-row { grid-template-columns: 18px 34px minmax(0,1fr); min-height:
 .conversion-dialog fieldset>label {grid-template-columns:minmax(0,1fr) 112px;word-break:keep-all;overflow-wrap:normal}
 .conversion-dialog fieldset>label.conversion-check {justify-content:flex-start;white-space:nowrap}
 .conversion-dialog .conversion-check input[type=checkbox] {width:14px;min-width:14px;height:14px;flex:0 0 14px;margin:0}
+
+.updater-status { position: fixed; left: 48px; top: 52px; z-index: 1500; max-width: calc(100vw - 64px); padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); box-shadow: 0 3px 12px #0003; font-size: 12px; pointer-events: none; }

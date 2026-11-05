@@ -3,7 +3,7 @@ members = ["crates/lumapaint-fonts", "crates/lumapaint-core", "crates/lumapaint-
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 [workspace.dependencies]
@@ -17,6 +17,7 @@ codegen-units = 1
 svg2pdf = { path = "vendor/svg2pdf" }
 block = { path = "vendor/block" }
 usvg = { path = "vendor/usvg" }
+resvg = { path = "vendor/resvg" }
 simplecss = { path = "vendor/simplecss" }
 freetype-sys = { path = "vendor/freetype-sys" }
 

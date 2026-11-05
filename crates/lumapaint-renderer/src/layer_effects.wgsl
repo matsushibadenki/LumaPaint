@@ -49,14 +49,27 @@ fn adjust_color(packed:u32,i:u32)->u32 {
 fn main(@builtin(global_invocation_id) id:vec3<u32>){
  let i=id.x;if i>=arrayLength(&input){return;}output[i]=adjust(input[i],i);
 }
+@group(0) @binding(3) var display_source:texture_2d<f32>;
+
 // Display-only output has aligned rows for copy_buffer_to_texture. Quantize
 // opacity exactly where the CPU workspace path does, before sRGB texture sampling.
-@compute @workgroup_size(256)
-fn display(@builtin(global_invocation_id) id:vec3<u32>){
- let i=id.x;if i>=arrayLength(&input){return;}
- let packed=adjust(input[i],i);let opacity=config[1134u];
+fn write_display(source:u32,i:u32){
+ let packed=adjust(source,i);let opacity=config[1134u];
  let rgba=vec4<f32>(f32(packed&255u),f32((packed>>8u)&255u),f32((packed>>16u)&255u),f32(packed>>24u));
  let result=vec4<u32>(floor(rgba*opacity+0.5));
  let width=u32(config[1132u]);let stride=u32(config[1133u]);
  output[(i/width)*stride+i%width]=result.x|result.y<<8u|result.z<<16u|result.w<<24u;
+}
+
+@compute @workgroup_size(256)
+fn display(@builtin(global_invocation_id) id:vec3<u32>){
+ let i=id.x;if i>=arrayLength(&input){return;}write_display(input[i],i);
+}
+// Use the UNORM view: Skia stores encoded, premultiplied RGBA bytes. An sRGB
+// sampling view would linearize RGB before the byte-based color adjustments.
+@compute @workgroup_size(256)
+fn display_texture(@builtin(global_invocation_id) id:vec3<u32>){
+ let size=textureDimensions(display_source);let i=id.x;if i>=size.x*size.y{return;}
+ let rgba=vec4<u32>(floor(textureLoad(display_source,vec2<i32>(i32(i%size.x),i32(i/size.x)),0)*255.+0.5));
+ write_display(rgba.x|rgba.y<<8u|rgba.z<<16u|rgba.w<<24u,i);
 }

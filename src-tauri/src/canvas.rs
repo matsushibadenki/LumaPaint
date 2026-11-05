@@ -1654,6 +1654,17 @@ pub async fn import_svg_layer(window: tauri::WebviewWindow) -> Result<DocumentSn
     }
 }
 
+pub(crate) fn ready_for_update() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        platform::window_sessions::ready_for_update()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 pub fn confirm_discard() -> bool {
     #[cfg(target_os = "macos")]
     {

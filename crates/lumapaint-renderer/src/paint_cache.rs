@@ -10,6 +10,7 @@ pub(crate) struct PaintCache {
     pub compared_strokes: usize,
     active_coords: Vec<TileCoord>,
     active: Option<ActiveTiles>,
+    sampled: Option<(Stroke, Vec<RasterDab>)>,
     pub active_tiles_rasterized: usize,
     uploaded: BTreeMap<TileCoord, Vec<u8>>,
     pub replayed: usize,
@@ -92,6 +93,7 @@ impl PaintCache {
             compared_strokes: 0,
             active_coords: vec![],
             active: None,
+            sampled: None,
             active_tiles_rasterized: 0,
             uploaded: BTreeMap::new(),
             replayed: 0,
@@ -224,12 +226,33 @@ impl PaintCache {
         let active = document.active_paint_stroke();
         // Keep the committed tiles untouched between calls. Only changed active tiles
         // are composited temporarily; unchanged active pixels already live in the display.
-        let sampled = active
-            .filter(|stroke| !stroke.clear)
-            .map(sampled_raster_dabs)
-            .transpose()?;
+        let sample_stroke = active.filter(|stroke| !stroke.clear);
+        let sample_hit = sample_stroke
+            .zip(self.sampled.as_ref())
+            .is_some_and(|(stroke, (old, _))| stroke == old);
+        if unchanged && sample_hit && !force {
+            // Cursor/overlay redraws keep the already uploaded active tiles.
+            crate::performance::count("paint_active_unchanged_frames", 1);
+            return Ok(Vec::new());
+        }
+        let new_samples = if sample_hit {
+            crate::performance::count("paint_active_sample_reuses", 1);
+            None
+        } else {
+            sample_stroke
+                .map(|stroke| {
+                    crate::performance::count("paint_active_sample_builds", 1);
+                    sampled_raster_dabs(stroke)
+                })
+                .transpose()?
+        };
+        let sampled = if sample_hit {
+            self.sampled.as_ref().map(|(_, dabs)| dabs.as_slice())
+        } else {
+            new_samples.as_deref()
+        };
         let next = active
-            .zip(sampled.as_deref())
+            .zip(sampled)
             .and_then(|(stroke, dabs)| ActiveTiles::new(stroke, dabs, document.dimensions()));
         if let Some(next) = &next {
             let compatible = self.active.as_ref().filter(|old| old.style == next.style);
@@ -253,39 +276,38 @@ impl PaintCache {
         if force || size_changed {
             dirty.extend(self.tiles.layers()[0].tiles.allocated_coords());
         }
-        let changes = if let (Some(stroke), Some(dabs), Some(next)) =
-            (active, sampled.as_deref(), next.as_ref())
-        {
-            self.active_tiles_rasterized = next
-                .dabs
-                .keys()
-                .filter(|coord| dirty.contains(coord))
-                .count();
-            if dirty.is_empty() {
-                None
-            } else {
+        let changes =
+            if let (Some(stroke), Some(dabs), Some(next)) = (active, sampled, next.as_ref()) {
+                self.active_tiles_rasterized = next
+                    .dabs
+                    .keys()
+                    .filter(|coord| dirty.contains(coord))
+                    .count();
+                if dirty.is_empty() {
+                    None
+                } else {
+                    self.tiles.paint_brush_dabs_clipped_in_tiles(
+                        "paint",
+                        dabs,
+                        compositing_brush(stroke),
+                        stroke.selection.as_ref(),
+                        Some(&dirty),
+                    )?
+                }
+            } else if let (Some(stroke), Some(dabs)) = (active, sampled) {
                 self.tiles.paint_brush_dabs_clipped_in_tiles(
                     "paint",
                     dabs,
                     compositing_brush(stroke),
                     stroke.selection.as_ref(),
-                    Some(&dirty),
+                    None,
                 )?
-            }
-        } else if let (Some(stroke), Some(dabs)) = (active, sampled.as_deref()) {
-            self.tiles.paint_brush_dabs_clipped_in_tiles(
-                "paint",
-                dabs,
-                compositing_brush(stroke),
-                stroke.selection.as_ref(),
-                None,
-            )?
-        } else {
-            active
-                .map(|stroke| paint_stroke_into_tiles(&mut self.tiles, "paint", stroke))
-                .transpose()?
-                .flatten()
-        };
+            } else {
+                active
+                    .map(|stroke| paint_stroke_into_tiles(&mut self.tiles, "paint", stroke))
+                    .transpose()?
+                    .flatten()
+            };
         let active_coords = next
             .as_ref()
             .map(|next| next.dabs.keys().copied().collect())
@@ -324,6 +346,29 @@ impl PaintCache {
         }
         self.tiles.discard_history();
         let mut uploads = uploads?;
+        if !sample_hit {
+            // Bounded, exact input snapshots: length/pointer/last-point keys are not
+            // sufficient when a cancelled stroke is replaced by another stroke.
+            self.sampled = sample_stroke.zip(new_samples).and_then(|(stroke, dabs)| {
+                let bytes = dabs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<RasterDab>())
+                    .saturating_add(
+                        stroke
+                            .points
+                            .len()
+                            .saturating_mul(std::mem::size_of::<Point>()),
+                    )
+                    .saturating_add(
+                        stroke
+                            .pressures
+                            .len()
+                            .saturating_mul(std::mem::size_of::<f32>()),
+                    );
+                (stroke.selection.is_none() && bytes <= 8 * 1024 * 1024)
+                    .then(|| (stroke.clone(), dabs))
+            });
+        }
         self.committed_key = Some(key);
         self.active = next;
         self.active_coords = active_coords;
@@ -350,6 +395,87 @@ impl PaintCache {
 mod tests {
     use super::*;
     use lumapaint_core::document::Brush;
+
+    #[test]
+    fn unchanged_active_stroke_reuses_samples_but_edits_force_and_history_stay_exact() {
+        let mut doc = Document::default();
+        doc.begin_with_pressure(Point { x: 30., y: 40. }, Brush::default(), 0.3)
+            .unwrap();
+        doc.extend_with_pressure(Point { x: 180., y: 110. }, 0.8)
+            .unwrap();
+        let mut cache = PaintCache::new(doc.dimensions()).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        let data = cache.sampled.as_ref().unwrap().1.as_ptr();
+        for _ in 0..5 {
+            assert!(cache.prepare(&doc, false).unwrap().is_empty());
+            assert_eq!(cache.active_tiles_rasterized, 0);
+            assert_eq!(data, cache.sampled.as_ref().unwrap().1.as_ptr());
+        }
+        assert!(!cache.prepare(&doc, true).unwrap().is_empty());
+        assert_eq!(data, cache.sampled.as_ref().unwrap().1.as_ptr());
+        doc.extend_with_pressure(Point { x: 210., y: 130. }, 0.2)
+            .unwrap();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(
+            &cache.sampled.as_ref().unwrap().0,
+            doc.active_paint_stroke().unwrap()
+        );
+        let mut fresh = PaintCache::new(doc.dimensions()).unwrap();
+        fresh.prepare(&doc, true).unwrap();
+        assert_eq!(cache.uploaded, fresh.uploaded);
+        doc.finish();
+        cache.prepare(&doc, false).unwrap();
+        assert!(cache.sampled.is_none());
+        for redo in [false, true] {
+            if redo {
+                doc.redo();
+            } else {
+                doc.undo();
+            }
+            cache.prepare(&doc, false).unwrap();
+            let mut fresh = PaintCache::new(doc.dimensions()).unwrap();
+            fresh.prepare(&doc, true).unwrap();
+            assert_eq!(cache.uploaded, fresh.uploaded);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual active stroke redraw benchmark"]
+    fn unchanged_active_redraw_timing() {
+        let mut doc = Document::default();
+        doc.begin(Point { x: 20., y: 40. }, Brush::default())
+            .unwrap();
+        for i in 0..300 {
+            doc.extend(Point {
+                x: 20. + i as f32 * 2.,
+                y: 180. + (i as f32 * 0.2).sin() * 100.,
+            })
+            .unwrap();
+        }
+        let mut cache = PaintCache::new(doc.dimensions()).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        let mut baseline = Vec::new();
+        let mut retained = Vec::new();
+        for i in 0..21 {
+            for reuse in [false, true] {
+                if !reuse {
+                    cache.sampled = None;
+                }
+                let start = std::time::Instant::now();
+                assert!(cache.prepare(&doc, false).unwrap().is_empty());
+                if i > 0 {
+                    if reuse { &mut retained } else { &mut baseline }
+                        .push(start.elapsed().as_secs_f64() * 1000.);
+                }
+            }
+        }
+        baseline.sort_by(f64::total_cmp);
+        retained.sort_by(f64::total_cmp);
+        eprintln!(
+            "active redraw benchmark: cache_off_ms={:.3} retained_ms={:.3}",
+            baseline[10], retained[10]
+        );
+    }
 
     #[test]
     #[ignore = "manual Release timing; compares targeted updates with forced whole-stroke redraw"]

@@ -20,9 +20,9 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-11-02)
+## Dependency inventory (2026-11-05)
 
-`cargo-license-inventory.json` inventories 634 locked Cargo packages across
+`cargo-license-inventory.json` inventories 639 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:
@@ -84,3 +84,7 @@ for the shared 0.49 SVG tree. No new license metadata is missing from the
 625-package Cargo inventory. See docs/dependency-update-2026-10-26.md.
 
 The moxcms 0.8.1 (BSD/Apache alternatives) and zip 9.2.1 (MIT) source notices are included as `moxcms-LICENSE`, `moxcms-LICENSE-APACHE`, and `zip-LICENSE`.
+
+### Local resvg viewport fix (2026-11-04)
+
+resvg 0.49.0 is now vendored under `vendor/resvg` (Apache-2.0 OR MIT, unchanged version). The offscreen-layer coordinate correction is documented in `vendor/resvg/LUMAPAINT-PATCHES.md`; the existing filter allocation limits are retained.

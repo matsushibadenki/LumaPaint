@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LumaPaint",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "app.lumapaint.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -10,7 +10,16 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "LumaPaint", "width": 1200, "height": 800, "minWidth": 640, "minHeight": 480 }],
+    "windows": [
+      {
+        "label": "main",
+        "title": "LumaPaint",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 480
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' pressure-preview: http://pressure-preview.localhost document-preview: http://document-preview.localhost lut-preview: http://lut-preview.localhost cel-preview: http://cel-preview.localhost media: http://media.localhost asset: http://asset.localhost data: blob:; media-src 'self' media: http://media.localhost; connect-src ipc: http://ipc.localhost"
     }
@@ -19,8 +28,27 @@
     "active": true,
     "targets": "all",
     "category": "GraphicsAndDesign",
-    "resources": { "../third-party-notices/": "third-party-notices/" },
-    "macOS": { "minimumSystemVersion": "12.0" },
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "resources": {
+      "../third-party-notices/": "third-party-notices/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA3QzQzQUMxNkY5MDUxODIKUldTQ1VaQnZ3VHJFQndDeUNGSXdYdlhIMVZGdFB2L2U5RFBFaUdSOGVOemRVZmJNMWJONXJ4MXAK",
+      "endpoints": [
+        "https://github.com/matsushibadenki/LumaPaint/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

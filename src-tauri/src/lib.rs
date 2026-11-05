@@ -15,6 +15,7 @@ mod shortcuts;
 #[cfg(any(target_os = "macos", test))]
 mod surface_retry;
 mod timeline;
+mod updater;
 #[cfg(any(target_os = "macos", test))]
 mod workspace_notifications;
 mod workspace_session;
@@ -67,6 +68,8 @@ fn runtime_info() -> lumapaint_core::RuntimeInfo {
 
 pub fn run() {
     let exit_code = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::Updates::default())
         .register_asynchronous_uri_scheme_protocol("media", |_context, request, responder| {
             media_browser::serve(request, responder)
         })
@@ -155,6 +158,7 @@ pub fn run() {
         .manage(shortcuts::Store::default())
         .manage(lut_editor::Store::default())
         .invoke_handler(tauri::generate_handler![
+            updater::check_for_updates,
             shortcuts::shortcut_catalog,
             shortcuts::save_shortcuts,
             shortcuts::export_shortcuts,

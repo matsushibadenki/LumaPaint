@@ -1892,8 +1892,13 @@ fn anchor_pointer(
 
 impl AnchorDraft {
     fn preview(&self, document: &Document, zoom: f32) -> Result<Document, String> {
-        use std::fmt::Write;
         let mut preview = document.clone_for_rendering();
+        self.apply_preview(&mut preview, zoom)?;
+        Ok(preview)
+    }
+
+    fn apply_preview(&self, preview: &mut Document, zoom: f32) -> Result<(), String> {
+        use std::fmt::Write;
         if self.original != self.object {
             preview.direct_object_preview(&self.layer, self.object.clone())?;
         }
@@ -1908,7 +1913,7 @@ impl AnchorDraft {
         guide.fill = None;
         guide.stroke = Some(VectorPaint {
             registration: false,
-            color: document.layer_guide_color(&self.layer),
+            color: preview.layer_guide_color(&self.layer),
         });
         guide.stroke_width = 1. / zoom;
         guide.transform = [1., 0., 0., 1., 0., 0.];
@@ -1971,7 +1976,7 @@ impl AnchorDraft {
             );
         }
         preview.append_vector_guide(&self.layer, guide)?;
-        Ok(preview)
+        Ok(())
     }
 }
 
@@ -2480,7 +2485,7 @@ fn anchor_guides_preview(document: &Document, scale: f32) -> Result<Document, St
             index: 0,
             start: [0., 0.],
         };
-        preview = draft.preview(&preview, scale)?;
+        draft.apply_preview(&mut preview, scale)?;
     }
     Ok(preview)
 }
@@ -2518,7 +2523,7 @@ fn direct_preview(document: &Document, zoom: f32) -> Result<Document, String> {
             start: [0., 0.],
         };
         // Reuse the same anchor/handle guides as the anchor-point tool.
-        preview = draft.preview(&preview, zoom)?;
+        draft.apply_preview(&mut preview, zoom)?;
         let mut marker = object.clone();
         marker.clipping_group = None;
         marker.group_path.clear();
@@ -5224,7 +5229,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         return DOCUMENT.with(|d| canvas.renderer.render(canvas.viewport, &d.borrow()));
     }
     if let Some(d) = BOX_DRAFT.with(|draft| *draft.borrow()) {
-        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
+        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone_for_rendering());
         preview.resize_selected_image_frames(d.matrix, d.rotate || d.scale_content)?;
         canvas
             .renderer
@@ -5242,7 +5247,7 @@ fn render_canvas_inner(canvas: &mut Canvas) -> Result<(), String> {
         TOOL.with(|t| t.get()),
         CanvasTool::VectorScale | CanvasTool::VectorRotate
     ) {
-        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone());
+        let mut preview = DOCUMENT.with(|doc| doc.borrow().clone_for_rendering());
         if let Some(draft) = ROTATE_DRAFT.with(|d| *d.borrow()) {
             if !transform_selected_controls(&mut preview, draft.center, 1., draft.angle)? {
                 preview.rotate_selected_vectors(draft.center, draft.angle)?;
@@ -8698,6 +8703,136 @@ mod tests {
             before[3].1.control_points
         );
         DIRECT_POINTS.with(|points| points.borrow_mut().clear());
+    }
+
+    #[test]
+    fn editable_drag_previews_preserve_artwork_and_export_gpu_fixtures() {
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
+        DIRECT_GESTURE.with(|g| g.borrow_mut().take());
+        let mut doc = Document::default();
+        let layer = doc.add_vector_layer().unwrap();
+        let pen = PenDraft {
+            closing: None,
+            layer: layer.clone(),
+            brush: Brush::default(),
+            nodes: [[0., 0.], [8., 0.], [8., 8.], [0., 8.]]
+                .map(|p| (p, p))
+                .to_vec(),
+        };
+        for i in 0..101 {
+            let mut object = pen.object(true, &format!("edit-{i}")).unwrap();
+            object.stroke = None;
+            object.stroke_width = 0.;
+            object.opacity = if i == 100 { 0.4 } else { 0.55 };
+            object.fill = Some(VectorPaint {
+                registration: false,
+                color: if i == 100 {
+                    [255, 40, 20, 255]
+                } else {
+                    [30, 80, 255, 255]
+                },
+            });
+            object.transform = if i == 100 {
+                [14., 0., 0., 14., 292., 152.]
+            } else {
+                [
+                    4.,
+                    0.,
+                    0.,
+                    4.,
+                    220. + (i % 10) as f32 * 48.,
+                    80. + (i / 10) as f32 * 48.,
+                ]
+            };
+            doc.upsert_vector_object(&layer, object).unwrap();
+        }
+        doc.set_layer_settings(lumapaint_core::document::LayerSettings {
+            id: layer.clone(),
+            name: "Editable overlap".into(),
+            opacity: 0.6,
+            locked: false,
+            alpha_locked: false,
+            mask_enabled: false,
+            mask_inverted: false,
+            mask_density: 1.,
+        })
+        .unwrap();
+        doc.select_direct_objects(vec!["edit-33".into()]).unwrap();
+        DIRECT_POINTS.with(|p| *p.borrow_mut() = vec![("edit-33".into(), 0)]);
+        let before = doc.encode().unwrap();
+        let output = std::env::var("LUMAPAINT_DRAG_FIXTURES")
+            .ok()
+            .map(std::path::PathBuf::from);
+        if let Some(dir) = &output {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("editable-base.lumapaint"), &before).unwrap();
+        }
+        for (name, zoom) in [("75", 0.75), ("100", 1.), ("200", 2.), ("400", 4.)] {
+            for step in 0..9 {
+                let delta = [step as f32 * 1.25, step as f32 * -0.75];
+                DIRECT_GESTURE.with(|g| {
+                    *g.borrow_mut() = Some(DirectGesture {
+                        corner: None,
+                        corner_all: false,
+                        start: [364., 224.],
+                        current: [364. + delta[0], 224. + delta[1]],
+                        marquee: false,
+                        baseline: vec![],
+                        break_smooth: false,
+                    })
+                });
+                let mut preview = direct_preview(&doc, zoom).unwrap();
+                let mut expected = doc.clone();
+                expected
+                    .move_vector_controls(&[("edit-33".into(), 0)], delta, false)
+                    .unwrap();
+                for (actual, expected) in preview
+                    .svg_layers()
+                    .next()
+                    .unwrap()
+                    .vector_objects
+                    .iter()
+                    .zip(&expected.svg_layers().next().unwrap().vector_objects)
+                {
+                    assert_eq!(actual, expected);
+                }
+                assert_eq!(preview.svg_layers().next().unwrap().opacity, 0.6);
+                if let Some(dir) = &output {
+                    std::fs::write(
+                        dir.join(format!("point-{name}-{step}.lumapaint")),
+                        preview.encode().unwrap(),
+                    )
+                    .unwrap();
+                }
+                DIRECT_GESTURE.with(|g| g.borrow_mut().take());
+                for (kind, scale, angle) in [
+                    ("scale", 1. + step as f32 * 0.035, 0.),
+                    ("rotate", 1., step as f32 * 0.06),
+                ] {
+                    let mut light = doc.clone_for_rendering();
+                    let mut full = doc.clone();
+                    transform_selected_controls(&mut light, [380., 240.], scale, angle).unwrap();
+                    transform_selected_controls(&mut full, [380., 240.], scale, angle).unwrap();
+                    assert_eq!(
+                        light.svg_layers().next().unwrap().source,
+                        full.svg_layers().next().unwrap().source
+                    );
+                    assert_eq!(
+                        light.svg_layers().next().unwrap().vector_objects,
+                        full.svg_layers().next().unwrap().vector_objects
+                    );
+                    if let Some(dir) = &output {
+                        std::fs::write(
+                            dir.join(format!("{kind}-{name}-{step}.lumapaint")),
+                            light.encode().unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+        assert_eq!(doc.encode().unwrap(), before);
+        DIRECT_POINTS.with(|p| p.borrow_mut().clear());
     }
 
     #[test]

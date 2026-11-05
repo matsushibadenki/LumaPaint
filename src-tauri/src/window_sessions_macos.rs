@@ -1020,6 +1020,51 @@ pub(in crate::canvas) fn confirm_window(label: &str) -> bool {
     };
     confirm_discard()
 }
+// Called on the main thread immediately before installation, with no input
+// event allowed between checking every document and replacing the executable.
+pub(in crate::canvas) fn ready_for_update() -> bool {
+    let Some(app) = APP.get() else {
+        return false;
+    };
+    let windows = app.webview_windows();
+    windows_ready_for_update(
+        windows
+            .keys()
+            .filter(|label| crate::editor_windows::is_editor(label))
+            .map(String::as_str),
+    )
+}
+
+fn windows_ready_for_update<'a>(labels: impl Iterator<Item = &'a str>) -> bool {
+    for label in labels {
+        let Ok(_session) = SessionGuard::enter(label) else {
+            return false;
+        };
+        if text_editor::finish(true).is_err() {
+            return false;
+        }
+        let dirty = DOCUMENT_OPEN.with(|open| open.get())
+            && ACTIVE_TILED_DOCUMENT.with(|document| {
+                document.borrow().as_ref().map_or_else(
+                    || DOCUMENT.with(|doc| doc.borrow().is_dirty()),
+                    TiledSession::dirty,
+                )
+            });
+        if dirty
+            || INACTIVE_DOCUMENTS
+                .with(|docs| docs.borrow().iter().any(|entry| entry.content.dirty()))
+        {
+            return false;
+        }
+    }
+    SHARED.with(|shared| {
+        shared
+            .borrow()
+            .values()
+            .all(|record| !record.snapshot.dirty)
+    })
+}
+
 pub(in crate::canvas) fn confirm_all() -> bool {
     let Some(app) = APP.get() else {
         return confirm_discard();
@@ -1801,6 +1846,37 @@ mod tests {
         assert_eq!(workspace_snapshot().documents.len(), 2);
         assert!(transfer_document(id, "settings").is_err());
         close_window("editor-90012");
+    }
+
+    #[test]
+    fn update_requires_saved_documents_in_other_windows_and_inactive_tabs() {
+        let labels = ["editor-90871", "editor-90872"];
+        {
+            let _session = SessionGuard::enter(labels[0]).unwrap();
+            let first = new_document(preset("Update A")).unwrap().active_id.unwrap();
+            DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer().unwrap());
+            new_document(preset("Update B")).unwrap();
+            DOCUMENT.with(|doc| doc.borrow_mut().mark_saved("B.lumapaint".into()));
+            assert!(!windows_ready_for_update(labels.into_iter()));
+            switch_document(first).unwrap();
+            DOCUMENT.with(|doc| doc.borrow_mut().mark_saved("A.lumapaint".into()));
+        }
+        assert!(windows_ready_for_update(labels.into_iter()));
+        {
+            let _session = SessionGuard::enter(labels[1]).unwrap();
+            new_document(preset("Other window")).unwrap();
+            DOCUMENT.with(|doc| doc.borrow_mut().add_vector_layer().unwrap());
+        }
+        assert!(!windows_ready_for_update(labels.into_iter()));
+        {
+            let _session = SessionGuard::enter(labels[1]).unwrap();
+            assert!(DOCUMENT.with(|doc| doc.borrow().is_dirty()));
+            DOCUMENT.with(|doc| doc.borrow_mut().mark_saved("C.lumapaint".into()));
+        }
+        assert!(windows_ready_for_update(labels.into_iter()));
+        for label in labels {
+            close_window(label);
+        }
     }
 
     #[test]

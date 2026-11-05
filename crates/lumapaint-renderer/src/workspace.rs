@@ -13,10 +13,12 @@ struct RetainedLayer {
     source_pixels: Arc<Vec<u8>>,
     source_revision: u64,
     deferred: bool,
+    gpu: bool,
 }
 
 pub(super) struct WorkspaceImage {
     pub image: SharedPreparedLayer,
+    pub texture: Option<wgpu::Texture>,
     pub effect: Option<(lumapaint_core::layer_effects::LayerEffects, u64, [f32; 4])>,
 }
 
@@ -36,6 +38,8 @@ pub(super) struct WorkspaceCache {
     key: Option<[f32; 8]>,
     journal_cursor: u64,
     gpu_display: bool,
+    gpu_svg: bool,
+    gpu_texture_effects: bool,
     layers: Vec<String>,
     retained: std::collections::HashMap<String, RetainedLayer>,
     #[cfg(test)]
@@ -78,6 +82,7 @@ impl WorkspaceCache {
         }
         Ok(prepared)
     }
+    #[cfg(test)]
     pub fn prepare_filtered(
         &mut self,
         document: &Document,
@@ -86,6 +91,27 @@ impl WorkspaceCache {
         excluded: &std::collections::HashSet<&str>,
         gpu_limits: Option<&wgpu::Limits>,
     ) -> Result<Option<Vec<WorkspaceImage>>, String> {
+        self.prepare_with_gpu(document, viewport, offset, excluded, gpu_limits, None)
+    }
+
+    pub fn prepare_with_gpu(
+        &mut self,
+        document: &Document,
+        viewport: Viewport,
+        offset: [f32; 2],
+        excluded: &std::collections::HashSet<&str>,
+        gpu_limits: Option<&wgpu::Limits>,
+        mut gpu: Option<(
+            &wgpu::Device,
+            &wgpu::Queue,
+            Option<&mut super::effects_display::EffectsDisplay>,
+        )>,
+    ) -> Result<Option<Vec<WorkspaceImage>>, String> {
+        #[cfg(not(all(feature = "skia", target_os = "macos")))]
+        let _ = &mut gpu;
+        let gpu_texture_effects = gpu
+            .as_ref()
+            .is_some_and(|(_, _, display)| display.is_some());
         let key = [
             viewport.width as f32,
             viewport.height as f32,
@@ -117,7 +143,9 @@ impl WorkspaceCache {
         } else {
             previews.iter().collect()
         };
-        if self.gpu_display == gpu_limits.is_some()
+        if self.gpu_texture_effects == gpu_texture_effects
+            && self.gpu_svg == gpu.is_some()
+            && self.gpu_display == gpu_limits.is_some()
             && self.key == Some(key)
             && self.layers.len() == layers.len()
             && self.layers.iter().zip(&layers).all(|(id, layer)| {
@@ -145,9 +173,14 @@ impl WorkspaceCache {
         let cursor = journal.cursor();
         let complete_history = journal.read_borrowed(self.journal_cursor).is_some();
         lumapaint_core::performance::count("workspace_journal_range_checks", 1);
-        let same_view =
-            self.gpu_display == gpu_limits.is_some() && self.key == Some(key) && complete_history;
+        let same_view = self.gpu_texture_effects == gpu_texture_effects
+            && self.gpu_svg == gpu.is_some()
+            && self.gpu_display == gpu_limits.is_some()
+            && self.key == Some(key)
+            && complete_history;
         self.gpu_display = gpu_limits.is_some();
+        self.gpu_svg = gpu.is_some();
+        self.gpu_texture_effects = gpu_texture_effects;
         // A failed raster must not leave a valid key after moving old payloads.
         self.key = None;
         let mut retained = std::collections::HashMap::new();
@@ -171,6 +204,7 @@ impl WorkspaceCache {
                     && old.effects == effects
             }) {
                 prepared.push(WorkspaceImage {
+                    texture: None,
                     effect: None,
                     image: PreparedSvgLayer {
                         id: layer.id.clone(),
@@ -184,6 +218,88 @@ impl WorkspaceCache {
                 retained.insert(layer.id.clone(), old.unwrap());
                 continue;
             }
+            #[cfg(all(feature = "skia", target_os = "macos"))]
+            if !layer.paint_layer
+                && (layer.vector_objects.is_empty() || vector::workspace_gpu::editable_layer(layer))
+            {
+                if let Some(texture) = gpu.as_mut().and_then(|(device, queue, display)| {
+                    if effects.active() && display.is_none() {
+                        return None;
+                    }
+                    let dimensions = [document.dimensions().0, document.dimensions().1];
+                    let gpu_opacity = if effects.active() { 1. } else { opacity };
+                    let texture = vector::workspace_gpu::render_editable(
+                        device,
+                        queue,
+                        layer,
+                        dimensions,
+                        size,
+                        rect,
+                        gpu_opacity,
+                    )
+                    .or_else(|| {
+                        vector::workspace_gpu::render(
+                            device,
+                            queue,
+                            &layer.source,
+                            dimensions,
+                            size,
+                            rect,
+                            gpu_opacity,
+                        )
+                    })?;
+                    if effects.active() {
+                        display.as_mut()?.render_texture(
+                            device,
+                            queue,
+                            &texture,
+                            &effects,
+                            [
+                                rect[0],
+                                rect[1],
+                                rect[2] / size[0] as f32,
+                                rect[3] / size[1] as f32,
+                            ],
+                            opacity,
+                        )
+                    } else {
+                        Some(texture)
+                    }
+                }) {
+                    if !layer.vector_objects.is_empty() {
+                        crate::performance::count("workspace_editable_gpu_frames", 1);
+                    }
+                    prepared.push(WorkspaceImage {
+                        texture: Some(texture),
+                        effect: None,
+                        image: PreparedSvgLayer {
+                            id: layer.id.clone(),
+                            source: layer.id.clone(),
+                            opacity,
+                            size: (size[0], size[1]),
+                            fully_contained: true,
+                            pixels: Default::default(),
+                        },
+                    });
+                    retained.insert(
+                        layer.id.clone(),
+                        RetainedLayer {
+                            layer: (*layer).clone(),
+                            effects,
+                            size,
+                            pixels: Default::default(),
+                            source_pixels: Default::default(),
+                            source_revision: 0,
+                            deferred,
+                            gpu: true,
+                        },
+                    );
+                    continue;
+                }
+            }
+            // GPU-only retained images contain no CPU reference pixels. If the
+            // renderer/effects change, regenerate before entering CPU reuse.
+            let old = old.filter(|old| !old.gpu);
             let same_source = old
                 .as_ref()
                 .is_some_and(|old| old.layer.source == layer.source);
@@ -336,6 +452,7 @@ impl WorkspaceCache {
                     layer: retained_layer,
                     effects: effects.clone(),
                     deferred,
+                    gpu: false,
                     size,
                     source_pixels,
                     source_revision,
@@ -343,6 +460,7 @@ impl WorkspaceCache {
                 },
             );
             prepared.push(WorkspaceImage {
+                texture: None,
                 effect: deferred.then_some((
                     effects,
                     source_revision,
@@ -453,7 +571,7 @@ fn dirty_tiles(
     {
         return None;
     }
-    let mut dirty = std::collections::BTreeSet::new();
+    let mut dirty = std::collections::BTreeMap::new();
     let old: std::collections::HashMap<_, _> = before
         .vector_objects
         .iter()
@@ -496,12 +614,12 @@ fn dirty_tiles(
     Some(
         dirty
             .into_iter()
-            .map(|(x, y)| [x, y, 256.min(size[0] - x), 256.min(size[1] - y)])
+            .map(|(_, [x, y, right, bottom])| [x, y, right - x, bottom - y])
             .collect(),
     )
 }
 fn mark_tiles(
-    tiles: &mut std::collections::BTreeSet<(u32, u32)>,
+    tiles: &mut std::collections::BTreeMap<(u32, u32), [u32; 4]>,
     bounds: [f64; 4],
     size: [u32; 2],
     rect: [f32; 4],
@@ -526,7 +644,23 @@ fn mark_tiles(
     }
     for y in (top / 256 * 256..bottom).step_by(256) {
         for x in (left / 256 * 256..right).step_by(256) {
-            tiles.insert((x, y));
+            // Retain exact damage within each bounded tile. A single edited
+            // point/object should not rasterize a whole 256×256 square.
+            let r = [
+                left.max(x),
+                top.max(y),
+                right.min(x + 256),
+                bottom.min(y + 256),
+            ];
+            tiles
+                .entry((x, y))
+                .and_modify(|a| {
+                    a[0] = a[0].min(r[0]);
+                    a[1] = a[1].min(r[1]);
+                    a[2] = a[2].max(r[2]);
+                    a[3] = a[3].max(r[3]);
+                })
+                .or_insert(r);
         }
     }
 }
@@ -895,6 +1029,57 @@ mod tests {
         .unwrap();
         assert!(!tiles.is_empty());
         assert!(tiles.len() < 12);
+        if std::env::var("LUMAPAINT_LOCAL_EDIT_BENCH").as_deref() == Ok("1") {
+            let full_tiles: Vec<_> = tiles
+                .iter()
+                .map(|r| [r[0] / 256 * 256, r[1] / 256 * 256, 256, 256])
+                .collect();
+            let mut before_times = Vec::new();
+            let mut after_times = Vec::new();
+            for sample in 0..21 {
+                for tight in if sample % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let plan = if tight { &tiles } else { &full_tiles };
+                    let start = std::time::Instant::now();
+                    for &[x, y, w, h] in plan {
+                        let rect = [x as f32 - 2., y as f32 - 2., w as f32 + 4., h as f32 + 4.];
+                        let source = tile_svg(after, &bounds, document.dimensions(), rect);
+                        std::hint::black_box(
+                            vector::rasterize_svg_workspace(
+                                &source,
+                                [960, 640],
+                                [w + 4, h + 4],
+                                rect,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    if sample > 0 {
+                        if tight {
+                            &mut after_times
+                        } else {
+                            &mut before_times
+                        }
+                        .push(start.elapsed().as_secs_f64() * 1000.);
+                    }
+                }
+            }
+            before_times.sort_by(f64::total_cmp);
+            after_times.sort_by(f64::total_cmp);
+            eprintln!(
+                "CPU local raster before_ms={:.6} after_ms={:.6} before_pixels={} after_pixels={}",
+                (before_times[9] + before_times[10]) * 0.5,
+                (after_times[9] + after_times[10]) * 0.5,
+                full_tiles
+                    .iter()
+                    .map(|r| (r[2] + 4) * (r[3] + 4))
+                    .sum::<u32>(),
+                tiles.iter().map(|r| (r[2] + 4) * (r[3] + 4)).sum::<u32>()
+            );
+        }
         lumapaint_core::performance::take();
         let incremental = cache
             .prepare(&document, viewport, [0., 0.])

@@ -3112,6 +3112,17 @@
       "repository": "https://github.com/Alexhuszagh/minimal-lexical"
     },
     {
+      "name": "minisign-verify",
+      "version": "0.3.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/jedisct1/rust-minisign-verify"
+    },
+    {
       "name": "miniz_oxide",
       "version": "0.8.9",
       "license": "MIT OR Zlib OR Apache-2.0",
@@ -3470,6 +3481,15 @@
       "repository": "https://github.com/madsmtm/objc2"
     },
     {
+      "name": "objc2-osa-kit",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/madsmtm/objc2"
+    },
+    {
       "name": "objc2-quartz-core",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
@@ -3550,6 +3570,18 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/reem/rust-ordered-float"
+    },
+    {
+      "name": "osakit",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/mdevils/rust-osakit"
     },
     {
       "name": "pango",
@@ -4279,7 +4311,7 @@
         "LICENSE-APACHE",
         "LICENSE-MIT"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "source": null,
       "repository": "https://github.com/linebender/resvg"
     },
     {
@@ -5394,6 +5426,28 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/tauri-apps/tauri"
+    },
+    {
+      "name": "tauri-plugin",
+      "version": "2.7.2",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/tauri-apps/tauri"
+    },
+    {
+      "name": "tauri-plugin-updater",
+      "version": "2.14.1",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE.spdx",
+        "LICENSE_APACHE-2.0",
+        "LICENSE_MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/tauri-apps/plugins-workspace"
     },
     {
       "name": "tauri-runtime",

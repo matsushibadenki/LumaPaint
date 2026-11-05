@@ -1,0 +1,29 @@
+{
+  "platform": "macOS / Apple M4 / Metal",
+  "viewport_pixels": [
+    800,
+    554
+  ],
+  "backing_scale": 1,
+  "image_sha256": "f768ef967b2ecf704f8bfebb3d8d683079690686cfcb64306e57757e2d71054b",
+  "checks": [
+    "image: fit and 200% zoom; pan in both directions",
+    "image: move, Undo, Redo, Undo",
+    "canonical vector: radial and elliptical gradients; fit, 200%, pan",
+    "canonical vector: layer opacity 100% to 49% to 100%"
+  ],
+  "not_verified": [
+    "native vector position edit/Undo: canvas selection did not establish an editable target in this run",
+    "physical display latency and competitor comparison",
+    "Windows/Linux native interaction"
+  ],
+  "last_published_process_counters": {
+    "parsed_text_cache_hits": 33,
+    "parsed_text_cache_misses": 9,
+    "parsed_tree_cache_admissions": 6,
+    "parsed_tree_cache_evictions": 4,
+    "svg_parses": 9,
+    "pixel_drag_commit_reuses": 1,
+    "pixel_drag_upload_bytes": 0
+  }
+}

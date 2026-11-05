@@ -137,7 +137,8 @@ impl Renderer {
         for run in &mut cache.image.runs {
             run.rectangle[0] += offset[0];
             run.rectangle[1] += offset[1];
-            self.queue.write_buffer(
+            crate::gpu_metrics::write_buffer!(
+                self.queue,
                 &run.geometry_buffer,
                 0,
                 bytemuck::cast_slice(&run.rectangle),

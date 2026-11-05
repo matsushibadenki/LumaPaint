@@ -1,0 +1,32 @@
+{
+  "before_fit": {
+    "mean_rgba": 0.0001263537906137184,
+    "max_channel": 7,
+    "pixels_gt32": 0
+  },
+  "after_fit": {
+    "mean_rgba": 0.0001263537906137184,
+    "max_channel": 7,
+    "pixels_gt32": 0
+  },
+  "before_200": {
+    "mean_rgba": 8.190838222021661,
+    "max_channel": 123,
+    "pixels_gt32": 85175
+  },
+  "after_200": {
+    "mean_rgba": 0.00017430054151624548,
+    "max_channel": 6,
+    "pixels_gt32": 0
+  },
+  "before_400": {
+    "mean_rgba": 8.970655460288809,
+    "max_channel": 112,
+    "pixels_gt32": 96630
+  },
+  "after_400": {
+    "mean_rgba": 0.00019855595667870037,
+    "max_channel": 6,
+    "pixels_gt32": 0
+  }
+}

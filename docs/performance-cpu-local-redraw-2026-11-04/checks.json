@@ -1,0 +1,32 @@
+{
+  "renderer": [
+    "    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.90s",
+    "test glyph_run::tests::unclipped_pairs_are_not_compared_when_one_frame_boundary_is_present ... ok",
+    "test paint_bucket::tests::contiguous_stops_at_boundary_and_global_reaches_disconnected_color ... ok",
+    "test tiled_rgba::tests::boundary_patch_matches_contiguous_image_and_preserves_snapshot ... ok",
+    "test vector::workspace_cpu_tests::complex_cpu_composite_crop_comparison ... ignored, requires the licensed AdobeStock derived fixture",
+    "test vector::workspace_gpu::tests::complex_artwork_effects_gpu_comparison ... ignored, requires Metal and licensed LUMAPAINT_COMPLEX_SVG fixture",
+    "test result: ok. 335 passed; 0 failed; 90 ignored; 0 measured; 0 filtered out; finished in 86.02s"
+  ],
+  "skia_clippy": [
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.64s"
+  ],
+  "portable_clippy": [
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.72s"
+  ],
+  "tauri_build": [
+    "✓ 222 modules transformed.",
+    "✓ built in 238ms",
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 11s",
+    "    Finished 1 bundle at:"
+  ],
+  "architecture": [
+    "> python3 scripts/check-core-boundary.py",
+    "lumapaint-core boundary OK.",
+    "lumapaint-formats boundary OK.",
+    "lumapaint-renderer boundary OK."
+  ],
+  "licenses": [
+    "634 dependencies inventoried; 0 lack license metadata."
+  ]
+}

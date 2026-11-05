@@ -1,5 +1,6 @@
 export const settingsMessages = {
   ja: {
+    checkUpdates: 'アップデートを確認…', checkingUpdates: 'アップデートを確認中…',
     pasteboard: 'アートボード外の色', pasteboardDescription: '作品の背景や書き出しには影響しません。', pasteboardTheme: 'テーマの標準色を使用',
     appMenu: 'LumaPaintメニュー', about: 'LumaPaintについて', settings: '設定…',
     title: '設定', close: '設定を閉じる', general: '一般', appearance: 'アピアランス',
@@ -7,6 +8,7 @@ export const settingsMessages = {
     appearanceDescription: 'ワークスペースの明るさを選択します。',
   },
   en: {
+    checkUpdates: 'Check for Updates…', checkingUpdates: 'Checking for updates…',
     pasteboard: 'Outside artboard color', pasteboardDescription: 'Does not affect artwork backgrounds or exports.', pasteboardTheme: 'Use theme default',
     appMenu: 'LumaPaint menu', about: 'About LumaPaint', settings: 'Settings…',
     title: 'Settings', close: 'Close settings', general: 'General', appearance: 'Appearance',
@@ -14,6 +16,7 @@ export const settingsMessages = {
     appearanceDescription: 'Choose the workspace appearance.',
   },
   'zh-CN': {
+    checkUpdates: '检查更新…', checkingUpdates: '正在检查更新…',
     pasteboard: '画板外颜色', pasteboardDescription: '不影响作品背景或导出。', pasteboardTheme: '使用主题默认颜色',
     appMenu: 'LumaPaint菜单', about: '关于LumaPaint', settings: '设置…',
     title: '设置', close: '关闭设置', general: '常规', appearance: '外观',

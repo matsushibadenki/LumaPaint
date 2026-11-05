@@ -3427,6 +3427,15 @@ impl Renderer {
             .into_iter()
             .map(|item| {
                 let mut image = item.image;
+                if let Some(texture) = item.texture {
+                    return Ok(self.cached_svg_texture(texture, image));
+                }
+                if item.effect.is_none() && image.pixels.is_empty() {
+                    return previous
+                        .remove(&image.source)
+                        .filter(|old| old.size == image.size)
+                        .ok_or_else(|| "Missing retained workspace texture".into());
+                }
                 if let Some((effects, revision, mapping)) = item.effect {
                     if let Some(display) = &mut self.effects_display {
                         let old_texture = previous.get(&image.source).map(|old| &old._texture);
@@ -4804,6 +4813,25 @@ impl Renderer {
             performance::time("encode_layers_host"),
         );
         let high_zoom = viewport.screen_zoom() > 1.5;
+        // Route editable SVG fallbacks directly to the viewport compositor.
+        // Otherwise selection guides force a full CPU image (and at high zoom
+        // a second viewport image) before the GPU texture is even attempted.
+        let workspace_vector_layers: std::collections::HashSet<&str> = document
+            .visible_svg_layers()
+            .filter(|layer| !object_layers.contains(layer.id.as_str()))
+            .filter(|layer| {
+                #[cfg(all(feature = "skia", target_os = "macos"))]
+                {
+                    vector::workspace_gpu::editable_layer(layer)
+                }
+                #[cfg(not(all(feature = "skia", target_os = "macos")))]
+                {
+                    let _ = layer;
+                    false
+                }
+            })
+            .map(|layer| layer.id.as_str())
+            .collect();
         for original in document.visible_svg_layers() {
             if pixel_drag.is_some_and(|drag| drag.layer == original.id) {
                 continue;
@@ -4815,6 +4843,9 @@ impl Renderer {
                 || glyph_layers.contains(&original.id)
                 || mesh_layers.contains(&original.id)
             {
+                continue;
+            }
+            if workspace_vector_layers.contains(original.id.as_str()) {
                 continue;
             }
             if (original.vector_layer || cfg!(all(feature = "skia", target_os = "macos")))
@@ -5106,9 +5137,10 @@ impl Renderer {
                 .and_then(|input| input.stage("encode_workspace")),
             performance::time("encode_workspace_host"),
         );
-        let exterior_needed = document
-            .visible_svg_layers()
-            .any(|l| document.has_layer_effects(&l.id))
+        let exterior_needed = !workspace_vector_layers.is_empty()
+            || document
+                .visible_svg_layers()
+                .any(|l| document.has_layer_effects(&l.id))
             || high_zoom
             || document
                 .visible_svg_layers()
@@ -5124,7 +5156,7 @@ impl Renderer {
                         })
                 });
         if exterior_needed {
-            if let Some(prepared) = self.workspace_cache.prepare_filtered(
+            if let Some(prepared) = self.workspace_cache.prepare_with_gpu(
                 document,
                 viewport,
                 offset,
@@ -5133,6 +5165,7 @@ impl Renderer {
                     .as_ref()
                     .map(|_| self.device.limits())
                     .as_ref(),
+                Some((&self.device, &self.queue, self.effects_display.as_mut())),
             )? {
                 let previous = self.workspace_image.take().unwrap_or_default();
                 match self.update_workspace_images(previous, prepared) {
@@ -5149,7 +5182,7 @@ impl Renderer {
             self.workspace_image = None;
         }
         if let Some(preview) = &self.page_preview {
-            if let Some(prepared) = self.page_workspace_cache.prepare_filtered(
+            if let Some(prepared) = self.page_workspace_cache.prepare_with_gpu(
                 preview,
                 viewport,
                 [0., 0.],
@@ -5158,6 +5191,7 @@ impl Renderer {
                     .as_ref()
                     .map(|_| self.device.limits())
                     .as_ref(),
+                Some((&self.device, &self.queue, self.effects_display.as_mut())),
             )? {
                 let previous = self.page_workspace_image.take().unwrap_or_default();
                 self.page_workspace_image = Some(self.update_workspace_images(previous, prepared)?);
@@ -5526,7 +5560,9 @@ impl Renderer {
                     .as_ref()
                     .and_then(|images| images.iter().find(|image| image.source == layer.id))
                 {
-                    let full_layer = high_zoom || document.has_layer_effects(&layer.id);
+                    let full_layer = high_zoom
+                        || document.has_layer_effects(&layer.id)
+                        || workspace_vector_layers.contains(layer.id.as_str());
                     pass.set_pipeline(if full_layer {
                         &self.workspace_full_pipeline
                     } else {

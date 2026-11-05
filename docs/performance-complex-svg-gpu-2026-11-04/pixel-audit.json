@@ -1,0 +1,17 @@
+{
+  "fit": {
+    "pixels_gt32": 3002,
+    "pixels_gt32_outside_3x3_reference_edges": 1,
+    "edge_definition": "3x3 local range >16/255 in at least one premultiplied RGBA channel"
+  },
+  "200": {
+    "pixels_gt32": 2703,
+    "pixels_gt32_outside_3x3_reference_edges": 0,
+    "edge_definition": "3x3 local range >16/255 in at least one premultiplied RGBA channel"
+  },
+  "400": {
+    "pixels_gt32": 1171,
+    "pixels_gt32_outside_3x3_reference_edges": 0,
+    "edge_definition": "3x3 local range >16/255 in at least one premultiplied RGBA channel"
+  }
+}

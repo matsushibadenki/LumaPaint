@@ -1,7 +1,9 @@
 import {useShortcuts,binding,accelerator,displayKey,keyFromAccelerator} from '../shortcuts';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { isTauri } from '@tauri-apps/api/core';
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
+import packageInfo from '../../package.json';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
 import { createNativeMenu, type NativeMenu } from '../native-menu';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -14,6 +16,18 @@ function AppMark() {
 
 export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSettings: () => void; onError: (error: string) => void }) {
   const t = settingsMessages[locale];
+  const [version, setVersion] = useState(packageInfo.version);
+  const [updateStatus, setUpdateStatus] = useState('');
+  useEffect(() => { if (isTauri()) void getVersion().then(setVersion).catch(() => {}); }, []);
+  const checkUpdates = async () => {
+    if (updateStatus) return;
+    setUpdateStatus(t.checkingUpdates);
+    const progress = new Channel<string>();
+    progress.onmessage = setUpdateStatus;
+    try { await invoke('check_for_updates', { locale, progress }); }
+    catch (error) { onError(String(error)); }
+    finally { setUpdateStatus(''); }
+  };
   const shortcuts=useShortcuts();
   const shortcut=accelerator(binding(shortcuts.settings,{id:'app.settings',label:t.settings,category:'LumaPaint',defaultKey:'Primary+Comma'}));
   const native = isTauri();
@@ -39,8 +53,9 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
       nativeMenu.current = null;
       await previous?.close();
       menu = await createNativeMenu({ items: [
-        { text: 'LumaPaint 0.1.0', enabled: false },
+        { text: `LumaPaint ${version}`, enabled: false },
         { item: 'Separator' as const },
+        { text: updateStatus || t.checkUpdates, enabled: !updateStatus, action: () => void checkUpdates() },
         { text: t.settings, accelerator: shortcut || undefined, action: onSettings },
       ] });
       nativeMenu.current = menu;
@@ -79,14 +94,15 @@ export function AppMenu({ locale, onSettings, onError }: { locale: Locale; onSet
   }, [open, native]);
 
   return <>
-    <button ref={trigger} className="app-menu-trigger" type="button" aria-label={t.appMenu} title={t.appMenu} aria-haspopup="menu" aria-expanded={open} onClick={() => void show()} onKeyDown={event => {
+    <button ref={trigger} className="app-menu-trigger" type="button" aria-label={t.appMenu} title={updateStatus || t.appMenu} aria-haspopup="menu" aria-expanded={open} onClick={() => void show()} onKeyDown={event => {
       if (event.key === 'ArrowDown') { event.preventDefault(); void show(); }
       if (event.key === 'Escape') setOpen(false);
     }}><AppMark /></button>
+    {updateStatus && <output className="updater-status" role="status">{updateStatus}</output>}
     {!native && open && createPortal(<div ref={popup} className="app-dropdown" role="menu" aria-label={t.appMenu} style={position} onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
     }}>
-      <p>{t.about}<small>0.1.0</small></p>
+      <p>{t.about}<small>{version}</small></p>
       <div role="separator" />
       <button role="menuitem" onClick={() => { setOpen(false); onSettings(); }}>{t.settings}<kbd>{displayKey(keyFromAccelerator(shortcut))}</kbd></button>
     </div>, document.body)}

@@ -604,6 +604,8 @@ pub(crate) fn font_resolver() -> usvg::FontResolver<'static> {
 mod gpu_cache;
 #[cfg(feature = "skia")]
 pub mod skia_paths;
+#[cfg(all(feature = "skia", target_os = "macos"))]
+pub(crate) mod workspace_gpu;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SvgBackend {
@@ -3616,3 +3618,6 @@ mod image_frame_tests {
         assert_eq!(raster.pixels[3], 0);
     }
 }
+
+#[cfg(test)]
+mod workspace_cpu_tests;

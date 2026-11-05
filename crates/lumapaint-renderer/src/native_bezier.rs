@@ -1047,11 +1047,15 @@ impl Cache {
         offset: [f32; 2],
     ) -> bool {
         let _timer = crate::performance::time("native_geometry_prepare");
-        let previous_upload = (
-            self.metrics.geometry_builds,
-            self.metrics.uniform_upload_bytes,
-        );
+
         let (journal, selected) = scene;
+        // A failed preparation may already update some resident geometry.
+        // Keep the composite invalid until a complete preparation succeeds.
+        let previous_composite_dirty = self.composites.get(&layer.id).map(|c| {
+            let dirty = c.dirty.get();
+            c.dirty.set(true);
+            dirty
+        });
         if !layer.vector_layer
             || !layer.effective_opacity().is_finite()
             || layer.vector_objects.is_empty()
@@ -1221,6 +1225,7 @@ impl Cache {
             layer.vector_objects[i].visible && layer.vector_objects[i].clipping_group.is_none()
         });
         let mut work = 0usize;
+        let mut changed_objects = Vec::with_capacity(candidates.len());
         for &i in &candidates {
             let o = &layer.vector_objects[i];
             let clip_indices = &self.verified[&layer.id].clip_indices[i];
@@ -1317,15 +1322,18 @@ impl Cache {
             if previous_indirect != g.last_indirect {
                 self.metrics.uniform_upload_bytes += std::mem::size_of::<[u32; 4]>();
             }
+            changed_objects.push(
+                !valid
+                    || paint_uploaded != 0
+                    || g.paint.mask_upload_bytes != 0
+                    || previous_uniform != g.last_uniform
+                    || previous_indirect != g.last_indirect,
+            );
             if work > 32_000_000 {
                 return false;
             }
         }
-        let geometry_changed = previous_upload
-            != (
-                self.metrics.geometry_builds,
-                self.metrics.uniform_upload_bytes,
-            );
+
         let isolated = candidates.len() > 1 || layer.effective_opacity() != 1.;
         if isolated {
             let size = [viewport.width, viewport.height];
@@ -1371,9 +1379,19 @@ impl Cache {
                 );
                 self.metrics.uniform_upload_bytes += 16;
             }
-            if !reuse_query || geometry_changed {
-                c.dirty.set(true);
+            if let Some(dirty) = previous_composite_dirty {
+                c.dirty.set(dirty);
             }
+            c.damage(
+                viewport_readiness_key(viewport),
+                candidates
+                    .iter()
+                    .zip(&changed_objects)
+                    .map(|(&i, &changed)| {
+                        let id = layer.vector_objects[i].id.as_str();
+                        (id, self.shapes[id].screen_rect(), changed)
+                    }),
+            );
         } else {
             self.composites.remove(&layer.id);
         }
@@ -1401,16 +1419,42 @@ impl Cache {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: if c.region.get().is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
+            if let Some([x, y, w, h]) = c.region.get() {
+                pass.set_scissor_rect(x, y, w, h);
+                pass.set_pipeline(&self.composite_pipeline.clear);
+                pass.draw(0..3, 0..1);
+                crate::performance::count("native_partial_layer_redraws", 1);
+                crate::performance::count(
+                    "native_layer_redrawn_pixels",
+                    u64::from(w) * u64::from(h),
+                );
+            } else {
+                crate::performance::count(
+                    "native_layer_redrawn_pixels",
+                    u64::from(c.size[0]) * u64::from(c.size[1]),
+                );
+            }
             pass.set_pipeline(&self.encoded_pipeline);
             for &i in self.draw_lists.get(id).into_iter().flatten() {
                 let object_id = self.verified[id].object_ids.get(i);
                 if let Some(g) = object_id.and_then(|id| self.shapes.get(id)) {
+                    if c.region
+                        .get()
+                        .is_some_and(|r| !composite::intersects(r, g.screen_rect()))
+                    {
+                        continue;
+                    }
+                    crate::performance::count("native_layer_objects_redrawn", 1);
                     pass.set_bind_group(0, &g.binding, &[]);
                     pass.draw_indirect(&g.indirect, 0);
                 }
@@ -2024,6 +2068,15 @@ impl Geometry {
             binding,
             last_uniform: None,
             last_indirect: None,
+        })
+    }
+    fn screen_rect(&self) -> [u32; 4] {
+        self.last_uniform.map_or([0; 4], |u| {
+            let x = u[8].floor().max(0.) as u32;
+            let y = u[9].floor().max(0.) as u32;
+            let right = (u[8] + u[10]).ceil().clamp(0., u[2]) as u32;
+            let bottom = (u[9] + u[11]).ceil().clamp(0., u[3]) as u32;
+            [x, y, right.saturating_sub(x), bottom.saturating_sub(y)]
         })
     }
     fn update(
@@ -3565,6 +3618,130 @@ mod tests {
                     }
                 }
             }
+        }
+        // Small path edits must redraw the old + new region, including lower
+        // translucent overlaps, while retaining unrelated pixels exactly.
+        {
+            let mut probe = layer.clone();
+            probe.opacity = 0.6;
+            probe.vector_objects = (0..100)
+                .map(|i| {
+                    let mut item = object("M0 0H8V8H0Z");
+                    item.id = format!("small-{i}");
+                    item.transform[4] = (i % 10) as f32 * 12.;
+                    item.transform[5] = (i / 10) as f32 * 12.;
+                    item.opacity = 0.55;
+                    item
+                })
+                .collect();
+            let mut overlap = object("M18 18H46V46H18Z");
+            overlap.id = "overlap".into();
+            overlap.opacity = 0.4;
+            overlap.fill.as_mut().unwrap().color = [255, 40, 20, 255];
+            probe.vector_objects.push(overlap);
+            let mut retained = Cache::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            let journal = lumapaint_core::scene::Journal::default();
+            probe.source = lumapaint_core::document::vector_svg(128, 128, &probe.vector_objects);
+            assert!(retained.prepare(&device, &queue, &probe, v, (&journal, &[]), [0., 0.]));
+            let _ = render(&retained, &probe);
+            if let Ok(path) = std::env::var("LUMAPAINT_LOCAL_EDIT_DOCUMENT") {
+                use lumapaint_formats::native::NativeDocumentCodec;
+                let mut doc = lumapaint_core::document::Document::default();
+                let id = doc.add_vector_layer().unwrap();
+                for item in &probe.vector_objects {
+                    let mut item = item.clone();
+                    item.control_points = if item.id == "overlap" {
+                        vec![[18., 18.], [46., 18.], [46., 46.], [18., 46.]]
+                    } else {
+                        vec![[0., 0.], [8., 0.], [8., 8.], [0., 8.]]
+                    };
+                    item.transform = [
+                        4.,
+                        0.,
+                        0.,
+                        4.,
+                        220. + item.transform[4] * 4.,
+                        80. + item.transform[5] * 4.,
+                    ];
+                    doc.upsert_vector_object(&id, item).unwrap();
+                }
+                std::fs::write(path, doc.encode().unwrap()).unwrap();
+            }
+            let mut last_damage = [0; 4];
+            for step in 0..8 {
+                let item = &mut probe.vector_objects[22];
+                item.path.data = if step % 2 == 0 {
+                    "M0 0L10 2L6 9H0Z"
+                } else {
+                    "M0 0H8V8H0Z"
+                }
+                .into();
+                item.transform = [1., 0.1, 0.2, 1., 24. + step as f32, 24.];
+                probe.source =
+                    lumapaint_core::document::vector_svg(128, 128, &probe.vector_objects);
+                retained.begin_frame();
+                assert!(retained.prepare(&device, &queue, &probe, v, (&journal, &[]), [0., 0.]));
+                let damage = retained.composites[&probe.id]
+                    .region
+                    .get()
+                    .expect("small edit uses partial redraw");
+                assert!(damage[2] * damage[3] < 1024);
+                last_damage = damage;
+                let partial = render(&retained, &probe);
+                retained.composites[&probe.id].dirty.set(true);
+                retained.composites[&probe.id].region.set(None);
+                assert_eq!(
+                    partial,
+                    render(&retained, &probe),
+                    "partial/full mismatch at edit {step}"
+                );
+            }
+            let mut full_times = Vec::new();
+            let mut partial_times = Vec::new();
+            for sample in 0..31 {
+                for partial in if sample % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let c = &retained.composites[&probe.id];
+                    c.dirty.set(true);
+                    c.region.set(partial.then_some(last_damage));
+                    let start = std::time::Instant::now();
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    retained.encode(&mut encoder);
+                    queue.submit([encoder.finish()]);
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    if sample > 0 {
+                        if partial {
+                            &mut partial_times
+                        } else {
+                            &mut full_times
+                        }
+                        .push(start.elapsed().as_secs_f64() * 1000.);
+                    }
+                }
+            }
+            full_times.sort_by(f64::total_cmp);
+            partial_times.sort_by(f64::total_cmp);
+            eprintln!("native local edit GPU completion full_ms={:.6} partial_ms={:.6} full_pixels=16384 partial_pixels={} full_objects=101 partial_objects={}",
+                (full_times[14]+full_times[15])*0.5,(partial_times[14]+partial_times[15])*0.5,last_damage[2]*last_damage[3],probe.vector_objects.iter().filter(|o|composite::intersects(last_damage,retained.shapes[&o.id].screen_rect())).count());
+            probe.vector_objects.reverse();
+            probe.source = lumapaint_core::document::vector_svg(128, 128, &probe.vector_objects);
+            retained.begin_frame();
+            assert!(retained.prepare(&device, &queue, &probe, v, (&journal, &[]), [0., 0.]));
+            assert!(retained.composites[&probe.id].region.get().is_none());
+            let _ = render(&retained, &probe);
+            retained.begin_frame();
+            assert!(retained.prepare(
+                &device,
+                &queue,
+                &probe,
+                v.with_pan(2., 3.).unwrap(),
+                (&journal, &[]),
+                [0., 0.]
+            ));
+            assert!(retained.composites[&probe.id].region.get().is_none());
         }
         for opacity in [1., 0.6] {
             let mut first = object("M40 40H76V76H40Z");

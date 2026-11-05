@@ -1,0 +1,20 @@
+{
+  "checks": {
+    "rotate_undo_layers_equal_base": true,
+    "rotate_redo_layers_equal_saved_rotation": true,
+    "scale_undo_layers_equal_base": true,
+    "scale_redo_layers_equal_saved_scale": true,
+    "point100_undo_layers_equal_scaled": true,
+    "point100_redo_layers_equal_saved_point": true,
+    "rotation_only_edit33_changed": true,
+    "rotation_opacity_fill_order_preserved": true,
+    "rotation_no_saved_guides": true,
+    "scale_only_edit33_changed": true,
+    "scale_opacity_fill_order_preserved": true,
+    "scale_no_saved_guides": true,
+    "point100_only_edit33_changed": true,
+    "point100_opacity_fill_order_preserved": true,
+    "point100_no_saved_guides": true
+  },
+  "note": "Rotation Redo equality was checked against native-rotated immediately after saving, before subsequent scale edits. Other equalities use retained fixture copies. All operations used the Tauri UI."
+}

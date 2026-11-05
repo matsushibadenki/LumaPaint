@@ -1,10 +1,11 @@
-//! Resolution-independent text shaping cache. Parsing and drawing never hold its lock.
+//! Resolution-independent scene parsing cache. Parsing and drawing never hold its lock.
 use super::{font_resolver, system_fonts, usvg};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, TryLockError};
 
 const MAX_ENTRIES: usize = 32;
-const MAX_BYTES: usize = 32 * 1024 * 1024;
+// One shared cache replaces the former two 32 MiB text/workspace caches.
+const MAX_BYTES: usize = 64 * 1024 * 1024;
 
 struct Entry {
     identity: u64,
@@ -317,14 +318,15 @@ pub(super) fn parse_uncached(source: &str) -> Result<usvg::Tree, String> {
 pub(super) fn parse(source: &str) -> Result<Arc<usvg::Tree>, String> {
     static CACHE: OnceLock<SharedCache> = OnceLock::new();
     let cache = CACHE.get_or_init(SharedCache::new);
-    parse_with_cache(source, cache)
+    parse_with_policy(source, cache, true)
 }
 
 pub(super) fn parse_workspace(source: &str) -> Result<Arc<usvg::Tree>, String> {
-    static CACHE: OnceLock<SharedCache> = OnceLock::new();
-    parse_with_policy(source, CACHE.get_or_init(SharedCache::new), true)
+    // Bounds, object rendering and viewport rendering share the exact immutable tree.
+    parse(source)
 }
 
+#[cfg(test)]
 fn parse_with_cache(source: &str, cache: &SharedCache) -> Result<Arc<usvg::Tree>, String> {
     parse_with_policy(source, cache, false)
 }
@@ -333,9 +335,13 @@ fn parse_with_policy(
     cache: &SharedCache,
     workspace: bool,
 ) -> Result<Arc<usvg::Tree>, String> {
-    // Ordinary vectors/images retain their existing path. Namespaced text remains correct,
-    // but bypasses this optimization. Bound source retention before doing any extra traversal.
-    let candidate = source.len() <= 512 * 1024 && (workspace || source.contains("<text"));
+    // Embedded image bytes and gradient stops are charged before admission. A hit avoids
+    // parsing/base64 decoding during pan, zoom, bounds queries and repeated redraws.
+    let candidate = if workspace {
+        source.len() <= 4 * 1024 * 1024
+    } else {
+        source.len() <= 512 * 1024 && source.contains("<text")
+    };
     let fingerprint = if candidate { fingerprint(source) } else { 0 };
     if candidate {
         if let Some(tree) = cache.lookup(source, fingerprint) {
@@ -363,15 +369,14 @@ fn parse_with_policy(
 
 // Accounted estimate, not RSS: source-owned metadata, nodes, paths and positioned glyphs
 // with allocation headroom. The immutable system font database is shared, not charged per
-// entry. Images (including bitmap emoji), filters and paint servers bypass retention to
-// avoid hiding large decoded resources. In-flight Arc users may outlive cache eviction.
+// entry. Raster image kinds retain encoded bytes, not decoded RGBA. Nested SVG images,
+// patterns and complex filters bypass retention. In-flight Arc users may outlive eviction.
 #[cfg(test)]
 fn retained_charge(source: &str, tree: &usvg::Tree) -> Option<usize> {
     retained_charge_policy(source, tree, false)
 }
 fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> Option<usize> {
-    // Only fixed-size blur primitives are qualified for workspace retention.
-    // Images, paint servers and other filter resources keep the bounded bypass.
+    // Only fixed-size blur primitives are qualified for scene retention.
     let simple_filters = workspace
         && tree.filters().iter().all(|filter| {
             filter
@@ -382,8 +387,8 @@ fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> O
     if (!tree.filters().is_empty() && !simple_filters)
         || !tree.patterns().is_empty()
         || (!workspace && !tree.masks().is_empty())
-        || !tree.linear_gradients().is_empty()
-        || !tree.radial_gradients().is_empty()
+        || (!workspace
+            && (!tree.linear_gradients().is_empty() || !tree.radial_gradients().is_empty()))
     {
         return None;
     }
@@ -392,6 +397,7 @@ fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> O
         bytes: &mut usize,
         depth: usize,
         has_text: &mut bool,
+        workspace: bool,
     ) -> Option<()> {
         if depth > 64 || *bytes > MAX_BYTES {
             return None;
@@ -400,8 +406,20 @@ fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> O
         for node in group.children() {
             *bytes = bytes.saturating_add(1024 + node.id().len());
             match node {
-                usvg::Node::Image(_) => return None,
-                usvg::Node::Group(child) => visit(child, bytes, depth + 1, has_text)?,
+                usvg::Node::Image(image) => {
+                    if !workspace {
+                        return None;
+                    }
+                    let data = match image.kind() {
+                        usvg::ImageKind::JPEG(data)
+                        | usvg::ImageKind::PNG(data)
+                        | usvg::ImageKind::GIF(data)
+                        | usvg::ImageKind::WEBP(data) => data,
+                        usvg::ImageKind::SVG(_) => return None,
+                    };
+                    *bytes = bytes.saturating_add(data.len().saturating_mul(2));
+                }
+                usvg::Node::Group(child) => visit(child, bytes, depth + 1, has_text, workspace)?,
                 usvg::Node::Path(path) => {
                     *bytes = bytes.saturating_add(path.data().points().len().saturating_mul(32));
                 }
@@ -417,7 +435,7 @@ fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> O
             }
             let mut valid = true;
             node.subroots(|root| {
-                valid &= visit(root, bytes, depth + 1, has_text).is_some();
+                valid &= visit(root, bytes, depth + 1, has_text, workspace).is_some();
             });
             if !valid || *bytes > MAX_BYTES {
                 return None;
@@ -426,13 +444,19 @@ fn retained_charge_policy(source: &str, tree: &usvg::Tree, workspace: bool) -> O
         Some(())
     }
     let mut bytes = source.len().saturating_mul(8).saturating_add(4096);
+    for gradient in tree.linear_gradients() {
+        bytes = bytes.saturating_add(1024 + gradient.stops().len().saturating_mul(256));
+    }
+    for gradient in tree.radial_gradients() {
+        bytes = bytes.saturating_add(1024 + gradient.stops().len().saturating_mul(256));
+    }
     for filter in tree.filters() {
         bytes = bytes.saturating_add(1024 + filter.primitives().len().saturating_mul(1024));
     }
     // usvg Tree::has_text_nodes checks subroots, but misses ordinary nested groups.
     // Detect text in the same complete traversal used for retained-memory accounting.
     let mut has_text = false;
-    visit(tree.root(), &mut bytes, 0, &mut has_text)?;
+    visit(tree.root(), &mut bytes, 0, &mut has_text, workspace)?;
     ((workspace || has_text) && bytes <= MAX_BYTES).then_some(bytes)
 }
 
@@ -442,8 +466,243 @@ mod tests {
 
     const SOURCE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><text x="10" y="40" font-size="24">English 日本語 简体中文</text></svg>"#;
 
+    use base64::Engine;
+
+    fn image_source() -> String {
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 64, 64);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..64 * 64)
+            .flat_map(|i| {
+                [
+                    (i % 64 * 4) as u8,
+                    (i / 64 * 4) as u8,
+                    170,
+                    (i % 7 * 35) as u8,
+                ]
+            })
+            .collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        format!(
+            r#"<svg width="320" height="240" xmlns="http://www.w3.org/2000/svg"><g opacity=".65" transform="rotate(13 160 120)"><image x="-30" y="-20" width="380" height="280" href="data:image/png;base64,{}"/></g></svg>"#,
+            base64::engine::general_purpose::STANDARD.encode(png)
+        )
+    }
+
     #[test]
-    fn workspace_reuses_shapes_and_masked_blur_but_not_decoded_images_or_other_filters() {
+    fn scenes_reuse_images_and_gradients_with_exact_pixels_and_invalidation() {
+        let cache = SharedCache::new();
+        let gradient = r##"<svg width="320" height="240"><defs><linearGradient id="g"><stop stop-color="#f80" stop-opacity=".3"/><stop offset="1" stop-color="#08f"/></linearGradient><radialGradient id="r"><stop stop-color="#f08"/><stop offset="1" stop-color="#0f8" stop-opacity="0"/></radialGradient></defs><path d="M-20 50 C180 -90 400 40 380 240 L-50 270Z" fill="url(#g)"/><circle cx="130" cy="130" r="80" fill="url(#r)" opacity=".5"/></svg>"##;
+        for source in [image_source(), gradient.into()] {
+            let first = parse_with_policy(&source, &cache, true).unwrap();
+            let retained = parse_with_policy(&source, &cache, true).unwrap();
+            assert!(Arc::ptr_eq(&first, &retained));
+            let fresh = parse_uncached(&source).unwrap();
+            for transform in [[1., 0., 0.], [2., -37., -19.], [0.75, 17.3, -4.7]] {
+                let draw = |tree: &usvg::Tree| {
+                    super::super::rasterize_tree_region(
+                        tree,
+                        [320, 240],
+                        transform,
+                        false,
+                        false,
+                        true,
+                    )
+                    .unwrap()
+                    .raster
+                    .pixels
+                };
+                assert_eq!(draw(&fresh), draw(&retained));
+            }
+            let edited = source.replace(".65", ".35").replace("#f80", "#080");
+            assert_eq!(source.len(), edited.len());
+            let changed = parse_with_policy(&edited, &cache, true).unwrap();
+            assert!(!Arc::ptr_eq(&retained, &changed));
+            assert!(Arc::ptr_eq(
+                &retained,
+                &parse_with_policy(&source, &cache, true).unwrap()
+            ));
+            let charge = retained_charge_policy(&source, &retained, true).unwrap();
+            assert!(charge >= source.len() * 8);
+            assert!(charge <= MAX_BYTES);
+        }
+        let tree = parse_uncached(gradient).unwrap();
+        assert!(retained_charge_policy(&"x".repeat(MAX_BYTES / 8), &tree, true).is_none());
+    }
+
+    /// User artwork remains external; no licensed artwork is embedded in this test.
+    #[test]
+    #[ignore = "requires LUMAPAINT_COMPLEX_SVG; manual real-artwork benchmark"]
+    fn complex_artwork_redraw_timing() {
+        let path = std::env::var("LUMAPAINT_COMPLEX_SVG").expect("set LUMAPAINT_COMPLEX_SVG");
+        let source = std::fs::read_to_string(path).unwrap();
+        let start = std::time::Instant::now();
+        let document =
+            lumapaint_formats::svg::import("Complex artwork".into(), source.clone()).unwrap();
+        eprintln!(
+            "complex import: ms={:.3}, dimensions={:?}, preserved_svg_layers={}, native_objects={}",
+            start.elapsed().as_secs_f64() * 1000.,
+            document.dimensions(),
+            document.svg_layers().count(),
+            document
+                .svg_layers()
+                .map(|l| l.vector_objects.len())
+                .sum::<usize>()
+        );
+        assert_eq!(document.svg_layers().next().unwrap().source, source);
+        let cache = SharedCache::new();
+        let start = std::time::Instant::now();
+        let tree = parse_with_policy(&source, &cache, true).unwrap();
+        let cold_ms = start.elapsed().as_secs_f64() * 1000.;
+        let charge = retained_charge_policy(&source, &tree, true);
+        assert!(
+            Arc::ptr_eq(&tree, &parse_with_policy(&source, &cache, true).unwrap()),
+            "real artwork must be admitted before reporting reuse"
+        );
+        eprintln!(
+            "complex parse: cold_ms={cold_ms:.3}, charged_bytes={charge:?}, source_bytes={}",
+            source.len()
+        );
+        let size = tree.size();
+        let fit = (752. / size.width()).min(506. / size.height());
+        for (name, zoom) in [("fit", fit), ("200", 2.), ("400", 4.)] {
+            let mut baseline = Vec::new();
+            let mut retained = Vec::new();
+            for sample in 0..7 {
+                let pan = if sample == 0 {
+                    [0., 0.]
+                } else {
+                    [sample as f32 * 13.25, sample as f32 * -7.5]
+                };
+                let transform = [
+                    zoom,
+                    (800. - size.width() * zoom) * 0.5 + pan[0],
+                    (554. - size.height() * zoom) * 0.5 + pan[1],
+                ];
+                let mut outputs = Vec::new();
+                for fast in if sample % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let start = std::time::Instant::now();
+                    let parsed = if fast {
+                        parse_with_policy(&source, &cache, true).unwrap()
+                    } else {
+                        Arc::new(parse_uncached(&source).unwrap())
+                    };
+                    let raster = super::super::rasterize_tree_region(
+                        &parsed,
+                        [800, 554],
+                        transform,
+                        false,
+                        false,
+                        true,
+                    )
+                    .unwrap();
+                    let ms = start.elapsed().as_secs_f64() * 1000.;
+                    if sample != 0 {
+                        if fast { &mut retained } else { &mut baseline }.push(ms);
+                    }
+                    outputs.push(raster.raster.pixels);
+                }
+                assert_eq!(outputs[0], outputs[1], "zoom={name}, pan sample={sample}");
+                if sample == 0 {
+                    if let Ok(dir) = std::env::var("LUMAPAINT_COMPLEX_OUTPUT") {
+                        let mut data = Vec::new();
+                        let mut encoder = png::Encoder::new(&mut data, 800, 554);
+                        encoder.set_color(png::ColorType::Rgba);
+                        encoder.set_depth(png::BitDepth::Eight);
+                        encoder
+                            .write_header()
+                            .unwrap()
+                            .write_image_data(&outputs[0])
+                            .unwrap();
+                        std::fs::write(
+                            std::path::Path::new(&dir).join(format!("complex-{name}.png")),
+                            data,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            baseline.sort_by(f64::total_cmp);
+            retained.sort_by(f64::total_cmp);
+            eprintln!("complex redraw zoom={name}: baseline_median_ms={:.3}, retained_median_ms={:.3}, baseline_max_ms={:.3}, retained_max_ms={:.3}, exact_pixel_pairs=7",
+                (baseline[2]+baseline[3])*0.5,(retained[2]+retained[3])*0.5,baseline[5],retained[5]);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual same-process scene parsing/redraw benchmark"]
+    fn scene_redraw_timing() {
+        let image = std::env::var("LUMAPAINT_PAN_IMAGE").map_or_else(|_| image_source(), |path| {
+            format!(r#"<svg width="1672" height="941" xmlns="http://www.w3.org/2000/svg"><image width="1672" height="941" href="data:image/png;base64,{}"/></svg>"#,
+                base64::engine::general_purpose::STANDARD.encode(std::fs::read(path).unwrap()))
+        });
+        let shapes = (0..600).map(|i| format!(r##"<ellipse cx="{}" cy="{}" rx="160" ry="110" fill="url(#g)" opacity=".18"/>"##, i * 47 % 1672, i * 31 % 941)).collect::<String>();
+        let vector = format!(
+            r##"<svg width="1672" height="941"><defs><linearGradient id="g"><stop stop-color="#08f"/><stop offset="1" stop-color="#f80" stop-opacity=".4"/></linearGradient></defs>{shapes}</svg>"##
+        );
+        for (name, source) in [("pixel", image), ("vector", vector)] {
+            let cache = SharedCache::new();
+            let retained = parse_with_policy(&source, &cache, true).unwrap();
+            assert!(Arc::ptr_eq(
+                &retained,
+                &parse_with_policy(&source, &cache, true).unwrap()
+            ));
+            for draw in [false, true] {
+                let mut baseline = Vec::new();
+                let mut reused = Vec::new();
+                for i in 0..10 {
+                    for fast in if i % 2 == 0 {
+                        [false, true]
+                    } else {
+                        [true, false]
+                    } {
+                        let start = std::time::Instant::now();
+                        let tree = if fast {
+                            parse_with_policy(&source, &cache, true).unwrap()
+                        } else {
+                            Arc::new(parse_uncached(&source).unwrap())
+                        };
+                        if draw {
+                            std::hint::black_box(
+                                super::super::rasterize_tree_region(
+                                    &tree,
+                                    [800, 554],
+                                    [2., -800. - i as f32 * 13., -400.],
+                                    false,
+                                    false,
+                                    true,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        std::hint::black_box(tree);
+                        if i > 0 {
+                            if fast { &mut reused } else { &mut baseline }
+                                .push(start.elapsed().as_secs_f64() * 1000.);
+                        }
+                    }
+                }
+                baseline.sort_by(f64::total_cmp);
+                reused.sort_by(f64::total_cmp);
+                eprintln!(
+                    "scene benchmark {name} draw={draw}: baseline_ms={:.3} retained_ms={:.3}",
+                    baseline[4], reused[4]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_reuses_shapes_and_masked_blur_but_not_complex_filters() {
         use resvg::tiny_skia;
         let cache = SharedCache::new();
         for body in ["<rect width='16' height='16'/>", "<defs><mask id='m'><rect width='32' height='32' fill='white'/></mask><filter id='b'><feGaussianBlur stdDeviation='1'/></filter></defs><g mask='url(#m)'><circle cx='16' cy='16' r='8' filter='url(#b)'/></g>"] {

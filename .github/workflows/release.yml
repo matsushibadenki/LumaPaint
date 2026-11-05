@@ -1,0 +1,64 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: checks
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: Validate release version and signing configuration
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          python3 scripts/check-release-version.py
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          tagName: v__VERSION__
+          releaseName: LumaPaint __VERSION__
+          releaseBody: |
+            Software Update is now available from the LumaPaint menu (English / 日本語 / 简体中文).
+            Signed updates preserve documents and refuse installation while unsaved changes remain.
+            Includes SVG GPU rendering and node-drag performance improvements.
+
+            macOS Apple Silicon. Install 0.0.2 manually once when upgrading from 0.0.1; subsequent versions can use in-app updates.
+          releaseDraft: true
+          args: --target aarch64-apple-darwin --bundles app,dmg
+      - name: Validate update manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release download "v$VERSION" --pattern latest.json --dir /tmp/lumapaint-update
+          python3 scripts/check-update-manifest.py /tmp/lumapaint-update/latest.json

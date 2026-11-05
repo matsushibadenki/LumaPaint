@@ -1,0 +1,156 @@
+{
+  "machine": "Apple M4 / Metal / macOS",
+  "viewport_pixels": [
+    800,
+    554
+  ],
+  "backing_scale": 1,
+  "source": {
+    "ai_format": "DOS EPS / PostScript",
+    "ai_bytes": 8104166,
+    "ai_sha256": "727582ba2a6b1cbc47c752c82ec244b38a10d76291718578ea1dec5121f2f886",
+    "svg_bytes": 1834970,
+    "svg_sha256": "a2601b171a41e1bb2c69c57df0029487721de846bff0309a979215bf2fec4ab0",
+    "svg_elements": {
+      "svg": 1,
+      "rect": 3,
+      "g": 870,
+      "defs": 2,
+      "clipPath": 2,
+      "use": 2,
+      "path": 2669,
+      "radialGradient": 55,
+      "stop": 165,
+      "linearGradient": 14,
+      "polygon": 9
+    }
+  },
+  "native": {
+    "200": {
+      "frames": [
+        {
+          "frame": 1,
+          "main_ms": 151.54,
+          "svg_raster_ms": 147.227292,
+          "workspace_ms": 147.788375,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 2,
+          "main_ms": 147.54,
+          "svg_raster_ms": 145.180625,
+          "workspace_ms": 145.661833,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 3,
+          "main_ms": 147.59,
+          "svg_raster_ms": 145.34025,
+          "workspace_ms": 145.828375,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 4,
+          "main_ms": 149.24,
+          "svg_raster_ms": 146.041125,
+          "workspace_ms": 146.525834,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 5,
+          "main_ms": 147.4,
+          "svg_raster_ms": 145.232916,
+          "workspace_ms": 145.716333,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 6,
+          "main_ms": 149.7,
+          "svg_raster_ms": 147.466208,
+          "workspace_ms": 147.930541,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        }
+      ],
+      "median_main_ms": 148.41500000000002,
+      "max_main_ms": 151.54
+    },
+    "400": {
+      "frames": [
+        {
+          "frame": 1,
+          "main_ms": 253.3,
+          "svg_raster_ms": 249.090791,
+          "workspace_ms": 249.710375,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 2,
+          "main_ms": 257.01,
+          "svg_raster_ms": 252.819209,
+          "workspace_ms": 253.444083,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 3,
+          "main_ms": 250.32,
+          "svg_raster_ms": 247.796333,
+          "workspace_ms": 248.314792,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 4,
+          "main_ms": 250.47,
+          "svg_raster_ms": 247.94775,
+          "workspace_ms": 248.4685,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 5,
+          "main_ms": 253.03,
+          "svg_raster_ms": 249.241959,
+          "workspace_ms": 249.784959,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        },
+        {
+          "frame": 6,
+          "main_ms": 251.6,
+          "svg_raster_ms": 248.742583,
+          "workspace_ms": 249.285959,
+          "svg_parses": 0,
+          "parse_cache_hits": 1,
+          "raster_surface_bytes": 1772800
+        }
+      ],
+      "median_main_ms": 252.315,
+      "max_main_ms": 257.01
+    }
+  },
+  "correctness": {
+    "exact_cpu_comparison_pairs": 21,
+    "saved_svg_source_identical": true,
+    "native_editable_objects": 0,
+    "notes": "Original AI unsupported: Malformed(\"pdf.header\"). SVG copy from local Illustrator retained as an SVG layer. Not a native editable-path or physical display-latency test."
+  }
+}

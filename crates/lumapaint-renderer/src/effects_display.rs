@@ -43,6 +43,7 @@ struct Buffers {
 pub(super) struct EffectsDisplay {
     job_timing: crate::gpu_timing::JobTiming,
     pipeline: wgpu::ComputePipeline,
+    texture_pipeline: wgpu::ComputePipeline,
     buffers: Option<Buffers>,
     source: Option<(u64, usize)>,
     #[cfg(test)]
@@ -74,14 +75,25 @@ impl EffectsDisplay {
             compilation_options: Default::default(),
             cache: None,
         });
+        let texture_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("GPU texture display effects"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("display_texture"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
         let invalid = validation_scope.pop().await;
         let memory = memory_scope.pop().await;
         if invalid.is_some() || memory.is_some() {
+            #[cfg(test)]
+            eprintln!("display effects setup: {invalid:?} / {memory:?}");
             return None;
         }
         Some(Self {
             job_timing: crate::gpu_timing::JobTiming::new("display_effects", device, queue),
             pipeline,
+            texture_pipeline,
             buffers: None,
             source: None,
             #[cfg(test)]
@@ -99,6 +111,49 @@ impl EffectsDisplay {
         queue: &wgpu::Queue,
         request: Request<'_>,
     ) -> Option<wgpu::Texture> {
+        self.render_source(device, queue, request, None)
+    }
+
+    #[cfg(all(feature = "skia", target_os = "macos"))]
+    pub fn render_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        effects: &LayerEffects,
+        mapping: [f32; 4],
+        opacity: f32,
+    ) -> Option<wgpu::Texture> {
+        if texture.format() != wgpu::TextureFormat::Rgba8Unorm
+            || !texture
+                .usage()
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        {
+            return None;
+        }
+        self.render_source(
+            device,
+            queue,
+            Request {
+                pixels: &[],
+                size: (texture.width(), texture.height()),
+                revision: 0,
+                effects,
+                opacity,
+                previous: None,
+                mapping: Some(mapping),
+            },
+            Some(texture),
+        )
+    }
+
+    fn render_source(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        request: Request<'_>,
+        source_texture: Option<&wgpu::Texture>,
+    ) -> Option<wgpu::Texture> {
         let Request {
             pixels,
             size,
@@ -109,7 +164,10 @@ impl EffectsDisplay {
             mapping,
         } = request;
         let (bytes, capacity, stride) = layout(size, &device.limits())?;
-        if pixels.len() as u64 != bytes || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+        if (source_texture.is_none() && pixels.len() as u64 != bytes)
+            || !opacity.is_finite()
+            || !(0.0..=1.0).contains(&opacity)
+        {
             return None;
         }
         let mut plan = config(effects)?;
@@ -159,7 +217,7 @@ impl EffectsDisplay {
         }
         let buffers = self.buffers.as_ref()?;
         let identity = (revision, pixels.len());
-        if self.source != Some(identity) {
+        if source_texture.is_none() && self.source != Some(identity) {
             crate::gpu_metrics::write_buffer!(queue, &buffers.input, 0, pixels);
             #[cfg(test)]
             {
@@ -178,7 +236,11 @@ impl EffectsDisplay {
             bytemuck::cast_slice(&parameters)
         );
         let texture = previous
-            .filter(|texture| texture.width() == size.0 && texture.height() == size.1)
+            .filter(|texture| {
+                texture.width() == size.0
+                    && texture.height() == size.1
+                    && texture.usage().contains(wgpu::TextureUsages::COPY_DST)
+            })
             .cloned()
             .unwrap_or_else(|| {
                 crate::gpu_metrics::create_texture!(
@@ -201,18 +263,37 @@ impl EffectsDisplay {
                     }
                 )
             });
+        let source_view = source_texture.map(|texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                ..Default::default()
+            })
+        });
+        let pipeline = if source_view.is_some() {
+            &self.texture_pipeline
+        } else {
+            &self.pipeline
+        };
+        let source_entry = if let Some(view) = &source_view {
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(view),
+            }
+        } else {
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffers.input,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(bytes),
+                }),
+            }
+        };
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Direct effects buffers"),
-            layout: &self.pipeline.get_bind_group_layout(0),
+            label: Some("Direct display effects inputs"),
+            layout: &pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffers.input,
-                        offset: 0,
-                        size: std::num::NonZeroU64::new(bytes),
-                    }),
-                },
+                source_entry,
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: buffers.output.as_entire_binding(),
@@ -223,6 +304,9 @@ impl EffectsDisplay {
                 },
             ],
         });
+        if source_texture.is_some() {
+            crate::performance::count("workspace_gpu_texture_effects", 1);
+        }
         let mut job = self.job_timing.start(device);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -230,7 +314,7 @@ impl EffectsDisplay {
                 timestamp_writes: job.as_ref().map(|sample| sample.writes()),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups((bytes / 4).div_ceil(256) as u32, 1, 1);
         }
