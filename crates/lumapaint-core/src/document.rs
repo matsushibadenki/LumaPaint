@@ -1084,6 +1084,27 @@ impl Document {
         }
     }
 
+    /// Matches the selected layer's UI editability without building object summaries.
+    pub fn selected_layer_mask_editable(&self) -> Option<bool> {
+        let id = self.selected_layer_id();
+        if id == "layer-1" {
+            return Some(self.visible && !self.layer_locked);
+        }
+        let layer = self
+            .svg_layers
+            .iter()
+            .find(|layer| layer.id == id && !self.is_path_edit_layer(layer))?;
+        let member = self
+            .layer_groups
+            .members
+            .iter()
+            .find(|member| member.id == id);
+        Some(
+            member.map_or(layer.visible, |m| m.visible)
+                && !member.map_or(layer.locked, |m| m.locked),
+        )
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision || self.active.is_some()
     }
@@ -14201,3 +14222,34 @@ fn animation_history_bytes(animation: &animation::Animation) -> usize {
 
 #[path = "document_rasterize.rs"]
 mod document_rasterize;
+
+#[cfg(test)]
+mod mask_editability_tests {
+    use super::*;
+
+    #[test]
+    fn lightweight_mask_editability_matches_snapshot() {
+        let mut document = Document::default();
+        let vector = document.add_vector_layer().unwrap();
+        for id in ["layer-1", vector.as_str()] {
+            document.select_layer(id.to_owned()).unwrap();
+            for (visible, locked) in [(true, false), (false, false), (true, true)] {
+                if id == "layer-1" {
+                    document.visible = visible;
+                    document.layer_locked = locked;
+                } else {
+                    let layer = document.svg_layers.iter_mut().find(|l| l.id == id).unwrap();
+                    layer.visible = visible;
+                    layer.locked = locked;
+                }
+                let snapshot = document.snapshot();
+                let expected = snapshot
+                    .layers
+                    .iter()
+                    .find(|l| l.id == snapshot.layer_id)
+                    .map(|layer| layer.visible && !layer.locked);
+                assert_eq!(document.selected_layer_mask_editable(), expected);
+            }
+        }
+    }
+}

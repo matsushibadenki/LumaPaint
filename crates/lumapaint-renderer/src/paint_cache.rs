@@ -124,7 +124,7 @@ impl PaintCache {
             .map(|coord| {
                 let origin = [coord.x * TILE_SIZE, coord.y * TILE_SIZE];
                 let extent = [TILE_SIZE.min(w - origin[0]), TILE_SIZE.min(h - origin[1])];
-                let mut pixels = vec![0; (extent[0] * extent[1] * 4) as usize];
+                let mut pixels = vec![0; (TILE_SIZE * TILE_SIZE * 4) as usize];
                 for y in 0..extent[1] {
                     for x in 0..extent[0] {
                         let px = origin[0] + x;
@@ -139,7 +139,7 @@ impl PaintCache {
                             [1., 1.],
                         )
                         .map(|v| (v as f32 * opacity).round() as u8);
-                        let at = ((y * extent[0] + x) * 4) as usize;
+                        let at = ((y * TILE_SIZE + x) * 4) as usize;
                         pixels[at..at + 4].copy_from_slice(&pixel);
                     }
                 }
@@ -147,7 +147,7 @@ impl PaintCache {
                     coord: *coord,
                     origin,
                     extent,
-                    bytes_per_row: extent[0] * 4,
+                    bytes_per_row: TILE_SIZE * 4,
                     pixels,
                 }
             })
@@ -395,6 +395,64 @@ impl PaintCache {
 mod tests {
     use super::*;
     use lumapaint_core::document::Brush;
+
+    #[test]
+    fn masked_paper_edge_tiles_match_upload_contract() {
+        let mut document = Document::default();
+        document
+            .set_layer_effects(
+                "layer-1",
+                lumapaint_core::layer_effects::LayerEffects {
+                    mask: Some(
+                        lumapaint_core::layer_mask::LayerMask::from_selection(
+                            lumapaint_core::layer_mask::MaskKind::Pixel,
+                            None,
+                            document.dimensions().0,
+                            document.dimensions().1,
+                        )
+                        .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (w, h) = document.dimensions();
+        let coord = TileCoord {
+            x: (w - 1) / TILE_SIZE,
+            y: (h - 1) / TILE_SIZE,
+        };
+        let cache = PaintCache::new((w, h)).unwrap();
+        let uploads = cache
+            .paper_uploads(&document, &BTreeSet::from([coord]))
+            .unwrap();
+        validate_tile_uploads(w, h, &uploads).unwrap();
+        let upload = &uploads[0];
+        let mut effects = document.layer_effects("layer-1");
+        let mask = effects.mask.take();
+        let effects = effects.prepare();
+        for y in 0..TILE_SIZE {
+            for x in 0..TILE_SIZE {
+                let offset = ((y * TILE_SIZE + x) * 4) as usize;
+                let expected = if x < upload.extent[0] && y < upload.extent[1] {
+                    crate::root_paint::composite(
+                        [0; 4],
+                        [
+                            (upload.origin[0] + x) as f32 + 0.5,
+                            (upload.origin[1] + y) as f32 + 0.5,
+                        ],
+                        &effects,
+                        mask.as_ref(),
+                        true,
+                        document.paper(),
+                        [1., 1.],
+                    )
+                } else {
+                    [0; 4]
+                };
+                assert_eq!(&upload.pixels[offset..offset + 4], &expected);
+            }
+        }
+    }
 
     #[test]
     fn unchanged_active_stroke_reuses_samples_but_edits_force_and_history_stay_exact() {

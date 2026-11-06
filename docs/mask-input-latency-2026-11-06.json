@@ -1,0 +1,64 @@
+{
+  "baseline": {
+    "samples": [
+      {
+        "first_ms": 186.002,
+        "latest_ms": 185.312458
+      },
+      {
+        "first_ms": 196.734959,
+        "latest_ms": 193.500834
+      },
+      {
+        "first_ms": 197.877958,
+        "latest_ms": 194.927
+      },
+      {
+        "first_ms": 211.594792,
+        "latest_ms": 203.60925
+      },
+      {
+        "first_ms": 216.926458,
+        "latest_ms": 210.593708
+      }
+    ],
+    "median_first_ms": 197.877958,
+    "median_latest_ms": 194.927
+  },
+  "optimized": {
+    "samples": [
+      {
+        "first_ms": 171.299042,
+        "latest_ms": 165.316959
+      },
+      {
+        "first_ms": 160.978417,
+        "latest_ms": 154.464917
+      },
+      {
+        "first_ms": 163.666958,
+        "latest_ms": 156.19175
+      },
+      {
+        "first_ms": 173.751416,
+        "latest_ms": 172.437916
+      },
+      {
+        "first_ms": 250.523625,
+        "latest_ms": 243.869042
+      }
+    ],
+    "median_first_ms": 171.299042,
+    "median_latest_ms": 165.316959
+  },
+  "conditions": {
+    "platform": "macOS Apple M4, Metal",
+    "build": "Tauri debug with embedded frontend and LUMAPAINT_RENDER_METRICS=1",
+    "document": "A6 300ppi, 1240x1748, white root with pixel mask, no artwork objects",
+    "view": "28.95%, 16px brush, RGB #202020",
+    "actions": "After warmup click (400,300) and drag (400,350)-(580,350), five drags (400,y)-(580,y), y=380,410,440,470,500. CUA AX observation after each drag.",
+    "comparison": "Both binaries include edge tile fix. Baseline changes only MaskInputState retrieval back to snapshot + editable. Source restored after baseline build.",
+    "metric": "first input handler to present API call, host milliseconds. Latest event timings also retained.",
+    "limitations": "One sequential batch each, optimized before baseline. Small scene, no randomized load control, slight restored window placement difference. No physical display or OS input queue measurement. Not a general improvement or tail latency guarantee. Initial baseline trial lacking matching log records was discarded."
+  }
+}

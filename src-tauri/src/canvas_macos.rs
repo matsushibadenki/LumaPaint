@@ -4179,7 +4179,7 @@ pub fn commit_layer_mask(job: LayerMaskJob) -> Result<DocumentSnapshot, String> 
     let revision = if tiled {
         tiled_snapshot()?.revision
     } else {
-        DOCUMENT.with(|d| d.borrow().snapshot().revision)
+        DOCUMENT.with(|d| d.borrow().revision())
     };
     if ACTIVE_DOCUMENT_ID.with(|d| d.get()) != job.document_id
         || tiled != job.tiled
@@ -10667,7 +10667,7 @@ pub fn edit_direct_controls(
     let points = DIRECT_POINTS.with(|p| p.borrow().clone());
     if points != expected
         || points.is_empty()
-        || DOCUMENT.with(|d| d.borrow().snapshot().revision) != revision
+        || DOCUMENT.with(|d| d.borrow().revision()) != revision
     {
         return Err("Selection changed; reopen the control editor / 選択が変わりました。節点編集を開き直してください / 选择已更改，请重新打开节点编辑器".into());
     }

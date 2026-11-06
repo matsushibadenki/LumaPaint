@@ -62,6 +62,53 @@ fn editable(s: &DocumentSnapshot) -> Result<(), String> {
     }
     Ok(())
 }
+fn editable_layer_id() -> Result<String, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        let s = snapshot();
+        editable(&s)?;
+        return Ok(s.layer_id);
+    }
+    DOCUMENT.with(|d| {
+        let d = d.borrow();
+        match d.selected_layer_mask_editable() {
+            Some(true) => Ok(d.selected_layer_id().to_owned()),
+            Some(false) => Err("Unlock and show the layer / レイヤーのロックを解除し表示してください / 请解锁并显示图层".into()),
+            None => Err(TARGET_ERROR.into()),
+        }
+    })
+}
+struct MaskInputState {
+    layer_id: String,
+    revision: u64,
+    width: u32,
+    height: u32,
+    selection: Option<Selection>,
+}
+fn input_state() -> Result<MaskInputState, String> {
+    if ACTIVE_TILED_DOCUMENT.with(|d| d.borrow().is_some()) {
+        let s = snapshot();
+        editable(&s)?;
+        return Ok(MaskInputState {
+            layer_id: s.layer_id,
+            revision: s.revision,
+            width: s.width,
+            height: s.height,
+            selection: s.selection,
+        });
+    }
+    let layer_id = editable_layer_id()?;
+    DOCUMENT.with(|d| {
+        let d = d.borrow();
+        let (width, height) = d.dimensions();
+        Ok(MaskInputState {
+            layer_id,
+            revision: d.revision(),
+            width,
+            height,
+            selection: d.selection().cloned(),
+        })
+    })
+}
 fn moving(tool: CanvasTool) -> bool {
     matches!(
         tool,
@@ -319,8 +366,7 @@ pub(super) fn pointer(point: Point, phase: u8) -> Result<bool, String> {
     if phase == 0 {
         cancel_vector_drag();
         DOCUMENT.with(|d| d.borrow_mut().finish());
-        let s = snapshot();
-        editable(&s)?;
+        let s = input_state()?;
         let e = effects(&s.layer_id);
         let brush = BRUSH.with(|b| *b.borrow());
         if !moving(tool) && brush.no_color && tool != CanvasTool::Eraser {
@@ -476,10 +522,9 @@ pub(super) fn key(event: &NSEvent) -> bool {
             return clear();
         }
         cancel_vector_drag();
-        let s = snapshot();
-        editable(&s)?;
-        let e = effects(&s.layer_id);
-        let root = root_source(&s.layer_id, &e)?;
+        let id = editable_layer_id()?;
+        let e = effects(&id);
+        let root = root_source(&id, &e)?;
         let n = if event.modifierFlags().contains(NSEventModifierFlags::Shift) {
             10.
         } else {
@@ -491,7 +536,7 @@ pub(super) fn key(event: &NSEvent) -> bool {
             125 => (0., n),
             _ => (0., -n),
         };
-        transform(&s.layer_id, [1., 0., 0., 1., dx, dy], root)?;
+        transform(&id, [1., 0., 0., 1., dx, dy], root)?;
         redraw()?;
         emit_document();
         Ok(())
@@ -503,8 +548,7 @@ pub(super) fn key(event: &NSEvent) -> bool {
 }
 fn clear() -> Result<(), String> {
     cancel_vector_drag();
-    let s = snapshot();
-    editable(&s)?;
+    let s = input_state()?;
     let mut e = effects(&s.layer_id);
     let selection = s.selection.unwrap_or_else(|| {
         Selection::new(
@@ -560,9 +604,8 @@ pub(super) fn transform_action(
     }
     Some((|| {
         cancel_vector_drag();
-        let s = snapshot();
-        editable(&s)?;
-        let e = effects(&s.layer_id);
+        let id = editable_layer_id()?;
+        let e = effects(&id);
         if values.iter().any(|v| !v.is_finite() || v.abs() > 100_000.) {
             return Err("Invalid transform values".into());
         }
@@ -594,7 +637,7 @@ pub(super) fn transform_action(
         } else {
             [a, b, c, d, cx - a * cx - c * cy, cy - b * cx - d * cy]
         };
-        transform(&s.layer_id, matrix, root_source(&s.layer_id, &e)?)?;
+        transform(&id, matrix, root_source(&id, &e)?)?;
         redraw()?;
         emit_document();
         Ok(snapshot())
@@ -629,6 +672,12 @@ mod tests {
                     .unwrap();
                 let artwork = d.svg_layers().find(|l| l.id == id).unwrap().clone();
                 DOCUMENT.with(|doc| *doc.borrow_mut() = d);
+                let legacy = snapshot();
+                let input = input_state().unwrap();
+                assert_eq!(input.layer_id, legacy.layer_id);
+                assert_eq!(input.revision, legacy.revision);
+                assert_eq!((input.width, input.height), (legacy.width, legacy.height));
+                assert_eq!(input.selection, legacy.selection);
                 TOOL.with(|t| t.set(CanvasTool::Brush));
                 BRUSH.with(|b| {
                     b.borrow_mut().color = [0, 0, 0];
@@ -650,6 +699,24 @@ mod tests {
                     assert_eq!(d.layer_effects(&id).mask.unwrap().coverage([16.5, 8.5]), 1.);
                     d.redo();
                     assert_eq!(d.layer_effects(&id).mask.unwrap().coverage([16.5, 8.5]), 0.);
+                });
+                clear().unwrap();
+                DOCUMENT.with(|doc| {
+                    let mut d = doc.borrow_mut();
+                    assert_eq!(
+                        d.layer_effects(&id).mask.unwrap().coverage([40.5, 40.5]),
+                        0.
+                    );
+                    d.undo();
+                    assert_eq!(
+                        d.layer_effects(&id).mask.unwrap().coverage([40.5, 40.5]),
+                        1.
+                    );
+                    d.redo();
+                    assert_eq!(
+                        d.layer_effects(&id).mask.unwrap().coverage([40.5, 40.5]),
+                        0.
+                    );
                     d.select_layer_target(id.clone(), LayerEditTarget::None)
                         .unwrap();
                 });

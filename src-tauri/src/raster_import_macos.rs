@@ -64,7 +64,7 @@ pub(super) fn begin(
     let (width, height, revision) = DOCUMENT.with(|d| {
         let d = d.borrow();
         let (w, h) = d.dimensions();
-        (w, h, d.snapshot().revision)
+        (w, h, d.revision())
     });
     let scale = (width as f32 / info.width as f32)
         .min(height as f32 / info.height as f32)
@@ -180,7 +180,7 @@ pub(super) fn finish(commit: bool) -> Result<DocumentSnapshot, String> {
             let p=slot.as_ref().ok_or("No image placement")?;
             DOCUMENT.with(|d| -> Result<(),String> {
                 let mut d=d.borrow_mut();
-                if d.snapshot().revision!=p.revision {return Err("Document changed; cancel placement / ドキュメントが変更されました。配置をキャンセルしてください / 文档已更改，请取消放置".into());}
+                if d.revision()!=p.revision {return Err("Document changed; cancel placement / ドキュメントが変更されました。配置をキャンセルしてください / 文档已更改，请取消放置".into());}
                 let (w,h)=d.dimensions();
                 // Pixel layers already rasterize their source for display and painting.
                 // Retain the original compressed image and affine placement instead of
