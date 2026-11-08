@@ -4461,7 +4461,7 @@ impl Renderer {
             self.set_tiled_preview_visible(true);
             self.paint_cache_installed = true;
             if render_metrics_enabled() {
-                eprintln!("LumaPaint paint cache replayed={} uploaded_tiles={} upload_bytes={} prepare_ms={:.2}",cache.replayed,uploads.len(),uploads.iter().map(|u|u.pixels.len()).sum::<usize>(),started.elapsed().as_secs_f64()*1000.);
+                eprintln!("LumaPaint paint cache replayed={} paper_tiles_rasterized={} uploaded_tiles={} upload_bytes={} prepare_ms={:.2}",cache.replayed,cache.paper_tiles_rasterized,uploads.len(),uploads.iter().map(|u|u.pixels.len()).sum::<usize>(),started.elapsed().as_secs_f64()*1000.);
             }
             self.paint_cache = Some(cache);
         } else {

@@ -14,7 +14,9 @@ pub(crate) struct PaintCache {
     pub active_tiles_rasterized: usize,
     uploaded: BTreeMap<TileCoord, Vec<u8>>,
     pub replayed: usize,
+    pub paper_tiles_rasterized: usize,
     paper: bool,
+    paper_settings: Option<lumapaint_core::natural_media::PaperSettings>,
 }
 
 // At most 8 MiB of dab payload retained per paint cache. Large tips / long strokes
@@ -97,7 +99,9 @@ impl PaintCache {
             active_tiles_rasterized: 0,
             uploaded: BTreeMap::new(),
             replayed: 0,
+            paper_tiles_rasterized: 0,
             paper: false,
+            paper_settings: None,
         })
     }
 
@@ -178,6 +182,7 @@ impl PaintCache {
         let mut dirty = BTreeSet::new();
         self.active_tiles_rasterized = 0;
         self.replayed = 0;
+        self.paper_tiles_rasterized = 0;
         if !prefix {
             // Undo, history replacement and document switches invalidate the retained prefix.
             dirty.extend(self.active_coords.iter().copied());
@@ -207,11 +212,13 @@ impl PaintCache {
             self.strokes.push((*stroke).clone());
             self.replayed += 1;
         }
+        let mut appearance_changed = false;
         if let Some(changes) = self.tiles.set_layer_appearance(
             "paint",
             document.background_visible(),
             document.paint_layer_opacity(),
         )? {
+            appearance_changed = true;
             dirty.extend(changes.coords);
             dirty.extend(self.active_coords.iter().copied());
         }
@@ -219,6 +226,7 @@ impl PaintCache {
             .tiles
             .set_layer_effects("paint", document.layer_effects("layer-1"))?
         {
+            appearance_changed = true;
             dirty.extend(changes.coords);
             dirty.extend(self.active_coords.iter().copied());
         }
@@ -320,7 +328,13 @@ impl PaintCache {
             dirty.extend(active_coords.iter().copied());
         }
         let paper = crate::root_paint::masked_paper(document);
-        if self.paper != paper || (paper && (!unchanged || force)) {
+        if self.paper != paper
+            || (paper
+                && (appearance_changed
+                    || self.paper_settings != Some(document.paper())
+                    || !prefix
+                    || force))
+        {
             dirty.extend(self.uploaded.keys().copied());
             if paper {
                 let (w, h) = document.dimensions();
@@ -332,7 +346,9 @@ impl PaintCache {
             }
         }
         self.paper = paper;
+        self.paper_settings = Some(document.paper());
         let uploads = if paper {
+            self.paper_tiles_rasterized = dirty.len();
             self.paper_uploads(document, &dirty)
         } else {
             self.tiles.prepare_uploads(&TileInvalidation {
@@ -395,6 +411,59 @@ impl PaintCache {
 mod tests {
     use super::*;
     use lumapaint_core::document::Brush;
+
+    #[test]
+    fn masked_paper_local_paint_matches_full_rebuild() {
+        let mut doc = Document::default();
+        let (w, h) = doc.dimensions();
+        doc.set_layer_effects(
+            "layer-1",
+            lumapaint_core::layer_effects::LayerEffects {
+                mask: Some(
+                    lumapaint_core::layer_mask::LayerMask::from_selection(
+                        lumapaint_core::layer_mask::MaskKind::Pixel,
+                        None,
+                        w,
+                        h,
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut cache = PaintCache::new((w, h)).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        let full_count = cache.paper_tiles_rasterized;
+        stroke(&mut doc, 40., false);
+        cache.prepare(&doc, false).unwrap();
+        assert!(cache.paper_tiles_rasterized > 0);
+        assert!(cache.paper_tiles_rasterized < full_count);
+        let mut fresh = PaintCache::new((w, h)).unwrap();
+        fresh.prepare(&doc, true).unwrap();
+        assert_eq!(cache.uploaded, fresh.uploaded);
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(cache.paper_tiles_rasterized, 0);
+        for redo in [false, true] {
+            if redo {
+                doc.redo();
+            } else {
+                doc.undo();
+            }
+            cache.prepare(&doc, false).unwrap();
+            let mut fresh = PaintCache::new((w, h)).unwrap();
+            fresh.prepare(&doc, true).unwrap();
+            assert_eq!(cache.uploaded, fresh.uploaded);
+        }
+        let mut effects = doc.layer_effects("layer-1");
+        effects.mask.as_mut().unwrap().inverted = true;
+        doc.set_layer_effects("layer-1", effects).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(cache.paper_tiles_rasterized, full_count);
+        let mut fresh = PaintCache::new((w, h)).unwrap();
+        fresh.prepare(&doc, true).unwrap();
+        assert_eq!(cache.uploaded, fresh.uploaded);
+    }
 
     #[test]
     fn masked_paper_edge_tiles_match_upload_contract() {
