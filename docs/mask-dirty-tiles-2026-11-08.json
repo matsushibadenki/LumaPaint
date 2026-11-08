@@ -1,0 +1,121 @@
+{
+  "baseline": {
+    "samples": [
+      {
+        "first_ms": 89.557833,
+        "latest_ms": 89.192417
+      },
+      {
+        "first_ms": 94.052459,
+        "latest_ms": 83.749167
+      },
+      {
+        "first_ms": 90.504416,
+        "latest_ms": 90.1195
+      },
+      {
+        "first_ms": 93.629291,
+        "latest_ms": 84.583666
+      },
+      {
+        "first_ms": 99.346417,
+        "latest_ms": 88.115792
+      }
+    ],
+    "median_first_ms": 93.629291,
+    "paper_tiles_after_start": [
+      35,
+      35,
+      35,
+      35,
+      35
+    ]
+  },
+  "optimized": {
+    "samples": [
+      {
+        "first_ms": 114.967084,
+        "latest_ms": 112.676584
+      },
+      {
+        "first_ms": 125.33325,
+        "latest_ms": 112.986166
+      },
+      {
+        "first_ms": 121.335,
+        "latest_ms": 109.609791
+      },
+      {
+        "first_ms": 127.151958,
+        "latest_ms": 113.727042
+      },
+      {
+        "first_ms": 125.282416,
+        "latest_ms": 117.766541
+      }
+    ],
+    "median_first_ms": 125.282416,
+    "paper_tiles_after_start": [
+      3,
+      3,
+      3,
+      3,
+      6,
+      6,
+      0,
+      6,
+      35,
+      35,
+      35
+    ]
+  },
+  "optimized-rle": {
+    "samples": [
+      {
+        "first_ms": 27.433084,
+        "latest_ms": 21.070834
+      },
+      {
+        "first_ms": 26.347875,
+        "latest_ms": 16.752416
+      },
+      {
+        "first_ms": 27.143333,
+        "latest_ms": 18.13825
+      },
+      {
+        "first_ms": 26.395959,
+        "latest_ms": 19.373542
+      },
+      {
+        "first_ms": 32.773375,
+        "latest_ms": 32.4175
+      }
+    ],
+    "median_first_ms": 27.143333,
+    "paper_tiles_after_start": [
+      3,
+      3,
+      3,
+      3,
+      6,
+      6,
+      0,
+      6,
+      35,
+      35,
+      35
+    ]
+  },
+  "conditions": {
+    "platform": "macOS Apple M4, Metal",
+    "build": "Debug, embedded UI, metrics enabled, unique bundle identifiers",
+    "scene": "A6 1240x1748 RGB8 white root layer, pixel mask; no artwork objects",
+    "view": "28.95%, 800x554 surface, 16px brush #202020",
+    "actions": "Warmup drag (400,350)-(580,350), then five drags (400,y)-(580,y) at y=380,410,440,470,500. AX observed after each drag.",
+    "order": "Initial full coverage comparison (optimized), baseline full update, final interval-based optimized-rle. Single batch per variant.",
+    "metric": "first input handler to present API call in host milliseconds; latest handler timing retained separately",
+    "scope": "paper_tiles_after_start includes subsequent Undo/Redo and Clear checks; first five entries correspond to measured drags",
+    "limitations": "Debug, one small scene, five samples per variant, sequential ordering, no physical input queue/display latency, no Release or long-tail guarantee. Initial generic coverage scan regression retained as diagnostic evidence."
+  }
+}

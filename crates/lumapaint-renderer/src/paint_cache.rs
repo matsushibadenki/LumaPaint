@@ -82,6 +82,88 @@ impl ActiveTiles {
     }
 }
 
+// Compare final coverage at the exact document pixel centers used by paper_uploads.
+// Large canvases retain the full invalidation path to bound this CPU scan.
+fn changed_mask_tiles(
+    previous: &lumapaint_core::layer_mask::LayerMask,
+    next: &lumapaint_core::layer_mask::LayerMask,
+    size: (u32, u32),
+) -> Option<BTreeSet<TileCoord>> {
+    let (w, h) = size;
+    if u64::from(w) * u64::from(h) > 16_777_216 {
+        return None;
+    }
+    let mut changed = BTreeSet::new();
+    use lumapaint_core::layer_mask::MaskContent;
+    if previous.transform == [1., 0., 0., 1., 0., 0.] && next.transform == previous.transform {
+        if let (
+            Some(MaskContent::Pixel {
+                width: aw,
+                height: ah,
+                runs: ar,
+                gray: ag,
+            }),
+            Some(MaskContent::Pixel {
+                width: bw,
+                height: bh,
+                runs: br,
+                gray: bg,
+            }),
+        ) = (&previous.content, &next.content)
+        {
+            if (*aw, *ah) == size && (*bw, *bh) == size {
+                let mut boundaries = vec![0, w * h];
+                for run in ar.iter().chain(br.iter()) {
+                    boundaries.extend([run[0], run[0] + run[1]]);
+                }
+                for run in ag.iter().chain(bg.iter()) {
+                    boundaries.extend([run[0], run[0] + run[1]]);
+                }
+                boundaries.sort_unstable();
+                boundaries.dedup();
+                for pair in boundaries.windows(2) {
+                    let mut start = pair[0];
+                    let end = pair[1].min(w * h);
+                    if start >= end {
+                        continue;
+                    }
+                    let p = [(start % w) as f32 + 0.5, (start / w) as f32 + 0.5];
+                    if previous.coverage(p) == next.coverage(p) {
+                        continue;
+                    }
+                    while start < end {
+                        let y = start / w;
+                        let row_end = end.min((y + 1) * w);
+                        for x in (start % w) / TILE_SIZE..=((row_end - 1) % w) / TILE_SIZE {
+                            changed.insert(TileCoord {
+                                x,
+                                y: y / TILE_SIZE,
+                            });
+                        }
+                        start = row_end;
+                    }
+                }
+                return Some(changed);
+            }
+        }
+    }
+    for ty in 0..h.div_ceil(TILE_SIZE) {
+        for tx in 0..w.div_ceil(TILE_SIZE) {
+            let origin = [tx * TILE_SIZE, ty * TILE_SIZE];
+            let differs = (origin[1]..(origin[1] + TILE_SIZE).min(h)).any(|y| {
+                (origin[0]..(origin[0] + TILE_SIZE).min(w)).any(|x| {
+                    let p = [x as f32 + 0.5, y as f32 + 0.5];
+                    previous.coverage(p) != next.coverage(p)
+                })
+            });
+            if differs {
+                changed.insert(TileCoord { x: tx, y: ty });
+            }
+        }
+    }
+    Some(changed)
+}
+
 impl PaintCache {
     pub fn new(dimensions: (u32, u32)) -> Result<Self, String> {
         let mut tiles = TiledRasterDocument::new(dimensions.0, dimensions.1)?;
@@ -222,12 +304,34 @@ impl PaintCache {
             dirty.extend(changes.coords);
             dirty.extend(self.active_coords.iter().copied());
         }
-        if let Some(changes) = self
-            .tiles
-            .set_layer_effects("paint", document.layer_effects("layer-1"))?
+        let mut effects = document.layer_effects("layer-1");
+        let mask_tiles = if self.paper
+            && crate::root_paint::masked_paper(document)
+            && self.tiles.layers()[0].effects != effects
         {
-            appearance_changed = true;
-            dirty.extend(changes.coords);
+            let mut previous = self.tiles.layers()[0].effects.clone();
+            let old_mask = previous.mask.take();
+            let new_mask = effects.mask.take();
+            let changes = if previous == effects && old_mask != new_mask {
+                old_mask
+                    .as_ref()
+                    .zip(new_mask.as_ref())
+                    .and_then(|(old, new)| changed_mask_tiles(old, new, document.dimensions()))
+            } else {
+                None
+            };
+            effects.mask = new_mask;
+            changes
+        } else {
+            None
+        };
+        if let Some(changes) = self.tiles.set_layer_effects("paint", effects)? {
+            if let Some(coords) = mask_tiles {
+                dirty.extend(coords);
+            } else {
+                appearance_changed = true;
+                dirty.extend(changes.coords);
+            }
             dirty.extend(self.active_coords.iter().copied());
         }
         self.tiles.discard_history();
@@ -413,6 +517,40 @@ mod tests {
     use lumapaint_core::document::Brush;
 
     #[test]
+    fn mask_interval_diff_matches_coverage_across_rows_and_tiles() {
+        use lumapaint_core::layer_mask::{LayerMask, MaskContent, MaskKind};
+        let size = (513, 259);
+        let old = LayerMask::from_selection(MaskKind::Pixel, None, size.0, size.1).unwrap();
+        let mut next = old.clone();
+        if let Some(MaskContent::Pixel { gray, .. }) = next.content.as_mut() {
+            *gray = vec![[255, 4, 128], [1024, 513, 30]];
+        }
+        for inverted in [false, true] {
+            next.inverted = inverted;
+            for density in [0., 0.5, 1.] {
+                next.density = density;
+                for matrix in [[1., 0., 0., 1., 0., 0.], [0., -1., 1., 0., 0., 513.]] {
+                    next.transform = matrix;
+                    let actual = changed_mask_tiles(&old, &next, size).unwrap();
+                    let mut expected = BTreeSet::new();
+                    for y in 0..size.1 {
+                        for x in 0..size.0 {
+                            let point = [x as f32 + 0.5, y as f32 + 0.5];
+                            if old.coverage(point) != next.coverage(point) {
+                                expected.insert(TileCoord {
+                                    x: x / TILE_SIZE,
+                                    y: y / TILE_SIZE,
+                                });
+                            }
+                        }
+                    }
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn masked_paper_local_paint_matches_full_rebuild() {
         let mut doc = Document::default();
         let (w, h) = doc.dimensions();
@@ -451,6 +589,38 @@ mod tests {
                 doc.undo();
             }
             cache.prepare(&doc, false).unwrap();
+            let mut fresh = PaintCache::new((w, h)).unwrap();
+            fresh.prepare(&doc, true).unwrap();
+            assert_eq!(cache.uploaded, fresh.uploaded);
+        }
+        let mut effects = doc.layer_effects("layer-1");
+        effects
+            .mask
+            .as_mut()
+            .unwrap()
+            .paint_selection(
+                &lumapaint_core::selection::Selection::new(
+                    lumapaint_core::selection::SelectionShape::Rectangle,
+                    [10., 10., 30., 30.],
+                ),
+                None,
+                false,
+            )
+            .unwrap();
+        doc.set_layer_effects("layer-1", effects).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(cache.paper_tiles_rasterized, 1);
+        let mut fresh = PaintCache::new((w, h)).unwrap();
+        fresh.prepare(&doc, true).unwrap();
+        assert_eq!(cache.uploaded, fresh.uploaded);
+        for redo in [false, true] {
+            if redo {
+                doc.redo();
+            } else {
+                doc.undo();
+            }
+            cache.prepare(&doc, false).unwrap();
+            assert_eq!(cache.paper_tiles_rasterized, 1);
             let mut fresh = PaintCache::new((w, h)).unwrap();
             fresh.prepare(&doc, true).unwrap();
             assert_eq!(cache.uploaded, fresh.uploaded);
