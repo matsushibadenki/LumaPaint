@@ -1,0 +1,12 @@
+[
+  {
+    "package": "node_modules/@vitejs/plugin-react",
+    "before": "6.1.2",
+    "after": "6.2.1"
+  },
+  {
+    "package": "node_modules/vite",
+    "before": "8.3.5",
+    "after": "8.3.6"
+  }
+]

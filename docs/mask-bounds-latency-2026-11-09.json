@@ -1,0 +1,180 @@
+{
+  "baseline": {
+    "pixel": {
+      "samples": [
+        {
+          "first_ms": 97.953125,
+          "latest_ms": 93.870166
+        },
+        {
+          "first_ms": 99.910666,
+          "latest_ms": 90.064625
+        },
+        {
+          "first_ms": 108.109459,
+          "latest_ms": 93.724625
+        },
+        {
+          "first_ms": 105.807458,
+          "latest_ms": 93.671583
+        },
+        {
+          "first_ms": 102.061292,
+          "latest_ms": 94.610542
+        }
+      ],
+      "median_first_ms": 102.061292,
+      "max_first_ms": 108.109459,
+      "paper_tiles": [
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "prepare_ms": [
+        82.14,
+        80.07,
+        82.88,
+        83.09,
+        82.83
+      ]
+    },
+    "vector": {
+      "samples": [
+        {
+          "first_ms": 86.015959,
+          "latest_ms": 81.404042
+        },
+        {
+          "first_ms": 104.169208,
+          "latest_ms": 91.489167
+        },
+        {
+          "first_ms": 109.495084,
+          "latest_ms": 105.70225
+        },
+        {
+          "first_ms": 133.471041,
+          "latest_ms": 122.263708
+        },
+        {
+          "first_ms": 147.02275,
+          "latest_ms": 134.97525
+        }
+      ],
+      "median_first_ms": 109.495084,
+      "max_first_ms": 147.02275,
+      "paper_tiles": [
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "prepare_ms": [
+        73.65,
+        85.23,
+        99.58,
+        115.93,
+        129.43
+      ]
+    }
+  },
+  "optimized": {
+    "pixel": {
+      "samples": [
+        {
+          "first_ms": 31.264917,
+          "latest_ms": 24.701125
+        },
+        {
+          "first_ms": 34.947083,
+          "latest_ms": 23.043125
+        },
+        {
+          "first_ms": 25.555292,
+          "latest_ms": 22.564959
+        },
+        {
+          "first_ms": 34.615875,
+          "latest_ms": 23.170459
+        },
+        {
+          "first_ms": 34.632708,
+          "latest_ms": 31.602958
+        }
+      ],
+      "median_first_ms": 34.615875,
+      "max_first_ms": 34.947083,
+      "paper_tiles": [
+        3,
+        3,
+        3,
+        3,
+        6
+      ],
+      "prepare_ms": [
+        12.75,
+        13.36,
+        11.72,
+        12.66,
+        19.26
+      ]
+    },
+    "vector": {
+      "samples": [
+        {
+          "first_ms": 28.244167,
+          "latest_ms": 16.039083
+        },
+        {
+          "first_ms": 23.159125,
+          "latest_ms": 14.883875
+        },
+        {
+          "first_ms": 28.976625,
+          "latest_ms": 16.267542
+        },
+        {
+          "first_ms": 16.639958,
+          "latest_ms": 16.262666
+        },
+        {
+          "first_ms": 42.985916,
+          "latest_ms": 29.77475
+        }
+      ],
+      "median_first_ms": 28.244167,
+      "max_first_ms": 42.985916,
+      "paper_tiles": [
+        3,
+        3,
+        3,
+        3,
+        6
+      ],
+      "prepare_ms": [
+        8.68,
+        7.96,
+        8.57,
+        9.88,
+        22.33
+      ]
+    }
+  },
+  "conditions": {
+    "platform": "macOS Apple M4 / Metal",
+    "build": "Debug embedded Tauri UI, metrics enabled, separate bundle identifiers",
+    "document": "1240x1748, white root, full pixel/vector mask rotated 12 degrees about document center",
+    "view": "28.95%, 800x554 surface, 16px brush, #202020",
+    "input": "Warmup (400,350)-(580,350). Five drags (400,y)-(580,y) at y=380,410,440,470,500. AX observation after each.",
+    "ordering": "Baseline pixel, baseline vector, optimized vector, optimized pixel; one batch each. Initial optimized implementation was adjusted before final measurement.",
+    "scope": "Handler start to present API call in host milliseconds, with latest event timings separately retained. No OS queue or physical display latency.",
+    "limitations": "Five samples per case, Debug, sequential conditions, single generated scene each. No Release, repeated randomized acceptance, large production artwork, or general tail-latency guarantee.",
+    "fixture_sha256": {
+      "pixel": "1e2f12c633c8c6690dabf369e613a77accf6323be6f40af84158c543058f5187",
+      "vector": "69250701bc694d1e584a81d441ca09ea97c3a0104fdd80b4c3cc390756d1b42b"
+    }
+  }
+}

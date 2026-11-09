@@ -294,6 +294,15 @@ impl LayerMask {
             a * point[0] + c * point[1] + e,
             b * point[0] + d * point[1] + f,
         ];
+        self.coverage_in_mask_space(point)
+    }
+    /// Coverage after the caller has mapped the point into mask-local space.
+    /// This shares grayscale, edit ordering, inversion and density semantics
+    /// without cloning mask contents to temporarily replace the transform.
+    pub fn coverage_in_mask_space(&self, point: [f32; 2]) -> f32 {
+        if !self.enabled {
+            return 1.;
+        }
         let value = match &self.content {
             Some(MaskContent::Vector { selection, edits }) => {
                 let mut hit = selection.coverage(Point {

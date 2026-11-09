@@ -82,6 +82,300 @@ impl ActiveTiles {
     }
 }
 
+// The interval follows the same inverse transforms as coverage(). Expand after
+// each affine evaluation to include f32 multiply/add rounding, even for shear.
+fn affine_interval(bounds: [f64; 4], matrix: [f64; 6]) -> [f64; 4] {
+    let [a, b, c, d, e, f] = matrix;
+    let mut result = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for [x, y] in [
+        [bounds[0], bounds[1]],
+        [bounds[2], bounds[1]],
+        [bounds[2], bounds[3]],
+        [bounds[0], bounds[3]],
+    ] {
+        let point = [a * x + c * y + e, b * x + d * y + f];
+        for axis in 0..2 {
+            result[axis] = result[axis].min(point[axis]);
+            result[axis + 2] = result[axis + 2].max(point[axis]);
+        }
+    }
+    result
+}
+fn coverage_error(bounds: [f64; 4], matrix: [f32; 6]) -> [f64; 2] {
+    let [a, b, c, d, e, f] = matrix.map(f64::from);
+    let x = bounds[0].abs().max(bounds[2].abs());
+    let y = bounds[1].abs().max(bounds[3].abs());
+    [
+        a.abs() * x + c.abs() * y + e.abs() + 1.,
+        b.abs() * x + d.abs() * y + f.abs() + 1.,
+    ]
+    .map(|magnitude| magnitude * 8. * f64::from(f32::EPSILON))
+}
+fn expand_interval(mut bounds: [f64; 4], error: [f64; 2]) -> [f64; 4] {
+    for axis in 0..2 {
+        bounds[axis] -= error[axis];
+        bounds[axis + 2] += error[axis];
+    }
+    bounds
+}
+
+fn pixel_support_bounds(bounds: [f64; 4]) -> [f64; 4] {
+    // Pixel masks snap near-integer coordinates before flooring. Include that
+    // footprint separately from the affine arithmetic error above.
+    let x = bounds[0].abs().max(bounds[2].abs());
+    let y = bounds[1].abs().max(bounds[3].abs());
+    expand_interval(
+        bounds,
+        [(x * 0.0000004).max(0.00002), (y * 0.0000004).max(0.00002)],
+    )
+}
+
+struct MaskChangeRegion {
+    to_local: [f32; 6],
+    to_geometry: Option<[f32; 6]>,
+    bounds: [f64; 4],
+}
+impl MaskChangeRegion {
+    fn intersects(&self, tile: [f64; 4]) -> bool {
+        let local_error = coverage_error(tile, self.to_local);
+        let local = expand_interval(
+            affine_interval(tile, self.to_local.map(f64::from)),
+            local_error,
+        );
+        let area = if let Some(matrix) = self.to_geometry {
+            // Compose exact affine coefficients before bounding: rotating an AABB
+            // twice would lose x/y correlation and inflate even an identity path.
+            let [a, b, c, d, e, f] = self.to_local.map(f64::from);
+            let [x, y, z, w, u, v] = matrix.map(f64::from);
+            let combined = [
+                x * a + z * b,
+                y * a + w * b,
+                x * c + z * d,
+                y * c + w * d,
+                x * e + z * f + u,
+                y * e + w * f + v,
+            ];
+            let roundoff = coverage_error(local, matrix);
+            let error = [
+                x.abs() * local_error[0] + z.abs() * local_error[1] + roundoff[0],
+                y.abs() * local_error[0] + w.abs() * local_error[1] + roundoff[1],
+            ];
+            expand_interval(affine_interval(tile, combined), error)
+        } else {
+            local
+        };
+        // Uncertain arithmetic keeps the candidate instead of discarding pixels.
+        if area.iter().any(|v| !v.is_finite()) {
+            return true;
+        }
+        area[0] <= self.bounds[2]
+            && area[2] >= self.bounds[0]
+            && area[1] <= self.bounds[3]
+            && area[3] >= self.bounds[1]
+    }
+}
+
+fn selection_change_region(
+    selection: &lumapaint_core::selection::Selection,
+    to_local: [f32; 6],
+    to_geometry: Option<[f32; 6]>,
+) -> Option<Option<MaskChangeRegion>> {
+    // Raster selections have another sampling transform. Keep the existing scan
+    // until their interpolation footprint has an independently verified bound.
+    if selection.raster.is_some() {
+        return None;
+    }
+    let Some(bounds) = selection.coverage_bounds() else {
+        return Some(None);
+    };
+    let mut bounds = bounds.map(f64::from);
+    if bounds.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let magnitude = bounds.iter().map(|v| v.abs()).fold(1., f64::max);
+    let pad = 2. + magnitude * 16. * f64::from(f32::EPSILON);
+    bounds[0] -= pad;
+    bounds[1] -= pad;
+    bounds[2] += pad;
+    bounds[3] += pad;
+    Some(Some(MaskChangeRegion {
+        to_local,
+        to_geometry,
+        bounds,
+    }))
+}
+
+fn mask_pixel_boundaries(
+    ar: &[[u32; 2]],
+    br: &[[u32; 2]],
+    ag: &[[u32; 3]],
+    bg: &[[u32; 3]],
+    total: u32,
+) -> Option<Vec<u32>> {
+    let count = ar
+        .len()
+        .saturating_add(br.len())
+        .saturating_add(ag.len())
+        .saturating_add(bg.len())
+        .saturating_mul(2)
+        .saturating_add(2);
+    if count > 131_072 {
+        return None;
+    }
+    let mut boundaries = Vec::with_capacity(count);
+    boundaries.extend([0, total]);
+    for run in ar.iter().chain(br.iter()) {
+        boundaries.extend([run[0], run[0] + run[1]]);
+    }
+    for run in ag.iter().chain(bg.iter()) {
+        boundaries.extend([run[0], run[0] + run[1]]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    Some(boundaries)
+}
+
+fn mask_change_regions(
+    previous: &lumapaint_core::layer_mask::LayerMask,
+    next: &lumapaint_core::layer_mask::LayerMask,
+) -> Option<Vec<MaskChangeRegion>> {
+    use lumapaint_core::layer_mask::MaskContent;
+    if previous.enabled != next.enabled
+        || previous.inverted != next.inverted
+        || previous.density != next.density
+    {
+        return None;
+    }
+    let old_inverse = lumapaint_core::image_frame::inverse(previous.transform).ok()?;
+    let new_inverse = lumapaint_core::image_frame::inverse(next.transform).ok()?;
+    let mut regions = Vec::new();
+    match (&previous.content, &next.content) {
+        (
+            Some(MaskContent::Vector {
+                selection: old_selection,
+                edits: old_edits,
+            }),
+            Some(MaskContent::Vector {
+                selection: new_selection,
+                edits: new_edits,
+            }),
+        ) if previous.transform == next.transform && old_selection == new_selection => {
+            let prefix = old_edits
+                .iter()
+                .zip(new_edits)
+                .take_while(|(a, b)| a == b)
+                .count();
+            if old_edits
+                .len()
+                .saturating_sub(prefix)
+                .saturating_add(new_edits.len().saturating_sub(prefix))
+                > 512
+            {
+                return None;
+            }
+            for edit in old_edits[prefix..].iter().chain(&new_edits[prefix..]) {
+                if let Some(region) =
+                    selection_change_region(&edit.selection, old_inverse, Some(edit.to_geometry))?
+                {
+                    regions.push(region);
+                }
+            }
+            return Some(regions);
+        }
+        (
+            Some(MaskContent::Pixel {
+                width: aw,
+                height: ah,
+                runs: ar,
+                gray: ag,
+            }),
+            Some(MaskContent::Pixel {
+                width: bw,
+                height: bh,
+                runs: br,
+                gray: bg,
+            }),
+        ) if previous.transform == next.transform && aw == bw && ah == bh => {
+            let boundaries = mask_pixel_boundaries(ar, br, ag, bg, aw.checked_mul(*ah)?)?;
+            crate::performance::count("mask_diff_local_mask_clones_avoided", 2);
+            crate::performance::count(
+                "mask_diff_local_payload_bytes_avoided",
+                ((ar.len() + br.len()) * std::mem::size_of::<[u32; 2]>()
+                    + (ag.len() + bg.len()) * std::mem::size_of::<[u32; 3]>())
+                    as u64,
+            );
+            let mut bounds = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for pair in boundaries.windows(2) {
+                let (start, end) = (pair[0], pair[1]);
+                if start >= end {
+                    continue;
+                }
+                let point = [(start % aw) as f32 + 0.5, (start / aw) as f32 + 0.5];
+                if previous.coverage_in_mask_space(point) == next.coverage_in_mask_space(point) {
+                    continue;
+                }
+                let top = start / aw;
+                let bottom = (end - 1) / aw;
+                let (left, right) = if top == bottom {
+                    (start % aw, (end - 1) % aw + 1)
+                } else {
+                    (0, *aw)
+                };
+                bounds[0] = bounds[0].min(f64::from(left));
+                bounds[1] = bounds[1].min(f64::from(top));
+                bounds[2] = bounds[2].max(f64::from(right));
+                bounds[3] = bounds[3].max(f64::from(bottom + 1));
+            }
+            if bounds[0].is_finite() {
+                regions.push(MaskChangeRegion {
+                    to_local: old_inverse,
+                    to_geometry: None,
+                    bounds: pixel_support_bounds(bounds),
+                });
+            }
+            return Some(regions);
+        }
+        _ => {}
+    }
+    // A transform or base-shape replacement can affect old and new support.
+    // Flags above ensure coverage outside both supports remains the same.
+    for (mask, to_local) in [(previous, old_inverse), (next, new_inverse)] {
+        match mask.content.as_ref()? {
+            MaskContent::Pixel { width, height, .. } => regions.push(MaskChangeRegion {
+                to_local,
+                to_geometry: None,
+                bounds: pixel_support_bounds([0., 0., f64::from(*width), f64::from(*height)]),
+            }),
+            MaskContent::Vector { selection, edits } => {
+                if edits.len() > 512 {
+                    return None;
+                }
+                if let Some(region) = selection_change_region(selection, to_local, None)? {
+                    regions.push(region);
+                }
+                for edit in edits.iter().filter(|edit| edit.reveal) {
+                    if let Some(region) =
+                        selection_change_region(&edit.selection, to_local, Some(edit.to_geometry))?
+                    {
+                        regions.push(region);
+                    }
+                }
+            }
+        }
+    }
+    Some(regions)
+}
+
 // Compare final coverage at the exact document pixel centers used by paper_uploads.
 // Large canvases retain the full invalidation path to bound this CPU scan.
 fn changed_mask_tiles(
@@ -89,6 +383,7 @@ fn changed_mask_tiles(
     next: &lumapaint_core::layer_mask::LayerMask,
     size: (u32, u32),
 ) -> Option<BTreeSet<TileCoord>> {
+    const MAX_COVERAGE_SAMPLES: usize = 262_144;
     let (w, h) = size;
     if u64::from(w) * u64::from(h) > 16_777_216 {
         return None;
@@ -112,15 +407,7 @@ fn changed_mask_tiles(
         ) = (&previous.content, &next.content)
         {
             if (*aw, *ah) == size && (*bw, *bh) == size {
-                let mut boundaries = vec![0, w * h];
-                for run in ar.iter().chain(br.iter()) {
-                    boundaries.extend([run[0], run[0] + run[1]]);
-                }
-                for run in ag.iter().chain(bg.iter()) {
-                    boundaries.extend([run[0], run[0] + run[1]]);
-                }
-                boundaries.sort_unstable();
-                boundaries.dedup();
+                let boundaries = mask_pixel_boundaries(ar, br, ag, bg, w * h)?;
                 for pair in boundaries.windows(2) {
                     let mut start = pair[0];
                     let end = pair[1].min(w * h);
@@ -147,15 +434,49 @@ fn changed_mask_tiles(
             }
         }
     }
+    let regions = mask_change_regions(previous, next);
+    let mut samples_left = MAX_COVERAGE_SAMPLES;
     for ty in 0..h.div_ceil(TILE_SIZE) {
         for tx in 0..w.div_ceil(TILE_SIZE) {
             let origin = [tx * TILE_SIZE, ty * TILE_SIZE];
+            let tile_bounds = [
+                f64::from(origin[0] as f32 + 0.5),
+                f64::from(origin[1] as f32 + 0.5),
+                f64::from(((origin[0] + TILE_SIZE).min(w) - 1) as f32 + 0.5),
+                f64::from(((origin[1] + TILE_SIZE).min(h) - 1) as f32 + 0.5),
+            ];
+            if regions
+                .as_ref()
+                .is_some_and(|regions| !regions.iter().any(|region| region.intersects(tile_bounds)))
+            {
+                continue;
+            }
+            let mut exhausted = false;
             let differs = (origin[1]..(origin[1] + TILE_SIZE).min(h)).any(|y| {
+                let row_bounds = [
+                    tile_bounds[0],
+                    f64::from(y as f32 + 0.5),
+                    tile_bounds[2],
+                    f64::from(y as f32 + 0.5),
+                ];
+                if regions.as_ref().is_some_and(|regions| {
+                    !regions.iter().any(|region| region.intersects(row_bounds))
+                }) {
+                    return false;
+                }
                 (origin[0]..(origin[0] + TILE_SIZE).min(w)).any(|x| {
+                    if samples_left == 0 {
+                        exhausted = true;
+                        return true;
+                    }
+                    samples_left -= 1;
                     let p = [x as f32 + 0.5, y as f32 + 0.5];
                     previous.coverage(p) != next.coverage(p)
                 })
             });
+            if exhausted {
+                return None;
+            }
             if differs {
                 changed.insert(TileCoord { x: tx, y: ty });
             }
@@ -515,6 +836,175 @@ impl PaintCache {
 mod tests {
     use super::*;
     use lumapaint_core::document::Brush;
+
+    fn all_changed_mask_tiles(
+        old: &lumapaint_core::layer_mask::LayerMask,
+        next: &lumapaint_core::layer_mask::LayerMask,
+        size: (u32, u32),
+    ) -> BTreeSet<TileCoord> {
+        let mut tiles = BTreeSet::new();
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let p = [x as f32 + 0.5, y as f32 + 0.5];
+                if old.coverage(p) != next.coverage(p) {
+                    tiles.insert(TileCoord {
+                        x: x / TILE_SIZE,
+                        y: y / TILE_SIZE,
+                    });
+                }
+            }
+        }
+        tiles
+    }
+
+    #[test]
+    fn snapped_pixel_boundary_is_retained_after_large_scale() {
+        use lumapaint_core::layer_mask::{LayerMask, MaskContent, MaskKind};
+        let size = (513, 259);
+        let mut old = LayerMask::from_selection(MaskKind::Pixel, None, size.0, size.1).unwrap();
+        old.transform = [10000., 0., 0., 1., 255.59, 0.];
+        let mut next = old.clone();
+        if let Some(MaskContent::Pixel { runs, .. }) = next.content.as_mut() {
+            runs[0] = [1, 512];
+        }
+        let actual = changed_mask_tiles(&old, &next, size).unwrap();
+        assert!(!actual.is_empty());
+        assert_eq!(actual, all_changed_mask_tiles(&old, &next, size));
+    }
+
+    #[test]
+    fn transformed_mask_edit_bounds_match_full_pixels_and_undo_redo() {
+        use lumapaint_core::{
+            layer_mask::{LayerMask, MaskKind},
+            selection::{Selection, SelectionShape},
+        };
+        for kind in [MaskKind::Pixel, MaskKind::Vector] {
+            for matrix in [
+                [1., 0., 0., 1., 37., -19.],
+                [0.94, 0.2, -0.15, 1.05, 60., -20.],
+                [-1., 0.1, 0.2, 1., 750., -5.],
+            ] {
+                let mut doc = Document::default();
+                let size = doc.dimensions();
+                let mut old = LayerMask::from_selection(kind, None, size.0, size.1).unwrap();
+                old.transform = matrix;
+                old.density = 0.65;
+                old.inverted = true;
+                let mut next = old.clone();
+                next.paint_selection(
+                    &Selection::new(SelectionShape::Ellipse, [310., 270., 30., 25.]),
+                    Some(&Selection::new(
+                        SelectionShape::Rectangle,
+                        [300., 260., 35., 35.],
+                    )),
+                    true,
+                )
+                .unwrap();
+                let actual = changed_mask_tiles(&old, &next, size)
+                    .expect("local edit stays within comparison budget");
+                assert!(!actual.is_empty());
+                assert_eq!(actual, all_changed_mask_tiles(&old, &next, size));
+                assert_eq!(changed_mask_tiles(&next, &old, size).unwrap(), actual);
+                let mut effects = doc.layer_effects("layer-1");
+                effects.mask = Some(old);
+                doc.set_layer_effects("layer-1", effects).unwrap();
+                let mut cache = PaintCache::new(size).unwrap();
+                cache.prepare(&doc, false).unwrap();
+                let mut effects = doc.layer_effects("layer-1");
+                effects.mask = Some(next);
+                doc.set_layer_effects("layer-1", effects).unwrap();
+                for operation in 0..3 {
+                    if operation == 1 {
+                        doc.undo();
+                    }
+                    if operation == 2 {
+                        doc.redo();
+                    }
+                    cache.prepare(&doc, false).unwrap();
+                    let mut fresh = PaintCache::new(size).unwrap();
+                    fresh.prepare(&doc, true).unwrap();
+                    assert_eq!(cache.uploaded, fresh.uploaded);
+                    assert!(
+                        cache.paper_tiles_rasterized
+                            < (size.0.div_ceil(TILE_SIZE) * size.1.div_ceil(TILE_SIZE)) as usize
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moved_vector_support_and_replaced_shapes_preserve_all_changed_tiles() {
+        use lumapaint_core::{
+            layer_mask::{LayerMask, MaskKind},
+            selection::{Selection, SelectionShape},
+        };
+        let size = (800, 600);
+        let selection = Selection::new(SelectionShape::Ellipse, [60., 70., 40., 30.]);
+        let old =
+            LayerMask::from_selection(MaskKind::Vector, Some(&selection), size.0, size.1).unwrap();
+        let mut next = old.clone();
+        next.transform = [0.9, 0.2, -0.1, 1., 290., 220.];
+        assert_eq!(
+            changed_mask_tiles(&old, &next, size).unwrap(),
+            all_changed_mask_tiles(&old, &next, size)
+        );
+        let replaced = LayerMask::from_selection(
+            MaskKind::Vector,
+            Some(&Selection::new(
+                SelectionShape::Rectangle,
+                [450., 350., 20., 20.],
+            )),
+            size.0,
+            size.1,
+        )
+        .unwrap();
+        assert_eq!(
+            changed_mask_tiles(&next, &replaced, size).unwrap(),
+            all_changed_mask_tiles(&next, &replaced, size)
+        );
+    }
+
+    #[test]
+    fn complex_mask_diff_falls_back_to_exact_full_rebuild() {
+        use lumapaint_core::layer_mask::{LayerMask, MaskContent, MaskKind};
+        let mut doc = Document::default();
+        let (w, h) = doc.dimensions();
+        let old = LayerMask::from_selection(MaskKind::Pixel, None, w, h).unwrap();
+        let mut effects = doc.layer_effects("layer-1");
+        effects.mask = Some(old.clone());
+        doc.set_layer_effects("layer-1", effects).unwrap();
+        let mut cache = PaintCache::new((w, h)).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        let full_count = cache.paper_tiles_rasterized;
+        let mut next = old.clone();
+        if let Some(MaskContent::Pixel { runs, .. }) = next.content.as_mut() {
+            *runs = (0..65_536).map(|index| [index * 2, 1]).collect();
+        }
+        assert!(changed_mask_tiles(&old, &next, (w, h)).is_none());
+        let mut effects = doc.layer_effects("layer-1");
+        effects.mask = Some(next);
+        doc.set_layer_effects("layer-1", effects).unwrap();
+        for operation in [0, 1, 2] {
+            if operation == 1 {
+                doc.undo();
+            }
+            if operation == 2 {
+                doc.redo();
+            }
+            cache.prepare(&doc, false).unwrap();
+            assert_eq!(cache.paper_tiles_rasterized, full_count);
+            let mut fresh = PaintCache::new((w, h)).unwrap();
+            fresh.prepare(&doc, true).unwrap();
+            assert_eq!(cache.uploaded, fresh.uploaded);
+        }
+        let old = LayerMask::from_selection(MaskKind::Vector, None, 1024, 1024).unwrap();
+        let mut next = old.clone();
+        next.linked = !old.linked;
+        assert!(changed_mask_tiles(&old, &next, (1024, 1024))
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn mask_interval_diff_matches_coverage_across_rows_and_tiles() {

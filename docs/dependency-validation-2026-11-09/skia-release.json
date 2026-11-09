@@ -1,0 +1,10 @@
+{
+  "tag_name": "0.157.0",
+  "html_url": "https://github.com/rust-skia/rust-skia/releases/tag/0.157.0",
+  "published_at": "2026-11-03T17:07:37Z",
+  "draft": false,
+  "prerelease": true,
+  "body_excerpt": "This release aligns the Rust bindings with Skia milestone 157 in #1351, and includes cumulative updates since 0.156.0 (upstream Skia notes: https://skia.googlesource.com/skia/+/refs/heads/chrome/m157/RELEASE_NOTES.md). ## Notable Changes - Fixed aliasing violations at the FFI boundary that BorrowSanitizer found in `Canvas`, `PathBuilder`, the SVG containers, `TypefaceFontProvider`, `Document`, and the stream wrappers in #1359. This is a breaking change. The deprecated `Camera3D`, `Patch3D`, and `View3D` are removed, a PDF `Document` now keeps its writer borrowed until it is dropped, and `RefHandle` no longer offers `native_mut()`. `PathIterRec` now owns its points and is `Send` and `Sync`. - Updated expat to 2.10.0, which fixes four known vulnerabilities, in #1360. - Added the unsafe constructor `Typeface::from_ct_font()`, which creates a typeface from a Core Text `CTFont` on macOS,",
+  "body_truncated": true,
+  "body_sha256": "cd2d0bfff746c7d41747e6b59251d165b32c8e95d89a154f09ae7373470628c9"
+}

@@ -1,0 +1,8 @@
+{
+  "note": "Maintenance did not edit these existing user files; later independent edits are outside recorded validation snapshots.",
+  "files": {
+    "crates/lumapaint-core/src/layer_mask.rs": "06e4129cc1bd56b2c4204015328f1197976b95ff71c0075f07e3cbf5156d996a",
+    "crates/lumapaint-renderer/src/paint_cache.rs": "c1a69c6f7a43a3fa047fa58e86754ace57f8b4a2502e32a15b289a9522daf6f9",
+    "docs/mask-bounds-latency-2026-11-09.json": "2bb25bbbd062e19e8842aef525a990e9d4e69f7865bd0a5d7a54d3129ae11dde"
+  }
+}

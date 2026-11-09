@@ -1,0 +1,10 @@
+{
+  "tag_name": "v0.16.2",
+  "html_url": "https://github.com/linebender/svgtypes/releases/tag/v0.16.2",
+  "published_at": "2026-11-04T20:02:01Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "**[Crates.io](https://crates.io/crates/svgtypes/0.16.2) | [Docs](https://docs.rs/svgtypes/0.16.2/svgtypes/index.html)** This release has an MSRV of 1.85. ### Added - Support `hwb()` colors. (#63 by @simartin) - Support angle units for the hue in `hsl()` and `hsla()`. (#62 by @simartin) - Support the `/` separator before the alpha component in `rgb()`, `hsl()` and friends. (#64 by @simartin) ### Fixed - Accept all non-ASCII ident code points in CSS identifiers, so unquoted font-family names such as `caf\u00e9` parse. (#71 by @mamicicekel) - Return an error instead of panicking on invalid `transform-origin` values. (#65 by @ChrisJr404)",
+  "body_truncated": false,
+  "body_sha256": "013d630ade472d23199fb58d04bde7ccc06797f3f236ec603adb77f242ab91c6"
+}

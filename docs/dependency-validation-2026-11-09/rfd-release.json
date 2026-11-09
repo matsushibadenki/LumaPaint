@@ -1,0 +1,10 @@
+{
+  "tag_name": "0.18.0",
+  "html_url": "https://github.com/PolyMeilex/rfd/releases/tag/0.18.0",
+  "published_at": "2026-11-07T14:04:53Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "## What's Changed * feat: Add set_show_hidden_files option for file dialogs by @bbopen in https://github.com/PolyMeilex/rfd/pull/306 * linux: add support for starting_directory for file dialogs when using zenity fallback by @timon-schelling in https://github.com/PolyMeilex/rfd/pull/317 * fix zenity OkCustom button result by @zhao-gang in https://github.com/PolyMeilex/rfd/pull/321 * macos: Add save-dialog format picker for named filters by @davideme in https://github.com/PolyMeilex/rfd/pull/328 * feat(gtk3): bind dialog transient parent using RawWindowHandle by @bet4it in https://github.com/PolyMeilex/rfd/pull/327 * wasm: Support wasm64 targets by @SuchAFuriousDeath in https://github.com/PolyMeilex/rfd/pull/325 * wasm: don't panic when removing an already-removed overlay by @rogerwq in https://github.com/PolyMeilex/rfd/pull/335 * ci: Enforce 1.92 as MSRV by @PolyMeilex in https://github.com/PolyMeilex/rfd/pull/337 * wasm: Avoid innerHTML when injecting dialog styles by @kjarosh in https://github.com/PolyMeilex/rfd/pull/340 * gtk3: Don't use the message description as a",
+  "body_truncated": true,
+  "body_sha256": "7e394145368c2c26a78e3e0a099061f164128b3f690af539194977609ac79b52"
+}

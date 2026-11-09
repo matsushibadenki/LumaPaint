@@ -1,0 +1,10 @@
+{
+  "tag_name": "v0.47.0",
+  "html_url": "https://github.com/J-F-Liu/lopdf/releases/tag/v0.47.0",
+  "published_at": "2026-11-04T02:20:38Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "## What's Changed * Fix Identity defaults for V4 and V5 encryption filters by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/624 * Honor decompression limits in object streams and PNG predictors by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/625 * Preserve page attributes and outlines in merge examples by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/626 * Raise the PDF version when plain saves write an xref stream by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/627 * fix: default BitsPerComponent to 1 for inline image masks by @LuisFigueroaG in https://github.com/J-F-Liu/lopdf/pull/628 * fix: find EI after any white-space character when skipping inline images by @LuisFigueroaG in https://github.com/J-F-Liu/lopdf/pull/629 * perf: traverse and prune in linear time by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/630 * perf: delete the objects of delete_pages and delete_zero_length_streams in one traversal by @yhay81 in https://github.com/J-F-Liu/lopdf/pull/631 * fix:",
+  "body_truncated": true,
+  "body_sha256": "42547f914c095e80a58e2a049c60cccc13f6fc8a456aa238103034905553df10"
+}

@@ -17,7 +17,7 @@
     },
     {
       "name": "aes",
-      "version": "0.9.3",
+      "version": "0.9.4",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -405,7 +405,7 @@
     },
     {
       "name": "brotli-decompressor",
-      "version": "6.2.0",
+      "version": "6.3.0",
       "license": "BSD-3-Clause/MIT",
       "license_file": null,
       "source_notices": [
@@ -580,7 +580,7 @@
     },
     {
       "name": "cc",
-      "version": "1.10.0",
+      "version": "1.11.1",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -760,6 +760,19 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/RustCrypto/formats"
+    },
+    {
+      "name": "constant_time_eq",
+      "version": "0.6.1",
+      "license": "CC0-1.0 OR MIT-0 OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-CC0",
+        "LICENSE-MIT0"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://codeberg.org/cesarb/constant_time_eq"
     },
     {
       "name": "cookie",
@@ -1054,42 +1067,6 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/diwic/dbus-rs"
-    },
-    {
-      "name": "defmt",
-      "version": "1.2.0",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/knurling-rs/defmt"
-    },
-    {
-      "name": "defmt-macros",
-      "version": "1.2.0",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/knurling-rs/defmt"
-    },
-    {
-      "name": "defmt-parser",
-      "version": "1.1.0",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/knurling-rs/defmt"
     },
     {
       "name": "deranged",
@@ -1486,7 +1463,7 @@
     },
     {
       "name": "flate2",
-      "version": "1.1.10",
+      "version": "1.1.11",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2526,7 +2503,7 @@
     },
     {
       "name": "inout",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2596,7 +2573,7 @@
     },
     {
       "name": "jiff",
-      "version": "0.2.38",
+      "version": "0.2.41",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2608,7 +2585,7 @@
     },
     {
       "name": "jiff-core",
-      "version": "0.1.1",
+      "version": "0.1.4",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2620,7 +2597,7 @@
     },
     {
       "name": "jiff-static",
-      "version": "0.2.38",
+      "version": "0.2.41",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2901,7 +2878,7 @@
     },
     {
       "name": "libz-sys",
-      "version": "1.1.31",
+      "version": "1.1.32",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2973,7 +2950,7 @@
     },
     {
       "name": "lopdf",
-      "version": "0.46.0",
+      "version": "0.47.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3077,7 +3054,7 @@
     },
     {
       "name": "mime",
-      "version": "0.3.17",
+      "version": "0.3.18",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -3508,6 +3485,15 @@
       "repository": "https://github.com/madsmtm/objc2"
     },
     {
+      "name": "objc2-uniform-type-identifiers",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/madsmtm/objc2"
+    },
+    {
       "name": "objc2-user-notifications",
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
@@ -3775,18 +3761,6 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/image-rs/image-png"
-    },
-    {
-      "name": "pollster",
-      "version": "0.4.0",
-      "license": "Apache-2.0/MIT",
-      "license_file": null,
-      "source_notices": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/zesterer/pollster"
     },
     {
       "name": "pollster",
@@ -4316,7 +4290,7 @@
     },
     {
       "name": "rfd",
-      "version": "0.17.2",
+      "version": "0.18.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -4762,7 +4736,7 @@
     },
     {
       "name": "serde_spanned",
-      "version": "1.1.2",
+      "version": "1.1.3",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5015,7 +4989,7 @@
     },
     {
       "name": "smallvec",
-      "version": "1.16.4",
+      "version": "1.16.5",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5215,7 +5189,7 @@
     },
     {
       "name": "svgtypes",
-      "version": "0.16.1",
+      "version": "0.16.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5710,7 +5684,7 @@
     },
     {
       "name": "toml",
-      "version": "1.1.8+spec-1.1.0",
+      "version": "1.2.1+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5734,7 +5708,7 @@
     },
     {
       "name": "toml_datetime",
-      "version": "1.1.2+spec-1.1.0",
+      "version": "1.1.3+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5770,7 +5744,7 @@
     },
     {
       "name": "toml_edit",
-      "version": "0.25.17+spec-1.1.0",
+      "version": "0.25.19+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5794,7 +5768,7 @@
     },
     {
       "name": "toml_writer",
-      "version": "1.1.3+spec-1.1.0",
+      "version": "1.2.0+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6032,7 +6006,7 @@
     },
     {
       "name": "unicode-script",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6150,7 +6124,7 @@
     },
     {
       "name": "uuid",
-      "version": "1.29.0",
+      "version": "1.29.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7073,7 +7047,7 @@
     },
     {
       "name": "winnow",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -7281,6 +7255,18 @@
       "repository": "https://github.com/RustCrypto/utils"
     },
     {
+      "name": "zeroize_derive",
+      "version": "1.5.0",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/RustCrypto/utils"
+    },
+    {
       "name": "zerotrie",
       "version": "0.2.5",
       "license": "Unicode-3.0",
@@ -7315,7 +7301,7 @@
     },
     {
       "name": "zip",
-      "version": "9.2.1",
+      "version": "9.5.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [

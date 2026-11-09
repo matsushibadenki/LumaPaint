@@ -1,0 +1,10 @@
+{
+  "tag_name": "plugin-react@6.2.1",
+  "html_url": "https://github.com/vitejs/vite-plugin-react/releases/tag/plugin-react%406.2.1",
+  "published_at": "2026-11-02T09:15:09Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "### Fix `refreshInclude` and `refreshExclude` options not working ([#1543](https://github.com/vitejs/vite-plugin-react/pull/1543)) Fix mistake from #1516",
+  "body_truncated": false,
+  "body_sha256": "fc54b7fd1b9cae0e5848917441ab224568f8be1ba00cc69bc60de7f26dbdf076"
+}

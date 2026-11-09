@@ -714,7 +714,18 @@ mod tests {
         assert_eq!(pixels[(8 * 32 + 8) * 4 + 3], 255);
         let mut cache = crate::paint_cache::PaintCache::new((32, 32)).unwrap();
         let uploads = cache.prepare(&doc, true).unwrap();
-        assert_eq!(uploads[0].pixels, pixels);
+        assert_eq!(uploads.len(), 1);
+        let upload = &uploads[0];
+        assert_eq!(upload.origin, [0, 0]);
+        assert_eq!(upload.extent, [32, 32]);
+        // GPU upload buffers retain tile-row padding; compare the logical image.
+        let uploaded_pixels: Vec<_> = upload
+            .pixels
+            .chunks_exact(upload.bytes_per_row as usize)
+            .take(upload.extent[1] as usize)
+            .flat_map(|row| row[..upload.extent[0] as usize * 4].iter().copied())
+            .collect();
+        assert_eq!(uploaded_pixels, pixels);
         let upper = doc.add_paint_layer().unwrap();
         doc.select_layer(upper).unwrap();
         doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="red"/></svg>"#.into(),None).unwrap();

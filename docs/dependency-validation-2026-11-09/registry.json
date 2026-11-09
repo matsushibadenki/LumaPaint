@@ -1,0 +1,730 @@
+[
+  {
+    "kind": "cargo",
+    "name": "serde",
+    "current": [
+      "=1.0.229"
+    ],
+    "latest": "1.0.229",
+    "url": "https://crates.io/api/v1/crates/serde"
+  },
+  {
+    "kind": "cargo",
+    "name": "usvg",
+    "current": [
+      "0.49.0",
+      "=0.49.0"
+    ],
+    "latest": "0.49.0",
+    "url": "https://crates.io/api/v1/crates/usvg"
+  },
+  {
+    "kind": "cargo",
+    "name": "tiny-skia-path",
+    "current": [
+      "0.12.0",
+      "=0.12.0"
+    ],
+    "latest": "0.12.0",
+    "url": "https://crates.io/api/v1/crates/tiny-skia-path"
+  },
+  {
+    "kind": "cargo",
+    "name": "roxmltree",
+    "current": [
+      "0.20.0",
+      "0.21.1",
+      "=0.21.2"
+    ],
+    "latest": "0.21.2",
+    "url": "https://crates.io/api/v1/crates/roxmltree"
+  },
+  {
+    "kind": "cargo",
+    "name": "serde_json",
+    "current": [
+      "=1.0.154"
+    ],
+    "latest": "1.0.154",
+    "url": "https://crates.io/api/v1/crates/serde_json"
+  },
+  {
+    "kind": "cargo",
+    "name": "base64",
+    "current": [
+      "0.23",
+      "=0.23.1"
+    ],
+    "latest": "0.23.1",
+    "url": "https://crates.io/api/v1/crates/base64"
+  },
+  {
+    "kind": "cargo",
+    "name": "pollster",
+    "current": [
+      "=1.0.1"
+    ],
+    "latest": "1.0.1",
+    "url": "https://crates.io/api/v1/crates/pollster"
+  },
+  {
+    "kind": "cargo",
+    "name": "i_overlay",
+    "current": [
+      "=9.1.0"
+    ],
+    "latest": "9.1.0",
+    "url": "https://crates.io/api/v1/crates/i_overlay"
+  },
+  {
+    "kind": "cargo",
+    "name": "image",
+    "current": [
+      "0.25.5",
+      "=0.25.10"
+    ],
+    "latest": "0.25.10",
+    "url": "https://crates.io/api/v1/crates/image"
+  },
+  {
+    "kind": "cargo",
+    "name": "wgpu",
+    "current": [
+      "=30.0.1"
+    ],
+    "latest": "30.0.1",
+    "url": "https://crates.io/api/v1/crates/wgpu"
+  },
+  {
+    "kind": "cargo",
+    "name": "bytemuck",
+    "current": [
+      "1.16",
+      "=1.25.2"
+    ],
+    "latest": "1.25.2",
+    "url": "https://crates.io/api/v1/crates/bytemuck"
+  },
+  {
+    "kind": "cargo",
+    "name": "half",
+    "current": [
+      "=2.7.1"
+    ],
+    "latest": "2.7.1",
+    "url": "https://crates.io/api/v1/crates/half"
+  },
+  {
+    "kind": "cargo",
+    "name": "resvg",
+    "current": [
+      "0.49.0",
+      "=0.49.0"
+    ],
+    "latest": "0.49.0",
+    "url": "https://crates.io/api/v1/crates/resvg"
+  },
+  {
+    "kind": "cargo",
+    "name": "ttf-parser",
+    "current": [
+      "0.25",
+      "=0.25.1"
+    ],
+    "latest": "0.25.1",
+    "url": "https://crates.io/api/v1/crates/ttf-parser"
+  },
+  {
+    "kind": "cargo",
+    "name": "rustybuzz",
+    "current": [
+      "=0.20.1"
+    ],
+    "latest": "0.20.1",
+    "url": "https://crates.io/api/v1/crates/rustybuzz"
+  },
+  {
+    "kind": "cargo",
+    "name": "unicode-segmentation",
+    "current": [
+      "=1.13.3"
+    ],
+    "latest": "1.13.3",
+    "url": "https://crates.io/api/v1/crates/unicode-segmentation"
+  },
+  {
+    "kind": "cargo",
+    "name": "skia-safe",
+    "current": [
+      "=0.153.3"
+    ],
+    "latest": "0.157.0",
+    "url": "https://crates.io/api/v1/crates/skia-safe"
+  },
+  {
+    "kind": "cargo",
+    "name": "objc2",
+    "current": [
+      "=0.6.5"
+    ],
+    "latest": "0.6.5",
+    "url": "https://crates.io/api/v1/crates/objc2"
+  },
+  {
+    "kind": "cargo",
+    "name": "objc2-metal",
+    "current": [
+      "=0.3.2"
+    ],
+    "latest": "0.3.2",
+    "url": "https://crates.io/api/v1/crates/objc2-metal"
+  },
+  {
+    "kind": "cargo",
+    "name": "objc2-core-graphics",
+    "current": [
+      "=0.3.2"
+    ],
+    "latest": "0.3.2",
+    "url": "https://crates.io/api/v1/crates/objc2-core-graphics"
+  },
+  {
+    "kind": "cargo",
+    "name": "metal",
+    "current": [
+      "=0.33.0"
+    ],
+    "latest": "0.33.0",
+    "url": "https://crates.io/api/v1/crates/metal"
+  },
+  {
+    "kind": "cargo",
+    "name": "lopdf",
+    "current": [
+      "=0.46.0"
+    ],
+    "latest": "0.47.0",
+    "url": "https://crates.io/api/v1/crates/lopdf"
+  },
+  {
+    "kind": "cargo",
+    "name": "png",
+    "current": [
+      "0.18.0",
+      "=0.18.1"
+    ],
+    "latest": "0.18.1",
+    "url": "https://crates.io/api/v1/crates/png"
+  },
+  {
+    "kind": "cargo",
+    "name": "fontdb",
+    "current": [
+      "0.24",
+      "=0.24.0"
+    ],
+    "latest": "0.24.0",
+    "url": "https://crates.io/api/v1/crates/fontdb"
+  },
+  {
+    "kind": "cargo",
+    "name": "tempfile",
+    "current": [
+      "=3.27.0"
+    ],
+    "latest": "3.27.0",
+    "url": "https://crates.io/api/v1/crates/tempfile"
+  },
+  {
+    "kind": "cargo",
+    "name": "svgtypes",
+    "current": [
+      "0.16.1",
+      "=0.16.1"
+    ],
+    "latest": "0.16.2",
+    "url": "https://crates.io/api/v1/crates/svgtypes"
+  },
+  {
+    "kind": "cargo",
+    "name": "crc32fast",
+    "current": [
+      "=1.5.4"
+    ],
+    "latest": "1.5.4",
+    "url": "https://crates.io/api/v1/crates/crc32fast"
+  },
+  {
+    "kind": "cargo",
+    "name": "flate2",
+    "current": [
+      "1.1",
+      "=1.1.10"
+    ],
+    "latest": "1.1.11",
+    "url": "https://crates.io/api/v1/crates/flate2"
+  },
+  {
+    "kind": "cargo",
+    "name": "svg2pdf",
+    "current": [
+      "=0.13.0"
+    ],
+    "latest": "0.13.0",
+    "url": "https://crates.io/api/v1/crates/svg2pdf"
+  },
+  {
+    "kind": "cargo",
+    "name": "sha2",
+    "current": [
+      "=0.11.1"
+    ],
+    "latest": "0.11.1",
+    "url": "https://crates.io/api/v1/crates/sha2"
+  },
+  {
+    "kind": "cargo",
+    "name": "freetype-rs",
+    "current": [
+      "=0.38.0"
+    ],
+    "latest": "0.38.0",
+    "url": "https://crates.io/api/v1/crates/freetype-rs"
+  },
+  {
+    "kind": "cargo",
+    "name": "moxcms",
+    "current": [
+      "=0.8.1"
+    ],
+    "latest": "0.9.2",
+    "url": "https://crates.io/api/v1/crates/moxcms"
+  },
+  {
+    "kind": "cargo",
+    "name": "zip",
+    "current": [
+      "=9.2.1"
+    ],
+    "latest": "9.5.0",
+    "url": "https://crates.io/api/v1/crates/zip"
+  },
+  {
+    "kind": "cargo",
+    "name": "tauri-build",
+    "current": [
+      "=2.7.4"
+    ],
+    "latest": "2.7.4",
+    "url": "https://crates.io/api/v1/crates/tauri-build"
+  },
+  {
+    "kind": "cargo",
+    "name": "libc",
+    "current": [
+      "=0.2.191"
+    ],
+    "latest": "0.2.191",
+    "url": "https://crates.io/api/v1/crates/libc"
+  },
+  {
+    "kind": "cargo",
+    "name": "tauri",
+    "current": [
+      "=2.12.5"
+    ],
+    "latest": "2.12.5",
+    "url": "https://crates.io/api/v1/crates/tauri"
+  },
+  {
+    "kind": "cargo",
+    "name": "rfd",
+    "current": [
+      "=0.17.2"
+    ],
+    "latest": "0.18.0",
+    "url": "https://crates.io/api/v1/crates/rfd"
+  },
+  {
+    "kind": "cargo",
+    "name": "reqwest",
+    "current": [
+      "=0.13.5"
+    ],
+    "latest": "0.13.5",
+    "url": "https://crates.io/api/v1/crates/reqwest"
+  },
+  {
+    "kind": "cargo",
+    "name": "tauri-plugin-updater",
+    "current": [
+      "=2.14.1"
+    ],
+    "latest": "2.14.1",
+    "url": "https://crates.io/api/v1/crates/tauri-plugin-updater"
+  },
+  {
+    "kind": "cargo",
+    "name": "security-framework",
+    "current": [
+      "=3.7.0"
+    ],
+    "latest": "3.7.0",
+    "url": "https://crates.io/api/v1/crates/security-framework"
+  },
+  {
+    "kind": "cargo",
+    "name": "raw-window-handle",
+    "current": [
+      "=0.6.2"
+    ],
+    "latest": "0.6.2",
+    "url": "https://crates.io/api/v1/crates/raw-window-handle"
+  },
+  {
+    "kind": "cargo",
+    "name": "objc2-app-kit",
+    "current": [
+      "=0.3.2"
+    ],
+    "latest": "0.3.2",
+    "url": "https://crates.io/api/v1/crates/objc2-app-kit"
+  },
+  {
+    "kind": "cargo",
+    "name": "objc2-foundation",
+    "current": [
+      "=0.3.2"
+    ],
+    "latest": "0.3.2",
+    "url": "https://crates.io/api/v1/crates/objc2-foundation"
+  },
+  {
+    "kind": "cargo",
+    "name": "gif",
+    "current": [
+      "0.14.1"
+    ],
+    "latest": "0.14.2",
+    "url": "https://crates.io/api/v1/crates/gif"
+  },
+  {
+    "kind": "cargo",
+    "name": "image-webp",
+    "current": [
+      "0.2.4"
+    ],
+    "latest": "0.2.4",
+    "url": "https://crates.io/api/v1/crates/image-webp"
+  },
+  {
+    "kind": "cargo",
+    "name": "log",
+    "current": [
+      "0.4",
+      "0.4.22"
+    ],
+    "latest": "0.4.35",
+    "url": "https://crates.io/api/v1/crates/log"
+  },
+  {
+    "kind": "cargo",
+    "name": "pico-args",
+    "current": [
+      "0.5"
+    ],
+    "latest": "0.5.0",
+    "url": "https://crates.io/api/v1/crates/pico-args"
+  },
+  {
+    "kind": "cargo",
+    "name": "rgb",
+    "current": [
+      "0.8"
+    ],
+    "latest": "0.8.53",
+    "url": "https://crates.io/api/v1/crates/rgb"
+  },
+  {
+    "kind": "cargo",
+    "name": "tiny-skia",
+    "current": [
+      "0.12",
+      "0.12.0"
+    ],
+    "latest": "0.12.0",
+    "url": "https://crates.io/api/v1/crates/tiny-skia"
+  },
+  {
+    "kind": "cargo",
+    "name": "zune-jpeg",
+    "current": [
+      "0.5.9"
+    ],
+    "latest": "0.5.15",
+    "url": "https://crates.io/api/v1/crates/zune-jpeg"
+  },
+  {
+    "kind": "cargo",
+    "name": "once_cell",
+    "current": [
+      "1.18",
+      "1.21"
+    ],
+    "latest": "1.21.4",
+    "url": "https://crates.io/api/v1/crates/once_cell"
+  },
+  {
+    "kind": "cargo",
+    "name": "env_logger",
+    "current": [
+      "0.11.6"
+    ],
+    "latest": "0.11.11",
+    "url": "https://crates.io/api/v1/crates/env_logger"
+  },
+  {
+    "kind": "cargo",
+    "name": "libz-sys",
+    "current": [
+      "1.1.20"
+    ],
+    "latest": "1.1.32",
+    "url": "https://crates.io/api/v1/crates/libz-sys"
+  },
+  {
+    "kind": "cargo",
+    "name": "cc",
+    "current": [
+      "1"
+    ],
+    "latest": "1.11.1",
+    "url": "https://crates.io/api/v1/crates/cc"
+  },
+  {
+    "kind": "cargo",
+    "name": "pkg-config",
+    "current": [
+      "0.3.11"
+    ],
+    "latest": "0.3.34",
+    "url": "https://crates.io/api/v1/crates/pkg-config"
+  },
+  {
+    "kind": "cargo",
+    "name": "data-url",
+    "current": [
+      "0.3"
+    ],
+    "latest": "0.3.2",
+    "url": "https://crates.io/api/v1/crates/data-url"
+  },
+  {
+    "kind": "cargo",
+    "name": "harfrust",
+    "current": [
+      "0.12.0"
+    ],
+    "latest": "0.15.0",
+    "url": "https://crates.io/api/v1/crates/harfrust"
+  },
+  {
+    "kind": "cargo",
+    "name": "imagesize",
+    "current": [
+      "0.15.0"
+    ],
+    "latest": "0.15.0",
+    "url": "https://crates.io/api/v1/crates/imagesize"
+  },
+  {
+    "kind": "cargo",
+    "name": "kurbo",
+    "current": [
+      "0.13.0"
+    ],
+    "latest": "0.13.1",
+    "url": "https://crates.io/api/v1/crates/kurbo"
+  },
+  {
+    "kind": "cargo",
+    "name": "simplecss",
+    "current": [
+      "0.2"
+    ],
+    "latest": "0.2.2",
+    "url": "https://crates.io/api/v1/crates/simplecss"
+  },
+  {
+    "kind": "cargo",
+    "name": "siphasher",
+    "current": [
+      "1.0",
+      "1.0.1"
+    ],
+    "latest": "1.0.4",
+    "url": "https://crates.io/api/v1/crates/siphasher"
+  },
+  {
+    "kind": "cargo",
+    "name": "skrifa",
+    "current": [
+      "0.44"
+    ],
+    "latest": "0.49.0",
+    "url": "https://crates.io/api/v1/crates/skrifa"
+  },
+  {
+    "kind": "cargo",
+    "name": "strict-num",
+    "current": [
+      "0.1.1"
+    ],
+    "latest": "0.2.0",
+    "url": "https://crates.io/api/v1/crates/strict-num"
+  },
+  {
+    "kind": "cargo",
+    "name": "unicode-bidi",
+    "current": [
+      "0.3"
+    ],
+    "latest": "0.3.18",
+    "url": "https://crates.io/api/v1/crates/unicode-bidi"
+  },
+  {
+    "kind": "cargo",
+    "name": "unicode-script",
+    "current": [
+      "0.5"
+    ],
+    "latest": "0.5.9",
+    "url": "https://crates.io/api/v1/crates/unicode-script"
+  },
+  {
+    "kind": "cargo",
+    "name": "unicode-vo",
+    "current": [
+      "0.1"
+    ],
+    "latest": "0.1.0",
+    "url": "https://crates.io/api/v1/crates/unicode-vo"
+  },
+  {
+    "kind": "cargo",
+    "name": "xmlwriter",
+    "current": [
+      "0.1"
+    ],
+    "latest": "0.1.0",
+    "url": "https://crates.io/api/v1/crates/xmlwriter"
+  },
+  {
+    "kind": "cargo",
+    "name": "miniz_oxide",
+    "current": [
+      "0.8"
+    ],
+    "latest": "0.9.1",
+    "url": "https://crates.io/api/v1/crates/miniz_oxide"
+  },
+  {
+    "kind": "cargo",
+    "name": "pdf-writer",
+    "current": [
+      "0.12"
+    ],
+    "latest": "0.15.0",
+    "url": "https://crates.io/api/v1/crates/pdf-writer"
+  },
+  {
+    "kind": "cargo",
+    "name": "subsetter",
+    "current": [
+      "0.2"
+    ],
+    "latest": "0.2.6",
+    "url": "https://crates.io/api/v1/crates/subsetter"
+  },
+  {
+    "kind": "npm",
+    "name": "@tauri-apps/api",
+    "current": [
+      "^2.12.4"
+    ],
+    "latest": "2.12.4",
+    "url": "https://registry.npmjs.org/@tauri-apps%2Fapi/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "react",
+    "current": [
+      "^19.3.1"
+    ],
+    "latest": "19.3.1",
+    "url": "https://registry.npmjs.org/react/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "react-dom",
+    "current": [
+      "^19.3.1"
+    ],
+    "latest": "19.3.1",
+    "url": "https://registry.npmjs.org/react-dom/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "@tauri-apps/cli",
+    "current": [
+      "^2.12.4"
+    ],
+    "latest": "2.12.4",
+    "url": "https://registry.npmjs.org/@tauri-apps%2Fcli/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "@types/react",
+    "current": [
+      "^19.3.0"
+    ],
+    "latest": "19.3.0",
+    "url": "https://registry.npmjs.org/@types%2Freact/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "@types/react-dom",
+    "current": [
+      "^19.3.0"
+    ],
+    "latest": "19.3.0",
+    "url": "https://registry.npmjs.org/@types%2Freact-dom/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "@vitejs/plugin-react",
+    "current": [
+      "^6.1.2"
+    ],
+    "latest": "6.2.1",
+    "url": "https://registry.npmjs.org/@vitejs%2Fplugin-react/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "typescript",
+    "current": [
+      "^7.0.2"
+    ],
+    "latest": "7.0.2",
+    "url": "https://registry.npmjs.org/typescript/latest"
+  },
+  {
+    "kind": "npm",
+    "name": "vite",
+    "current": [
+      "^8.3.5"
+    ],
+    "latest": "8.3.6",
+    "url": "https://registry.npmjs.org/vite/latest"
+  }
+]

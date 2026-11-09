@@ -1,0 +1,12 @@
+{
+  "candidate": "0.9.2",
+  "retained": "0.8.1",
+  "test": "photoshop_half_transparent_composite_is_checked_before_retaining_layers",
+  "pixels": 16384,
+  "existing_max_tolerance": 9,
+  "candidate_max": 10,
+  "candidate_p3_mean": 0.23667399088541666,
+  "retained_max": 9,
+  "retained_result": "passed",
+  "threshold_unchanged": true
+}

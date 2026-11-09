@@ -1,0 +1,10 @@
+{
+  "tag_name": "v9.5.0",
+  "html_url": "https://github.com/zip-rs/zip2/releases/tag/v9.5.0",
+  "published_at": "2026-11-09T00:03:39Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "### <!-- 0 -->\ud83d\ude80 Features - `ExtractOptions` root_dir filter ([#1279](https://github.com/zip-rs/zip2/pull/1279))",
+  "body_truncated": false,
+  "body_sha256": "e3df9a2ec62bb087830457201837f8fb079df82ce9a736441e5345b6f333fc12"
+}

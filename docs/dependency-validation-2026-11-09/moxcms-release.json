@@ -1,0 +1,10 @@
+{
+  "tag_name": "0.9.2",
+  "html_url": "https://github.com/awxkee/moxcms/releases/tag/0.9.2",
+  "published_at": "2026-11-07T08:08:32Z",
+  "draft": false,
+  "prerelease": false,
+  "body_excerpt": "## What's Changed * Encode the profile's creation_date_time instead of the current time by @virtualritz in https://github.com/awxkee/moxcms/pull/195 * Fix swapped CICP colour primaries in P3 default profiles by @virtualritz in https://github.com/awxkee/moxcms/pull/194 * Round integer gamma table entries to nearest by @son653 in https://github.com/awxkee/moxcms/pull/196 * Fix TRC tag size overflow on 32-bit targets by @Mrmaxmeier in https://github.com/awxkee/moxcms/pull/197 * Use Q1.30 on NEON only when the matrix fits in it by @priard in https://github.com/awxkee/moxcms/pull/203 * Fall back to `A2B0`/`B2A0` when the rendering intent's LUT tag is missing by @mertalev in https://github.com/awxkee/moxcms/pull/205 * Fix `BarycentricWeightScale::High` above 8 bits and index it by sample by @mertalev in https://github.com/awxkee/moxcms/pull/204 * fix(icc): align encoded profile tag data by @jay23606 in https://github.com/awxkee/moxcms/pull/206 * Better tag writing, reducing",
+  "body_truncated": true,
+  "body_sha256": "3cbc0ff7b8cdd58bc963480acb004169f9f16e92508ce87683f8b7426bc5b2b7"
+}

@@ -83,8 +83,14 @@ svg2pdf remains 0.13.0 with its existing notices and a compatibility adapter
 for the shared 0.49 SVG tree. No new license metadata is missing from the
 625-package Cargo inventory. See docs/dependency-update-2026-10-26.md.
 
-The moxcms 0.8.1 (BSD/Apache alternatives) and zip 9.2.1 (MIT) source notices are included as `moxcms-LICENSE`, `moxcms-LICENSE-APACHE`, and `zip-LICENSE`.
+The moxcms 0.8.1 (BSD/Apache alternatives) and zip 9.5.0 (MIT) source notices are included as `moxcms-LICENSE`, `moxcms-LICENSE-APACHE`, and `zip-LICENSE`.
 
 ### Local resvg viewport fix (2026-11-04)
 
 resvg 0.49.0 is now vendored under `vendor/resvg` (Apache-2.0 OR MIT, unchanged version). The offscreen-layer coordinate correction is documented in `vendor/resvg/LUMAPAINT-PATCHES.md`; the existing filter allocation limits are retained.
+
+### Stable dependency audit (2026-11-09)
+
+The rfd, svgtypes and flate2 upstream notice originals are included. The lopdf and ZIP notices were rechecked against 0.47.0 and 9.5.0. Vendored source patches and Skia native notices are unchanged. See `docs/dependency-update-2026-11-09.md`.
+
+OSAKit shim license originals and the upstream objc2 licensing statement (`objc2-LICENSE.md`, commit `7b1abfd750a2cacaea71d6a56ecfb83cb7de560b`) cover the newly resolved OSAKit wrappers.
