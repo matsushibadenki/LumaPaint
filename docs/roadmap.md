@@ -2872,3 +2872,12 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 - 🟢 [Done] コアのマスク関連16件と描画キャッシュ関連12件が通過。変形・半透明・クリップ・描画・消去・Undo/Redo・整数近傍境界・全体再生成との画素一致を検証。Clippy警告禁止・fmt・差分空白検査も通過。手動タイミング用2件は未実行。
 - 🟠 [Next] キャッシュの効果比較で残る旧マスク複製の費用評価、Release・交互順複数試行・多重効果・複数レイヤーの実機受入れ。
 - ⭕️ [Pending] 今回の変更後のTauri実操作と入力遅延比較。前節の実機数値は今回の変更後の値として扱わない。Windows/Linux実機と物理表示遅延も未検証。
+
+### パネルサムネイルのマスク列挙でUI要約を省略（2026-11-11）
+
+- 🟢 [Done] Release profileでsnapshot・contour再解析を確認し、背景ID＋既存artwork iteratorへ置換。hidden layerのマスクと編集guide除外のmembershipを維持。全object UI要約は各生成N件→0件。
+- 🟢 [Done] 交互順5組で600/4096/10000図形のwarm中央値は約11%／30%／8%短縮。6条件全体のprocess命令数中央値は約8%削減。small・イラスト・多言語は改善認定せず、stress p99は約5%悪化を記録。実機入力遅延への換算は行わない。[報告](optimization-2026-11-11.md)。
+- 🟢 [Done] 6条件の全layer/mask/channel PNG・ID・順序が変更前後byte一致。thumbnails 11件、membership 1件、履歴・保存状態1件、SVG/PDF roundtrip 15件、Clippy・fmt・architecture・frontend TypeScriptが成功。
+- 🟠 [Next] Release実アプリでパネル更新を含む入力遅延・tailを交互順複数試行で確認。マスク比較・多重効果など前節の受入れ課題を継続。
+- 🔴 [Later] channel_viewの描画用複製と、残るallocation/copy費用を必要時にprofile。
+- ⭕️ [Pending] 今回の変更後のGUIパネル受入れ、Windows/Linux実機、物理入力表示遅延、GPU・idle wakeup・電力測定。

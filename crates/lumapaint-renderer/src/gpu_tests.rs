@@ -939,7 +939,6 @@ struct Gpu {
     texture_layout: wgpu::BindGroupLayout,
     selection_layout: wgpu::BindGroupLayout,
     outline: wgpu::RenderPipeline,
-    tile_nearest: bool,
 }
 
 impl Gpu {
@@ -1035,20 +1034,6 @@ impl Gpu {
                 texture_layout,
                 selection_layout,
                 outline,
-                tile_nearest: Viewport {
-                    pasteboard_color: None,
-                    width: W,
-                    height: H,
-                    scale,
-                    zoom,
-                    dark: false,
-                    pan_x: 0.0,
-                    pan_y: 0.0,
-                    document_width: 960.0,
-                    document_height: 640.0,
-                    canvas_color: CanvasColor::White,
-                }
-                .tile_filter_nearest(),
             }
         })
     }
@@ -1315,14 +1300,9 @@ impl Gpu {
             .as_ref()
             .unwrap_or(texture.texture())
             .create_view(&Default::default());
-        let filter = if self.tile_nearest && !pixel_layer {
-            wgpu::FilterMode::Nearest
-        } else {
-            wgpu::FilterMode::Linear
-        };
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: filter,
-            min_filter: filter,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3024,6 +3004,33 @@ fn gpu_pixel_tile_upload_preserves_untouched_pixels_opacity_and_edge_clears() {
         drop(data);
         buffer.unmap();
         previous.clone_from(next);
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on the desktop host"]
+fn gpu_reduced_thin_diagonal_has_continuous_coverage() {
+    let gpu = Gpu::new_with_viewport(1., 0.4);
+    let stroke = Stroke {
+        brush: Brush {
+            size: 1.,
+            hardness: 1.,
+            color: [0; 3],
+            ..Default::default()
+        },
+        points: vec![Point { x: 200., y: 200. }, Point { x: 760., y: 440. }],
+        pressures: vec![1.; 2],
+        eraser: false,
+        clear: false,
+        selection: None,
+    };
+    let pixels = gpu.render_raster_strokes(&[stroke], 1, false);
+    // The middle of the line stays well inside the document at this zoom.
+    for x in W / 2 - 80..W / 2 + 80 {
+        assert!(
+            (H / 2 - 45..H / 2 + 45).any(|y| pixels[((y * W + x) * 4) as usize] < 254),
+            "thin diagonal disappeared at column {x}"
+        );
     }
 }
 

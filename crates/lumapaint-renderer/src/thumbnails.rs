@@ -36,8 +36,10 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
     let scale = (64. / doc_width.max(doc_height) as f32).min(1.);
     let width = (doc_width as f32 * scale).round().max(1.) as u32;
     let height = (doc_height as f32 * scale).round().max(1.) as u32;
-    for layer in &document.snapshot().layers {
-        if let Some(mut mask) = document.layer_effects(&layer.id).mask {
+    let layer_ids = std::iter::once("layer-1")
+        .chain(document.artwork_svg_layers().map(|layer| layer.id.as_str()));
+    for id in layer_ids {
+        if let Some(mut mask) = document.layer_effects(id).mask {
             // Show mask content independently of application enablement and
             // density, so its pixels remain recognizable while editing.
             mask.enabled = true;
@@ -55,7 +57,7 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
             }
             result
                 .masks
-                .push((layer.id.clone(), clipboard_png(width, height, pixels)?));
+                .push((id.to_owned(), clipboard_png(width, height, pixels)?));
         }
     }
     let view = document.channel_view();
@@ -731,7 +733,14 @@ mod tests {
         doc.replace_moved_pixels(r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="red"/></svg>"#.into(),None).unwrap();
         doc.select_layer_target("layer-1".into(), LayerEditTarget::Mask)
             .unwrap();
+        crate::performance::take();
         let before = render(&doc).unwrap();
+        let stats = crate::performance::take();
+        if crate::performance::enabled() {
+            assert!(!stats
+                .counts
+                .contains_key("document_snapshot_default_stroke_styles_elided"));
+        }
         let mask_png = &before
             .masks
             .iter()

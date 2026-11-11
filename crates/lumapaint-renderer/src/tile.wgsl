@@ -20,10 +20,27 @@ struct VertexOut {
     return out;
 }
 
+// Use a small, bounded filter footprint when one screen pixel spans
+// several source texels. Keep ordinary bilinear sampling near 1:1.
+fn sample_tile(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(tile_texture));
+    if max(length(dx * size), length(dy * size)) <= 2.0 {
+        return textureSampleLevel(tile_texture, tile_sampler, uv, 0.0);
+    }
+    let x = dx * 0.25;
+    let y = dy * 0.25;
+    return (textureSampleLevel(tile_texture, tile_sampler, uv - x - y, 0.0)
+        + textureSampleLevel(tile_texture, tile_sampler, uv + x - y, 0.0)
+        + textureSampleLevel(tile_texture, tile_sampler, uv - x + y, 0.0)
+        + textureSampleLevel(tile_texture, tile_sampler, uv + x + y, 0.0)) * 0.25;
+}
+
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let dx = dpdx(in.uv);
+    let dy = dpdy(in.uv);
     let point = in.uv * u.document.xy + u.document.zw;
     if any(point < vec2(0.0)) || any(point >= u.document.xy) { discard; }
-    let encoded = textureSample(tile_texture, tile_sampler, in.uv);
+    let encoded = sample_tile(in.uv, dx, dy);
     if encoded.a <= 0.0 { return vec4(0.0); }
     // Tiles contain sRGB-encoded RGB premultiplied by alpha. Decode the
     // straight color before blending in the GPU's linear color space.

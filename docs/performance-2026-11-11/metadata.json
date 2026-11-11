@@ -1,0 +1,37 @@
+{
+  "head": "a557233543d4298314ee8cc8d9bbe76f292f50ac",
+  "initial_status": "clean",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "platform": "macOS 27.2.1 (26B131), ARM64",
+  "build": "release, default features, thin LTO, codegen-units=1, offline locked",
+  "source": {
+    "Cargo.lock": "1b4575d75c6f791dd809d36c321d6a695096e9e99c078787f6206ae1c92dd8c2",
+    "Cargo.toml": "2f91d6c1c61a957d27e7c4a1bd413c5e7062fa1d92774b171d83d1bde1a6cb88",
+    "crates/lumapaint-renderer/examples/bench_panel_thumbnails.rs": "ef48566c1a40200945c55880d5419ed7e05d9133ec8e5c3374b4588a30f70285",
+    "crates/lumapaint-renderer/src/thumbnails.rs": "bfac8584f5fd78f2262e24f6c8079fae5e17edacc076bcdfbb1c5ba199c68976"
+  },
+  "binaries": {
+    "before": "9a2712b924f1bbfc11b798461647adb171cab98ecb961d4690b07d00776ed1b2",
+    "after": "2eee60b060f2b90579174bb9ef9c06fec9374ee6405697ef06cbaa5ae454914a"
+  },
+  "outputs": {
+    "before": {
+      "10000": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "32": "309961d40e77cdb3e0c8e6e4911fadbc902638be53145f7004f71ae5e4f9de25",
+      "4096": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "600": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "artwork": "050c2d71477b43247bb02f89d5199c457a3a97217e6d924061bc5191007fc7a3",
+      "text": "87505df8c5b7faf295d1f791bf379af1598346b8e75acd9051658a5a855c78c9"
+    },
+    "after": {
+      "10000": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "32": "309961d40e77cdb3e0c8e6e4911fadbc902638be53145f7004f71ae5e4f9de25",
+      "4096": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "600": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "artwork": "050c2d71477b43247bb02f89d5199c457a3a97217e6d924061bc5191007fc7a3",
+      "text": "87505df8c5b7faf295d1f791bf379af1598346b8e75acd9051658a5a855c78c9"
+    }
+  },
+  "final_benchmark_source_sha256": "7892a3e11f1440e71042b2bada8b258c59eec4c7c6d63d4f64dd3ff1af45fc9a",
+  "before_renderer_source_sha256": "0114b0dc55ac8297ba8157e0faeded9ff7e625ed68f9de609d4c894df6f15ea7"
+}

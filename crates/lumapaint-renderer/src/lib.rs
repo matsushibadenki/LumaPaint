@@ -145,10 +145,6 @@ impl Viewport {
         fit * self.zoom * self.scale
     }
 
-    fn tile_filter_nearest(&self) -> bool {
-        self.tile_pixels_per_document_pixel() < 0.75
-    }
-
     /// Choose preview resolution from the effective physical pixel density,
     /// not the display's backing scale alone.
     pub fn recommended_tile_preview_scale(&self) -> u32 {
@@ -1722,7 +1718,6 @@ pub struct Renderer {
     linear_tile_pipeline: wgpu::RenderPipeline,
     svg_bind_layout: wgpu::BindGroupLayout,
     svg_sampler: wgpu::Sampler,
-    tile_nearest_sampler: wgpu::Sampler,
     tile_preview: Option<TileGpuPreview>,
     color_sampler: color_sampler::ColorSampler,
     paint_cache: Option<paint_cache::PaintCache>,
@@ -1753,7 +1748,6 @@ struct TileGpuPreview {
     texture: PreviewTileTexture,
     document_dimensions: (u32, u32),
     linear_bind_group: wgpu::BindGroup,
-    nearest_bind_group: wgpu::BindGroup,
     visible: bool,
 }
 
@@ -3126,7 +3120,6 @@ impl Renderer {
             texture: PreviewTileTexture::Encoded(texture),
             document_dimensions,
             linear_bind_group: make_bind_group(&self.svg_sampler),
-            nearest_bind_group: make_bind_group(&self.tile_nearest_sampler),
             visible: true,
         });
         Ok(())
@@ -3167,13 +3160,11 @@ impl Renderer {
             })
         };
         let linear_bind_group = make_group(&self.svg_sampler);
-        let nearest_bind_group = make_group(&self.tile_nearest_sampler);
         self.paint_cache_installed = false;
         self.tile_preview = Some(TileGpuPreview {
             texture: PreviewTileTexture::Extended(texture),
             document_dimensions: dimensions,
             linear_bind_group,
-            nearest_bind_group,
             visible: true,
         });
         Ok(())
@@ -4076,11 +4067,6 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let tile_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
         if let Some(error) = validation_scope.pop().await {
             return Err(error.to_string());
         }
@@ -4175,7 +4161,6 @@ impl Renderer {
             linear_tile_pipeline,
             svg_bind_layout,
             svg_sampler,
-            tile_nearest_sampler,
             tile_preview: None,
             color_sampler: Default::default(),
             paint_cache: None,
@@ -5417,12 +5402,7 @@ impl Renderer {
                 }
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            let tile_bind_group = if viewport.tile_filter_nearest() {
-                &preview.nearest_bind_group
-            } else {
-                &preview.linear_bind_group
-            };
-            pass.set_bind_group(1, tile_bind_group, &[]);
+            pass.set_bind_group(1, &preview.linear_bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
         if let Some((_mask, mask_view, mask_bind_group)) = &brush_mask {
@@ -6885,13 +6865,10 @@ mod tests {
     }
 
     #[test]
-    fn tile_filter_accounts_for_fit_zoom_and_retina_scale() {
+    fn tile_resolution_accounts_for_fit_zoom_and_retina_scale() {
         let base = Viewport::new(1024.0, 768.0, 1.0, 960.0 / 976.0, false).unwrap();
-        assert!(!base.tile_filter_nearest());
         let reduced = Viewport::new(1024.0, 768.0, 1.0, 0.5, false).unwrap();
-        assert!(reduced.tile_filter_nearest());
         let retina = Viewport::new(512.0, 384.0, 2.0, 1.0, false).unwrap();
-        assert!(!retina.tile_filter_nearest());
         assert_eq!(base.recommended_tile_preview_scale(), 1);
         assert_eq!(reduced.recommended_tile_preview_scale(), 1);
         assert_eq!(retina.recommended_tile_preview_scale(), 1);
