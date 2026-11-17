@@ -268,6 +268,18 @@
     },
     {
       "name": "bit-set",
+      "version": "0.11.1",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/contain-rs/bit-vec"
+    },
+    {
+      "name": "bit-set",
       "version": "0.8.0",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
@@ -277,6 +289,18 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/contain-rs/bit-set"
+    },
+    {
+      "name": "bit-vec",
+      "version": "0.10.2",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/contain-rs/bit-vec"
     },
     {
       "name": "bit-vec",
@@ -382,7 +406,7 @@
     },
     {
       "name": "brotli",
-      "version": "9.1.1",
+      "version": "9.1.3",
       "license": "BSD-3-Clause AND MIT",
       "license_file": null,
       "source_notices": [
@@ -405,7 +429,7 @@
     },
     {
       "name": "brotli-decompressor",
-      "version": "6.3.0",
+      "version": "6.3.2",
       "license": "BSD-3-Clause/MIT",
       "license_file": null,
       "source_notices": [
@@ -428,7 +452,7 @@
     },
     {
       "name": "bumpalo",
-      "version": "3.20.3",
+      "version": "3.20.4",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -580,7 +604,7 @@
     },
     {
       "name": "cc",
-      "version": "1.11.1",
+      "version": "1.11.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -751,7 +775,7 @@
     },
     {
       "name": "const-oid",
-      "version": "0.10.2",
+      "version": "0.10.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -907,7 +931,7 @@
     },
     {
       "name": "crc32fast",
-      "version": "1.5.4",
+      "version": "1.5.5",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -989,6 +1013,17 @@
       "repository": "https://github.com/servo/rust-cssparser"
     },
     {
+      "name": "cssparser",
+      "version": "0.38.0",
+      "license": "MPL-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/rust-cssparser"
+    },
+    {
       "name": "cssparser-macros",
       "version": "0.7.1",
       "license": "MPL-2.0",
@@ -1001,7 +1036,7 @@
     },
     {
       "name": "ctor",
-      "version": "1.0.13",
+      "version": "1.0.14",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -1224,6 +1259,17 @@
       "repository": "https://github.com/niklak/dom_query"
     },
     {
+      "name": "dom_query",
+      "version": "0.29.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/niklak/dom_query"
+    },
+    {
       "name": "downcast-rs",
       "version": "1.2.1",
       "license": "MIT/Apache-2.0",
@@ -1379,7 +1425,7 @@
     },
     {
       "name": "errno",
-      "version": "0.3.14",
+      "version": "0.3.15",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2141,6 +2187,18 @@
       "repository": "https://github.com/servo/html5ever"
     },
     {
+      "name": "html5ever",
+      "version": "0.40.1",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/html5ever"
+    },
+    {
       "name": "http",
       "version": "1.5.0",
       "license": "MIT OR Apache-2.0",
@@ -2255,7 +2313,7 @@
     },
     {
       "name": "i_overlay",
-      "version": "9.1.0",
+      "version": "9.2.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [],
@@ -2539,7 +2597,7 @@
     },
     {
       "name": "itoa",
-      "version": "1.0.18",
+      "version": "1.0.19",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2573,7 +2631,7 @@
     },
     {
       "name": "jiff",
-      "version": "0.2.41",
+      "version": "0.2.46",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2585,7 +2643,7 @@
     },
     {
       "name": "jiff-core",
-      "version": "0.1.4",
+      "version": "0.1.8",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2597,7 +2655,7 @@
     },
     {
       "name": "jiff-static",
-      "version": "0.2.41",
+      "version": "0.2.46",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2609,7 +2667,7 @@
     },
     {
       "name": "jiff-tzdb",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2878,7 +2936,7 @@
     },
     {
       "name": "libz-sys",
-      "version": "1.1.32",
+      "version": "1.1.33",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2887,6 +2945,18 @@
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "repository": "https://github.com/rust-lang/libz-sys"
+    },
+    {
+      "name": "link-section",
+      "version": "0.19.4",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/mmastrac/linktime"
     },
     {
       "name": "linux-raw-sys",
@@ -2984,6 +3054,18 @@
     {
       "name": "markup5ever",
       "version": "0.39.0",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/html5ever"
+    },
+    {
+      "name": "markup5ever",
+      "version": "0.40.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -3129,7 +3211,7 @@
     },
     {
       "name": "mio",
-      "version": "1.2.4",
+      "version": "1.2.5",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3177,7 +3259,7 @@
     },
     {
       "name": "naga",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -3189,7 +3271,7 @@
     },
     {
       "name": "naga-types",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -3239,7 +3321,7 @@
     },
     {
       "name": "nix",
-      "version": "0.31.3",
+      "version": "0.32.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3663,8 +3745,30 @@
       "repository": "https://github.com/rust-phf/rust-phf"
     },
     {
+      "name": "phf",
+      "version": "0.14.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-phf/rust-phf"
+    },
+    {
       "name": "phf_codegen",
       "version": "0.13.1",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-phf/rust-phf"
+    },
+    {
+      "name": "phf_codegen",
+      "version": "0.14.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -3685,6 +3789,17 @@
       "repository": "https://github.com/rust-phf/rust-phf"
     },
     {
+      "name": "phf_generator",
+      "version": "0.14.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-phf/rust-phf"
+    },
+    {
       "name": "phf_macros",
       "version": "0.13.1",
       "license": "MIT",
@@ -3696,8 +3811,30 @@
       "repository": "https://github.com/rust-phf/rust-phf"
     },
     {
+      "name": "phf_macros",
+      "version": "0.14.0",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-phf/rust-phf"
+    },
+    {
       "name": "phf_shared",
       "version": "0.13.1",
+      "license": "MIT",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/rust-phf/rust-phf"
+    },
+    {
+      "name": "phf_shared",
+      "version": "0.14.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -4063,7 +4200,7 @@
     },
     {
       "name": "rand",
-      "version": "0.10.3",
+      "version": "0.10.4",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4425,7 +4562,7 @@
     },
     {
       "name": "rustls-pki-types",
-      "version": "1.15.1",
+      "version": "1.16.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4458,7 +4595,7 @@
     },
     {
       "name": "rustls-webpki",
-      "version": "0.103.16",
+      "version": "0.103.17",
       "license": "ISC",
       "license_file": null,
       "source_notices": [
@@ -4620,6 +4757,15 @@
     {
       "name": "selectors",
       "version": "0.38.0",
+      "license": "MPL-2.0",
+      "license_file": null,
+      "source_notices": [],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/stylo"
+    },
+    {
+      "name": "selectors",
+      "version": "0.41.0",
       "license": "MPL-2.0",
       "license_file": null,
       "source_notices": [],
@@ -4797,6 +4943,18 @@
     {
       "name": "servo_arc",
       "version": "0.4.3",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/stylo"
+    },
+    {
+      "name": "servo_arc",
+      "version": "0.5.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5105,7 +5263,31 @@
     },
     {
       "name": "string_cache",
+      "version": "0.11.0",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/string-cache"
+    },
+    {
+      "name": "string_cache",
       "version": "0.9.0",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/string-cache"
+    },
+    {
+      "name": "string_cache_codegen",
+      "version": "0.11.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5237,7 +5419,7 @@
     },
     {
       "name": "syn",
-      "version": "3.0.9",
+      "version": "3.0.10",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6404,6 +6586,18 @@
       "repository": "https://github.com/servo/html5ever"
     },
     {
+      "name": "web_atoms",
+      "version": "0.3.0",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/servo/html5ever"
+    },
+    {
       "name": "webkit2gtk",
       "version": "2.0.2",
       "license": "MIT",
@@ -6427,7 +6621,7 @@
     },
     {
       "name": "webpki-root-certs",
-      "version": "1.0.11",
+      "version": "1.0.12",
       "license": "CDLA-Permissive-2.0",
       "license_file": null,
       "source_notices": [
@@ -6489,7 +6683,7 @@
     },
     {
       "name": "wgpu",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6501,7 +6695,7 @@
     },
     {
       "name": "wgpu-core",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6513,7 +6707,7 @@
     },
     {
       "name": "wgpu-core-deps-apple",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6525,7 +6719,7 @@
     },
     {
       "name": "wgpu-core-deps-emscripten",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6537,7 +6731,7 @@
     },
     {
       "name": "wgpu-core-deps-windows-linux-android",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6549,7 +6743,7 @@
     },
     {
       "name": "wgpu-hal",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6561,7 +6755,7 @@
     },
     {
       "name": "wgpu-naga-bridge",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6573,7 +6767,7 @@
     },
     {
       "name": "wgpu-types",
-      "version": "30.0.1",
+      "version": "30.0.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -7105,7 +7299,7 @@
     },
     {
       "name": "wry",
-      "version": "0.57.1",
+      "version": "0.57.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7301,7 +7495,7 @@
     },
     {
       "name": "zip",
-      "version": "9.5.0",
+      "version": "9.6.0",
       "license": "MIT",
       "license_file": null,
       "source_notices": [

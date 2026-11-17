@@ -1,0 +1,48 @@
+{
+  "wgpu": {
+    "html_url": "https://github.com/gfx-rs/wgpu/releases/tag/v30.0.2",
+    "tag_name": "v30.0.2",
+    "prerelease": false,
+    "published_at": "2026-11-12T18:50:04Z"
+  },
+  "zip": {
+    "html_url": "https://github.com/zip-rs/zip2/releases/tag/v9.6.0",
+    "tag_name": "v9.6.0",
+    "prerelease": false,
+    "published_at": "2026-11-15T06:45:32Z"
+  },
+  "vite": {
+    "html_url": "https://github.com/vitejs/vite/releases/tag/v8.3.8",
+    "tag_name": "v8.3.8",
+    "prerelease": false,
+    "published_at": "2026-11-11T02:46:37Z"
+  },
+  "react-plugin": {
+    "html_url": "https://github.com/vitejs/vite-plugin-react/releases/tag/plugin-react%406.3.0",
+    "tag_name": "plugin-react@6.3.0",
+    "prerelease": false,
+    "published_at": "2026-11-09T06:11:17Z"
+  },
+  "skia": {
+    "html_url": "https://github.com/rust-skia/rust-skia/releases/tag/0.157.0",
+    "tag_name": "0.157.0",
+    "prerelease": true,
+    "published_at": "2026-11-03T17:07:37Z"
+  },
+  "freetype": [
+    "https://freetype.org/",
+    [
+      "FreeType 2.15.0",
+      "FreeType 2.14.3",
+      "FreeType 2.14.2"
+    ]
+  ],
+  "libpng": [
+    "https://www.libpng.org/pub/png/libpng.html",
+    [
+      "libpng 1.6.59",
+      "libpng 1.0.18",
+      "libpng 1.6.56"
+    ]
+  ]
+}

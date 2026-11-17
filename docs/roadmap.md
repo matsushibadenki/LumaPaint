@@ -1,5 +1,11 @@
 # Roadmap
 
+## 外部依存のstable更新（2026-11-16）
+
+- 🟢 [Done] wgpu・i_overlay・CRC・ZIPと互換間接依存を更新。Rust検査と通常テスト、共有Metal 5件が成功。GPUは43件成功、既存2件失敗。[検証記録](dependency-update-2026-11-16.md)。
+- ⭕️ [Pending] Vite候補のWASM間接依存にbetaが含まれるため、安定版のみの検証済み差分の適用と、その構成でのmacOSバンドルを保留。
+- 🔴 [Later] SVG 0.50は独自CSS・文字組み・境界処理との互換移行後に再検討。Skiaとmoxcmsの見送りも継続。
+
 ## 外部依存のstable更新（2026-11-09）
 
 - 🟢 [Done] lopdf 0.47.0・svgtypes 0.16.2・flate2 1.1.11・ZIP 9.5.0・rfd 0.18.0、Vite 8.3.6・Reactプラグイン6.2.1と互換間接依存を更新。vendor独自修正を保持し、npm／pnpmの81組一致・Cargoロック・638件のライセンスを整合。[更新と検証](dependency-update-2026-11-09.md)。

@@ -214,14 +214,15 @@ pub(crate) async fn open_modal_window(
 ) -> Result<String, String> {
     request.validate()?;
     if !crate::editor_windows::is_editor(window.label()) {
-        return Err("A dialog requires an editor parent".into());
+        return Err("A dialog requires an editor window".into());
     }
     // Commit inline text and finish interactions before taking the dialog's view snapshot.
     let workspace = crate::canvas::prepare_modal(window.clone()).await?;
     let owner = window.label().to_string();
-    let parent = window.clone();
+    let app = window.app_handle().clone();
     main(window, move || {
-        let app = parent.app_handle();
+        let app = &app;
+        app.get_webview_window(&owner).ok_or("Editor is closed")?;
         {
             let modals = app.state::<Modals>();
             let entries = modals.0.lock().unwrap();
@@ -235,18 +236,16 @@ pub(crate) async fn open_modal_window(
         let label = format!("modal-{}", NEXT_MODAL.fetch_add(1, Ordering::Relaxed));
         let (width, height) = request.kind.geometry();
         let title = request.kind.title(&request.locale);
+        // The owner label routes document commands and cleanup. The OS window is independent.
         let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
             .title(title)
             .inner_size(width, height)
             .resizable(false)
             .minimizable(false)
             .maximizable(false)
-            .skip_taskbar(true)
             .decorations(true)
             .visible(false)
             .center();
-        #[cfg(not(target_os = "macos"))]
-        let builder = builder.parent(&parent).map_err(|error| error.to_string())?;
         app.state::<Modals>().0.lock().unwrap().insert(
             label.clone(),
             Entry {
@@ -301,14 +300,8 @@ pub(crate) async fn modal_ready(window: WebviewWindow) -> Result<(), String> {
             }
             entry.owner.clone()
         };
-        let _parent = app.get_webview_window(&owner).ok_or("Parent is closed")?;
-        #[cfg(target_os = "macos")]
+        app.get_webview_window(&owner).ok_or("Editor is closed")?;
         child.show().map_err(|e| e.to_string())?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = _parent;
-            child.show().map_err(|e| e.to_string())?;
-        }
         if let Some(entry) = app
             .state::<Modals>()
             .0
@@ -418,10 +411,6 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
         #[cfg(target_os = "macos")]
         crate::canvas::clear_window_preview(&entry.owner);
         if let Some(parent) = app.get_webview_window(&entry.owner) {
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = parent.set_enabled(true);
-            }
             let _ = app.emit_to(&entry.owner, "modal-closed", &entry.context.request_id);
             let _ = parent.set_focus();
         }

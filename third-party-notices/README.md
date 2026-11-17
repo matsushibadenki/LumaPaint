@@ -20,9 +20,9 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-11-05)
+## Dependency inventory (2026-11-16)
 
-`cargo-license-inventory.json` inventories 639 locked Cargo packages across
+`cargo-license-inventory.json` inventories 655 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
 Regenerate with:
