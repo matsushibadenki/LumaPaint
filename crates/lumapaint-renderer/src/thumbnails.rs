@@ -234,9 +234,9 @@ fn render_sized_ink(
         }
         tiles.discard_history();
     }
-    let mut effects = document.layer_effects("layer-1");
-    let mask = effects.mask.take();
-    let effects = effects.prepare();
+    let settings = crate::root_paint::settings(document);
+    let mask = settings.mask.as_ref();
+    let effects = settings.prepare();
     let mut paint = vec![0; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
@@ -248,7 +248,7 @@ fn render_sized_ink(
                     (y as f32 + 0.5) * doc_height as f32 / height as f32,
                 ],
                 &effects,
-                mask.as_ref(),
+                mask,
                 canvas_color == CanvasColor::White && !ink_only,
                 document.paper(),
                 [

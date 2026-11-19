@@ -1,0 +1,172 @@
+{
+  "date": "2026-11-19",
+  "machine": "macOS arm64 / Metal",
+  "release": "0.0.2 (isolated local test builds)",
+  "baseline": "2026-11-18 working tree including the earlier mask comparison optimization. Only the 2026-11-19 root paper changes were reverted in the baseline.",
+  "fixture": {
+    "width": 3600,
+    "height": 3200,
+    "layers": 4,
+    "opaquePixelMaskRuns": 3128,
+    "grayscalePixelMaskRuns": 21896,
+    "sha256": "0ff5bd0ac16bc419a39f3f5b2636b0a9a4240dab3a51ab297b57b4f5bdabea5b"
+  },
+  "bench": {
+    "brushWidthPx": 120,
+    "zoomPercent": 15.81,
+    "brushColor": "#202020",
+    "operation": "6 mask brush drags, undo, redo, quit without saving per process",
+    "dragFromXToX": [
+      425,
+      520
+    ],
+    "dragY": [
+      465,
+      495,
+      525,
+      555,
+      585,
+      615
+    ],
+    "latency": "First marked native handler to present API. One present per gesture, coalesced through pointer-up. Excludes OS event queue and physical display.",
+    "memory": "wait4 ru_maxrss (bytes, native app process), from launch through quit. Excludes WebKit child processes and separate GPU memory."
+  },
+  "functional": {
+    "maskBrush": true,
+    "eraserStroke": true,
+    "clearWithUpperLayersRetained": true,
+    "brushUndoRedo": true,
+    "clearUndoRedo": true,
+    "eyedropper": "#509BD6",
+    "thumbnailRefresh": true
+  },
+  "excluded": "An occluded window and mismatched brush diameter invalidated setup trials. The four scored trials had no surface-acquire occlusion or tile upload errors.",
+  "summary": {
+    "before": {
+      "minHandlerToPresentMs": 142.71875,
+      "medianHandlerToPresentMs": 464.5334165,
+      "maxHandlerToPresentMs": 491.925125,
+      "medianPeakRssMiB": 698.5546875
+    },
+    "after": {
+      "minHandlerToPresentMs": 144.860291,
+      "medianHandlerToPresentMs": 452.7752915,
+      "maxHandlerToPresentMs": 466.463083,
+      "medianPeakRssMiB": 700.9921875
+    }
+  },
+  "trials": [
+    {
+      "trial": "before-trial1",
+      "latencyMs": [
+        142.71875,
+        153.492458,
+        471.920583,
+        461.873375,
+        463.284791,
+        465.782042
+      ],
+      "latestHandlerToPresentMs": [
+        142.215791,
+        141.404375,
+        464.091958,
+        461.667375,
+        451.777208,
+        452.83125
+      ],
+      "coalescedEvents": [
+        3,
+        5,
+        4,
+        3,
+        4,
+        4
+      ],
+      "hostPeakRssBytes": 730218496
+    },
+    {
+      "trial": "after-trial2",
+      "latencyMs": [
+        164.357667,
+        146.885958,
+        457.836708,
+        460.18025,
+        447.328375,
+        461.839542
+      ],
+      "latestHandlerToPresentMs": [
+        158.838208,
+        141.646041,
+        450.909625,
+        447.846125,
+        447.081125,
+        450.726542
+      ],
+      "coalescedEvents": [
+        5,
+        5,
+        5,
+        5,
+        3,
+        4
+      ],
+      "hostPeakRssBytes": 735084544
+    },
+    {
+      "trial": "after-trial3",
+      "latencyMs": [
+        144.860291,
+        154.718583,
+        447.713875,
+        459.734333,
+        459.641292,
+        466.463083
+      ],
+      "latestHandlerToPresentMs": [
+        132.878583,
+        140.048125,
+        447.452333,
+        448.428208,
+        446.04675,
+        454.689791
+      ],
+      "coalescedEvents": [
+        3,
+        5,
+        3,
+        4,
+        4,
+        4
+      ],
+      "hostPeakRssBytes": 735002624
+    },
+    {
+      "trial": "before-trial2",
+      "latencyMs": [
+        146.047292,
+        162.300916,
+        487.362167,
+        488.891667,
+        484.232917,
+        491.925125
+      ],
+      "latestHandlerToPresentMs": [
+        134.443375,
+        158.697541,
+        474.751792,
+        474.627917,
+        480.235958,
+        479.488542
+      ],
+      "coalescedEvents": [
+        4,
+        5,
+        3,
+        5,
+        4,
+        4
+      ],
+      "hostPeakRssBytes": 734756864
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+ M crates/lumapaint-core/src/document.rs
+ M crates/lumapaint-core/src/layer_effects.rs
+ M crates/lumapaint-renderer/src/paint_cache.rs
+ M crates/lumapaint-renderer/src/root_paint.rs
+ M docs/roadmap.md
+ M src-tauri/src/channel_tools_macos.rs

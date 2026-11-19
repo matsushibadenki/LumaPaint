@@ -78,14 +78,14 @@ impl ColorSampler {
             }
             let cache = self.paint.as_mut().unwrap();
             cache.prepare(document, false)?;
-            let mut effects = document.layer_effects("layer-1");
-            let mask = effects.mask.take();
-            let effects = effects.prepare();
+            let settings = crate::root_paint::settings(document);
+            let mask = settings.mask.as_ref();
+            let effects = settings.prepare();
             let background = crate::root_paint::composite(
                 cache.raw_pixel(rect[0] as u32, rect[1] as u32),
                 [rect[0] + 0.5, rect[1] + 0.5],
                 &effects,
-                mask.as_ref(),
+                mask,
                 document.canvas_color() == CanvasColor::White,
                 document.paper(),
                 [1., 1.],

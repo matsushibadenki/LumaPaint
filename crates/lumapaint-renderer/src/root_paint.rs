@@ -2,15 +2,20 @@
 //! and exports. Input is straight RGBA; output is premultiplied RGBA.
 use lumapaint_core::{
     document::{CanvasColor, Document},
-    layer_effects::PreparedEffects,
+    layer_effects::{LayerEffects, PreparedEffects},
     layer_mask::LayerMask,
 };
 pub(crate) fn masked_paper(document: &Document) -> bool {
     document.canvas_color() == CanvasColor::White
         && document
-            .layer_effects("layer-1")
-            .mask
+            .layer_effects_ref("layer-1")
+            .and_then(|effects| effects.mask.as_ref())
             .is_some_and(|m| m.enabled)
+}
+pub(crate) fn settings(document: &Document) -> &LayerEffects {
+    static DEFAULT: std::sync::LazyLock<LayerEffects> =
+        std::sync::LazyLock::new(LayerEffects::default);
+    document.layer_effects_ref("layer-1").unwrap_or(&DEFAULT)
 }
 pub(crate) fn composite(
     input: [u8; 4],
@@ -25,7 +30,7 @@ pub(crate) fn composite(
     if coverage == 0. {
         return [0; 4];
     }
-    let adjusted = effects.apply_at(input, point);
+    let adjusted = effects.apply_at_without_mask(input, point);
     let alpha = adjusted[3] as f32 / 255.;
     let paper_color = if paper && adjusted[3] < 255 {
         surface.color_at_footprint(point[0], point[1], pixel_size)
@@ -94,6 +99,11 @@ mod tests {
                     mask.inverted = inverted;
                     for enabled in [false, true] {
                         mask.enabled = enabled;
+                        let masked_settings = LayerEffects {
+                            mask: Some(mask.clone()),
+                            ..settings.clone()
+                        };
+                        let masked_effects = masked_settings.prepare();
                         for point in [[0.5, 0.5], [2., 2.], [5.5, 5.5], [15.5, 15.5]] {
                             for input in [[0; 4], [17, 99, 200, 128], [220, 40, 90, 255]] {
                                 for paper in [false, true] {
@@ -105,7 +115,7 @@ mod tests {
                                         composite(
                                             input,
                                             point,
-                                            &effects,
+                                            &masked_effects,
                                             Some(&mask),
                                             paper,
                                             surface,

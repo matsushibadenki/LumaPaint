@@ -1,0 +1,52 @@
+{
+  "head": "442ab49cf8572961bde682c84b00949e7a09145a",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+  "initial_hashes": {
+    "crates/lumapaint-core/src/document.rs": "d25653b8e83805048c94d9b06c61fb9e900db9bcd656a19ac5787c944efe8b91",
+    "crates/lumapaint-core/src/layer_effects.rs": "c18eb54165d2c9eb12a13064068dfb74b2c9a9eb6e44c757e0a5a8c596f651a8",
+    "crates/lumapaint-renderer/src/paint_cache.rs": "fb48758ac072e25241d4d99c894d321955d31af7f30da91941f81dc344539784",
+    "crates/lumapaint-renderer/src/root_paint.rs": "ed68a909b3319836c42803f1f847eb9e4c85271b312770937f99b4072bef9546",
+    "src-tauri/src/channel_tools_macos.rs": "a241cb5653bcc3763a9353b797322c92be6b6edbe4d65828397d31afcb9fd04e",
+    "Cargo.lock": "77d389c585a40192681561e75438b610f558747dfabc3268dde6be96c497053c"
+  },
+  "candidate_hashes": {
+    "crates/lumapaint-core/src/document.rs": "bffe5b725d23250aa5039bd019181c0e8a02f39b1b999e708b1161cb38aa550b",
+    "crates/lumapaint-core/src/layer_effects.rs": "c18eb54165d2c9eb12a13064068dfb74b2c9a9eb6e44c757e0a5a8c596f651a8",
+    "crates/lumapaint-renderer/src/paint_cache.rs": "fb48758ac072e25241d4d99c894d321955d31af7f30da91941f81dc344539784",
+    "crates/lumapaint-renderer/src/root_paint.rs": "ed68a909b3319836c42803f1f847eb9e4c85271b312770937f99b4072bef9546",
+    "src-tauri/src/channel_tools_macos.rs": "a241cb5653bcc3763a9353b797322c92be6b6edbe4d65828397d31afcb9fd04e",
+    "Cargo.lock": "77d389c585a40192681561e75438b610f558747dfabc3268dde6be96c497053c",
+    "crates/lumapaint-core/src/document_channels.rs": "9652afbd07e6c7f84e19b5d952828ad1758f9dcd8f55404196c8d4b6f1185511"
+  },
+  "binaries": {
+    "current": "b6726e12248eac3255e948478f563c4fda34d1d69f451494e1657ce84d093030",
+    "after": "7411caccd51d1ba9c5774f6bb1a5fbac07ef068e0548ea33067c6691e31008b9"
+  },
+  "outputs": {
+    "outputs": {
+      "10000": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "32": "309961d40e77cdb3e0c8e6e4911fadbc902638be53145f7004f71ae5e4f9de25",
+      "4096": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "600": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "artwork": "050c2d71477b43247bb02f89d5199c457a3a97217e6d924061bc5191007fc7a3",
+      "text": "87505df8c5b7faf295d1f791bf379af1598346b8e75acd9051658a5a855c78c9"
+    },
+    "after-outputs": {
+      "10000": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "32": "309961d40e77cdb3e0c8e6e4911fadbc902638be53145f7004f71ae5e4f9de25",
+      "4096": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "600": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+      "artwork": "050c2d71477b43247bb02f89d5199c457a3a97217e6d924061bc5191007fc7a3",
+      "text": "87505df8c5b7faf295d1f791bf379af1598346b8e75acd9051658a5a855c78c9"
+    }
+  },
+  "rollback_verified": true,
+  "final_source_hashes": {
+    "crates/lumapaint-core/src/document.rs": "d25653b8e83805048c94d9b06c61fb9e900db9bcd656a19ac5787c944efe8b91",
+    "crates/lumapaint-core/src/layer_effects.rs": "c18eb54165d2c9eb12a13064068dfb74b2c9a9eb6e44c757e0a5a8c596f651a8",
+    "crates/lumapaint-renderer/src/paint_cache.rs": "fb48758ac072e25241d4d99c894d321955d31af7f30da91941f81dc344539784",
+    "crates/lumapaint-renderer/src/root_paint.rs": "ed68a909b3319836c42803f1f847eb9e4c85271b312770937f99b4072bef9546",
+    "src-tauri/src/channel_tools_macos.rs": "a241cb5653bcc3763a9353b797322c92be6b6edbe4d65828397d31afcb9fd04e",
+    "Cargo.lock": "77d389c585a40192681561e75438b610f558747dfabc3268dde6be96c497053c"
+  }
+}

@@ -2887,3 +2887,25 @@ All eight specification phases still have remaining acceptance work. Scene-only 
 - 🟠 [Next] Release実アプリでパネル更新を含む入力遅延・tailを交互順複数試行で確認。マスク比較・多重効果など前節の受入れ課題を継続。
 - 🔴 [Later] channel_viewの描画用複製と、残るallocation/copy費用を必要時にprofile。
 - ⭕️ [Pending] 今回の変更後のGUIパネル受入れ、Windows/Linux実機、物理入力表示遅延、GPU・idle wakeup・電力測定。
+
+### 背景マスクの効果比較で複製を省略（2026-11-18）
+
+- 🟢 [Done] 背景マスクの差分判定で、キャッシュ側の旧マスクと効果設定を参照で比較。白背景で有効なマスクがあるかを調べる処理でも、マスクを含む効果設定の複製を省略。
+- 🟠 [Next] 複数レイヤーと複数の効果を含む文書で、Release版の入力遅延とピークメモリを比較。
+- ⭕️ [Pending] 今回の変更後のTauri実操作と入力遅延計測。
+
+### channel_viewの複製削減候補を計測して不採用（2026-11-18）
+
+- 🟢 [Done] 現在の未コミット作業を含むRelease baselineとCPU profileを取得。表示しないSVGレイヤーの複製を省く候補を交互5組で検証。4096図形medianは2.746→2.170ms、process命令数は約3.7%減少したが、small median約4%増とpeak RSS約9MiB増を確認し、今回の候補hunkだけを戻した。[報告](optimization-2026-11-18.md)。
+- 🟢 [Done] 6条件の全PNG・ID・順序は変更前／候補／11月11日hashと一致。該当28テスト、Clippy、fmt、architecture、frontend TypeScriptが成功。開始時の別作業を保存hashで保持確認。
+- 🟠 [Next] 実機Releaseでのパネル更新profileと、複製削減候補のsmall／allocator peak RSS回帰の分解。大きなSVGの再解析費用とcache適格性を確認して採否を再検討。
+- ⭕️ [Pending] 現在の未コミット背景マスク最適化のGUI受入れ、Windows/Linux、物理入力表示遅延、GPU upload／idle wakeup／実消費電力。
+
+### 背景マスクの合成で複製を省略（2026-11-19）
+
+- 🟢 [Done] 背景タイル・スポイト・サムネイルでマスクとレイヤー効果を参照。紙と描画色を合成した後にマスクを一度だけ適用する順序を維持。変更タイルがない場合は背景合成の準備も省略。
+- 🟢 [Done] コア507件、レンダラー289件、Clippy、整形、アーキテクチャ検査が通過。半透明のピクセル／ベクターマスクの合成が従来と画素単位で一致。
+- 🟢 [Done] macOSのTauri Release版で、3,600×3,200 px・4レイヤーの文書を使い、マスク描画・消しゴム・全消去、描画と全消去のUndo／Redo、スポイトの描画色反映、背景とマスクのサムネイル更新を確認。
+- 🟢 [Done] 同一設定の6ドラッグを前・後・後・前の順で比較。入力ハンドラからpresent呼び出しまでの中央値464.5→452.8 ms、最大491.9→466.5 ms。アプリ本体のピークRSS中央値698.6→701.0 MiB。この条件でメモリ減少は確認できなかった。[計測条件・全サンプル](mask-release-qa-2026-11-19.json)
+- 🟠 [Next] 3本目以降に背景195タイルの全再合成に戻った条件を調べ、大きなマスクでの差分更新を改善。
+- ⭕️ [Pending] OSの入力待ち・物理表示までの遅延、WebKit子プロセスとGPUのメモリ、Windows/Linux実機。

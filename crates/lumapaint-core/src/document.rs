@@ -2056,7 +2056,10 @@ impl Document {
         Ok(())
     }
     pub fn layer_effects(&self, id: &str) -> crate::layer_effects::LayerEffects {
-        self.layer_effects.get(id).cloned().unwrap_or_default()
+        self.layer_effects_ref(id).cloned().unwrap_or_default()
+    }
+    pub fn layer_effects_ref(&self, id: &str) -> Option<&crate::layer_effects::LayerEffects> {
+        self.layer_effects.get(id)
     }
     pub fn has_layer_effects(&self, id: &str) -> bool {
         self.layer_effects.get(id).is_some_and(|e| e.active())

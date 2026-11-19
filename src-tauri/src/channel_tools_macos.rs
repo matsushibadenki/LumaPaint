@@ -346,10 +346,7 @@ pub(super) fn key(event: &NSEvent) -> bool {
         }
         return true;
     }
-    if [123, 124, 125, 126].contains(&event.keyCode()) {
-        return true;
-    }
-    false
+    [123, 124, 125, 126].contains(&event.keyCode())
 }
 
 #[cfg(test)]

@@ -1,0 +1,67 @@
+--- a/crates/lumapaint-core/src/document.rs
++++ b/crates/lumapaint-core/src/document.rs
+@@ -936,6 +936,9 @@
+     /// Omits Undo/Redo, inactive pages, picking/transform caches and change logs.
+     /// This is not a project backup: use the original document for saving/editing.
+     pub fn clone_for_rendering(&self) -> Self {
++        self.clone_for_rendering_with_svg_layers(self.svg_layers.clone())
++    }
++    fn clone_for_rendering_with_svg_layers(&self, svg_layers: Vec<SvgLayer>) -> Self {
+         Self {
+             quick_mask: self.quick_mask,
+             vector_assets: self.vector_assets.clone(),
+@@ -973,7 +976,7 @@
+             layer_mask_enabled: self.layer_mask_enabled,
+             layer_mask_inverted: self.layer_mask_inverted,
+             layer_mask_density: self.layer_mask_density,
+-            svg_layers: self.svg_layers.clone(),
++            svg_layers,
+             selected_layer: self.selected_layer.clone(),
+             editing_channel: self.editing_channel,
+             layer_edit_selection: self.layer_edit_selection.clone(),
+--- a/crates/lumapaint-core/src/document_channels.rs
++++ b/crates/lumapaint-core/src/document_channels.rs
+@@ -19,7 +19,18 @@
+     /// Read-only channel scene: inspect the selected target, without other layers
+     /// or the canvas display color obscuring its transparency.
+     pub fn channel_view(&self) -> Self {
+-        let mut view = self.clone_for_rendering();
++        let layers = if self.layer_edit_target() == LayerEditTarget::Mask
++            || self.selected_layer_id() == "layer-1"
++        {
++            Vec::new()
++        } else {
++            self.svg_layers
++                .iter()
++                .filter(|layer| layer.id == self.selected_layer_id())
++                .cloned()
++                .collect()
++        };
++        let mut view = self.clone_for_rendering_with_svg_layers(layers);
+         view.canvas_color = CanvasColor::Transparent;
+         view.selected_vector_objects.clear();
+         view.layer_groups = Default::default();
+@@ -28,7 +39,6 @@
+             if let Some(mask) = &mut mask {
+                 mask.enabled = true;
+             }
+-            view.svg_layers.clear();
+             view.strokes.clear();
+             view.active = None;
+             view.paint_source = Some(format!(
+@@ -48,14 +58,11 @@
+             );
+             view.selected_layer = None;
+             view.layer_edit_selection = None;
+-        } else if self.selected_layer_id() == "layer-1" {
+-            view.svg_layers.clear();
+-        } else {
++        } else if self.selected_layer_id() != "layer-1" {
+             view.visible = false;
+             view.strokes.clear();
+             view.active = None;
+             view.paint_source = None;
+-            view.svg_layers.retain(|l| l.id == self.selected_layer_id());
+         }
+         view
+     }

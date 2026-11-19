@@ -27,6 +27,33 @@ pub struct LayerEffects {
     pub curve_smooth: [bool; 4],
     pub curves: [Vec<[f32; 2]>; 4],
 }
+impl LayerEffects {
+    /// Compare all appearance settings except the mask without copying payloads.
+    pub fn same_adjustments(&self, other: &Self) -> bool {
+        let Self {
+            mask: _,
+            enabled,
+            screentone,
+            mixer,
+            grading,
+            grading_blend,
+            grading_balance,
+            values,
+            curve_smooth,
+            curves,
+        } = self;
+        *enabled == other.enabled
+            && *screentone == other.screentone
+            && *mixer == other.mixer
+            && *grading == other.grading
+            && *grading_blend == other.grading_blend
+            && *grading_balance == other.grading_balance
+            && *values == other.values
+            && *curve_smooth == other.curve_smooth
+            && *curves == other.curves
+    }
+}
+
 impl Default for LayerEffects {
     fn default() -> Self {
         Self {
@@ -55,23 +82,28 @@ pub struct PreparedEffects<'a> {
     tints: [[f32; 3]; 3],
 }
 impl PreparedEffects<'_> {
-    /// Read-only execution tables for alternate batch backends; not document state.
     pub fn apply_at(&self, pixel: [u8; 4], point: [f32; 2]) -> [u8; 4] {
-        let adjusted = self.apply(pixel);
-        let mut output = if self.effects.enabled {
-            self.effects
-                .screentone
-                .as_ref()
-                .map_or(adjusted, |t| t.apply(adjusted, point))
-        } else {
-            adjusted
-        };
+        let mut output = self.apply_at_without_mask(pixel, point);
         if let Some(mask) = &self.effects.mask {
             output[3] = (f32::from(output[3]) * mask.coverage(point)).round() as u8;
         }
         output
     }
 
+    /// Apply adjustments and screentone before a caller composites and masks the paper.
+    pub fn apply_at_without_mask(&self, pixel: [u8; 4], point: [f32; 2]) -> [u8; 4] {
+        let adjusted = self.apply(pixel);
+        if self.effects.enabled {
+            self.effects
+                .screentone
+                .as_ref()
+                .map_or(adjusted, |t| t.apply(adjusted, point))
+        } else {
+            adjusted
+        }
+    }
+
+    /// Read-only execution tables for alternate batch backends.
     pub fn tone_tables(&self) -> &[[f32; 256]; 3] {
         &self.tone
     }

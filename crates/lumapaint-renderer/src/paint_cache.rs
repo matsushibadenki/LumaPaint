@@ -516,10 +516,14 @@ impl PaintCache {
         document: &Document,
         coords: &BTreeSet<TileCoord>,
     ) -> Result<Vec<TileUpload>, String> {
+        if coords.is_empty() {
+            return Ok(Vec::new());
+        }
         let (w, h) = document.dimensions();
-        let mut effects = document.layer_effects("layer-1");
-        let mask = effects.mask.take();
-        let effects = effects.prepare();
+        let paper = document.paper();
+        let settings = crate::root_paint::settings(document);
+        let mask = settings.mask.as_ref();
+        let effects = settings.prepare();
         let opacity = if document.background_visible() {
             document.paint_layer_opacity()
         } else {
@@ -540,9 +544,9 @@ impl PaintCache {
                             self.raw_pixel(px, py),
                             [px as f32 + 0.5, py as f32 + 0.5],
                             &effects,
-                            mask.as_ref(),
+                            mask,
                             true,
-                            document.paper(),
+                            paper,
                             [1., 1.],
                         )
                         .map(|v| (v as f32 * opacity).round() as u8);
@@ -625,24 +629,18 @@ impl PaintCache {
             dirty.extend(changes.coords);
             dirty.extend(self.active_coords.iter().copied());
         }
-        let mut effects = document.layer_effects("layer-1");
+        let effects = document.layer_effects("layer-1");
+        let previous = &self.tiles.layers()[0].effects;
         let mask_tiles = if self.paper
             && crate::root_paint::masked_paper(document)
-            && self.tiles.layers()[0].effects != effects
+            && previous.mask != effects.mask
+            && previous.same_adjustments(&effects)
         {
-            let mut previous = self.tiles.layers()[0].effects.clone();
-            let old_mask = previous.mask.take();
-            let new_mask = effects.mask.take();
-            let changes = if previous == effects && old_mask != new_mask {
-                old_mask
-                    .as_ref()
-                    .zip(new_mask.as_ref())
-                    .and_then(|(old, new)| changed_mask_tiles(old, new, document.dimensions()))
-            } else {
-                None
-            };
-            effects.mask = new_mask;
-            changes
+            previous
+                .mask
+                .as_ref()
+                .zip(effects.mask.as_ref())
+                .and_then(|(old, new)| changed_mask_tiles(old, new, document.dimensions()))
         } else {
             None
         };
