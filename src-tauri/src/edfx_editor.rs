@@ -184,7 +184,8 @@ pub(crate) async fn edfx_edit(window: WebviewWindow, edit: Edit) -> Result<Optio
                 let doc = Document::load(path.unwrap()).map_err(|e| e.to_string())?;
                 *state = Editing {
                     document: Some(doc),
-                    ..Default::default()
+                    #[cfg(target_os = "macos")]
+                    placed: None,
                 };
             }
             Edit::New { locale, face } => {
@@ -203,7 +204,8 @@ pub(crate) async fn edfx_edit(window: WebviewWindow, edit: Edit) -> Result<Optio
                 .map_err(|e| e.to_string())?;
                 *state = Editing {
                     document: Some(doc),
-                    ..Default::default()
+                    #[cfg(target_os = "macos")]
+                    placed: None,
                 };
             }
             Edit::LoadPlaced => unreachable!(),
