@@ -2801,6 +2801,76 @@ impl Document {
         Ok(layer.id.clone())
     }
 
+    pub fn placed_edfx_transform(&self, id: &str) -> Result<crate::tiles::EdfxTransform, String> {
+        let layer = self
+            .svg_layers
+            .iter()
+            .find(|layer| layer.id == id && layer.edfx.is_some())
+            .ok_or("EDFX layer unavailable")?;
+        let xml = roxmltree::Document::parse(&layer.source).map_err(|e| e.to_string())?;
+        let Some(value) = xml
+            .descendants()
+            .find_map(|node| node.attribute("data-lumapaint-edfx-transform"))
+        else {
+            return Ok(crate::tiles::EdfxTransform::default());
+        };
+        let transform =
+            crate::tiles::EdfxTransform(serde_json::from_str(value).map_err(|e| e.to_string())?);
+        transform.validate()?;
+        Ok(transform)
+    }
+
+    pub fn transform_placed_edfx(
+        &mut self,
+        id: &str,
+        transform: crate::tiles::EdfxTransform,
+    ) -> Result<(), String> {
+        transform.validate()?;
+        let index = self
+            .svg_layers
+            .iter()
+            .position(|layer| layer.id == id && layer.edfx.is_some())
+            .ok_or("EDFX layer unavailable")?;
+        let mut layer = self.svg_layers[index].clone();
+        if layer.locked {
+            return Err("EDFX layer is locked".into());
+        }
+        let xml = roxmltree::Document::parse(&layer.source).map_err(|e| e.to_string())?;
+        let page = xml
+            .descendants()
+            .find(|node| node.attribute("data-lumapaint-edfx-page") == Some("1"))
+            .ok_or("EDFX page artwork unavailable")?;
+        let page_range = page.range();
+        let range = page
+            .parent()
+            .filter(|node| node.attribute("data-lumapaint-edfx-transform").is_some())
+            .map_or_else(|| page_range.clone(), |node| node.range());
+        let [x, y, scale] = transform.0;
+        let payload = format!(
+            r#"<g data-lumapaint-edfx-transform="[{x},{y},{scale}]" transform="translate({x} {y}) scale({scale})">{}</g>"#,
+            &layer.source[page_range]
+        );
+        layer.source.replace_range(range, &payload);
+        validate_svg_layer(&layer)?;
+        if self
+            .svg_layers
+            .iter()
+            .map(|item| item.source.len())
+            .sum::<usize>()
+            - self.svg_layers[index].source.len()
+            + layer.source.len()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much SVG data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[index] = layer;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn update_placed_edfx(
         &mut self,
         id: &str,
@@ -8313,7 +8383,15 @@ mod tests {
         let layer_id = doc
             .place_edfx(first, std::sync::Arc::clone(&initial))
             .unwrap();
+        let original = doc.svg_layers[0].source.clone();
+        let transform = crate::tiles::EdfxTransform([42., 65., 2.]);
+        doc.transform_placed_edfx(&layer_id, transform).unwrap();
         let source = doc.svg_layers[0].source.clone();
+        assert!(source.contains("translate(42 65) scale(2)"));
+        doc.undo();
+        assert_eq!(doc.svg_layers[0].source, original);
+        doc.redo();
+        assert_eq!(doc.svg_layers[0].source, source);
         doc.update_placed_edfx(&layer_id, &initial, second, std::sync::Arc::clone(&edited))
             .unwrap();
         assert_eq!(doc.svg_layers[0].source, source.replace(first, second));
@@ -8324,6 +8402,10 @@ mod tests {
         let serialized = serde_json::to_vec(&doc.document_state()).unwrap();
         let restored =
             Document::from_document_state(serde_json::from_slice(&serialized).unwrap()).unwrap();
+        assert_eq!(
+            restored.placed_edfx_transform(&layer_id).unwrap(),
+            transform
+        );
         assert_eq!(restored.svg_layers[0].edfx.as_ref(), Some(&edited));
         assert_eq!(restored.svg_layers[0].source, source.replace(first, second));
     }

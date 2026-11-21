@@ -69,6 +69,8 @@ struct LayerManifest {
     mask_tiles: Vec<TileReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edfx: Option<BlobReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edfx_transform: Option<lumapaint_core::tiles::EdfxTransform>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -140,6 +142,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
         });
         layers.push(LayerManifest {
             edfx,
+            edfx_transform: layer.edfx_transform,
             effects: layer.effects.clone(),
             blend_mode: layer.blend_mode,
             id: layer.id.clone(),
@@ -264,6 +267,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
             .transpose()?;
         layers.push(RasterLayerState {
             edfx,
+            edfx_transform: layer.edfx_transform,
             effects: layer.effects,
             blend_mode: layer.blend_mode,
             id: layer.id,
@@ -382,7 +386,7 @@ mod tests {
 
     #[test]
     fn edfx_tiles_and_payload_round_trip_with_undo_redo() {
-        use lumapaint_core::tiles::SparseTiles;
+        use lumapaint_core::tiles::{EdfxTransform, SparseTiles};
         use std::sync::Arc;
 
         let mut doc = TiledRasterDocument::new(300, 200).unwrap();
@@ -394,13 +398,22 @@ mod tests {
         let placed = doc.state();
         let mut second = SparseTiles::new(300, 200).unwrap();
         second.write_rect(256, 20, 1, 1, &[0, 0, 0, 255]).unwrap();
+        let transform = EdfxTransform([1., 5., 2.]);
+        doc.transform_edfx(&id, &initial, second.clone(), transform)
+            .unwrap();
+        let transformed = doc.state();
+        assert_eq!(transformed.layers[1].edfx_transform, Some(transform));
         doc.update_edfx(&id, &initial, second, Arc::from("Edited 編集 编辑"))
             .unwrap();
         let updated = doc.state();
+        assert_eq!(updated.layers[1].edfx_transform, Some(transform));
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), transformed);
         doc.undo().unwrap();
         assert_eq!(doc.state(), placed);
         doc.undo().unwrap();
         assert_eq!(doc.layers().len(), 1);
+        doc.redo().unwrap();
         doc.redo().unwrap();
         doc.redo().unwrap();
         assert_eq!(doc.state(), updated);

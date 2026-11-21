@@ -30,6 +30,27 @@ pub struct TiledRasterState {
     pub layers: Vec<RasterLayerState>,
 }
 
+/// Translation in canvas pixels and a uniform scale about the page origin.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EdfxTransform(pub [f64; 3]);
+
+impl Default for EdfxTransform {
+    fn default() -> Self {
+        Self([0., 0., 1.])
+    }
+}
+
+impl EdfxTransform {
+    pub fn validate(self) -> Result<(), String> {
+        let [x, y, scale] = self.0;
+        if x.abs() <= 1_000_000. && y.abs() <= 1_000_000. && (0.01..=100.).contains(&scale) {
+            Ok(())
+        } else {
+            Err("Invalid EDFX transform / EDFXの変形値が範囲外です / EDFX 变换值超出范围".into())
+        }
+    }
+}
+
 pub const MAX_TILED_EDFX_BYTES: usize = 256 * 1024 * 1024;
 
 /// Conservative bounds and header validation for retained RGB ICC profiles.
@@ -138,6 +159,8 @@ impl RasterBlendMode {
 pub struct RasterLayerState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edfx: Option<std::sync::Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edfx_transform: Option<EdfxTransform>,
     #[serde(default)]
     pub effects: crate::layer_effects::LayerEffects,
     #[serde(default)]
@@ -1370,6 +1393,8 @@ fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) 
 pub struct RasterLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edfx: Option<std::sync::Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edfx_transform: Option<EdfxTransform>,
     pub effects: crate::layer_effects::LayerEffects,
     pub blend_mode: RasterBlendMode,
     pub id: String,
@@ -1433,6 +1458,7 @@ enum RasterEdit {
         before: std::sync::Arc<str>,
         after: std::sync::Arc<str>,
         changes: Vec<TileChange>,
+        transforms: [Option<EdfxTransform>; 2],
     },
     Effects {
         id: String,
@@ -1853,6 +1879,7 @@ impl TiledRasterDocument {
                 .iter()
                 .map(|layer| RasterLayerState {
                     edfx: layer.edfx.clone(),
+                    edfx_transform: layer.edfx_transform,
                     effects: layer.effects.clone(),
                     blend_mode: layer.blend_mode,
                     id: layer.id.clone(),
@@ -1917,9 +1944,16 @@ impl TiledRasterDocument {
             if let Some(data) = &saved.edfx {
                 document.validate_edfx(None, data)?;
             }
+            if let Some(transform) = saved.edfx_transform {
+                transform.validate()?;
+                if saved.edfx.is_none() {
+                    return Err("EDFX transform requires an EDFX layer".into());
+                }
+            }
             document.add_layer(saved.id.clone(), saved.name)?;
             let layer = document.layers.last_mut().expect("layer was just added");
             layer.edfx = saved.edfx;
+            layer.edfx_transform = saved.edfx_transform;
             layer.blend_mode = saved.blend_mode;
             saved.effects.validate()?;
             layer.effects = saved.effects;
@@ -2133,6 +2167,7 @@ impl TiledRasterDocument {
         }
         self.layers.push(RasterLayer {
             edfx: None,
+            edfx_transform: None,
             effects: Default::default(),
             blend_mode: RasterBlendMode::Normal,
             id,
@@ -2222,6 +2257,28 @@ impl TiledRasterDocument {
         tiles: SparseTiles,
         data: std::sync::Arc<str>,
     ) -> Result<(), String> {
+        self.replace_edfx(id, expected, tiles, data, None)
+    }
+
+    pub fn transform_edfx(
+        &mut self,
+        id: &str,
+        expected: &std::sync::Arc<str>,
+        tiles: SparseTiles,
+        transform: EdfxTransform,
+    ) -> Result<(), String> {
+        transform.validate()?;
+        self.replace_edfx(id, expected, tiles, expected.clone(), Some(transform))
+    }
+
+    fn replace_edfx(
+        &mut self,
+        id: &str,
+        expected: &std::sync::Arc<str>,
+        tiles: SparseTiles,
+        data: std::sync::Arc<str>,
+        transform: Option<EdfxTransform>,
+    ) -> Result<(), String> {
         self.validate_edfx(Some(id), &data)?;
         if tiles.dimensions() != self.dimensions() {
             return Err("EDFX canvas dimensions changed".into());
@@ -2261,7 +2318,11 @@ impl TiledRasterDocument {
             .edfx
             .replace(data.clone())
             .expect("validated EDFX layer");
+        let before_transform = layer.edfx_transform;
+        layer.edfx_transform = transform.or(before_transform);
+        let transforms = [before_transform, layer.edfx_transform];
         self.record_edit(RasterEdit::Edfx {
+            transforms,
             id: id.into(),
             before,
             after: data,
@@ -3342,6 +3403,7 @@ impl TiledRasterDocument {
                 before,
                 after,
                 changes,
+                transforms,
             } => {
                 let layer = self
                     .layers
@@ -3349,6 +3411,7 @@ impl TiledRasterDocument {
                     .find(|layer| layer.id == *id)
                     .ok_or("EDFX layer unavailable")?;
                 layer.edfx = Some(if undo { before } else { after }.clone());
+                layer.edfx_transform = transforms[usize::from(!undo)];
                 for change in changes {
                     if let Some(pixels) = if undo { &change.before } else { &change.after } {
                         layer.tiles.tiles.insert(change.coord, pixels.clone());

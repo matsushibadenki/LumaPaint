@@ -188,6 +188,7 @@ pub fn run() {
             modal_windows::open_modal_window,
             edfx_editor::edfx_edit,
             edfx_editor::edfx_canvas_apply,
+            edfx_editor::edfx_transform_mode,
             modal_windows::modal_context,
             modal_windows::modal_ready,
             modal_windows::modal_busy,

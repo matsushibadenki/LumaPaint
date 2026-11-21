@@ -1,5 +1,7 @@
 use base64::Engine;
 use edfx::{Document, Locale, Paragraph};
+#[cfg(target_os = "macos")]
+use lumapaint_core::tiles::EdfxTransform;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -19,6 +21,7 @@ pub(crate) struct Placed {
     pub document_id: u64,
     pub layer_id: String,
     pub data: Arc<str>,
+    pub transform: EdfxTransform,
 }
 
 #[derive(Default)]
@@ -246,14 +249,16 @@ pub(crate) struct TileTarget {
 fn render_page_tiles(
     paths: &str,
     target: TileTarget,
+    transform: EdfxTransform,
 ) -> Result<lumapaint_core::tiles::SparseTiles, String> {
     use lumapaint_core::tiles::{SparseTiles, TILE_SIZE};
     use resvg::{tiny_skia, usvg};
 
     let (width, height) = target.dimensions;
-    let [sx, sy] = target.ppi.map(|value| value / 72_000.);
+    let [x, y, scale] = transform.0;
+    let [sx, sy] = target.ppi.map(|value| value / 72_000. * scale);
     let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><g transform="scale({sx} {sy})">{paths}</g></svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><g transform="translate({x} {y}) scale({sx} {sy})">{paths}</g></svg>"#
     );
     let tree =
         usvg::Tree::from_str(&svg, &usvg::Options::default()).map_err(|error| error.to_string())?;
@@ -311,17 +316,17 @@ pub(crate) async fn edfx_canvas_apply(window: WebviewWindow) -> Result<(), Strin
             {
                 return Err("The target document has changed".to_string());
             }
-            let mut svg = Vec::new();
-            doc.write_svg(&mut svg).map_err(|e| e.to_string())?;
-            let svg = String::from_utf8(svg).map_err(|e| e.to_string())?;
-            let (_, paths) = svg.split_once(">\n").ok_or("Invalid EDFX SVG")?;
-            let (paths, _) = paths.rsplit_once("</svg>").ok_or("Invalid EDFX SVG")?;
+            let paths = glyph_paths(doc)?;
+            let transform = editing
+                .placed
+                .as_ref()
+                .map_or_else(EdfxTransform::default, |layer| layer.transform);
             let tiles = tile_target
-                .map(|target| render_page_tiles(paths, target))
+                .map(|target| render_page_tiles(&paths, target, transform))
                 .transpose()?;
             Ok((
                 editing.placed.clone(),
-                paths.to_owned(),
+                paths,
                 tiles,
                 Arc::<str>::from(doc.to_json().map_err(|e| e.to_string())?),
             ))
@@ -340,4 +345,60 @@ pub(crate) async fn edfx_canvas_apply(window: WebviewWindow) -> Result<(), Strin
         let _ = window;
         Err("EDFX canvas placement is unavailable on this platform".into())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn glyph_paths(doc: &Document) -> Result<String, String> {
+    let mut svg = Vec::new();
+    doc.write_svg(&mut svg).map_err(|error| error.to_string())?;
+    let svg = String::from_utf8(svg).map_err(|error| error.to_string())?;
+    let (_, paths) = svg.split_once(">\n").ok_or("Invalid EDFX SVG")?;
+    let (paths, _) = paths.rsplit_once("</svg>").ok_or("Invalid EDFX SVG")?;
+    Ok(paths.to_owned())
+}
+
+#[tauri::command]
+pub(crate) async fn edfx_transform_mode(
+    window: WebviewWindow,
+    mode: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::canvas::on_main(window, move || {
+            crate::canvas::platform::edfx_transform_mode(mode)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, mode);
+        Err("EDFX canvas transform is unavailable on this platform".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn transform_placement(
+    window: WebviewWindow,
+    placed: Placed,
+    target: Option<TileTarget>,
+    transform: EdfxTransform,
+) -> Result<(), String> {
+    let tiles = async {
+        transform.validate()?;
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let data = placed.data.clone();
+        crate::diagnostic_jobs::spawn_blocking(move || {
+            let doc = Document::from_json(data.as_bytes()).map_err(|error| error.to_string())?;
+            render_page_tiles(&glyph_paths(&doc)?, target, transform).map(Some)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    .await;
+    crate::canvas::on_main(window, move || {
+        crate::canvas::platform::finish_edfx_transform(placed, tiles, transform)
+    })
+    .await
 }

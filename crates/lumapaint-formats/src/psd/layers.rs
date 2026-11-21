@@ -809,6 +809,7 @@ pub(super) fn decode_with_metadata_mode_and_clipped(
         tiles.retain(|_, pixels| pixels.iter().any(|&value| value != 0));
         layers.push(RasterLayerState {
             edfx: None,
+            edfx_transform: None,
             effects: Default::default(),
             blend_mode: record.blend_mode,
             id: format!("psd-layer-{index}"),

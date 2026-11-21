@@ -1,3 +1,4 @@
+import { EdfxTransformControls } from './components/EdfxTransformControls';
 import {ObjectConversionDialog,conversionDefaults} from './components/ObjectConversionDialog';
 import {convertObjects,type ConversionKind} from './bridge';
 import { pressurePreset } from './bridge';
@@ -793,7 +794,11 @@ export function Workspace() {
             <span>{ {ja:'画像を配置：辺・角で拡大縮小、角の外側で回転', en:'Place image: resize with handles, rotate outside corners', 'zh-CN':'放置图片：拖动控制点缩放，在角外旋转'}[locale] }</span>
             <button disabled={placementBusy} onClick={() => void finishPlacement(false)}>{ {ja:'キャンセル',en:'Cancel','zh-CN':'取消'}[locale] }</button>
             <button disabled={placementBusy} onClick={() => void finishPlacement(true)}>{ {ja:'確定',en:'Confirm','zh-CN':'确认'}[locale] }</button>
-          </div> : <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />}
+          </div> : <>
+            {isTauri() && documentAvailable && documentState.layers.some(layer => layer.id === documentState.layerId && layer.placedEdfx && !layer.locked)
+              && <EdfxTransformControls key={`${activeDocumentId}:${documentState.layerId}`} locale={locale} onError={setError} />}
+            <RecoveryControls locale={locale} document={documentState} onDocument={updateDocument} />
+          </>}
           zoomCommand={zoomCommand} onZoom={changeZoom} onDocument={updateDocument} onReady={setReady} /></DocumentPanes></DocumentDock>
       </div>
       {panels && <Inspector layerPanelRequest={layerPanelRequest} documentAvailable={documentAvailable} onOpenLayerMask={id=>setLayerMaskTarget(current=>current??{id,documentId:activeDocumentId})} onLayerEffects={(id, effects) => { if (!ready || busy || fileBusy) return; setBusy(true); setError(''); void setLayerEffects(id, effects).then(updateDocument).catch(cause => setError(String(cause))).finally(() => setBusy(false)); }} rasterEnabled={!placingImage && documentAvailable && !documentEditable && ready && !busy && !fileBusy} onRasterBlendMode={(id, mode) => void changeRasterBlendMode(id, mode)} linksPanelRequest={linksPanelRequest} gradientTool={gradientTool} gradientPanelRequest={gradientPanelRequest} onTransformUpdate={updateDocument} thumbnailDocumentKey={activeDocumentId === null ? '' : String(activeDocumentId)} onSavedPathAction={async (action, id, name) => { updateDocument(await savedPathAction(action, id, name)); }} vectorColors={vectorColors} channel={channel} onChannel={value => {void selectChannel(value).then(updateDocument).catch(cause=>setError(String(cause)));}} onStrokeStyle={async patch => { updateDocument(await setVectorStrokeStyle(patch)); }} onStrokeWidth={async width => { updateDocument(await setVectorStrokeWidth(width, brush.color)); }} textPanelRequest={textPanelRequest} textSettings={activeText} textEditing={inlineText !== null}

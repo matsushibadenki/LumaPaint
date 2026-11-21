@@ -230,7 +230,11 @@ export function WorkspaceMenu(props: Props) {
     if(!entry)return;const id=entry.id??`${path}.${index}`;
     if(entry.children)collect(entry.children,`${category} › ${entry.label}`,id,parentEnabled&&entry.enabled!==false);
     else if(entry.action&&!entry.planned){
-      const command={id,label:entry.label,category,defaultKey:entry.shortcut?keyFromAccelerator(entry.shortcut):'',enabled:parentEnabled&&entry.enabled!==false,action:entry.action};
+      // Rust decides history availability at dispatch time, including EDFX work in flight.
+      const enabled = id === 'menu.undo' || id === 'menu.redo'
+        ? canHistory
+        : parentEnabled && entry.enabled !== false;
+      const command={id,label:entry.label,category,defaultKey:entry.shortcut?keyFromAccelerator(entry.shortcut):'',enabled,action:entry.action};
       commands.push(command);entry.shortcut=accelerator(binding(shortcutState.settings,command));
     }
   });
