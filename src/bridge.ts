@@ -135,6 +135,7 @@ export function setLayerEffects(id: string, effects: LayerEffects): Promise<Docu
   canvasQueue = result.then(() => undefined, () => undefined); return result;
 }
 export interface LayerSnapshot {
+  placedEdfx?: boolean;
   effects?: LayerEffects;
   sparseMaskPresent?: boolean; sparseMaskLinked?: boolean;
   rasterBlendMode?: RasterBlendMode;

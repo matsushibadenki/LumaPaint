@@ -438,10 +438,12 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
     }
     let moving_tool = moving(TOOL.with(|t| t.get()));
     let overlay = |e: &LayerEffects| {
+        if !moving_tool {
+            return None;
+        }
         e.mask
             .as_ref()
             .and_then(|m| m.bounds_quad())
-            .filter(|_| moving_tool)
             .map(|corners| lumapaint_renderer::FrameOverlay {
                 corners,
                 handles: false,
@@ -470,27 +472,40 @@ pub(super) fn render(canvas: &mut Canvas) -> Option<Result<(), String>> {
                     }
                     mask.transform_by(d.matrix())?;
                 }
-                preview.set_layer_effects(&d.layer, e.clone())?;
+                let frame = overlay(&e);
+                preview.set_layer_effects(&d.layer, e)?;
                 install_color_managed_tiled_preview(&mut canvas.renderer, &preview)?;
                 canvas.active_tiled_key = None;
-                canvas.renderer.set_frame_overlay(overlay(&e));
+                canvas.renderer.set_frame_overlay(frame);
                 let display = tiled_display_document(preview.dimensions())?;
                 canvas.renderer.render(canvas.viewport, &display)
             })());
         }
         Some((|| {
-            let mut preview = DOCUMENT.with(|d| d.borrow().clone_for_rendering());
-            if let Some(d) = draft {
-                if moving(d.tool) {
-                    preview.transform_layer_mask(&d.layer, d.matrix(), d.root_source.clone())?;
-                } else {
-                    preview.set_layer_effects(&d.layer, d.painted()?)?;
-                }
-            }
-            canvas
-                .renderer
-                .set_frame_overlay(overlay(&preview.layer_effects(preview.selected_layer_id())));
-            canvas.renderer.render(canvas.viewport, &preview)
+            let render = |canvas: &mut Canvas, document: &Document| {
+                canvas.renderer.set_frame_overlay(
+                    document
+                        .layer_effects_ref(document.selected_layer_id())
+                        .and_then(overlay),
+                );
+                canvas.renderer.render(canvas.viewport, document)
+            };
+            let Some(d) = draft else {
+                return DOCUMENT.with(|doc| render(canvas, &doc.borrow()));
+            };
+            let preview = if moving(d.tool) {
+                let mut preview = {
+                    let _time =
+                        lumapaint_core::performance::time("host.mask_preview_document_clone");
+                    DOCUMENT.with(|doc| doc.borrow().clone_for_rendering())
+                };
+                preview.transform_layer_mask(&d.layer, d.matrix(), d.root_source.clone())?;
+                preview
+            } else {
+                let effects = d.painted()?;
+                DOCUMENT.with(|doc| doc.borrow().preview_with_layer_effects(&d.layer, effects))?
+            };
+            render(canvas, &preview)
         })())
     })
 }

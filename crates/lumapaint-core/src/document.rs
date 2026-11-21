@@ -406,6 +406,8 @@ pub struct Stroke {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SvgLayer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edfx: Option<std::sync::Arc<str>>,
     #[serde(skip)]
     pub motion_scene: Option<std::sync::Arc<crate::motion::mesh::Scene>>,
     pub id: String,
@@ -515,6 +517,7 @@ pub struct LayerObjectSnapshot {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerSnapshot {
+    pub placed_edfx: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<crate::layer_effects::LayerEffects>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -936,6 +939,10 @@ impl Document {
     /// Omits Undo/Redo, inactive pages, picking/transform caches and change logs.
     /// This is not a project backup: use the original document for saving/editing.
     pub fn clone_for_rendering(&self) -> Self {
+        self.clone_for_rendering_except_effects(None)
+    }
+
+    fn clone_for_rendering_except_effects(&self, replaced_layer: Option<&str>) -> Self {
         Self {
             quick_mask: self.quick_mask,
             vector_assets: self.vector_assets.clone(),
@@ -961,7 +968,15 @@ impl Document {
             canvas_color: self.canvas_color,
             paper: self.paper,
             pixel_aspect_ratio: self.pixel_aspect_ratio,
-            layer_effects: self.layer_effects.clone(),
+            layer_effects: match replaced_layer {
+                Some(id) => self
+                    .layer_effects
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != id)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+                None => self.layer_effects.clone(),
+            },
             paint_source: self.paint_source.clone(),
             strokes: self.strokes.clone(),
             active: self.active.clone(),
@@ -1158,6 +1173,7 @@ impl Document {
     pub fn snapshot(&self) -> DocumentSnapshot {
         let mut default_styles_elided = 0;
         let mut layers = vec![LayerSnapshot {
+            placed_edfx: false,
             effects: Some(
                 self.layer_effects
                     .get("layer-1")
@@ -1201,6 +1217,7 @@ impl Document {
                         Vec::new()
                     };
                     LayerSnapshot {
+                        placed_edfx: layer.edfx.is_some(),
                         effects: Some(
                             self.layer_effects
                                 .get(&layer.id)
@@ -2064,12 +2081,20 @@ impl Document {
     pub fn has_layer_effects(&self, id: &str) -> bool {
         self.layer_effects.get(id).is_some_and(|e| e.active())
     }
-    pub fn set_layer_effects(
-        &mut self,
+    fn prepare_layer_effects(
+        &self,
         id: &str,
-        mut effects: crate::layer_effects::LayerEffects,
-    ) -> Result<(), String> {
-        effects.retain_mask_content(&self.layer_effects(id))?;
+        effects: &mut crate::layer_effects::LayerEffects,
+    ) -> Result<bool, String> {
+        let fallback;
+        let previous = match self.layer_effects_ref(id) {
+            Some(previous) => previous,
+            None => {
+                fallback = crate::layer_effects::LayerEffects::default();
+                &fallback
+            }
+        };
+        effects.retain_mask_content(previous)?;
         effects.validate()?;
         let locked = if id == "layer-1" {
             self.layer_locked
@@ -2080,11 +2105,43 @@ impl Document {
                 .ok_or("Layer not found")?
                 .locked
         };
-        if self.layer_effects(id) == effects {
-            return Ok(());
+        if previous == effects {
+            return Ok(false);
         }
         if locked {
             return Err("Layer is locked".into());
+        }
+        Ok(true)
+    }
+
+    /// Builds an isolated render document with temporary effects and no edit history.
+    pub fn preview_with_layer_effects(
+        &self,
+        id: &str,
+        mut effects: crate::layer_effects::LayerEffects,
+    ) -> Result<Self, String> {
+        let changed = {
+            let _time = crate::performance::time("host.mask_preview_effects_update");
+            self.prepare_layer_effects(id, &mut effects)?
+        };
+        let _time = crate::performance::time("host.mask_preview_document_clone");
+        let mut preview = self.clone_for_rendering_except_effects(changed.then_some(id));
+        if changed {
+            preview.finish();
+            preview.undo_order.clear();
+            preview.layer_effects.insert(id.into(), effects);
+            preview.revision += 1;
+        }
+        Ok(preview)
+    }
+
+    pub fn set_layer_effects(
+        &mut self,
+        id: &str,
+        mut effects: crate::layer_effects::LayerEffects,
+    ) -> Result<(), String> {
+        if !self.prepare_layer_effects(id, &mut effects)? {
+            return Ok(());
         }
         self.finish();
         let before = self.vector_history_state();
@@ -2429,6 +2486,7 @@ impl Document {
         let source = source.unwrap_or_else(|| vector_svg(self.width, self.height, &objects));
         let layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: id.clone(),
             name: format!("Pasted {serial}"),
             visible: true,
@@ -2530,6 +2588,7 @@ impl Document {
             } else {
                 layer.vector_objects.clear();
                 layer.source = empty;
+                layer.edfx = None;
             }
         }
         self.record_vector_edit(before);
@@ -2607,6 +2666,7 @@ impl Document {
         let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: id.clone(),
             name: format!("Layer {serial}"),
             visible: true,
@@ -2728,12 +2788,101 @@ impl Document {
         Ok(())
     }
 
+    pub fn place_edfx(&mut self, paths: &str, data: std::sync::Arc<str>) -> Result<String, String> {
+        self.check_placed_edfx_size(None, &data)?;
+        let (w, h) = self.dimensions();
+        let scale = f64::from(self.resolution) / 72_000.;
+        let source = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><g transform="scale({scale})" data-lumapaint-edfx-page="1">{paths}</g></svg>"#
+        );
+        self.import_svg_as_layer("EDFX".into(), source)?;
+        let layer = self.svg_layers.last_mut().ok_or("EDFX layer unavailable")?;
+        layer.edfx = Some(data);
+        Ok(layer.id.clone())
+    }
+
+    pub fn update_placed_edfx(
+        &mut self,
+        id: &str,
+        expected: &std::sync::Arc<str>,
+        paths: &str,
+        data: std::sync::Arc<str>,
+    ) -> Result<(), String> {
+        self.check_placed_edfx_size(Some(id), &data)?;
+        let index = self
+            .svg_layers
+            .iter()
+            .position(|layer| layer.id == id)
+            .ok_or("EDFX layer unavailable")?;
+        let layer = &self.svg_layers[index];
+        if layer.locked
+            || !layer
+                .edfx
+                .as_ref()
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, expected))
+        {
+            return Err("EDFX layer is locked or changed".into());
+        }
+        let xml = roxmltree::Document::parse(&layer.source).map_err(|e| e.to_string())?;
+        let mut groups = xml.descendants().filter(|node| {
+            node.has_tag_name(("http://www.w3.org/2000/svg", "g"))
+                && node.attribute("data-lumapaint-edfx-page") == Some("1")
+        });
+        let range = groups
+            .next()
+            .ok_or("EDFX page artwork unavailable")?
+            .range();
+        if groups.next().is_some() {
+            return Err("Multiple EDFX page groups".into());
+        }
+        let group = &layer.source[range.clone()];
+        let start = group.find('>').ok_or("Invalid EDFX page group")? + 1;
+        let end = group.rfind("</g>").ok_or("Invalid EDFX page group")?;
+        let mut updated = layer.clone();
+        updated
+            .source
+            .replace_range(range.start + start..range.start + end, paths);
+        updated.edfx = Some(data);
+        validate_svg_layer(&updated)?;
+        if self
+            .svg_layers
+            .iter()
+            .map(|layer| layer.source.len())
+            .sum::<usize>()
+            - layer.source.len()
+            + updated.source.len()
+            > MAX_SVG_TOTAL_BYTES
+        {
+            return Err("Project contains too much SVG data".into());
+        }
+        self.finish();
+        let before = self.vector_history_state();
+        self.svg_layers[index] = updated;
+        self.record_vector_edit(before);
+        self.revision += 1;
+        Ok(())
+    }
+
+    fn check_placed_edfx_size(&self, replacing: Option<&str>, data: &str) -> Result<(), String> {
+        let existing = self
+            .svg_layers
+            .iter()
+            .filter(|layer| Some(layer.id.as_str()) != replacing)
+            .filter_map(|layer| layer.edfx.as_ref())
+            .map(|data| data.len())
+            .sum::<usize>();
+        if data.is_empty() || existing.saturating_add(data.len()) > MAX_PLACED_EDFX_BYTES {
+            return Err("Embedded EDFX data exceeds 48 MiB / 埋め込みEDFXが48 MiBを超えています / 嵌入的 EDFX 超过 48 MiB".into());
+        }
+        Ok(())
+    }
+
     pub fn import_svg(&mut self, name: String, source: String) -> Result<(), String> {
         if let Some(id) = self.selected_layer.clone() {
             let index = self.svg_layers.iter().position(|layer| layer.id == id)
                 .ok_or("選択レイヤーには画像を追加できません。画像レイヤーを選択してください。\nSelect an image layer to add an image.\n请选择图像图层以添加图像。")?;
             let layer = &self.svg_layers[index];
-            if layer.vector_layer || layer.locked || !layer.visible {
+            if layer.vector_layer || layer.edfx.is_some() || layer.locked || !layer.visible {
                 return Err("選択レイヤーには画像を追加できません。表示中のロックされていない画像レイヤーを選択してください。\nSelect an unlocked, visible image layer.\n请选择可见且未锁定的图像图层。".into());
             }
             let mut updated = layer.clone();
@@ -2774,6 +2923,7 @@ impl Document {
         let id = format!("svg-layer-{}", self.svg_layers.len() + 1);
         let layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id,
             name,
             visible: true,
@@ -2828,6 +2978,7 @@ impl Document {
         let before = self.vector_history_state();
         self.svg_layers.push(SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: id.clone(),
             name: format!("Vector Layer {serial}"),
             visible: true,
@@ -3102,6 +3253,7 @@ impl Document {
         }
         let layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: format!("text-layer-{serial}"),
             name: object.name.clone(),
             visible: true,
@@ -3921,6 +4073,7 @@ impl Document {
         let source = vector_svg(self.width, self.height, &objects);
         let layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: id.clone(),
             name: title.into(),
             source,
@@ -4919,6 +5072,7 @@ impl Document {
         let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: layer_id,
             name: path.name,
             visible: true,
@@ -4954,6 +5108,7 @@ impl Document {
         let previous = self.svg_layers.clone();
         self.svg_layers.push(SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: format!("guide-{}", self.svg_layers.len()),
             name: "Path guide".into(),
             visible: true,
@@ -5219,6 +5374,7 @@ impl Document {
             index,
             SvgLayer {
                 motion_scene: None,
+                edfx: None,
                 id,
                 name: "Clipping preview".into(),
                 visible: true,
@@ -5955,6 +6111,7 @@ impl Document {
                     result_index,
                     SvgLayer {
                         motion_scene: None,
+                        edfx: None,
                         id,
                         name: "Pathfinder".into(),
                         visible: true,
@@ -8147,6 +8304,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn placed_edfx_keeps_artwork_and_editable_data_across_history_and_reload() {
+        let mut doc = Document::default();
+        let initial = std::sync::Arc::from(r#"["English","日本語","简体中文"]"#);
+        let edited = std::sync::Arc::from(r#"["Edited","編集","编辑"]"#);
+        let first = r#"<path d="M1 1H7V7Z"/>"#;
+        let second = r#"<path d="M2 2H9V9Z"/>"#;
+        let layer_id = doc
+            .place_edfx(first, std::sync::Arc::clone(&initial))
+            .unwrap();
+        let source = doc.svg_layers[0].source.clone();
+        doc.update_placed_edfx(&layer_id, &initial, second, std::sync::Arc::clone(&edited))
+            .unwrap();
+        assert_eq!(doc.svg_layers[0].source, source.replace(first, second));
+        doc.undo();
+        assert_eq!(doc.svg_layers[0].edfx.as_ref(), Some(&initial));
+        assert_eq!(doc.svg_layers[0].source, source);
+        doc.redo();
+        let serialized = serde_json::to_vec(&doc.document_state()).unwrap();
+        let restored =
+            Document::from_document_state(serde_json::from_slice(&serialized).unwrap()).unwrap();
+        assert_eq!(restored.svg_layers[0].edfx.as_ref(), Some(&edited));
+        assert_eq!(restored.svg_layers[0].source, source.replace(first, second));
+    }
+
+    #[test]
     fn compact_object_snapshot_keeps_custom_style_selection_and_history() {
         use crate::stroke::{LineCap, StrokeStyle, StrokeStylePatch};
         let prototype: VectorObject = serde_json::from_value(serde_json::json!({
@@ -8267,6 +8449,35 @@ mod tests {
         doc.selected_layer = Some("missing-layer".into());
         check(&doc);
         assert_eq!(doc.selected_layer_id(), "layer-1");
+    }
+
+    #[test]
+    fn layer_effect_preview_matches_commit_without_recording_history() {
+        use crate::layer_mask::{LayerMask, MaskKind};
+        let mut doc = Document::default();
+        let (width, height) = doc.dimensions();
+        let effects = crate::layer_effects::LayerEffects {
+            mask: Some(LayerMask::from_selection(MaskKind::Pixel, None, width, height).unwrap()),
+            ..Default::default()
+        };
+        doc.set_layer_effects("layer-1", effects.clone()).unwrap();
+        let mut edited = effects.clone();
+        edited.mask.as_mut().unwrap().density = 0.4;
+        let history_len = doc.vector_undo.len();
+        let preview = doc
+            .preview_with_layer_effects("layer-1", edited.clone())
+            .unwrap();
+        assert_eq!(preview.layer_effects_ref("layer-1"), Some(&edited));
+        assert!(preview.vector_undo.is_empty());
+        assert!(!preview.snapshot().can_undo);
+        assert_eq!(doc.vector_undo.len(), history_len);
+        assert_eq!(doc.layer_effects_ref("layer-1"), Some(&effects));
+        doc.set_layer_effects("layer-1", edited.clone()).unwrap();
+        assert_eq!(preview.revision(), doc.revision());
+        doc.undo();
+        assert_eq!(doc.layer_effects_ref("layer-1"), Some(&effects));
+        doc.redo();
+        assert_eq!(doc.layer_effects_ref("layer-1"), Some(&edited));
     }
 
     #[test]
@@ -9963,7 +10174,16 @@ fn validate_svg_edit_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_PLACED_EDFX_BYTES: usize = 48 * 1024 * 1024;
+
 fn validate_svg_layer(layer: &SvgLayer) -> Result<(), String> {
+    if layer
+        .edfx
+        .as_ref()
+        .is_some_and(|data| data.is_empty() || data.len() > MAX_PLACED_EDFX_BYTES)
+    {
+        return Err("Invalid placed EDFX data".into());
+    }
     if layer.id.is_empty() || layer.id.len() > 64 || layer.name.is_empty() || layer.name.len() > 255
     {
         return Err("Invalid SVG layer name or identifier".into());

@@ -1,0 +1,5 @@
+[
+  {"locale":"en","text":"The fixed page keeps line breaks and glyph positions when opened again."},
+  {"locale":"ja","text":"固定ページを開き直しても、保存した改行と文字の位置を再現できます。"},
+  {"locale":"zh-Hans","text":"重新打开固定页面时，仍可复现保存的换行和字形位置。"}
+]

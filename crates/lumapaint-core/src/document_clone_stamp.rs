@@ -53,6 +53,7 @@ impl Document {
                 0,
                 SvgLayer {
                     motion_scene: None,
+                    edfx: None,
                     id: "clone-stamp-preview-base".into(),
                     name: self.layer_name.clone(),
                     visible: self.visible,

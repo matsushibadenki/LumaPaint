@@ -1,3 +1,4 @@
+import { EdfxEditor } from './components/EdfxEditor';
 import {ObjectConversionDialog} from './components/ObjectConversionDialog';
 import {convertObjects,type ConversionKind} from './bridge';
 import {ImageResolutionDialog} from './components/ImageResolutionDialog';
@@ -92,6 +93,7 @@ export function ModalPage() {
     case 'toolSettings': content = context.document && <ToolSettingsDialog tool={context.action as CanvasTool} locale={context.locale} document={context.document} onClose={close} onUpdate={()=>{}}/>; break;
     case 'settings': content = <SettingsDialog locale={context.locale} theme={context.theme} onLocale={locale => preferences(locale, context.theme)} onTheme={theme => preferences(context.locale, theme)} onClose={close}/>; break;
     case 'newDocument': content = <NewDocumentDialog locale={context.locale} onClose={close} onCreate={settings => run(async () => { await createDocument(settings); await invoke('modal_change', { change: { type: 'createdDocument' } }); })}/>; break;
+    case 'edfx': content = <EdfxEditor locale={context.locale} pendingFile={context.action === 'pending'} loadPlaced={context.action === 'placed'} canvasAvailable={!!context.document} onClose={close} />; break;
     case 'pdfImport': content = <PdfImportDialog locale={context.locale} onClose={close} onApply={(token, pageIndex, dpi, allPages, selectedPages) => run(() => invoke<boolean>('pdf_import_apply', { token, pageIndex, dpi, allPages, selectedPages }))}/>; break;
     case 'importImage': content = <ImportImageDialog locale={context.locale} onClose={close} onImport={format => run(async () => { await importRasterLayer(format); })}/>; break;
     case 'objectConversion': content=<ObjectConversionDialog kind={context.action as ConversionKind} locale={context.locale} resolution={context.document?.resolution??72} onClose={close} onApply={request=>run(async()=>{await convertObjects(request);})}/>;break;

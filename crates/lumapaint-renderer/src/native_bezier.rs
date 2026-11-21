@@ -3199,6 +3199,7 @@ mod tests {
         let o = object("M20 20C0 60 40 110 64 108C100 110 128 40 108 20Z M48 48H80V80H48Z");
         let mut layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: "layer".into(),
             name: "layer".into(),
             visible: true,

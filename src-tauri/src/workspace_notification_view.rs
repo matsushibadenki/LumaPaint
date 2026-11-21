@@ -118,6 +118,7 @@ impl Serialize for DocumentView<'_> {
 impl Serialize for LayerView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let LayerSnapshot {
+            placed_edfx,
             effects,
             raster_blend_mode,
             guide_color,
@@ -144,6 +145,7 @@ impl Serialize for LayerView<'_> {
         if raster_blend_mode.is_some() {
             map.serialize_entry("rasterBlendMode", raster_blend_mode)?;
         }
+        map.serialize_entry("placedEdfx", placed_edfx)?;
         map.serialize_entry("guideColor", guide_color)?;
         map.serialize_entry(
             "objects",

@@ -30,6 +30,8 @@ pub struct TiledRasterState {
     pub layers: Vec<RasterLayerState>,
 }
 
+pub const MAX_TILED_EDFX_BYTES: usize = 256 * 1024 * 1024;
+
 /// Conservative bounds and header validation for retained RGB ICC profiles.
 pub fn validate_rgb_icc(profile: &[u8]) -> Result<(), String> {
     if profile.len() < 132
@@ -134,6 +136,8 @@ impl RasterBlendMode {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RasterLayerState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edfx: Option<std::sync::Arc<str>>,
     #[serde(default)]
     pub effects: crate::layer_effects::LayerEffects,
     #[serde(default)]
@@ -1364,6 +1368,8 @@ fn valid_mask_payload(coord: TileCoord, values: &[u8], width: u32, height: u32) 
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RasterLayer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edfx: Option<std::sync::Arc<str>>,
     pub effects: crate::layer_effects::LayerEffects,
     pub blend_mode: RasterBlendMode,
     pub id: String,
@@ -1421,6 +1427,12 @@ enum RasterEdit {
     ImportedLayer {
         layer: Box<RasterLayer>,
         index: usize,
+    },
+    Edfx {
+        id: String,
+        before: std::sync::Arc<str>,
+        after: std::sync::Arc<str>,
+        changes: Vec<TileChange>,
     },
     Effects {
         id: String,
@@ -1840,6 +1852,7 @@ impl TiledRasterDocument {
                 .layers
                 .iter()
                 .map(|layer| RasterLayerState {
+                    edfx: layer.edfx.clone(),
                     effects: layer.effects.clone(),
                     blend_mode: layer.blend_mode,
                     id: layer.id.clone(),
@@ -1901,8 +1914,12 @@ impl TiledRasterDocument {
             {
                 return Err("Invalid raster layer state".into());
             }
+            if let Some(data) = &saved.edfx {
+                document.validate_edfx(None, data)?;
+            }
             document.add_layer(saved.id.clone(), saved.name)?;
             let layer = document.layers.last_mut().expect("layer was just added");
+            layer.edfx = saved.edfx;
             layer.blend_mode = saved.blend_mode;
             saved.effects.validate()?;
             layer.effects = saved.effects;
@@ -2115,6 +2132,7 @@ impl TiledRasterDocument {
             return Err("Invalid or duplicate raster layer".into());
         }
         self.layers.push(RasterLayer {
+            edfx: None,
             effects: Default::default(),
             blend_mode: RasterBlendMode::Normal,
             id,
@@ -2143,6 +2161,30 @@ impl TiledRasterDocument {
         name: String,
         tiles: SparseTiles,
     ) -> Result<(), String> {
+        self.import_layer_with_edfx(id, name, tiles, None)
+    }
+
+    pub fn place_edfx(
+        &mut self,
+        tiles: SparseTiles,
+        data: std::sync::Arc<str>,
+    ) -> Result<String, String> {
+        self.validate_edfx(None, &data)?;
+        let id = (1..)
+            .map(|index| format!("edfx-{index}"))
+            .find(|id| self.layers.iter().all(|layer| layer.id != *id))
+            .unwrap();
+        self.import_layer_with_edfx(id.clone(), "EDFX".into(), tiles, Some(data))?;
+        Ok(id)
+    }
+
+    fn import_layer_with_edfx(
+        &mut self,
+        id: String,
+        name: String,
+        tiles: SparseTiles,
+        edfx: Option<std::sync::Arc<str>>,
+    ) -> Result<(), String> {
         if tiles.dimensions() != self.dimensions() {
             return Err("Imported layer dimensions differ from document".into());
         }
@@ -2150,10 +2192,80 @@ impl TiledRasterDocument {
         self.add_layer(id, name)?;
         let index = self.layers.len() - 1;
         self.layers[index].tiles = tiles;
+        self.layers[index].edfx = edfx;
         self.revision -= 1;
         self.record_edit(RasterEdit::ImportedLayer {
             layer: Box::new(self.layers[index].clone()),
             index,
+        });
+        Ok(())
+    }
+
+    fn validate_edfx(&self, replacing: Option<&str>, data: &str) -> Result<(), String> {
+        let other_bytes = self
+            .layers
+            .iter()
+            .filter(|layer| Some(layer.id.as_str()) != replacing)
+            .filter_map(|layer| layer.edfx.as_ref())
+            .map(|data| data.len())
+            .sum::<usize>();
+        if data.is_empty() || other_bytes.saturating_add(data.len()) > MAX_TILED_EDFX_BYTES {
+            return Err("Embedded EDFX exceeds 256 MiB / 埋め込みEDFXが256 MiBを超えています / 嵌入的 EDFX 超过 256 MiB".into());
+        }
+        Ok(())
+    }
+
+    pub fn update_edfx(
+        &mut self,
+        id: &str,
+        expected: &std::sync::Arc<str>,
+        tiles: SparseTiles,
+        data: std::sync::Arc<str>,
+    ) -> Result<(), String> {
+        self.validate_edfx(Some(id), &data)?;
+        if tiles.dimensions() != self.dimensions() {
+            return Err("EDFX canvas dimensions changed".into());
+        }
+        let layer = self
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == id)
+            .ok_or("EDFX layer unavailable")?;
+        if layer.locked
+            || !layer
+                .edfx
+                .as_ref()
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, expected))
+        {
+            return Err("EDFX layer is locked or changed / EDFXレイヤーがロックされているか、変更されています / EDFX 图层已锁定或已更改".into());
+        }
+        let coords = layer
+            .tiles
+            .allocated_coords()
+            .chain(tiles.allocated_coords())
+            .collect::<BTreeSet<_>>();
+        let changes = coords
+            .into_iter()
+            .filter_map(|coord| {
+                let before = layer.tiles.tiles.get(&coord);
+                let after = tiles.tiles.get(&coord);
+                (before != after).then(|| TileChange {
+                    coord,
+                    before: before.cloned(),
+                    after: after.cloned(),
+                })
+            })
+            .collect();
+        layer.tiles = tiles;
+        let before = layer
+            .edfx
+            .replace(data.clone())
+            .expect("validated EDFX layer");
+        self.record_edit(RasterEdit::Edfx {
+            id: id.into(),
+            before,
+            after: data,
+            changes,
         });
         Ok(())
     }
@@ -2582,6 +2694,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|l| l.id == id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if !layer.off_canvas_tiles.is_empty() && moved_outside.is_none() {
             return Err("Cannot transform a layer containing off-canvas pixels".into());
         }
@@ -2705,6 +2820,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|l| l.id == id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() && pixels.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if !layer.off_canvas_tiles.is_empty() && pixels.is_some() && moved_outside.is_none() {
             return Err("Cannot transform a layer containing off-canvas pixels".into());
         }
@@ -2810,6 +2928,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|layer| layer.id == layer_id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if layer.locked || layer.alpha_locked {
             return Err("Raster layer pixel replacement is locked".into());
         }
@@ -2850,6 +2971,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|layer| layer.id == layer_id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if layer.locked || layer.alpha_locked || !layer.visible {
             return Err("Raster layer is hidden or locked".into());
         }
@@ -2920,6 +3044,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|layer| layer.id == layer_id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if layer.locked || layer.alpha_locked || !layer.visible {
             return Err("Raster layer is hidden or locked".into());
         }
@@ -3019,6 +3146,9 @@ impl TiledRasterDocument {
             .iter_mut()
             .find(|layer| layer.id == layer_id)
             .ok_or("Unknown raster layer")?;
+        if layer.edfx.is_some() {
+            return Err("Edit EDFX content in the EDFX editor / EDFXの内容はEDFXエディターで編集してください / 请在 EDFX 编辑器中编辑内容".into());
+        }
         if !layer.visible || layer.locked {
             return Err("Raster layer is hidden or locked".into());
         }
@@ -3085,6 +3215,22 @@ impl TiledRasterDocument {
                         })
                         .sum::<usize>()
             }
+            RasterEdit::Edfx {
+                before,
+                after,
+                changes,
+                ..
+            } => {
+                before.len()
+                    + after.len()
+                    + changes
+                        .iter()
+                        .map(|c| {
+                            c.before.as_ref().map_or(0, Vec::len)
+                                + c.after.as_ref().map_or(0, Vec::len)
+                        })
+                        .sum::<usize>()
+            }
             RasterEdit::Pixels { changes, .. } => changes
                 .iter()
                 .map(|change| {
@@ -3123,6 +3269,7 @@ impl TiledRasterDocument {
                 .sum(),
             RasterEdit::ImportedLayer { layer, .. } => {
                 layer.tiles.allocated_tile_count() * TILE_BYTES
+                    + layer.edfx.as_ref().map_or(0, |data| data.len())
             }
             _ => 4096,
         };
@@ -3188,6 +3335,30 @@ impl TiledRasterDocument {
                 TileInvalidation {
                     layer_id: layer.id.clone(),
                     coords: layer.tiles.allocated_coords().collect(),
+                }
+            }
+            RasterEdit::Edfx {
+                id,
+                before,
+                after,
+                changes,
+            } => {
+                let layer = self
+                    .layers
+                    .iter_mut()
+                    .find(|layer| layer.id == *id)
+                    .ok_or("EDFX layer unavailable")?;
+                layer.edfx = Some(if undo { before } else { after }.clone());
+                for change in changes {
+                    if let Some(pixels) = if undo { &change.before } else { &change.after } {
+                        layer.tiles.tiles.insert(change.coord, pixels.clone());
+                    } else {
+                        layer.tiles.tiles.remove(&change.coord);
+                    }
+                }
+                TileInvalidation {
+                    layer_id: id.clone(),
+                    coords: changes.iter().map(|change| change.coord).collect(),
                 }
             }
             RasterEdit::Effects { id, before, after } => {

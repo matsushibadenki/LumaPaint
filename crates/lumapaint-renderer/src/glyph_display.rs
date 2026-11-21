@@ -253,6 +253,7 @@ mod tests {
         let mut display = Display::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let mut layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: "glyphs".into(),
             name: "glyphs".into(),
             visible: true,

@@ -1,0 +1,65 @@
+.native-modal-page .edfx-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  height: 100dvh;
+  gap: 12px;
+  color: var(--text);
+}
+.edfx-toolbar, .edfx-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.edfx-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.edfx-toolbar input { width: 5em; }
+.edfx-toolbar [role="status"] {
+  flex: 1 1 12ch;
+  font-size: 12px;
+}
+.edfx-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+.edfx-paragraphs, .edfx-preview { overflow: auto; }
+.edfx-paragraphs fieldset {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  margin: 0 0 8px;
+  border: 1px solid var(--color-rule);
+}
+.edfx-paragraphs textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+}
+.edfx-preview {
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  background: var(--color-control);
+}
+.edfx-preview img {
+  display: block;
+  width: min(100%, 300px);
+  height: auto;
+  background: white;
+}
+.edfx-message {
+  margin: 0;
+  max-height: 6em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .edfx-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+}

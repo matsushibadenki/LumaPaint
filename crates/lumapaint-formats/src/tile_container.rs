@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8; 8] = b"LPTILE2\0";
 const VERSION: u32 = 1;
+const EDFX_VERSION: u32 = 2;
 const HEADER_BYTES: usize = 28;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_TILE_CONTAINER_BYTES: usize = 512 * 1024 * 1024;
@@ -66,6 +67,8 @@ struct LayerManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     off_canvas_tiles: Vec<OffCanvasReference>,
     mask_tiles: Vec<TileReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edfx: Option<BlobReference>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -87,10 +90,19 @@ struct OffCanvasReference {
     checksum: u32,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BlobReference {
+    offset: u64,
+    length: u32,
+    checksum: u32,
+}
+
 pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
     TiledRasterDocument::from_state(state.clone())?;
     let mut payload = Vec::new();
     let mut layers = Vec::with_capacity(state.layers.len());
+    let mut version = VERSION;
     for layer in &state.layers {
         let tiles = references(&layer.tiles, &mut payload, |tile| {
             (&tile.coord, &tile.pixels)
@@ -115,7 +127,19 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
         let mask_tiles = references(&layer.mask_tiles, &mut payload, |tile| {
             (&tile.coord, &tile.values)
         })?;
+        let edfx = layer.edfx.as_ref().map(|data| {
+            version = EDFX_VERSION;
+            let bytes = data.as_bytes();
+            let reference = BlobReference {
+                offset: payload.len() as u64,
+                length: bytes.len() as u32,
+                checksum: hash(bytes),
+            };
+            payload.extend_from_slice(bytes);
+            reference
+        });
         layers.push(LayerManifest {
+            edfx,
             effects: layer.effects.clone(),
             blend_mode: layer.blend_mode,
             id: layer.id.clone(),
@@ -157,7 +181,7 @@ pub fn encode(state: &TiledRasterState) -> Result<Vec<u8>, String> {
     }
     let mut output = Vec::with_capacity(total);
     output.extend_from_slice(MAGIC);
-    output.extend_from_slice(&VERSION.to_le_bytes());
+    output.extend_from_slice(&version.to_le_bytes());
     output.extend_from_slice(&(manifest.len() as u32).to_le_bytes());
     output.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     output.extend_from_slice(&hash(&manifest).to_le_bytes());
@@ -175,7 +199,7 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
     let manifest_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     let payload_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
     let manifest_checksum = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
-    if version != VERSION || manifest_len > MAX_MANIFEST_BYTES {
+    if !matches!(version, VERSION | EDFX_VERSION) || manifest_len > MAX_MANIFEST_BYTES {
         return Err("Unsupported tile container".into());
     }
     let payload_len = usize::try_from(payload_len).map_err(|_| "Tile payload is too large")?;
@@ -218,7 +242,28 @@ pub fn decode(bytes: &[u8]) -> Result<TiledRasterState, String> {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mask_tiles = read_masks(&layer.mask_tiles, payload, MASK_TILE_BYTES, &mut cursor)?;
+        let edfx = layer
+            .edfx
+            .map(|blob| {
+                if version != EDFX_VERSION
+                    || blob.length == 0
+                    || blob.length as usize > lumapaint_core::tiles::MAX_TILED_EDFX_BYTES
+                {
+                    return Err("Invalid EDFX payload reference".to_string());
+                }
+                let reference = TileReference {
+                    coord: TileCoord { x: 0, y: 0 },
+                    offset: blob.offset,
+                    length: blob.length,
+                    checksum: blob.checksum,
+                };
+                let bytes = checked_bytes(&reference, payload, blob.length as usize, &mut cursor)?;
+                let text = std::str::from_utf8(bytes).map_err(|err| err.to_string())?;
+                Ok(std::sync::Arc::<str>::from(text))
+            })
+            .transpose()?;
         layers.push(RasterLayerState {
+            edfx,
             effects: layer.effects,
             blend_mode: layer.blend_mode,
             id: layer.id,
@@ -334,6 +379,40 @@ fn read_masks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edfx_tiles_and_payload_round_trip_with_undo_redo() {
+        use lumapaint_core::tiles::SparseTiles;
+        use std::sync::Arc;
+
+        let mut doc = TiledRasterDocument::new(300, 200).unwrap();
+        doc.add_layer("base".into(), "Base".into()).unwrap();
+        let mut first = SparseTiles::new(300, 200).unwrap();
+        first.write_rect(255, 20, 1, 1, &[0, 0, 0, 128]).unwrap();
+        let initial: Arc<str> = Arc::from("English 日本語 简体中文");
+        let id = doc.place_edfx(first, initial.clone()).unwrap();
+        let placed = doc.state();
+        let mut second = SparseTiles::new(300, 200).unwrap();
+        second.write_rect(256, 20, 1, 1, &[0, 0, 0, 255]).unwrap();
+        doc.update_edfx(&id, &initial, second, Arc::from("Edited 編集 编辑"))
+            .unwrap();
+        let updated = doc.state();
+        doc.undo().unwrap();
+        assert_eq!(doc.state(), placed);
+        doc.undo().unwrap();
+        assert_eq!(doc.layers().len(), 1);
+        doc.redo().unwrap();
+        doc.redo().unwrap();
+        assert_eq!(doc.state(), updated);
+        let mut bytes = encode(&updated).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            EDFX_VERSION
+        );
+        assert_eq!(decode(&bytes).unwrap(), updated);
+        *bytes.last_mut().unwrap() ^= 1;
+        assert!(decode(&bytes).is_err());
+    }
 
     fn sample_state() -> TiledRasterState {
         let mut document = TiledRasterDocument::new(257, 17).unwrap();

@@ -210,13 +210,70 @@ fn selection_change_region(
     }))
 }
 
+// Only coverage within differing runs can change when the mask properties match.
+fn differing_run_range<const N: usize>(old: &[[u32; N]], new: &[[u32; N]]) -> Option<[u32; 2]> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let (old, new) = (&old[prefix..], &new[prefix..]);
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (old, new) = (&old[..old.len() - suffix], &new[..new.len() - suffix]);
+    let start = old
+        .first()
+        .into_iter()
+        .chain(new.first())
+        .map(|run| run[0])
+        .min()?;
+    let end = old
+        .last()
+        .into_iter()
+        .chain(new.last())
+        .map(|run| run[0] + run[1])
+        .max()?;
+    Some([start, end])
+}
+
+fn runs_in_range<const N: usize>(runs: &[[u32; N]], [start, end]: [u32; 2]) -> &[[u32; N]] {
+    let first = runs.partition_point(|run| run[0] + run[1] <= start);
+    let last = runs.partition_point(|run| run[0] < end);
+    &runs[first..last]
+}
+
+fn same_mask_coverage_properties(
+    old: &lumapaint_core::layer_mask::LayerMask,
+    new: &lumapaint_core::layer_mask::LayerMask,
+) -> bool {
+    old.enabled == new.enabled && old.inverted == new.inverted && old.density == new.density
+}
+
 fn mask_pixel_boundaries(
     ar: &[[u32; 2]],
     br: &[[u32; 2]],
     ag: &[[u32; 3]],
     bg: &[[u32; 3]],
     total: u32,
+    same_properties: bool,
 ) -> Option<Vec<u32>> {
+    let [start, end] = if same_properties {
+        match (differing_run_range(ar, br), differing_run_range(ag, bg)) {
+            (Some(a), Some(b)) => [a[0].min(b[0]), a[1].max(b[1])],
+            (Some(range), None) | (None, Some(range)) => range,
+            (None, None) => return Some(Vec::new()),
+        }
+    } else {
+        [0, total]
+    };
+    // Include overlapping runs from both channels, including unchanged gray
+    // runs that override changed opaque coverage.
+    let (ar, br, ag, bg) = (
+        runs_in_range(ar, [start, end]),
+        runs_in_range(br, [start, end]),
+        runs_in_range(ag, [start, end]),
+        runs_in_range(bg, [start, end]),
+    );
     let count = ar
         .len()
         .saturating_add(br.len())
@@ -228,12 +285,12 @@ fn mask_pixel_boundaries(
         return None;
     }
     let mut boundaries = Vec::with_capacity(count);
-    boundaries.extend([0, total]);
+    boundaries.extend([start, end]);
     for run in ar.iter().chain(br.iter()) {
-        boundaries.extend([run[0], run[0] + run[1]]);
+        boundaries.extend([run[0].max(start), (run[0] + run[1]).min(end)]);
     }
     for run in ag.iter().chain(bg.iter()) {
-        boundaries.extend([run[0], run[0] + run[1]]);
+        boundaries.extend([run[0].max(start), (run[0] + run[1]).min(end)]);
     }
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -245,10 +302,7 @@ fn mask_change_regions(
     next: &lumapaint_core::layer_mask::LayerMask,
 ) -> Option<Vec<MaskChangeRegion>> {
     use lumapaint_core::layer_mask::MaskContent;
-    if previous.enabled != next.enabled
-        || previous.inverted != next.inverted
-        || previous.density != next.density
-    {
+    if !same_mask_coverage_properties(previous, next) {
         return None;
     }
     let old_inverse = lumapaint_core::image_frame::inverse(previous.transform).ok()?;
@@ -301,7 +355,7 @@ fn mask_change_regions(
                 gray: bg,
             }),
         ) if previous.transform == next.transform && aw == bw && ah == bh => {
-            let boundaries = mask_pixel_boundaries(ar, br, ag, bg, aw.checked_mul(*ah)?)?;
+            let boundaries = mask_pixel_boundaries(ar, br, ag, bg, aw.checked_mul(*ah)?, true)?;
             crate::performance::count("mask_diff_local_mask_clones_avoided", 2);
             crate::performance::count(
                 "mask_diff_local_payload_bytes_avoided",
@@ -407,7 +461,14 @@ fn changed_mask_tiles(
         ) = (&previous.content, &next.content)
         {
             if (*aw, *ah) == size && (*bw, *bh) == size {
-                let boundaries = mask_pixel_boundaries(ar, br, ag, bg, w * h)?;
+                let boundaries = mask_pixel_boundaries(
+                    ar,
+                    br,
+                    ag,
+                    bg,
+                    w * h,
+                    same_mask_coverage_properties(previous, next),
+                )?;
                 for pair in boundaries.windows(2) {
                     let mut start = pair[0];
                     let end = pair[1].min(w * h);
@@ -961,6 +1022,76 @@ mod tests {
             changed_mask_tiles(&next, &replaced, size).unwrap(),
             all_changed_mask_tiles(&next, &replaced, size)
         );
+    }
+
+    #[test]
+    fn repeated_gray_mask_strokes_keep_large_background_updates_local() {
+        use lumapaint_core::layer_mask::{LayerMask, MaskContent, MaskKind};
+        let (w, h) = (3600, 3200);
+        let mut state = Document::default().document_state();
+        (state.width, state.height) = (w, h);
+        let mut doc = Document::from_document_state(state).unwrap();
+        let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, w, h).unwrap();
+        mask.content = Some(MaskContent::Pixel {
+            width: w,
+            height: h,
+            runs: (36..h - 36).map(|y| [y * w + 40, 2780]).collect(),
+            gray: (36..h - 36)
+                .flat_map(|y| (2840..3550).step_by(108).map(move |x| [y * w + x, 10, 95]))
+                .collect(),
+        });
+        let mut effects = doc.layer_effects("layer-1");
+        effects.mask = Some(mask.clone());
+        doc.set_layer_effects("layer-1", effects.clone()).unwrap();
+        let mut cache = PaintCache::new((w, h)).unwrap();
+        cache.prepare(&doc, false).unwrap();
+        assert_eq!(cache.paper_tiles_rasterized, 195);
+        let mut exceeded_old_budget = false;
+        for y in [1650., 1840., 2030., 2220., 2410., 2600.] {
+            let stroke = Stroke {
+                brush: Brush {
+                    size: 120.,
+                    hardness: 1.,
+                    color: [32; 3],
+                    ..Brush::default()
+                },
+                points: vec![Point { x: 1380., y }, Point { x: 1980., y }],
+                pressures: Vec::new(),
+                selection: None,
+                eraser: false,
+                clear: false,
+            };
+            let previous = mask.clone();
+            mask.paint_brush_dabs(
+                (w, h),
+                &sampled_raster_dabs(&stroke).unwrap(),
+                stroke.brush,
+                None,
+            )
+            .unwrap();
+            let run_count = |mask: &LayerMask| match mask.content.as_ref().unwrap() {
+                MaskContent::Pixel { runs, gray, .. } => runs.len() + gray.len(),
+                _ => unreachable!(),
+            };
+            exceeded_old_budget |= (run_count(&previous) + run_count(&mask)) * 2 + 2 > 131_072;
+            effects.mask = Some(mask.clone());
+            doc.set_layer_effects("layer-1", effects.clone()).unwrap();
+            cache.prepare(&doc, false).unwrap();
+            assert!((1..=8).contains(&cache.paper_tiles_rasterized));
+        }
+        assert!(exceeded_old_budget);
+        let edited = cache.uploaded.clone();
+        doc.undo();
+        cache.prepare(&doc, false).unwrap();
+        assert!((1..=8).contains(&cache.paper_tiles_rasterized));
+        assert_ne!(cache.uploaded, edited);
+        doc.redo();
+        cache.prepare(&doc, false).unwrap();
+        assert!((1..=8).contains(&cache.paper_tiles_rasterized));
+        assert_eq!(cache.uploaded, edited);
+        let mut fresh = PaintCache::new((w, h)).unwrap();
+        fresh.prepare(&doc, true).unwrap();
+        assert_eq!(cache.uploaded, fresh.uploaded);
     }
 
     #[test]

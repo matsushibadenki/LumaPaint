@@ -609,6 +609,7 @@ pub fn read_with_links(
             for (index, l) in layer_defs.iter().enumerate() {
                 state.svg_layers.push(SvgLayer {
                     motion_scene: None,
+                    edfx: None,
                     id: format!("layer-idml-{index}"),
                     name: attr(*l, "Name")
                         .unwrap_or("Layer")

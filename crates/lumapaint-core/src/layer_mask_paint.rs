@@ -28,6 +28,59 @@ fn bounds(selection: &Selection) -> [f32; 4] {
         },
     )
 }
+// Runs never span rows. Joining at the splice boundaries keeps adjacent
+// equal coverage compact without changing grayscale-over-opaque precedence.
+fn append_run<const N: usize>(output: &mut Vec<[u32; N]>, row_start: u32, run: [u32; N]) {
+    if let Some(last) = output
+        .last_mut()
+        .filter(|last| last[0] >= row_start && last[0] + last[1] == run[0] && last[2..] == run[2..])
+    {
+        last[1] += run[1];
+    } else {
+        output.push(run);
+    }
+}
+
+fn copy_run_range<const N: usize>(
+    input: &[[u32; N]],
+    old_row: u32,
+    new_row: u32,
+    shift: u32,
+    range: std::ops::Range<u32>,
+    output: &mut Vec<[u32; N]>,
+) {
+    for &run in input {
+        let start = run[0] - old_row + shift;
+        let left = start.max(range.start);
+        let right = (start + run[1]).min(range.end);
+        if left < right {
+            let mut clipped = run;
+            clipped[0] = new_row + left;
+            clipped[1] = right - left;
+            append_run(output, new_row, clipped);
+        }
+    }
+}
+
+fn expand_run_range<const N: usize>(
+    pixels: &mut [u8],
+    runs: &[[u32; N]],
+    old_row: u32,
+    shift: u32,
+    left: u32,
+    value: impl Fn(&[u32; N]) -> u8,
+) {
+    let right = left + pixels.len() as u32;
+    for run in runs {
+        let start = run[0] - old_row + shift;
+        let a = start.max(left);
+        let b = (start + run[1]).min(right);
+        if a < b {
+            pixels[(a - left) as usize..(b - left) as usize].fill(value(run));
+        }
+    }
+}
+
 impl LayerMask {
     /// Apply a whole brush stroke to grayscale mask coverage, using the same
     /// accumulated dab density as pixel painting. Called with the original mask
@@ -50,17 +103,11 @@ impl LayerMask {
         else {
             return Err("Pixel mask required".into());
         };
-        let (mut width, mut height) = (*width, *height);
+        let (old_width, old_height) = (*width, *height);
+        let (mut remaining_runs, mut remaining_gray) = (runs.as_slice(), gray.as_slice());
         let density = crate::tiles::dab_density(size.0, size.1, dabs, clip)?;
         if density.is_empty() || brush.no_color || brush.opacity * brush.alpha == 0. {
             return Ok(());
-        }
-        let mut pixels = vec![0u8; (width * height) as usize];
-        for [start, len] in runs {
-            pixels[*start as usize..(start + len) as usize].fill(255);
-        }
-        for [start, len, value] in gray {
-            pixels[*start as usize..(start + len) as usize].fill(*value as u8);
         }
         let inverse = inverse(self.transform)?;
         let mut area = [
@@ -88,27 +135,45 @@ impl LayerMask {
         // Retain painting outside the old mask bounds after an unlinked move.
         let ox = area[0].floor().min(0.);
         let oy = area[1].floor().min(0.);
-        let nw = area[2].ceil().max(width as f32) - ox;
-        let nh = area[3].ceil().max(height as f32) - oy;
+        let nw = area[2].ceil().max(old_width as f32) - ox;
+        let nh = area[3].ceil().max(old_height as f32) - oy;
         if !nw.is_finite() || !nh.is_finite() || nw > 8192. || nh > 8192. {
             return Err("Pixel mask size limit exceeded (8192 px)".into());
         }
         let transform = multiply(self.transform, [1., 0., 0., 1., ox, oy]);
-        if nw as u32 != width || nh as u32 != height {
-            let mut expanded = vec![0; (nw as u32 * nh as u32) as usize];
-            for y in 0..height {
-                let from = (y * width) as usize;
-                let to = ((y + (-oy) as u32) * nw as u32 + (-ox) as u32) as usize;
-                expanded[to..to + width as usize]
-                    .copy_from_slice(&pixels[from..from + width as usize]);
+        let (width, height) = (nw as u32, nh as u32);
+        let (shift_x, shift_y) = ((-ox) as u32, (-oy) as u32);
+        let left = ((area[0] - ox).floor().max(0.) as u32).min(width);
+        let right = ((area[2] - ox).ceil().max(0.) as u32).min(width).max(left);
+        let top = ((area[1] - oy).floor().max(0.) as u32).min(height);
+        let bottom = ((area[3] - oy).ceil().max(0.) as u32).min(height);
+        let mut pixels = vec![0u8; (right - left) as usize];
+        let mut runs = Vec::new();
+        let mut gray = Vec::new();
+        for y in 0..height {
+            let old_row = y.saturating_sub(shift_y) * old_width;
+            let new_row = y * width;
+            let (mut row_runs, mut row_gray) = (&[][..], &[][..]);
+            if y >= shift_y && y - shift_y < old_height {
+                let old_end = old_row + old_width;
+                let run_count = remaining_runs.partition_point(|run| run[0] < old_end);
+                let gray_count = remaining_gray.partition_point(|run| run[0] < old_end);
+                (row_runs, remaining_runs) = remaining_runs.split_at(run_count);
+                (row_gray, remaining_gray) = remaining_gray.split_at(gray_count);
             }
-            pixels = expanded;
-            width = nw as u32;
-            height = nh as u32;
-        }
-        area = [area[0] - ox, area[1] - oy, area[2] - ox, area[3] - oy];
-        for y in (area[1].floor().max(0.) as u32)..(area[3].ceil().max(0.) as u32).min(height) {
-            for x in (area[0].floor().max(0.) as u32)..(area[2].ceil().max(0.) as u32).min(width) {
+            if y < top || y >= bottom || left == right {
+                copy_run_range(row_runs, old_row, new_row, shift_x, 0..width, &mut runs);
+                copy_run_range(row_gray, old_row, new_row, shift_x, 0..width, &mut gray);
+                continue;
+            }
+            copy_run_range(row_runs, old_row, new_row, shift_x, 0..left, &mut runs);
+            copy_run_range(row_gray, old_row, new_row, shift_x, 0..left, &mut gray);
+            pixels.fill(0);
+            expand_run_range(&mut pixels, row_runs, old_row, shift_x, left, |_| 255);
+            expand_run_range(&mut pixels, row_gray, old_row, shift_x, left, |run| {
+                run[2] as u8
+            });
+            for (x, pixel) in (left..right).zip(&mut pixels) {
                 let p = mapped(transform, [x as f32 + 0.5, y as f32 + 0.5]);
                 if p.x < 0. || p.y < 0. {
                     continue;
@@ -124,12 +189,7 @@ impl LayerMask {
                 let depth = tile[((wy % crate::tiles::TILE_SIZE) * crate::tiles::TILE_SIZE
                     + wx % crate::tiles::TILE_SIZE) as usize];
                 let amount = (1. - (-depth).exp()) * brush.opacity * brush.alpha;
-                let at = (y * width + x) as usize;
-                let old = if self.inverted {
-                    255 - pixels[at]
-                } else {
-                    pixels[at]
-                };
+                let old = if self.inverted { 255 - *pixel } else { *pixel };
                 let value = crate::brush_blend::composite_gray(
                     old,
                     brush.color[0],
@@ -137,36 +197,33 @@ impl LayerMask {
                     brush.blend_mode,
                     [wx, wy],
                 );
-                pixels[at] = if self.inverted { 255 - value } else { value };
+                *pixel = if self.inverted { 255 - value } else { value };
             }
-        }
-        let mut runs = Vec::new();
-        let mut gray = Vec::new();
-        for y in 0..height {
             let mut x = 0;
-            while x < width {
-                let start = y * width + x;
-                let value = pixels[start as usize];
-                let mut len = 1;
-                while x + len < width && pixels[(start + len) as usize] == value {
-                    len += 1;
-                }
+            while x < pixels.len() {
+                let value = pixels[x];
+                let len = pixels[x..].iter().take_while(|&&v| v == value).count();
+                let start = new_row + left + x as u32;
                 if value == 255 {
-                    runs.push([start, len]);
+                    append_run(&mut runs, new_row, [start, len as u32]);
                 } else if value > 0 {
-                    gray.push([start, len, u32::from(value)]);
+                    append_run(&mut gray, new_row, [start, len as u32, u32::from(value)]);
                 }
                 x += len;
             }
+            copy_run_range(row_runs, old_row, new_row, shift_x, right..width, &mut runs);
+            copy_run_range(row_gray, old_row, new_row, shift_x, right..width, &mut gray);
         }
-        let mut next = self.clone();
-        next.transform = transform;
-        next.content = Some(MaskContent::Pixel {
-            width,
-            height,
-            runs,
-            gray,
-        });
+        let next = Self {
+            transform,
+            content: Some(MaskContent::Pixel {
+                width,
+                height,
+                runs,
+                gray,
+            }),
+            ..*self
+        };
         next.validate()?;
         *self = next;
         Ok(())
@@ -445,6 +502,49 @@ mod tests {
         .unwrap();
         assert_eq!(mask.coverage([16.5, 16.5]), 1.);
     }
+    #[test]
+    fn brush_splices_runs_crossing_both_sides_of_the_edited_tile() {
+        use crate::{document::Brush, tiles::RasterDab};
+        let size = (768, 8);
+        let mut mask = LayerMask::from_selection(MaskKind::Pixel, None, size.0, size.1).unwrap();
+        let Some(MaskContent::Pixel { gray, .. }) = &mut mask.content else {
+            unreachable!();
+        };
+        // Older files can contain gray runs that override opaque runs.
+        gray.push([3 * size.0 + 100, 560, 160]);
+        let previous = mask.clone();
+        let dab = RasterDab {
+            x: 384.,
+            y: 3.5,
+            radius: 4.,
+            hardness: 1.,
+            weight: 4.,
+            texture: 0.,
+            texture_scale: 1.,
+            material: Default::default(),
+        };
+        mask.paint_brush_dabs(
+            size,
+            &[dab],
+            Brush {
+                color: [0; 3],
+                ..Brush::default()
+            },
+            None,
+        )
+        .unwrap();
+        mask.validate().unwrap();
+        assert_eq!(mask.coverage([384.5, 3.5]), 0.);
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                if !(376..392).contains(&x) {
+                    let p = [x as f32 + 0.5, y as f32 + 0.5];
+                    assert_eq!(mask.coverage(p), previous.coverage(p));
+                }
+            }
+        }
+    }
+
     #[test]
     fn all_layer_mask_combinations_edit_coverage_without_touching_artwork() {
         for vector_layer in [false, true] {

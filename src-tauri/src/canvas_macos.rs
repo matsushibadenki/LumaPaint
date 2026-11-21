@@ -4905,6 +4905,114 @@ pub fn raster_import_snapshot() -> Result<DocumentSnapshot, String> {
     Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()))
 }
 
+pub(crate) fn edfx_canvas_target() -> Result<(u64, Option<crate::edfx_editor::TileTarget>), String>
+{
+    let target = ACTIVE_TILED_DOCUMENT.with(|doc| {
+        let doc = doc.borrow();
+        doc.as_ref().map(|session| {
+            let resolution = session.document.resolution();
+            crate::edfx_editor::TileTarget {
+                dimensions: session.document.dimensions(),
+                ppi: resolution.map_or([72., 72.], |r| [r.x_ppi, r.y_ppi]),
+            }
+        })
+    });
+    if target.is_some() {
+        ensure_tiled_open()?;
+    } else {
+        ensure_document_open()?;
+    }
+    Ok((ACTIVE_DOCUMENT_ID.with(|id| id.get()), target))
+}
+
+pub(crate) fn selected_edfx() -> Result<crate::edfx_editor::Placed, String> {
+    let (document_id, tiled) = edfx_canvas_target()?;
+    let (layer_id, data) = if tiled.is_some() {
+        ACTIVE_TILED_DOCUMENT.with(|doc| {
+            let doc = doc.borrow();
+            let session = doc.as_ref().ok_or("Missing tiled document")?;
+            let id = session.selected_layer_id();
+            let data = session
+                .document
+                .layers()
+                .iter()
+                .find(|layer| layer.id == id)
+                .and_then(|layer| layer.edfx.clone())
+                .ok_or("Select an EDFX layer")?;
+            Ok::<_, String>((id.to_owned(), data))
+        })?
+    } else {
+        DOCUMENT.with(|doc| {
+            let doc = doc.borrow();
+            let id = doc.selected_layer_id();
+            let data = doc
+                .svg_layers()
+                .find(|layer| layer.id == id)
+                .and_then(|layer| layer.edfx.clone())
+                .ok_or("Select an EDFX layer")?;
+            Ok::<_, String>((id.to_owned(), data))
+        })?
+    };
+    Ok(crate::edfx_editor::Placed {
+        document_id,
+        layer_id,
+        data,
+    })
+}
+
+pub(crate) fn apply_edfx(
+    document_id: u64,
+    placed: Option<crate::edfx_editor::Placed>,
+    paths: String,
+    tiles: Option<lumapaint_core::tiles::SparseTiles>,
+    data: std::sync::Arc<str>,
+) -> Result<crate::edfx_editor::Placed, String> {
+    let (active_id, target) = edfx_canvas_target()?;
+    if active_id != document_id || target.is_some() != tiles.is_some() {
+        return Err("The target document has changed".into());
+    }
+
+    let layer_id = if let Some(tiles) = tiles {
+        ACTIVE_TILED_DOCUMENT.with(|doc| -> Result<String, String> {
+            let mut doc = doc.borrow_mut();
+            let session = doc.as_mut().ok_or("Missing tiled document")?;
+            let id = if let Some(placed) = placed {
+                session.document.update_edfx(
+                    &placed.layer_id,
+                    &placed.data,
+                    tiles,
+                    data.clone(),
+                )?;
+                placed.layer_id
+            } else {
+                session.document.place_edfx(tiles, data.clone())?
+            };
+            session.selected_layer = Some(id.clone());
+            Ok(id)
+        })?
+    } else {
+        text_editor::finish(true)?;
+        DOCUMENT.with(|doc| -> Result<String, String> {
+            let mut doc = doc.borrow_mut();
+            if let Some(placed) = placed {
+                doc.update_placed_edfx(&placed.layer_id, &placed.data, &paths, data.clone())?;
+                Ok(placed.layer_id)
+            } else {
+                doc.place_edfx(&paths, data.clone())
+            }
+        })?
+    };
+    if let Err(error) = redraw() {
+        emit_error(error);
+    }
+    emit_document();
+    Ok(crate::edfx_editor::Placed {
+        document_id,
+        layer_id,
+        data,
+    })
+}
+
 pub fn import_svg_layer() -> Result<DocumentSnapshot, String> {
     ensure_document_open()?;
     let Some(path) = rfd::FileDialog::new()
@@ -6219,19 +6327,7 @@ impl TiledSession {
         snapshot.width = width;
         snapshot.height = height;
         snapshot.raster_resolution = self.document.resolution();
-        snapshot.layer_id = self
-            .selected_layer
-            .clone()
-            .or_else(|| {
-                self.document
-                    .layers()
-                    .iter()
-                    .rev()
-                    .find(|l| l.visible)
-                    .map(|l| l.id.clone())
-            })
-            .or_else(|| self.document.layers().last().map(|l| l.id.clone()))
-            .unwrap_or_default();
+        snapshot.layer_id = self.selected_layer_id().to_owned();
         snapshot.layer_edit_target = self.document.layer_edit_target(&snapshot.layer_id);
         snapshot.layer_visible = self.document.layers().iter().any(|layer| layer.visible);
         snapshot.layers = self
@@ -6239,13 +6335,14 @@ impl TiledSession {
             .layers()
             .iter()
             .map(|layer| LayerSnapshot {
+                placed_edfx: layer.edfx.is_some(),
                 effects: Some(layer.effects.snapshot()),
                 raster_blend_mode: Some(layer.blend_mode),
                 guide_color: [48, 144, 255, 255],
                 objects: Vec::new(),
                 id: layer.id.clone(),
                 name: layer.name.clone(),
-                kind: "paint",
+                kind: if layer.edfx.is_some() { "svg" } else { "paint" },
                 visible: layer.visible,
                 opacity: layer.opacity,
                 locked: layer.locked,
@@ -9710,9 +9807,10 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
         FileAction::Open => {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter(
-                    "LumaPaint / SVG / PDF / AI / IDML / PSD / PSB / JPEG / PNG",
+                    "LumaPaint / EDFX / SVG / PDF / AI / IDML / PSD / PSB / JPEG / PNG",
                     &[
                         "lumapaint",
+                        "edfx",
                         "svg",
                         "pdf",
                         "ai",
@@ -9733,6 +9831,14 @@ pub fn file_action(action: super::FileAction) -> Result<DocumentSnapshot, String
                 .and_then(|value| value.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            if extension == "edfx" {
+                crate::edfx_editor::queue_open(
+                    APP.get().ok_or("Application unavailable")?,
+                    &current_label(),
+                    path,
+                )?;
+                return Ok(DOCUMENT.with(|doc| doc.borrow().snapshot()));
+            }
             if extension == "psd" || extension == "psb" {
                 crate::psd_import::open(
                     APP.get().ok_or("Application unavailable")?.clone(),

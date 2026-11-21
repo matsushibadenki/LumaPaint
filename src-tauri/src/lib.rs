@@ -1,6 +1,7 @@
 mod cel_previews;
 mod diagnostic_jobs;
 mod document_previews;
+mod edfx_editor;
 mod font_viewer;
 #[cfg(any(target_os = "macos", test))]
 mod idml_links;
@@ -93,6 +94,7 @@ pub fn run() {
             }
             app.manage(resource_memory::Resources::load(app.handle())?);
             app.manage(modal_windows::Modals::default());
+            app.manage(edfx_editor::Sessions::default());
             app.manage(pdf_import::Imports::default());
             #[cfg(target_os = "macos")]
             app.manage(psd_import::Gate::default());
@@ -184,6 +186,8 @@ pub fn run() {
             pdf_import::pdf_import_apply,
             pdf_import::pdf_import_cancel,
             modal_windows::open_modal_window,
+            edfx_editor::edfx_edit,
+            edfx_editor::edfx_canvas_apply,
             modal_windows::modal_context,
             modal_windows::modal_ready,
             modal_windows::modal_busy,
@@ -332,7 +336,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label().starts_with("modal-") {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    if !modal_windows::can_close(window.app_handle(), window.label()) {
+                    if !modal_windows::can_close(window.app_handle(), window.label())
+                        || modal_windows::request_edfx_close(window.app_handle(), window.label())
+                    {
                         api.prevent_close();
                         return;
                     }

@@ -1,0 +1,792 @@
+{
+  "fixtureSha256": "0ff5bd0ac16bc419a39f3f5b2636b0a9a4240dab3a51ab297b57b4f5bdabea5b",
+  "width": 3600,
+  "height": 3200,
+  "layers": 4,
+  "brushPx": 128,
+  "zoomPercent": 15.81,
+  "strokePoints": [
+    425,
+    455,
+    485,
+    520
+  ],
+  "strokeYs": [
+    465,
+    495,
+    525,
+    555,
+    585,
+    615
+  ],
+  "summary": {
+    "before": {
+      "samples": 12,
+      "medianFirstPresentMs": 151.4298335,
+      "minFirstPresentMs": 28.20275,
+      "maxFirstPresentMs": 185.156333,
+      "medianStrokes3To6Ms": 127.591354,
+      "medianPeakRssMiB": 696.8984375
+    },
+    "after": {
+      "samples": 12,
+      "medianFirstPresentMs": 143.6863335,
+      "minFirstPresentMs": 73.700583,
+      "maxFirstPresentMs": 178.203833,
+      "medianStrokes3To6Ms": 143.59699999999998,
+      "medianPeakRssMiB": 697.828125
+    }
+  },
+  "trials": [
+    {
+      "name": "verified-before1",
+      "peakRssBytes": 730300416,
+      "operations": [
+        {
+          "operation": "stroke1",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.37
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 1,
+              "latestEvent": 5,
+              "coalescedEvents": 5,
+              "firstMs": 168.839083,
+              "latestMs": 149.733792
+            }
+          ]
+        },
+        {
+          "operation": "stroke2",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.78
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 6,
+              "latestEvent": 10,
+              "coalescedEvents": 5,
+              "firstMs": 179.515833,
+              "latestMs": 167.387792
+            }
+          ]
+        },
+        {
+          "operation": "stroke3",
+          "preparations": [
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.59
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.47
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 11,
+              "latestEvent": 12,
+              "coalescedEvents": 2,
+              "firstMs": 88.533459,
+              "latestMs": 83.44875
+            },
+            {
+              "firstEvent": 13,
+              "latestEvent": 15,
+              "coalescedEvents": 3,
+              "firstMs": 139.386542,
+              "latestMs": 139.251958
+            }
+          ]
+        },
+        {
+          "operation": "stroke4",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.4
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 16,
+              "latestEvent": 20,
+              "coalescedEvents": 5,
+              "firstMs": 176.859708,
+              "latestMs": 164.534708
+            }
+          ]
+        },
+        {
+          "operation": "stroke5",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.25
+            },
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.83
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 21,
+              "latestEvent": 23,
+              "coalescedEvents": 3,
+              "firstMs": 127.38375,
+              "latestMs": 118.849041
+            },
+            {
+              "firstEvent": 24,
+              "latestEvent": 25,
+              "coalescedEvents": 2,
+              "firstMs": 142.465625,
+              "latestMs": 142.387459
+            }
+          ]
+        },
+        {
+          "operation": "stroke6",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 12.2
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 26,
+              "latestEvent": 30,
+              "coalescedEvents": 5,
+              "firstMs": 185.156333,
+              "latestMs": 170.96875
+            }
+          ]
+        },
+        {
+          "operation": "undo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 14.92
+            }
+          ],
+          "presents": []
+        },
+        {
+          "operation": "redo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 15.58
+            }
+          ],
+          "presents": []
+        }
+      ]
+    },
+    {
+      "name": "verified-after1",
+      "peakRssBytes": 731561984,
+      "operations": [
+        {
+          "operation": "stroke1",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.79
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 1,
+              "latestEvent": 5,
+              "coalescedEvents": 5,
+              "firstMs": 166.600708,
+              "latestMs": 145.894375
+            }
+          ]
+        },
+        {
+          "operation": "stroke2",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.52
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.27
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 6,
+              "latestEvent": 8,
+              "coalescedEvents": 3,
+              "firstMs": 128.493208,
+              "latestMs": 118.372333
+            },
+            {
+              "firstEvent": 9,
+              "latestEvent": 10,
+              "coalescedEvents": 2,
+              "firstMs": 134.478834,
+              "latestMs": 134.40125
+            }
+          ]
+        },
+        {
+          "operation": "stroke3",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.63
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.36
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 11,
+              "latestEvent": 13,
+              "coalescedEvents": 3,
+              "firstMs": 129.351792,
+              "latestMs": 122.657459
+            },
+            {
+              "firstEvent": 14,
+              "latestEvent": 15,
+              "coalescedEvents": 2,
+              "firstMs": 140.939625,
+              "latestMs": 140.86575
+            }
+          ]
+        },
+        {
+          "operation": "stroke4",
+          "preparations": [
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.96
+            },
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.84
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 16,
+              "latestEvent": 17,
+              "coalescedEvents": 2,
+              "firstMs": 73.700583,
+              "latestMs": 71.29225
+            },
+            {
+              "firstEvent": 18,
+              "latestEvent": 20,
+              "coalescedEvents": 3,
+              "firstMs": 134.152625,
+              "latestMs": 134.016542
+            }
+          ]
+        },
+        {
+          "operation": "stroke5",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.51
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 21,
+              "latestEvent": 25,
+              "coalescedEvents": 5,
+              "firstMs": 157.842208,
+              "latestMs": 146.299625
+            }
+          ]
+        },
+        {
+          "operation": "stroke6",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 12.24
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 26,
+              "latestEvent": 30,
+              "coalescedEvents": 5,
+              "firstMs": 163.474958,
+              "latestMs": 153.058875
+            }
+          ]
+        },
+        {
+          "operation": "undo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 14.33
+            }
+          ],
+          "presents": []
+        },
+        {
+          "operation": "redo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 15.39
+            }
+          ],
+          "presents": []
+        }
+      ]
+    },
+    {
+      "name": "verified-after2",
+      "peakRssBytes": 731889664,
+      "operations": [
+        {
+          "operation": "stroke1",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.25
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 1,
+              "latestEvent": 5,
+              "coalescedEvents": 5,
+              "firstMs": 171.11,
+              "latestMs": 142.255959
+            }
+          ]
+        },
+        {
+          "operation": "stroke2",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.54
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.19
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 6,
+              "latestEvent": 8,
+              "coalescedEvents": 3,
+              "firstMs": 129.530459,
+              "latestMs": 122.765542
+            },
+            {
+              "firstEvent": 9,
+              "latestEvent": 10,
+              "coalescedEvents": 2,
+              "firstMs": 141.418792,
+              "latestMs": 141.337333
+            }
+          ]
+        },
+        {
+          "operation": "stroke3",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.92
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 11,
+              "latestEvent": 15,
+              "coalescedEvents": 5,
+              "firstMs": 178.203833,
+              "latestMs": 165.662458
+            }
+          ]
+        },
+        {
+          "operation": "stroke4",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.43
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 16,
+              "latestEvent": 20,
+              "coalescedEvents": 5,
+              "firstMs": 163.667,
+              "latestMs": 152.245209
+            }
+          ]
+        },
+        {
+          "operation": "stroke5",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.25
+            },
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.85
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 21,
+              "latestEvent": 23,
+              "coalescedEvents": 3,
+              "firstMs": 118.737208,
+              "latestMs": 112.275625
+            },
+            {
+              "firstEvent": 24,
+              "latestEvent": 25,
+              "coalescedEvents": 2,
+              "firstMs": 133.020333,
+              "latestMs": 132.93775
+            }
+          ]
+        },
+        {
+          "operation": "stroke6",
+          "preparations": [
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.86
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.51
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 26,
+              "latestEvent": 27,
+              "coalescedEvents": 2,
+              "firstMs": 79.911,
+              "latestMs": 77.597208
+            },
+            {
+              "firstEvent": 28,
+              "latestEvent": 30,
+              "coalescedEvents": 3,
+              "firstMs": 135.409333,
+              "latestMs": 135.279625
+            }
+          ]
+        },
+        {
+          "operation": "undo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 14.47
+            }
+          ],
+          "presents": []
+        },
+        {
+          "operation": "redo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 15.88
+            }
+          ],
+          "presents": []
+        }
+      ]
+    },
+    {
+      "name": "verified-before2",
+      "peakRssBytes": 731201536,
+      "operations": [
+        {
+          "operation": "stroke1",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.22
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 1,
+              "latestEvent": 5,
+              "coalescedEvents": 5,
+              "firstMs": 168.565375,
+              "latestMs": 149.850333
+            }
+          ]
+        },
+        {
+          "operation": "stroke2",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.5
+            },
+            {
+              "recomposed": 4,
+              "uploaded": 4,
+              "prepareMs": 8.33
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 6,
+              "latestEvent": 8,
+              "coalescedEvents": 3,
+              "firstMs": 134.294292,
+              "latestMs": 127.478292
+            },
+            {
+              "firstEvent": 9,
+              "latestEvent": 10,
+              "coalescedEvents": 2,
+              "firstMs": 139.592334,
+              "latestMs": 139.514125
+            }
+          ]
+        },
+        {
+          "operation": "stroke3",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 11.76
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 11,
+              "latestEvent": 15,
+              "coalescedEvents": 5,
+              "firstMs": 182.763125,
+              "latestMs": 170.280667
+            }
+          ]
+        },
+        {
+          "operation": "stroke4",
+          "preparations": [
+            {
+              "recomposed": 3,
+              "uploaded": 3,
+              "prepareMs": 6.26
+            },
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.62
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 16,
+              "latestEvent": 18,
+              "coalescedEvents": 3,
+              "firstMs": 127.798958,
+              "latestMs": 119.778125
+            },
+            {
+              "firstEvent": 19,
+              "latestEvent": 20,
+              "coalescedEvents": 2,
+              "firstMs": 141.581583,
+              "latestMs": 141.504083
+            }
+          ]
+        },
+        {
+          "operation": "stroke5",
+          "preparations": [
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.82
+            },
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 4.77
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 21,
+              "latestEvent": 22,
+              "coalescedEvents": 2,
+              "firstMs": 81.519291,
+              "latestMs": 79.409416
+            },
+            {
+              "firstEvent": 23,
+              "latestEvent": 25,
+              "coalescedEvents": 3,
+              "firstMs": 136.633,
+              "latestMs": 136.496833
+            }
+          ]
+        },
+        {
+          "operation": "stroke6",
+          "preparations": [
+            {
+              "recomposed": 2,
+              "uploaded": 2,
+              "prepareMs": 9.69
+            },
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 12.05
+            }
+          ],
+          "presents": [
+            {
+              "firstEvent": 26,
+              "latestEvent": 26,
+              "coalescedEvents": 1,
+              "firstMs": 28.20275,
+              "latestMs": 28.20275
+            },
+            {
+              "firstEvent": 27,
+              "latestEvent": 30,
+              "coalescedEvents": 4,
+              "firstMs": 155.264458,
+              "latestMs": 154.945791
+            }
+          ]
+        },
+        {
+          "operation": "undo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 13.45
+            }
+          ],
+          "presents": []
+        },
+        {
+          "operation": "redo",
+          "preparations": [
+            {
+              "recomposed": 6,
+              "uploaded": 6,
+              "prepareMs": 15.62
+            }
+          ],
+          "presents": []
+        }
+      ]
+    }
+  ],
+  "date": "2026-11-20",
+  "platform": "macOS arm64 / Metal, Tauri Release",
+  "binarySha256": {
+    "before": "57ab6dc982164b865bc8f62bfa01ff0f153c46d0e12eea8d18a54580c869e65c",
+    "after": "2c506d71a7411c987ff189f4dc958981e3066abd99e0e531da929495d86058d7"
+  },
+  "screenshots": {
+    "crop": [
+      208,
+      205,
+      776,
+      708
+    ],
+    "states": {
+      "drawn": {
+        "differingPixels": 0,
+        "beforeRgbSha256": "6bf6d0a9e709a3c61e1f5ea6c46e1a0df9d66cb3c9a954794c2c41a19f0e9a96",
+        "afterRgbSha256": "6bf6d0a9e709a3c61e1f5ea6c46e1a0df9d66cb3c9a954794c2c41a19f0e9a96"
+      },
+      "undo": {
+        "differingPixels": 0,
+        "beforeRgbSha256": "c874fce628e5d320839d79bdf0dc74f0fd42aa73150949961b71509afc4929bd",
+        "afterRgbSha256": "c874fce628e5d320839d79bdf0dc74f0fd42aa73150949961b71509afc4929bd"
+      },
+      "redo": {
+        "differingPixels": 0,
+        "beforeRgbSha256": "6bf6d0a9e709a3c61e1f5ea6c46e1a0df9d66cb3c9a954794c2c41a19f0e9a96",
+        "afterRgbSha256": "6bf6d0a9e709a3c61e1f5ea6c46e1a0df9d66cb3c9a954794c2c41a19f0e9a96"
+      }
+    }
+  },
+  "method": {
+    "baseline": "Includes the preceding range-limited tile recomposition change. Only the local brush expansion and recompression change is compared; later layer-effects clone reductions are outside this comparison.",
+    "latency": "Native pointer-down handler to first present API call. Excludes OS input queue and physical display.",
+    "memory": "wait4 maximum RSS of the native process from launch to normal exit; excludes WebKit child processes and GPU memory.",
+    "order": "Before, after, after, before. Screenshot captures are separate trials.",
+    "excluded": "Earlier comparison accidentally linked renderer artifacts from before the tile optimization; reran after forcing the baseline renderer to rebuild. Setup attempts with foreground or capture failures were excluded."
+  }
+}

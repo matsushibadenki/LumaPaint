@@ -22,6 +22,7 @@ pub(crate) enum Kind {
     DirectControls,
     ImportImage,
     PdfImport,
+    Edfx,
     ToolSettings,
     VectorSelections,
     BulkVectorSelection,
@@ -44,6 +45,7 @@ impl Kind {
             Self::ObjectConversion => (400., 420.),
             Self::ImportImage => (480., 360.),
             Self::PdfImport => (740., 680.),
+            Self::Edfx => (860., 640.),
             Self::ToolSettings => (440., 580.),
             Self::VectorSelections => (400., 320.),
             Self::BulkVectorSelection => (400., 620.),
@@ -74,6 +76,7 @@ impl Kind {
             ],
             Self::ImportImage => ["Import", "読み込み", "导入"],
             Self::PdfImport => ["PDF Page", "PDFページ", "PDF页面"],
+            Self::Edfx => ["EDFX Editor", "EDFXエディター", "EDFX 编辑器"],
             Self::ToolSettings => ["Tool Settings", "ツール設定", "工具设置"],
             Self::AppearanceAttribute => ["Appearance Attribute", "アピアランス属性", "外观属性"],
             Self::VectorAssets => ["Vector Assets", "ベクター素材", "矢量资源"],
@@ -274,6 +277,16 @@ pub(crate) async fn open_modal_window(
     })
     .await
 }
+pub(crate) fn is_edfx(window: &WebviewWindow) -> bool {
+    window
+        .state::<Modals>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .is_some_and(|entry| matches!(entry.context.kind, Kind::Edfx))
+}
+
 #[tauri::command]
 pub(crate) fn modal_context(window: WebviewWindow) -> Result<Context, String> {
     window
@@ -393,6 +406,20 @@ pub(crate) async fn close_modal_window(
     })
     .await
 }
+pub(crate) fn request_edfx_close(app: &AppHandle, label: &str) -> bool {
+    let edfx = app
+        .state::<Modals>()
+        .0
+        .lock()
+        .unwrap()
+        .get(label)
+        .is_some_and(|entry| matches!(entry.context.kind, Kind::Edfx));
+    if edfx {
+        let _ = app.emit_to(label, "edfx-close-request", ());
+    }
+    edfx
+}
+
 pub(crate) fn can_close(app: &AppHandle, label: &str) -> bool {
     app.state::<Modals>()
         .0
@@ -407,6 +434,9 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
         if matches!(entry.context.kind, Kind::PdfImport) {
             crate::pdf_import::discard(app, &entry.owner);
         }
+        if matches!(entry.context.kind, Kind::Edfx) {
+            crate::edfx_editor::discard(app, label);
+        }
         // Invalidate workers even if the editor itself has already been destroyed.
         #[cfg(target_os = "macos")]
         crate::canvas::clear_window_preview(&entry.owner);
@@ -417,6 +447,7 @@ pub(crate) fn detach(app: &AppHandle, label: &str) {
     }
 }
 pub(crate) fn parent_destroyed(app: &AppHandle, owner: &str) {
+    crate::edfx_editor::discard(app, owner);
     crate::pdf_import::discard(app, owner);
     let labels = app
         .state::<Modals>()

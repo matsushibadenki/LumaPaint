@@ -119,6 +119,7 @@ export function Workspace() {
   const [sampling, setSampling] = useState(false);
   const [zoomTool, setZoomTool] = useState<ZoomTool | null>(null);
   const [canvasSizeOpen,setCanvasSizeOpen]=useState(false);
+  const [edfxOpen, setEdfxOpen] = useState<null | 'editor' | 'pending' | 'placed'>(null);
   const [imageResolutionOpen,setImageResolutionOpen]=useState(false);
   const [lastZoomTool, setLastZoomTool] = useState<MagnificationTool>('zoomIn');
   const [transformTool, setTransformTool] = useState<'vectorScale' | 'vectorRotate' | 'vectorSelect' | 'vectorDirectSelect' | null>(null);
@@ -668,8 +669,12 @@ export function Workspace() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    const listener = getCurrentWebviewWindow().listen<number>('pdf-import-request', event => setPdfImportToken(event.payload));
-    return () => { void listener.then(unlisten => unlisten()); };
+    const window = getCurrentWebviewWindow();
+    const listeners = [
+      window.listen<number>('pdf-import-request', event => setPdfImportToken(event.payload)),
+      window.listen('edfx-open-request', () => setEdfxOpen('pending')),
+    ];
+    return () => { for (const listener of listeners) void listener.then(unlisten => unlisten()); };
   }, []);
 
   useEffect(()=>{setLayerMaskTarget(null);},[activeDocumentId]);
@@ -682,7 +687,7 @@ export function Workspace() {
           setBusy(true);setError('');
           void applyFilter(activeDocumentId,documentState.revision,documentState.layerId,category,preset).then(updateDocument).catch(cause=>setError(String(cause))).finally(()=>setBusy(false));
         }} onTimeline={()=>setTimelineRequest(value=>value+1)} onShortcuts={()=>setShortcutsOpen(true)} onVectorSelection={request=>{void vectorSelectionAction(request).then(updateDocument).catch(e=>setError(String(e)));}} onSavedSelections={setSavedSelectionDialog} onLayerGroupEdit={edit=>{if(['selectAll','deselectAll','isolate'].includes(edit.action)){setPanels(true);setLayerPanelRequest(n=>n+1);}changeLayerGroups(edit);}} onGuides={action=>{void editGuides({action}).then(updateDocument).catch(e=>setError(String(e)));}} outlineDisplay={outlineDisplay} onOutlineDisplay={value => { void outlineView(value).then(setOutlineDisplay).catch(error => setError(String(error))); }} locale={locale} document={documentState} canFile={!fileBusy && !placingImage} hasDocument={documentAvailable} canHistory={canHistory} canEdit={documentEditable && ready && !busy && !fileBusy}
-        zoom={zoom} panels={panels} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
+        zoom={zoom} panels={panels} onEdfx={isTauri() ? () => setEdfxOpen('editor') : undefined} onEditPlacedEdfx={isTauri() ? () => setEdfxOpen('placed') : undefined} onPlace={()=>void placeLinkedImage()} onFile={action => void file(action)} onImportImage={() => setImportImageOpen(true)} onImportSvg={() => void importSvg()} onEdit={action => void edit(action)} onZoom={changeZoom}
         onTransform={setTransformAction}
         onWritingMode={mode => { void setTextWritingMode(mode).then(updateDocument).catch(cause => setError(String(cause))); }}
         onOutlineText={() => { void outlineText().then(updateDocument).catch(cause => setError(String(cause))); }}
@@ -723,6 +728,7 @@ export function Workspace() {
       <p className="session-note" role="status">{fileBusy ? t.fileBusy : !documentAvailable ? t.noDocument : !documentEditable ? t.tiledReadOnly : documentState.dirty ? t.sessionOnly : documentState.fileName ? t.saved : t.empty}</p>
     </div>
     <main className="editor-layout" inert={toneStudioOpen || lutStudioOpen || mediaBrowserOpen}>
+      {edfxOpen && <NativeModal kind="edfx" action={edfxOpen} locale={locale} theme={theme} onClose={() => setEdfxOpen(null)} onError={setError}>{null}</NativeModal>}
       {imageResolutionOpen && activeDocumentId!==null && <NativeModal kind="imageResolution" action={String(activeDocumentId)} locale={locale} theme={theme} onClose={()=>setImageResolutionOpen(false)} onError={setError}><ImageResolutionDialog locale={locale} document={documentState} documentId={activeDocumentId} onClose={()=>setImageResolutionOpen(false)}/></NativeModal>}
       {canvasSizeOpen && activeDocumentId!==null && <NativeModal kind="canvasSize" action={String(activeDocumentId)} locale={locale} theme={theme} onClose={()=>setCanvasSizeOpen(false)} onError={setError}><CanvasSizeDialog locale={locale} document={documentState} documentId={activeDocumentId} onClose={()=>setCanvasSizeOpen(false)}/></NativeModal>}
       {shortcutsOpen && <NativeModal kind="shortcuts" locale={locale} theme={theme} onClose={()=>setShortcutsOpen(false)} onError={setError}><ShortcutDialog locale={locale} onClose={()=>setShortcutsOpen(false)}/></NativeModal>}

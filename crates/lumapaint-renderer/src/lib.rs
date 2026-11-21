@@ -6662,6 +6662,7 @@ mod tests {
     fn prepared_svg_keeps_identity_and_applies_effective_opacity() {
         let layer = SvgLayer {
             motion_scene: None,
+            edfx: None,
             id: "layer-1".into(),
             name: "Sample".into(),
             visible: true,

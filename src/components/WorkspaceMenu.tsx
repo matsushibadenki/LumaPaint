@@ -46,6 +46,8 @@ type Props = {
   onNewWindow: () => void; onNew: () => void; onCloseDocument: () => void;
   onPlace:()=>void;
   onImportSvg: () => void;
+  onEdfx?: () => void;
+  onEditPlacedEdfx?: () => void;
   onImportImage: () => void;
   onAlignment:(request:AlignmentRequest)=>void;
   onArrange: (action: ArrangeAction) => void;
@@ -110,7 +112,9 @@ export function WorkspaceMenu(props: Props) {
   const names=[...t.names.slice(0,6),vs.title,...t.names.slice(6)];
   const menus: Entry[][] = [
     [{ id: 'menu.new', label: t.new, enabled: canFile, shortcut: 'CmdOrCtrl+N', action: onNew }, { id: 'menu.open', label: w.open + '…', enabled: canFile, shortcut: 'CmdOrCtrl+O', action: () => onFile('open') },
-      { id: 'menu.closeDocument', label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
+      ...(props.onEdfx ? [{ id: 'menu.edfx', label: {en:'EDFX Editor…',ja:'EDFXエディター…','zh-CN':'EDFX 编辑器…'}[locale], enabled: canFile, action: props.onEdfx }] : []),
+      ...(props.onEditPlacedEdfx ? [{ id: 'menu.edfxPlaced', label: { en: 'Edit Placed EDFX…', ja: '配置したEDFXを編集…', 'zh-CN': '编辑已置入的 EDFX…' }[locale], enabled: canFile && doc.layers.some(layer => layer.id === doc.layerId && layer.placedEdfx && !layer.locked), action: props.onEditPlacedEdfx }] : []),
+      { id: 'menu.closeDocument' , label: t.closeDocument, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+W', action: onCloseDocument },
       {id:'command.place',label: {ja:'配置…',en:'Place…','zh-CN':'置入…'}[locale],enabled:canFile&&hasDocument&&canEdit,shortcut:'CmdOrCtrl+D',action:props.onPlace},
       null,
       { id: 'menu.save', label: w.save, enabled: canFile && hasDocument, shortcut: 'CmdOrCtrl+S', action: () => onFile('save') },
