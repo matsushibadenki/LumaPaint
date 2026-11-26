@@ -192,9 +192,13 @@ impl MaskGesture {
         ]
     }
     fn painted(&self) -> Result<LayerEffects, String> {
-        let mut e = self.effects.clone();
+        self.paint_effects(self.effects.clone())
+    }
+
+    fn paint_effects(&self, mut effects: LayerEffects) -> Result<LayerEffects, String> {
         if matches!(self.tool, CanvasTool::Brush | CanvasTool::Eraser)
-            && e.mask
+            && effects
+                .mask
                 .as_ref()
                 .is_some_and(|m| m.kind == lumapaint_core::layer_mask::MaskKind::Pixel)
         {
@@ -220,13 +224,18 @@ impl MaskGesture {
                 eraser: self.tool == CanvasTool::Eraser,
                 clear: false,
             };
-            e.mask.as_mut().unwrap().paint_brush_dabs(
+            let dabs = {
+                let _time = lumapaint_core::performance::time("host.mask_sample_dabs");
+                lumapaint_renderer::sampled_raster_dabs(&stroke)?
+            };
+            let _time = lumapaint_core::performance::time("host.mask_apply_dabs");
+            effects.mask.as_mut().unwrap().paint_brush_dabs(
                 self.size,
-                &lumapaint_renderer::sampled_raster_dabs(&stroke)?,
+                &dabs,
                 brush,
                 self.clip.as_ref(),
             )?;
-            return Ok(e);
+            return Ok(effects);
         }
         let a = self.points[0];
         let b = *self.points.last().unwrap();
@@ -277,11 +286,12 @@ impl MaskGesture {
             selection.regions[0].points = self.points.clone();
             selection.regions[0].radius = self.radius;
         }
-        e.mask
+        effects
+            .mask
             .as_mut()
             .ok_or("Layer mask not found")?
             .paint_selection(&selection, self.clip.as_ref(), self.reveal)?;
-        Ok(e)
+        Ok(effects)
     }
 }
 fn set_effects(id: &str, effects: LayerEffects) -> Result<(), String> {
@@ -421,13 +431,20 @@ pub(super) fn pointer(point: Point, phase: u8) -> Result<bool, String> {
         })?;
     }
     if phase == 2 {
-        if let Some(d) = MASK_GESTURE.with(|s| s.borrow_mut().take()) {
+        if let Some(mut d) = MASK_GESTURE.with(|s| s.borrow_mut().take()) {
             if moving(d.tool) {
                 transform(&d.layer, d.matrix(), d.root_source)?;
             } else {
-                set_effects(&d.layer, d.painted()?)?;
+                let effects = {
+                    let _time = lumapaint_core::performance::time("host.mask_commit_paint");
+                    let effects = std::mem::take(&mut d.effects);
+                    d.paint_effects(effects)?
+                };
+                let _time = lumapaint_core::performance::time("host.mask_commit_history");
+                set_effects(&d.layer, effects)?;
             }
         }
+        let _time = lumapaint_core::performance::time("host.mask_commit_notify");
         emit_document();
     }
     Ok(true)

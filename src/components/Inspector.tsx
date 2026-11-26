@@ -158,8 +158,16 @@ export function Inspector({ documentAvailable, onSelectLayerTarget, onOpenLayerM
   const [settings, setSettings] = useState<DocumentSettings>(() => ({ name: document.name, width: document.width, height: document.height, unit: measurementUnit, resolution: document.resolution, artboards: document.artboards, canvasColor: document.canvasColor, pixelAspectRatio: document.pixelAspectRatio }));
   const [displayDimensions, setDisplayDimensions] = useState(() => ({ width: displaySize(document.width, measurementUnit, document.resolution), height: displaySize(document.height, measurementUnit, document.resolution) }));
   const selectedLayerId = document.layerId;
-  const thumbnails = usePanelThumbnails(thumbnailDocumentKey, document.revision, `${document.layerId}:${document.layerEditTarget}`);
   const [layerPanelMode, setLayerPanelMode] = useState<'layers' | 'channels' | 'paths'>('layers');
+  const thumbnailsVisible = documentAvailable && (activePanel === 'layers' || !!floating.layers)
+    && layerPanelMode !== 'paths';
+  const thumbnails = usePanelThumbnails(
+    thumbnailDocumentKey,
+    document.revision,
+    `${document.pages.active}:${document.layerId}:${document.layerEditTarget}`,
+    thumbnailsVisible,
+    layerPanelMode === 'channels',
+  );
   const [pathTabError, setPathTabError] = useState('');
   const [maskLinkError, setMaskLinkError] = useState('');
   const switchLayerPanel = async (mode: 'layers' | 'channels' | 'paths') => {

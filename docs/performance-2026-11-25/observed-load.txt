@@ -1,0 +1,14 @@
+ %CPU COMM
+271.9 node
+ 99.6 python3
+ 99.1 python3
+ 99.0 python3
+ 20.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 10.4 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/158.0.8127.37/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer)
+  8.2 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/158.0.8127.37/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif)
+  5.4 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex
+  4.6 /Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/Versions/158.1.100.59/Helpers/Brave Browser Helper (Aperitif).app/Contents/MacOS/Brave Browser Helper (Aperitif)
+  4.1 /Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/Versions/158.1.100.59/Helpers/Brave Browser Helper (Aperitif Renderer).app/Contents/MacOS/Brave Browser Helper (Aperitif Renderer)
+  2.2 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+vm.loadavg: { 15.69 13.53 8.55 }
+hw.logicalcpu: 10

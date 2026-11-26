@@ -24,5 +24,5 @@ ttf-parser = "=0.25.1"
 freetype-rs = { version = "=0.38.0", features = ["bundled"] }
 moxcms = "=0.8.1"
 
-zip = { version = "=9.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "=9.8.1", default-features = false, features = ["deflate-flate2"] }
 svgtypes = "=0.16.2"

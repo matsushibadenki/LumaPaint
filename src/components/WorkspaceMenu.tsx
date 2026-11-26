@@ -1,3 +1,4 @@
+import { commandPaletteLabels } from '../command-palette-i18n';
 import {conversionLabels} from './ObjectConversionDialog';
 import {filterLabels,filterPresets,filterAvailability,type FilterCategory,type FilterPreset} from '../filter-presets';
 import {pixelSelectionLabels,pixelModifyKinds} from '../pixel-selection-i18n';
@@ -35,6 +36,7 @@ type Props = {
   onFilter:(category:FilterCategory,preset:FilterPreset)=>void;
   onTimeline:()=>void;
   onShortcuts:()=>void;
+  onCommandPalette?:()=>void;
   onPixelSelection:(action:string)=>void;
   onVectorSelection:(request:VectorSelectionRequest)=>void;
   onSavedSelections:(mode:'save'|'edit'|'bulk'|'assets'|'attribute')=>void;
@@ -215,7 +217,10 @@ export function WorkspaceMenu(props: Props) {
     [{ label: 'LumaPaint 0.1.0' }, null, { id: 'menu.guide', label: t.guide }, { id: 'menu.drawHint', label: t.drawHint }, { id: 'menu.saveHint', label: t.saveHint }, { id: 'menu.recoveryHint', label: t.recoveryHint }],
   ];
   menus.splice(6,0,vectorMenus);
-  menus[1].push(null,{id:'shortcuts.edit',label:shortcutLabels[locale].title+'…',shortcut:'CmdOrCtrl+Alt+Shift+K',action:props.onShortcuts});
+  menus[1].push(null, {
+    id: 'app.commandPalette', label: commandPaletteLabels[locale].title + '…',
+    shortcut: 'CmdOrCtrl+K', enabled: !!props.onCommandPalette, action: props.onCommandPalette,
+  }, {id:'shortcuts.edit' ,label:shortcutLabels[locale].title+'…',shortcut:'CmdOrCtrl+Alt+Shift+K',action:props.onShortcuts});
   const categoryFeatures: (FeatureType | undefined)[] = ['combined','combined','combined','vector','combined','vector','vector','pixel','pixel','combined',undefined,undefined,undefined];
   const annotate = (entries: Entry[], fallback?: FeatureType) => entries.forEach(entry => {
     if (!entry) return;
@@ -226,15 +231,21 @@ export function WorkspaceMenu(props: Props) {
   const featureBadge = (entry: EntryItem) => entry.feature && <img className="menu-feature-icon" src={featureIcons[entry.feature]} alt="" title={featureLabels[locale][entry.feature]} aria-hidden="true" />;
   const shortcutState=useShortcuts();
   const commands:Command[]=[];
+  const palette = commandPaletteLabels[locale];
+  const needsDocument = new Set(['menu.closeDocument', 'command.place', 'menu.save',
+    'menu.saveAs', 'command.import', 'menu.importSvg', 'menu.export', 'menu.undo', 'menu.redo']);
   const collect=(entries:Entry[],category:string,path:string,parentEnabled=true)=>entries.forEach((entry,index)=>{
     if(!entry)return;const id=entry.id??`${path}.${index}`;
     if(entry.children)collect(entry.children,`${category} › ${entry.label}`,id,parentEnabled&&entry.enabled!==false);
     else if(entry.action&&!entry.planned){
-      // Rust decides history availability at dispatch time, including EDFX work in flight.
-      const enabled = id === 'menu.undo' || id === 'menu.redo'
-        ? canHistory
-        : parentEnabled && entry.enabled !== false;
-      const command={id,label:entry.label,category,defaultKey:entry.shortcut?keyFromAccelerator(entry.shortcut):'',enabled,action:entry.action};
+      const enabled = parentEnabled && entry.enabled !== false;
+      // The history shortcut can arrive before the EDFX pending state reaches the WebView.
+      const shortcutEnabled = id === 'menu.undo' || id === 'menu.redo' ? canHistory : undefined;
+      const disabledReason = !hasDocument && needsDocument.has(id) ? palette.document
+        : canHistory && id === 'menu.undo' && !doc.canUndo ? palette.undo
+        : canHistory && id === 'menu.redo' && !doc.canRedo ? palette.redo
+        : undefined;
+      const command={id,label:entry.label,category,disabledReason,defaultKey:entry.shortcut?keyFromAccelerator(entry.shortcut):'',enabled,shortcutEnabled,action:entry.action};
       commands.push(command);entry.shortcut=accelerator(binding(shortcutState.settings,command));
     }
   });

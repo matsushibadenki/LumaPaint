@@ -1,0 +1,322 @@
+[
+  {
+    "crate": "bytes",
+    "num": "1.12.2",
+    "yanked": false,
+    "license": "MIT",
+    "rust_version": "1.57",
+    "repository": "https://github.com/tokio-rs/bytes"
+  },
+  {
+    "crate": "cc",
+    "num": "1.11.3",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.65.0",
+    "repository": "https://github.com/rust-lang/cc-rs"
+  },
+  {
+    "crate": "filetime",
+    "num": "0.2.30",
+    "yanked": false,
+    "license": "MIT/Apache-2.0",
+    "rust_version": "1.75.0",
+    "repository": "https://github.com/alexcrichton/filetime"
+  },
+  {
+    "crate": "form_urlencoded",
+    "num": "1.2.3",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.51",
+    "repository": "https://github.com/servo/rust-url"
+  },
+  {
+    "crate": "hashbrown",
+    "num": "0.17.2",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.85.0",
+    "repository": "https://github.com/rust-lang/hashbrown"
+  },
+  {
+    "crate": "jiff",
+    "num": "1.0.2",
+    "yanked": false,
+    "license": "Unlicense OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/BurntSushi/jiff"
+  },
+  {
+    "crate": "jiff-core",
+    "num": "1.0.1",
+    "yanked": false,
+    "license": "Unlicense OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/BurntSushi/jiff"
+  },
+  {
+    "crate": "jiff-static",
+    "num": "1.0.2",
+    "yanked": false,
+    "license": "Unlicense OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/BurntSushi/jiff"
+  },
+  {
+    "crate": "jiff-tzdb",
+    "num": "1.0.0",
+    "yanked": false,
+    "license": "Unlicense OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/BurntSushi/jiff"
+  },
+  {
+    "crate": "jiff-tzdb-platform",
+    "num": "1.0.0",
+    "yanked": false,
+    "license": "Unlicense OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/BurntSushi/jiff"
+  },
+  {
+    "crate": "pin-project-lite",
+    "num": "0.2.18",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.37",
+    "repository": "https://github.com/taiki-e/pin-project-lite"
+  },
+  {
+    "crate": "plist",
+    "num": "1.10.4",
+    "yanked": false,
+    "license": "MIT",
+    "rust_version": "1.88.0",
+    "repository": "https://github.com/ebarnard/rust-plist/"
+  },
+  {
+    "crate": "pollster",
+    "num": "1.0.3",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.69",
+    "repository": "https://github.com/zesterer/pollster"
+  },
+  {
+    "crate": "rand_pcg",
+    "num": "0.10.3",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.85",
+    "repository": "https://github.com/rust-random/rngs"
+  },
+  {
+    "crate": "regex",
+    "num": "1.13.2",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.65",
+    "repository": "https://github.com/rust-lang/regex"
+  },
+  {
+    "crate": "regex-automata",
+    "num": "0.4.19",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.65",
+    "repository": "https://github.com/rust-lang/regex"
+  },
+  {
+    "crate": "regex-syntax",
+    "num": "0.8.12",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.65",
+    "repository": "https://github.com/rust-lang/regex"
+  },
+  {
+    "crate": "serde_with",
+    "num": "3.25.0",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.88",
+    "repository": "https://github.com/jonasbb/serde_with/"
+  },
+  {
+    "crate": "serde_with_macros",
+    "num": "3.25.0",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.88",
+    "repository": "https://github.com/jonasbb/serde_with/"
+  },
+  {
+    "crate": "smallvec",
+    "num": "1.16.6",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": null,
+    "repository": "https://github.com/smallvec/smallvec"
+  },
+  {
+    "crate": "tao",
+    "num": "0.37.3",
+    "yanked": false,
+    "license": "Apache-2.0",
+    "rust_version": "1.85",
+    "repository": "https://github.com/tauri-apps/tao"
+  },
+  {
+    "crate": "tauri",
+    "num": "2.12.7",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-build",
+    "num": "2.7.6",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-codegen",
+    "num": "2.7.6",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-macros",
+    "num": "2.7.6",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-plugin",
+    "num": "2.7.4",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-runtime",
+    "num": "2.12.4",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-runtime-wry",
+    "num": "2.12.5",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "tauri-utils",
+    "num": "2.10.4",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.90",
+    "repository": "https://github.com/tauri-apps/tauri"
+  },
+  {
+    "crate": "toml",
+    "num": "1.2.2+spec-1.1.0",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.85",
+    "repository": "https://github.com/toml-rs/toml"
+  },
+  {
+    "crate": "toml_edit",
+    "num": "0.25.20+spec-1.1.0",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.85",
+    "repository": "https://github.com/toml-rs/toml"
+  },
+  {
+    "crate": "toml_parser",
+    "num": "1.1.6+spec-1.1.0",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.85",
+    "repository": "https://github.com/toml-rs/toml"
+  },
+  {
+    "crate": "url",
+    "num": "2.5.9",
+    "yanked": false,
+    "license": "MIT OR Apache-2.0",
+    "rust_version": "1.63",
+    "repository": "https://github.com/servo/rust-url"
+  },
+  {
+    "crate": "uuid",
+    "num": "1.29.3",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.89.0",
+    "repository": "https://github.com/uuid-rs/uuid"
+  },
+  {
+    "crate": "walkdir",
+    "num": "2.5.1",
+    "yanked": false,
+    "license": "Unlicense/MIT",
+    "rust_version": null,
+    "repository": "https://github.com/BurntSushi/walkdir"
+  },
+  {
+    "crate": "wry",
+    "num": "0.57.3",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/tauri-apps/wry"
+  },
+  {
+    "crate": "zerocopy",
+    "num": "0.8.64",
+    "yanked": false,
+    "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+    "rust_version": "1.56.0",
+    "repository": "https://github.com/google/zerocopy"
+  },
+  {
+    "crate": "zerocopy-derive",
+    "num": "0.8.64",
+    "yanked": false,
+    "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+    "rust_version": null,
+    "repository": "https://github.com/google/zerocopy"
+  },
+  {
+    "crate": "zeroize",
+    "num": "1.9.2",
+    "yanked": false,
+    "license": "Apache-2.0 OR MIT",
+    "rust_version": "1.85",
+    "repository": "https://github.com/RustCrypto/utils"
+  },
+  {
+    "crate": "zip",
+    "num": "9.8.1",
+    "yanked": false,
+    "license": "MIT",
+    "rust_version": "1.89",
+    "repository": "https://github.com/zip-rs/zip2"
+  }
+]

@@ -20,11 +20,13 @@ Sources:
 - https://github.com/rust-skia/rust-skia/tree/0.153.3
 - https://github.com/rust-skia/skia-binaries/releases/tag/0.153.3
 
-## Dependency inventory (2026-11-16)
+## Dependency inventory (2026-11-23)
 
-`cargo-license-inventory.json` inventories 655 locked Cargo packages across
+`cargo-license-inventory.json` inventories 662 locked Cargo packages across
 platforms/features, including packages that may not be linked into this build.
 No package lacks both a license expression and a license file in Cargo metadata.
+`npm-license-inventory.json` records all 81 locked npm packages and their license
+expressions from package-lock.json; none lacks license metadata.
 Regenerate with:
 
 ```sh

@@ -1,0 +1,141 @@
+{
+  "changed": {
+    "node_modules/@rolldown/binding-android-arm-eabi": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-android-arm64": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-darwin-arm64": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-darwin-x64": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-freebsd-x64": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-arm-gnueabihf": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-arm64-gnu": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-arm64-musl": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-ppc64-gnu": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-s390x-gnu": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-x64-gnu": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-linux-x64-musl": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-openharmony-arm64": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-win32-arm64-msvc": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@rolldown/binding-win32-x64-msvc": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/@tauri-apps/api": {
+      "before": "2.12.4",
+      "after": "2.12.5"
+    },
+    "node_modules/@tauri-apps/cli": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-darwin-arm64": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-darwin-x64": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-arm-gnueabihf": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-arm64-gnu": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-arm64-musl": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-riscv64-gnu": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-x64-gnu": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-linux-x64-musl": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-win32-arm64-msvc": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-win32-ia32-msvc": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/@tauri-apps/cli-win32-x64-msvc": {
+      "before": "2.12.4",
+      "after": "2.12.6"
+    },
+    "node_modules/csstype": {
+      "before": "3.2.3",
+      "after": "3.2.4"
+    },
+    "node_modules/rolldown": {
+      "before": "1.2.19",
+      "after": "1.2.16"
+    },
+    "node_modules/source-map-js": {
+      "before": "1.2.2",
+      "after": "1.2.4"
+    },
+    "node_modules/vite": {
+      "before": "8.3.8",
+      "after": "8.3.6"
+    }
+  },
+  "removed": [
+    "node_modules/@emnapi/core",
+    "node_modules/@emnapi/runtime",
+    "node_modules/@emnapi/wasi-threads",
+    "node_modules/@napi-rs/wasm-runtime",
+    "node_modules/@rolldown/binding-wasm32-wasi",
+    "node_modules/@tybys/wasm-util",
+    "node_modules/tslib"
+  ]
+}

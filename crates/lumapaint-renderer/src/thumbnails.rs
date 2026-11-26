@@ -31,7 +31,19 @@ fn over(dst: &mut [u8], src: &[u8], opacity: f32) {
     }
 }
 pub fn render(document: &Document) -> Result<Thumbnails, String> {
-    let mut result = render_sized(document, 64., false)?;
+    render_panel(document, true)
+}
+
+/// The Layers tab only needs the individual artwork and mask images.
+pub fn render_layers(document: &Document) -> Result<Thumbnails, String> {
+    render_panel(document, false)
+}
+
+fn render_panel(document: &Document, include_channels: bool) -> Result<Thumbnails, String> {
+    let mut result = render_sized_inner(document, 64., false, !include_channels)?;
+    if !include_channels {
+        result.channels.clear();
+    }
     let (doc_width, doc_height) = document.dimensions();
     let scale = (64. / doc_width.max(doc_height) as f32).min(1.);
     let width = (doc_width as f32 * scale).round().max(1.) as u32;
@@ -39,7 +51,10 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
     let layer_ids = std::iter::once("layer-1")
         .chain(document.artwork_svg_layers().map(|layer| layer.id.as_str()));
     for id in layer_ids {
-        if let Some(mut mask) = document.layer_effects(id).mask {
+        if let Some(mut mask) = document
+            .layer_effects_ref(id)
+            .and_then(|effects| effects.mask.clone())
+        {
             // Show mask content independently of application enablement and
             // density, so its pixels remain recognizable while editing.
             mask.enabled = true;
@@ -60,20 +75,20 @@ pub fn render(document: &Document) -> Result<Thumbnails, String> {
                 .push((id.to_owned(), clipboard_png(width, height, pixels)?));
         }
     }
+    if !include_channels {
+        return Ok(result);
+    }
     let view = document.channel_view();
     let selected = render_sized_inner(&view, 64., true, true)?
         .channels
         .remove(0);
     let scale = (64. / document.dimensions().0.max(document.dimensions().1) as f32).min(1.);
     let (w, h) = document.dimensions();
-    let channels = channel_pngs(
+    result.channels.extend(channel_detail_pngs(
         (w as f32 * scale).round().max(1.) as u32,
         (h as f32 * scale).round().max(1.) as u32,
-        selected,
-    )?;
-    for (index, channel) in channels.into_iter().enumerate().skip(1) {
-        result.channels[index] = channel;
-    }
+        &selected,
+    )?);
     Ok(result)
 }
 pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, String> {
@@ -306,17 +321,15 @@ fn render_sized_ink(
         masks: Vec::new(),
         channels: if raw {
             vec![composite]
-        } else if page_only {
-            vec![clipboard_png(width, height, composite)?]
         } else {
-            channel_pngs(width, height, composite)?
+            vec![clipboard_png(width, height, composite)?]
         },
     })
 }
-fn channel_pngs(width: u32, height: u32, composite: Vec<u8>) -> Result<Vec<Vec<u8>>, String> {
-    let mut channels = vec![clipboard_png(width, height, composite.clone())?];
+fn channel_detail_pngs(width: u32, height: u32, composite: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let mut channels = Vec::with_capacity(8);
     for channel in 1..=8 {
-        let mut pixels = composite.clone();
+        let mut pixels = composite.to_vec();
         for p in pixels.as_chunks_mut::<4>().0.iter_mut() {
             let rgb = [p[0], p[1], p[2]].map(|c| {
                 if p[3] == 0 {
@@ -353,13 +366,13 @@ pub fn tiled_page_preview(
             .remove(0),
     )
 }
-fn render_tiled_sized(
-    document: &TiledRasterDocument,
+fn render_tiled_sized<'doc>(
+    document: &'doc TiledRasterDocument,
     max_side: f32,
-    include_masks: bool,
+    include_panel_thumbnails: bool,
 ) -> Result<Thumbnails, String> {
     use lumapaint_core::tiles::{TileCoord, TILE_SIZE};
-    use std::collections::BTreeSet;
+    use std::{borrow::Cow, collections::BTreeSet};
     let (dw, dh) = document.dimensions();
     let scale = (max_side / dw.max(dh) as f32).min(1.);
     let (width, height) = (
@@ -367,7 +380,7 @@ fn render_tiled_sized(
         (dh as f32 * scale).round().max(1.) as u32,
     );
     let sample = |coords: Vec<TileCoord>,
-                  tile: &dyn Fn(TileCoord) -> Option<Vec<u8>>,
+                  tile: &dyn Fn(TileCoord) -> Option<Cow<'doc, [u8]>>,
                   straight: bool| {
         let mut sums = vec![[0u64; 4]; (width * height) as usize];
         for coord in coords {
@@ -408,17 +421,19 @@ fn render_tiled_sized(
     let mut masks = Vec::new();
     let mut coords = BTreeSet::new();
     for layer in document.layers() {
+        if !include_panel_thumbnails {
+            coords.extend(layer.tiles.allocated_coords());
+            continue;
+        }
         let allocated: Vec<_> = layer.tiles.allocated_coords().collect();
         coords.extend(allocated.iter().copied());
         let pixels = sample(
             allocated,
-            &|coord| layer.tiles.tile(coord).map(<[u8]>::to_vec),
+            &|coord| layer.tiles.tile(coord).map(Cow::Borrowed),
             true,
         );
         layers.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
-        if include_masks
-            && (layer.mask_present || layer.mask_enabled || layer.mask.allocated_tile_count() > 0)
-        {
+        if layer.mask_present || layer.mask_enabled || layer.mask.allocated_tile_count() > 0 {
             // Four stratified samples reduce loss of small masked features while
             // keeping work independent of the source document's dimensions.
             let mut pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -448,13 +463,21 @@ fn render_tiled_sized(
     }
     let composite = sample(
         coords.into_iter().collect(),
-        &|coord| document.composite_tile(coord),
+        &|coord| document.composite_tile(coord).map(Cow::Owned),
         false,
     );
+    let channels = if include_panel_thumbnails {
+        let details = channel_detail_pngs(width, height, &composite)?;
+        let mut channels = vec![clipboard_png(width, height, composite)?];
+        channels.extend(details);
+        channels
+    } else {
+        vec![clipboard_png(width, height, composite)?]
+    };
     Ok(Thumbnails {
         layers,
         masks,
-        channels: channel_pngs(width, height, composite)?,
+        channels,
     })
 }
 
@@ -630,6 +653,10 @@ mod tests {
         let id = doc.svg_layers().last().unwrap().id.clone();
         doc.select_layer(id).unwrap();
         let image = render(&doc).unwrap();
+        let layers_only = render_layers(&doc).unwrap();
+        assert_eq!(layers_only.layers, image.layers);
+        assert_eq!(layers_only.masks, image.masks);
+        assert!(layers_only.channels.is_empty());
         assert_eq!(pixel(&image.layers[1].1, 32, 21), [0, 0, 255, 255]);
         assert_eq!(pixel(&image.channels[3], 32, 21), [255; 4]);
         assert_eq!(pixel(&image.channels[5], 32, 21), [0, 0, 0, 255]);
@@ -735,6 +762,10 @@ mod tests {
             .unwrap();
         crate::performance::take();
         let before = render(&doc).unwrap();
+        assert_eq!(
+            render_layers(&doc).unwrap().masks,
+            render(&doc).unwrap().masks
+        );
         let stats = crate::performance::take();
         if crate::performance::enabled() {
             assert!(!stats

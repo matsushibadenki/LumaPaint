@@ -1,0 +1,19 @@
+ M .github/workflows/ci.yml
+ M Cargo.lock
+ M crates/lumapaint-formats/Cargo.toml
+ M crates/lumapaint-renderer/Cargo.toml
+ M docs/roadmap.md
+ M package-lock.json
+ M package.json
+ M pnpm-lock.yaml
+ M src-tauri/Cargo.toml
+ M src-tauri/src/canvas.rs
+ M src-tauri/src/canvas_macos.rs
+ M src-tauri/src/mask_tools_macos.rs
+ M third-party-notices/README.md
+ M third-party-notices/cargo-license-inventory.json
+?? docs/dependency-update-2026-11-23.md
+?? docs/dependency-validation-2026-11-23/
+?? scripts/check-i18n.mjs
+?? src-tauri/src/edfx_canvas_macos.rs
+?? third-party-notices/npm-license-inventory.json

@@ -233,6 +233,18 @@
     },
     {
       "name": "base64",
+      "version": "0.22.1",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/marshallpierce/rust-base64"
+    },
+    {
+      "name": "base64",
       "version": "0.23.1",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
@@ -513,7 +525,7 @@
     },
     {
       "name": "bytes",
-      "version": "1.12.1",
+      "version": "1.12.2",
       "license": "MIT",
       "license_file": null,
       "source_notices": [
@@ -604,7 +616,7 @@
     },
     {
       "name": "cc",
-      "version": "1.11.2",
+      "version": "1.11.3",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1485,7 +1497,7 @@
     },
     {
       "name": "filetime",
-      "version": "0.2.29",
+      "version": "0.2.30",
       "license": "MIT/Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -1637,7 +1649,7 @@
     },
     {
       "name": "form_urlencoded",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2128,7 +2140,7 @@
     },
     {
       "name": "hashbrown",
-      "version": "0.17.1",
+      "version": "0.17.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -2642,8 +2654,32 @@
       "repository": "https://github.com/BurntSushi/jiff"
     },
     {
+      "name": "jiff",
+      "version": "1.0.2",
+      "license": "Unlicense OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "COPYING",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/BurntSushi/jiff"
+    },
+    {
       "name": "jiff-core",
       "version": "0.1.8",
+      "license": "Unlicense OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "COPYING",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/BurntSushi/jiff"
+    },
+    {
+      "name": "jiff-core",
+      "version": "1.0.1",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -2666,6 +2702,18 @@
       "repository": "https://github.com/BurntSushi/jiff"
     },
     {
+      "name": "jiff-static",
+      "version": "1.0.2",
+      "license": "Unlicense OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "COPYING",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/BurntSushi/jiff"
+    },
+    {
       "name": "jiff-tzdb",
       "version": "0.1.10",
       "license": "Unlicense OR MIT",
@@ -2678,8 +2726,32 @@
       "repository": "https://github.com/BurntSushi/jiff"
     },
     {
+      "name": "jiff-tzdb",
+      "version": "1.0.0",
+      "license": "Unlicense OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "COPYING",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/BurntSushi/jiff"
+    },
+    {
       "name": "jiff-tzdb-platform",
       "version": "0.1.3",
+      "license": "Unlicense OR MIT",
+      "license_file": null,
+      "source_notices": [
+        "COPYING",
+        "LICENSE-MIT"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/BurntSushi/jiff"
+    },
+    {
+      "name": "jiff-tzdb-platform",
+      "version": "1.0.0",
       "license": "Unlicense OR MIT",
       "license_file": null,
       "source_notices": [
@@ -3856,7 +3928,7 @@
     },
     {
       "name": "pin-project-lite",
-      "version": "0.2.17",
+      "version": "0.2.18",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -3880,7 +3952,7 @@
     },
     {
       "name": "plist",
-      "version": "1.10.3",
+      "version": "1.10.4",
       "license": "MIT",
       "license_file": null,
       "source_notices": [],
@@ -3901,8 +3973,8 @@
     },
     {
       "name": "pollster",
-      "version": "1.0.1",
-      "license": "Apache-2.0/MIT",
+      "version": "1.0.3",
+      "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
         "LICENSE-APACHE",
@@ -4224,7 +4296,7 @@
     },
     {
       "name": "rand_pcg",
-      "version": "0.10.2",
+      "version": "0.10.3",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4355,7 +4427,7 @@
     },
     {
       "name": "regex",
-      "version": "1.13.1",
+      "version": "1.13.2",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4367,7 +4439,7 @@
     },
     {
       "name": "regex-automata",
-      "version": "0.4.18",
+      "version": "0.4.19",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4379,7 +4451,7 @@
     },
     {
       "name": "regex-syntax",
-      "version": "0.8.11",
+      "version": "0.8.12",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4894,7 +4966,7 @@
     },
     {
       "name": "serde_with",
-      "version": "3.24.0",
+      "version": "3.25.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -4906,7 +4978,7 @@
     },
     {
       "name": "serde_with_macros",
-      "version": "3.24.0",
+      "version": "3.25.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5147,7 +5219,7 @@
     },
     {
       "name": "smallvec",
-      "version": "1.16.5",
+      "version": "1.16.6",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5155,7 +5227,7 @@
         "LICENSE-MIT"
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "repository": "https://github.com/servo/rust-smallvec"
+      "repository": "https://github.com/smallvec/smallvec"
     },
     {
       "name": "socket2",
@@ -5489,7 +5561,7 @@
     },
     {
       "name": "tao",
-      "version": "0.37.2",
+      "version": "0.37.3",
       "license": "Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5537,7 +5609,7 @@
     },
     {
       "name": "tauri",
-      "version": "2.12.5",
+      "version": "2.12.7",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5549,7 +5621,7 @@
     },
     {
       "name": "tauri-build",
-      "version": "2.7.4",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5561,7 +5633,7 @@
     },
     {
       "name": "tauri-codegen",
-      "version": "2.7.4",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5573,7 +5645,7 @@
     },
     {
       "name": "tauri-macros",
-      "version": "2.7.4",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5585,7 +5657,7 @@
     },
     {
       "name": "tauri-plugin",
-      "version": "2.7.2",
+      "version": "2.7.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [],
@@ -5607,7 +5679,7 @@
     },
     {
       "name": "tauri-runtime",
-      "version": "2.12.2",
+      "version": "2.12.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5619,7 +5691,7 @@
     },
     {
       "name": "tauri-runtime-wry",
-      "version": "2.12.3",
+      "version": "2.12.5",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5631,7 +5703,7 @@
     },
     {
       "name": "tauri-utils",
-      "version": "2.10.2",
+      "version": "2.10.4",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -5866,7 +5938,7 @@
     },
     {
       "name": "toml",
-      "version": "1.2.1+spec-1.1.0",
+      "version": "1.2.2+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5926,7 +5998,7 @@
     },
     {
       "name": "toml_edit",
-      "version": "0.25.19+spec-1.1.0",
+      "version": "0.25.20+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -5938,7 +6010,7 @@
     },
     {
       "name": "toml_parser",
-      "version": "1.1.5+spec-1.1.0",
+      "version": "1.1.6+spec-1.1.0",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6161,6 +6233,17 @@
       "repository": "https://github.com/dtolnay/unicode-ident"
     },
     {
+      "name": "unicode-linebreak",
+      "version": "0.1.5",
+      "license": "Apache-2.0",
+      "license_file": null,
+      "source_notices": [
+        "LICENSE"
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "repository": "https://github.com/axelf4/unicode-linebreak"
+    },
+    {
       "name": "unicode-normalization",
       "version": "0.1.26",
       "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
@@ -6247,7 +6330,7 @@
     },
     {
       "name": "url",
-      "version": "2.5.8",
+      "version": "2.5.9",
       "license": "MIT OR Apache-2.0",
       "license_file": null,
       "source_notices": [
@@ -6306,7 +6389,7 @@
     },
     {
       "name": "uuid",
-      "version": "1.29.2",
+      "version": "1.29.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -6375,7 +6458,7 @@
     },
     {
       "name": "walkdir",
-      "version": "2.5.0",
+      "version": "2.5.1",
       "license": "Unlicense/MIT",
       "license_file": null,
       "source_notices": [
@@ -7299,7 +7382,7 @@
     },
     {
       "name": "wry",
-      "version": "0.57.2",
+      "version": "0.57.3",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7390,7 +7473,7 @@
     },
     {
       "name": "zerocopy",
-      "version": "0.8.63",
+      "version": "0.8.64",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7403,7 +7486,7 @@
     },
     {
       "name": "zerocopy-derive",
-      "version": "0.8.63",
+      "version": "0.8.64",
       "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7438,7 +7521,7 @@
     },
     {
       "name": "zeroize",
-      "version": "1.9.1",
+      "version": "1.9.2",
       "license": "Apache-2.0 OR MIT",
       "license_file": null,
       "source_notices": [
@@ -7495,7 +7578,7 @@
     },
     {
       "name": "zip",
-      "version": "9.6.0",
+      "version": "9.8.1",
       "license": "MIT",
       "license_file": null,
       "source_notices": [

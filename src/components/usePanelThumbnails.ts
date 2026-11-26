@@ -1,29 +1,50 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-type Thumbnails = { layers: [string,string][]; masks: [string,string][]; channels: string[] };
+
+type Thumbnails = { layers: [string, string][]; masks: [string, string][]; channels: string[] };
+type Result = { key: string; data: Thumbnails; error: string };
 const empty: Thumbnails = { layers: [], masks: [], channels: [] };
-export function usePanelThumbnails(documentKey: string, revision: number, target = '') {
-  const cacheKey = `${documentKey}:${target}`;
-  const [result, setResult] = useState<{key:string; data:Thumbnails}>({key:'',data:empty});
-  const [error,setError] = useState('');
-  const generation = useRef(0);
+
+export function usePanelThumbnails(documentKey: string, revision: number, target: string, enabled: boolean, includeChannels: boolean) {
+  const cacheKey = `${documentKey}:${target}:${includeChannels}`;
+  const [result, setResult] = useState<Result>({ key: '', data: empty, error: '' });
   const inFlight = useRef(false);
-  const refresh = useRef<() => void>(()=>{});
+  const pending = useRef<(() => void) | null>(null);
+
   useEffect(() => {
-    const request = ++generation.current;
+    if (!enabled || !documentKey || !isTauri()) return;
     let disposed = false;
     const run = async () => {
-      if (disposed || inFlight.current || !documentKey || !isTauri()) return;
       inFlight.current = true;
       try {
-        const data = await invoke<Thumbnails>('panel_thumbnails');
-        if (!disposed && generation.current === request) { setResult({key:cacheKey,data}); setError(''); }
-      } catch (cause) { if (!disposed) setError(String(cause)); }
-      finally { inFlight.current = false; if (generation.current !== request) refresh.current(); }
+        const data = await invoke<Thumbnails>('panel_thumbnails', { includeChannels });
+        if (!disposed) setResult({ key: cacheKey, data, error: '' });
+      } catch (cause) {
+        if (!disposed) setResult(previous => ({
+          key: cacheKey,
+          data: previous.key === cacheKey ? previous.data : empty,
+          error: String(cause),
+        }));
+      } finally {
+        inFlight.current = false;
+        const next = pending.current;
+        pending.current = null;
+        next?.();
+      }
     };
-    refresh.current = () => { void run(); };
-    const timer = window.setTimeout(refresh.current,300);
-    return () => { disposed = true; window.clearTimeout(timer); };
-  },[documentKey,revision,cacheKey]);
-  return { ...(result.key === cacheKey ? result.data : empty), error };
+    const start = () => { void run(); };
+    const timer = window.setTimeout(() => {
+      if (inFlight.current) pending.current = start;
+      else start();
+    }, 300);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      if (pending.current === start) pending.current = null;
+    };
+  }, [documentKey, revision, cacheKey, enabled, includeChannels]);
+
+  return result.key === cacheKey
+    ? { ...result.data, error: result.error }
+    : { ...empty, error: '' };
 }

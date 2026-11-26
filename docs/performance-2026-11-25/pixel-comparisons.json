@@ -1,0 +1,248 @@
+[
+  {
+    "kind": "panel",
+    "case": "10000",
+    "sha256": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+    "matches_previous": true
+  },
+  {
+    "kind": "panel",
+    "case": "32",
+    "sha256": "309961d40e77cdb3e0c8e6e4911fadbc902638be53145f7004f71ae5e4f9de25",
+    "matches_previous": true
+  },
+  {
+    "kind": "panel",
+    "case": "4096",
+    "sha256": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+    "matches_previous": true
+  },
+  {
+    "kind": "panel",
+    "case": "600",
+    "sha256": "7d30ac93aa699e6ab93a2e73db4dde67541845430471e9cf95223ac2a8f7d925",
+    "matches_previous": true
+  },
+  {
+    "kind": "panel",
+    "case": "artwork",
+    "sha256": "050c2d71477b43247bb02f89d5199c457a3a97217e6d924061bc5191007fc7a3",
+    "matches_previous": true
+  },
+  {
+    "kind": "panel",
+    "case": "text",
+    "sha256": "87505df8c5b7faf295d1f791bf379af1598346b8e75acd9051658a5a855c78c9",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "artwork",
+    "trial": 0,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "artwork",
+    "trial": 1,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "artwork",
+    "trial": 2,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "artwork",
+    "trial": 3,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "artwork",
+    "trial": 4,
+    "sha256": "cd12f023e639ad6f38f423323ba02ccd3e25589777928be1c02e44563905a47c",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "large",
+    "trial": 0,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "large",
+    "trial": 1,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "large",
+    "trial": 2,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "large",
+    "trial": 3,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "large",
+    "trial": 4,
+    "sha256": "21f37de07cb3106f801035dd5208ab9aa0713fbdba1835b487607abfe5aef220",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "medium",
+    "trial": 0,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "medium",
+    "trial": 1,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "medium",
+    "trial": 2,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "medium",
+    "trial": 3,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "medium",
+    "trial": 4,
+    "sha256": "c39f2ad0a2971b8b6985aa0576640646d7dd55defa7b66282afb499e99c42794",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "small",
+    "trial": 0,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "small",
+    "trial": 1,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "small",
+    "trial": 2,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "small",
+    "trial": 3,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "small",
+    "trial": 4,
+    "sha256": "9af786aff6b7199ab79a0b8029aeef5d9aa1d9982ec5543e47a11bdc03d6858b",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "stress",
+    "trial": 0,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "stress",
+    "trial": 1,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "stress",
+    "trial": 2,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "stress",
+    "trial": 3,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "stress",
+    "trial": 4,
+    "sha256": "e8072ca683e866a1d04408204cf346141d311ceeaf5200c359852a7c954c28fc",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "text_blur",
+    "trial": 0,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "text_blur",
+    "trial": 1,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "text_blur",
+    "trial": 2,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "text_blur",
+    "trial": 3,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "matches_previous": true
+  },
+  {
+    "kind": "scene",
+    "case": "text_blur",
+    "trial": 4,
+    "sha256": "2bc7b200b4079c1bb1209653ac8c6ea1b393f5ffbabe6d7bc91bc13e8dc84152",
+    "matches_previous": true
+  }
+]

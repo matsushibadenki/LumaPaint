@@ -1,0 +1,21 @@
+.command-palette {
+  width: min(560px, calc(100vw - 32px));
+  margin: min(14vh, 100px) auto auto;
+  padding: 0;
+  border: 1px solid var(--color-rule);
+  border-radius: 9px;
+  color: var(--color-ink);
+  background: var(--color-panel);
+  box-shadow: 0 12px 32px #0006;
+}
+.command-palette::backdrop { background: #0005; }
+.command-palette-search { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--color-rule); }
+.command-palette-search input { flex: 1; min-width: 0; padding: 7px 9px; }
+.command-palette ul { padding: 4px; margin: 0; max-height: min(420px, 57dvh); overflow: auto; }
+.command-palette li { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 7px 10px; border-radius: 4px; overflow-wrap: anywhere; cursor: pointer; }
+.command-palette li span { min-width: 0; }
+.command-palette li small { display: block; color: var(--color-muted); }
+.command-palette li[aria-selected="true"] { background: var(--color-control); outline: 1px solid var(--color-focus); outline-offset: -1px; }
+.command-palette li[aria-disabled="true"] { opacity: .65; cursor: default; }
+.command-palette kbd { flex: none; }
+.command-palette p { margin: 10px 14px 14px; }

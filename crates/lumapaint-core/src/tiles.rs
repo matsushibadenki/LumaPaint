@@ -2031,6 +2031,21 @@ impl TiledRasterDocument {
 
     /// Drop import-time edits after replaying a legacy document. This leaves
     /// the current pixels and revision intact while releasing tile snapshots.
+    /// Snapshot the current tile artwork without allocating history copies.
+    pub fn clone_for_rendering(&self) -> Self {
+        Self {
+            layer_edit_selection: self.layer_edit_selection.clone(),
+            resolution: self.resolution,
+            icc_profile: self.icc_profile.clone(),
+            width: self.width,
+            height: self.height,
+            layers: self.layers.clone(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            revision: self.revision,
+        }
+    }
+
     pub fn discard_history(&mut self) {
         self.undo.clear();
         self.redo.clear();

@@ -1,0 +1,226 @@
+{
+  "panel": {
+    "32": {
+      "n": 150,
+      "median_ms": 0.9513125,
+      "p95_ms": 1.517542,
+      "p99_ms": 2.115,
+      "maximum_ms": 2.4189589999999996
+    },
+    "600": {
+      "n": 150,
+      "median_ms": 1.4230420000000001,
+      "p95_ms": 1.797334,
+      "p99_ms": 2.880958,
+      "maximum_ms": 2.9955410000000002
+    },
+    "4096": {
+      "n": 150,
+      "median_ms": 3.0042919999999995,
+      "p95_ms": 5.711334,
+      "p99_ms": 10.998208,
+      "maximum_ms": 12.048083
+    },
+    "10000": {
+      "n": 150,
+      "median_ms": 42.1527505,
+      "p95_ms": 46.284792,
+      "p99_ms": 58.672,
+      "maximum_ms": 59.568459000000004
+    },
+    "artwork": {
+      "n": 150,
+      "median_ms": 2.6765625,
+      "p95_ms": 4.098583,
+      "p99_ms": 5.34875,
+      "maximum_ms": 6.025917000000001
+    },
+    "text": {
+      "n": 150,
+      "median_ms": 1.0065,
+      "p95_ms": 1.225708,
+      "p99_ms": 1.565125,
+      "maximum_ms": 1.612042
+    }
+  },
+  "scene": {
+    "small": {
+      "n": 150,
+      "median_ms": 0.3019585,
+      "p95_ms": 0.316125,
+      "p99_ms": 0.321625,
+      "maximum_ms": 0.33283300000000005
+    },
+    "medium": {
+      "n": 150,
+      "median_ms": 1.0492915,
+      "p95_ms": 1.091,
+      "p99_ms": 1.486916,
+      "maximum_ms": 1.959375
+    },
+    "large": {
+      "n": 150,
+      "median_ms": 5.833708,
+      "p95_ms": 8.184375,
+      "p99_ms": 12.966042,
+      "maximum_ms": 25.312625
+    },
+    "stress": {
+      "n": 150,
+      "median_ms": 11.5245835,
+      "p95_ms": 12.24225,
+      "p99_ms": 12.39275,
+      "maximum_ms": 12.434834
+    },
+    "artwork": {
+      "n": 150,
+      "median_ms": 1.923,
+      "p95_ms": 2.131833,
+      "p99_ms": 2.313167,
+      "maximum_ms": 3.707291
+    },
+    "text_blur": {
+      "n": 150,
+      "median_ms": 1.5645,
+      "p95_ms": 1.615375,
+      "p99_ms": 1.7140840000000002,
+      "maximum_ms": 1.7654580000000002
+    }
+  },
+  "resources": [
+    {
+      "cpu_s": 1.92,
+      "rss_bytes": 358383616,
+      "instructions": 36105048606
+    },
+    {
+      "cpu_s": 1.74,
+      "rss_bytes": 356499456,
+      "instructions": 35383169255
+    },
+    {
+      "cpu_s": 1.83,
+      "rss_bytes": 359006208,
+      "instructions": 35615185492
+    },
+    {
+      "cpu_s": 1.87,
+      "rss_bytes": 358957056,
+      "instructions": 35598867026
+    },
+    {
+      "cpu_s": 1.7999999999999998,
+      "rss_bytes": 357433344,
+      "instructions": 35762503422
+    }
+  ],
+  "cache": {
+    "small": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 373280
+    },
+    "medium": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 6909360
+    },
+    "large": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 51383960
+    },
+    "stress": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 66180992
+    },
+    "artwork": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 64425632
+    },
+    "text_blur": {
+      "svg_parses": 0,
+      "cache_hits": 25,
+      "cache_misses": 0,
+      "cache_bypasses": 0,
+      "admissions": 0,
+      "evictions": 0,
+      "all_max_insertion_retained_bytes": 64644932
+    }
+  },
+  "cache_all": {
+    "svg_parses": 30,
+    "cache_hits": 150,
+    "cache_misses": 30,
+    "cache_bypasses": 0,
+    "admissions": 30,
+    "admitted_bytes": 151598380,
+    "evictions": 17,
+    "max_insertion_retained_bytes": 66180992
+  },
+  "resource_medians": {
+    "cpu_s": 1.83,
+    "rss_bytes": 358383616,
+    "instructions": 35615185492
+  },
+  "confirmation": {
+    "32": {
+      "median_ms": 1.907875,
+      "p95_ms": 2.627834,
+      "p99_ms": 2.881834,
+      "maximum_ms": 3.0099169999999997
+    },
+    "600": {
+      "median_ms": 3.0886665,
+      "p95_ms": 4.207083,
+      "p99_ms": 4.684875,
+      "maximum_ms": 7.4367920000000005
+    },
+    "4096": {
+      "median_ms": 7.4313125,
+      "p95_ms": 10.286792,
+      "p99_ms": 11.494667,
+      "maximum_ms": 11.735583
+    },
+    "10000": {
+      "median_ms": 94.795042,
+      "p95_ms": 128.641958,
+      "p99_ms": 214.093084,
+      "maximum_ms": 265.374541
+    },
+    "artwork": {
+      "median_ms": 5.679541,
+      "p95_ms": 23.679083,
+      "p99_ms": 59.948375,
+      "maximum_ms": 209.97833300000002
+    },
+    "text": {
+      "median_ms": 2.1886665,
+      "p95_ms": 3.121042,
+      "p99_ms": 7.7735,
+      "maximum_ms": 11.516167
+    }
+  }
+}

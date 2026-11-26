@@ -2092,20 +2092,34 @@ pub struct ThumbnailSet {
     channels: Vec<String>,
 }
 #[tauri::command]
-pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailSet, String> {
+pub async fn panel_thumbnails(
+    window: tauri::WebviewWindow,
+    include_channels: Option<bool>,
+) -> Result<ThumbnailSet, String> {
     #[cfg(target_os = "macos")]
     {
-        let document = on_main(window, platform::thumbnail_document).await?;
+        let document = on_main(window, || {
+            let _metrics = lumapaint_core::performance::batch("host.panel_thumbnail_snapshot");
+            platform::thumbnail_document()
+        })
+        .await?;
         crate::diagnostic_jobs::spawn_blocking(move || {
             use base64::Engine;
-            let previews = match document {
-                ThumbnailDocument::Standard(document) => {
-                    lumapaint_renderer::thumbnails::render(&document)?
-                }
-                ThumbnailDocument::Tiled(document) => {
-                    lumapaint_renderer::thumbnails::render_tiled(&document)?
+            let previews = {
+                let _time = lumapaint_core::performance::time("host.panel_thumbnail_render");
+                match document {
+                    ThumbnailDocument::Standard(document) if include_channels == Some(false) => {
+                        lumapaint_renderer::thumbnails::render_layers(&document)?
+                    }
+                    ThumbnailDocument::Standard(document) => {
+                        lumapaint_renderer::thumbnails::render(&document)?
+                    }
+                    ThumbnailDocument::Tiled(document) => {
+                        lumapaint_renderer::thumbnails::render_tiled(&document)?
+                    }
                 }
             };
+            let _time = lumapaint_core::performance::time("host.panel_thumbnail_encode");
             let encode = |png: Vec<u8>| {
                 format!(
                     "data:image/png;base64,{}",
@@ -2131,7 +2145,7 @@ pub async fn panel_thumbnails(window: tauri::WebviewWindow) -> Result<ThumbnailS
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = window;
+        let _ = (window, include_channels);
         Err("Panel thumbnails are pending on this platform".into())
     }
 }
