@@ -2091,6 +2091,15 @@ pub struct ThumbnailSet {
     masks: Vec<(String, String)>,
     channels: Vec<String>,
 }
+#[cfg(target_os = "macos")]
+fn thumbnail_data_url(png: &[u8]) -> String {
+    use base64::{display::Base64Display, engine::general_purpose::STANDARD};
+    format!(
+        "data:image/png;base64,{}",
+        Base64Display::new(png, &STANDARD)
+    )
+}
+
 #[tauri::command]
 pub async fn panel_thumbnails(
     window: tauri::WebviewWindow,
@@ -2104,40 +2113,38 @@ pub async fn panel_thumbnails(
         })
         .await?;
         crate::diagnostic_jobs::spawn_blocking(move || {
-            use base64::Engine;
             let previews = {
                 let _time = lumapaint_core::performance::time("host.panel_thumbnail_render");
+                let include_channels = include_channels.unwrap_or(true);
                 match document {
-                    ThumbnailDocument::Standard(document) if include_channels == Some(false) => {
-                        lumapaint_renderer::thumbnails::render_layers(&document)?
-                    }
                     ThumbnailDocument::Standard(document) => {
-                        lumapaint_renderer::thumbnails::render(&document)?
+                        lumapaint_renderer::thumbnails::render_panel(&document, include_channels)?
                     }
                     ThumbnailDocument::Tiled(document) => {
-                        lumapaint_renderer::thumbnails::render_tiled(&document)?
+                        lumapaint_renderer::thumbnails::render_tiled_panel(
+                            &document,
+                            include_channels,
+                        )?
                     }
                 }
             };
             let _time = lumapaint_core::performance::time("host.panel_thumbnail_encode");
-            let encode = |png: Vec<u8>| {
-                format!(
-                    "data:image/png;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(png)
-                )
-            };
             Ok(ThumbnailSet {
                 layers: previews
                     .layers
                     .into_iter()
-                    .map(|(id, png)| (id, encode(png)))
+                    .map(|(id, png)| (id, thumbnail_data_url(&png)))
                     .collect(),
                 masks: previews
                     .masks
                     .into_iter()
-                    .map(|(id, png)| (id, encode(png)))
+                    .map(|(id, png)| (id, thumbnail_data_url(&png)))
                     .collect(),
-                channels: previews.channels.into_iter().map(encode).collect(),
+                channels: previews
+                    .channels
+                    .iter()
+                    .map(|png| thumbnail_data_url(png))
+                    .collect(),
             })
         })
         .await
@@ -2525,18 +2532,11 @@ pub async fn page_thumbnails(
         let documents =
             on_main(window, move || platform::page_thumbnail_documents(indices)).await?;
         crate::diagnostic_jobs::spawn_blocking(move || {
-            use base64::Engine;
             documents
                 .into_iter()
                 .map(|(id, doc)| {
                     let png = lumapaint_renderer::thumbnails::page_preview(&doc, 128)?;
-                    Ok((
-                        id,
-                        format!(
-                            "data:image/png;base64,{}",
-                            base64::engine::general_purpose::STANDARD.encode(png)
-                        ),
-                    ))
+                    Ok((id, thumbnail_data_url(&png)))
                 })
                 .collect::<Result<Vec<_>, String>>()
         })

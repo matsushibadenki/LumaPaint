@@ -10,6 +10,7 @@ use lumapaint_core::{
 #[cfg(test)]
 use lumapaint_formats::native::NativeDocumentCodec;
 
+#[derive(Default)]
 pub struct Thumbnails {
     pub layers: Vec<(String, Vec<u8>)>,
     pub masks: Vec<(String, Vec<u8>)>,
@@ -39,15 +40,22 @@ pub fn render_layers(document: &Document) -> Result<Thumbnails, String> {
     render_panel(document, false)
 }
 
-fn render_panel(document: &Document, include_channels: bool) -> Result<Thumbnails, String> {
-    let mut result = render_sized_inner(document, 64., false, !include_channels)?;
-    if !include_channels {
-        result.channels.clear();
-    }
+pub fn render_panel(document: &Document, include_channels: bool) -> Result<Thumbnails, String> {
+    let mut result = Thumbnails::default();
     let (doc_width, doc_height) = document.dimensions();
-    let scale = (64. / doc_width.max(doc_height) as f32).min(1.);
-    let width = (doc_width as f32 * scale).round().max(1.) as u32;
-    let height = (doc_height as f32 * scale).round().max(1.) as u32;
+    let size = PreviewSize::new(document.dimensions(), 64);
+    let PreviewSize { width, height, .. } = size;
+    let mut composite = include_channels.then(|| size.buffer());
+    render_artwork(
+        document,
+        size,
+        Surface::Page,
+        composite.as_deref_mut(),
+        Some(&mut result.layers),
+    )?;
+    if let Some(pixels) = composite {
+        result.channels.push(clipboard_png(width, height, pixels)?);
+    }
     let layer_ids = std::iter::once("layer-1")
         .chain(document.artwork_svg_layers().map(|layer| layer.id.as_str()));
     for id in layer_ids {
@@ -79,30 +87,24 @@ fn render_panel(document: &Document, include_channels: bool) -> Result<Thumbnail
         return Ok(result);
     }
     let view = document.channel_view();
-    let selected = render_sized_inner(&view, 64., true, true)?
+    let selected = render_pixels(&view, size, Surface::Page)?;
+    result
         .channels
-        .remove(0);
-    let scale = (64. / document.dimensions().0.max(document.dimensions().1) as f32).min(1.);
-    let (w, h) = document.dimensions();
-    result.channels.extend(channel_detail_pngs(
-        (w as f32 * scale).round().max(1.) as u32,
-        (h as f32 * scale).round().max(1.) as u32,
-        &selected,
-    )?);
+        .extend(channel_detail_pngs(width, height, &selected)?);
     Ok(result)
 }
 pub fn page_preview(document: &Document, max_side: u32) -> Result<Vec<u8>, String> {
-    Ok(
-        render_sized(document, max_side.clamp(64, 2048) as f32, true)?
-            .channels
-            .remove(0),
+    let size = PreviewSize::new(document.dimensions(), max_side.clamp(64, 2048));
+    clipboard_png(
+        size.width,
+        size.height,
+        render_pixels(document, size, Surface::Page)?,
     )
 }
 /// Small input proxy; histograms return bins, never raster data, to the UI.
 pub fn effect_histogram(document: &Document) -> Result<crate::histogram::Histogram, String> {
-    let pixels = render_sized_inner(document, 512., true, true)?
-        .channels
-        .remove(0);
+    let size = PreviewSize::new(document.dimensions(), 512);
+    let pixels = render_pixels(document, size, Surface::Page)?;
     Ok(crate::histogram::from_premultiplied(&pixels))
 }
 /// Export-quality host fallback for PDF effects. All pixels remain in Rust.
@@ -111,19 +113,12 @@ pub fn document_png(document: &Document) -> Result<Vec<u8>, String> {
     if u64::from(w) * u64::from(h) > 16_777_216 {
         return Err("Document exceeds raster export limit".into());
     }
-    Ok(render_sized(document, w.max(h) as f32, true)?
-        .channels
-        .remove(0))
-}
-fn render_sized(document: &Document, max_side: f32, page_only: bool) -> Result<Thumbnails, String> {
-    render_sized_inner(document, max_side, page_only, false)
+    clipboard_png(w, h, document_pixels(document)?)
 }
 pub fn document_pixels(document: &Document) -> Result<Vec<u8>, String> {
     let (w, h) = document.dimensions();
     crate::vector::document_rgba_len(w, h)?;
-    Ok(render_sized_inner(document, w.max(h) as f32, true, true)?
-        .channels
-        .remove(0))
+    render_pixels(document, PreviewSize::new((w, h), w.max(h)), Surface::Page)
 }
 /// Transparent ink only, at a bounded reference resolution. Never includes the
 /// document's paper, other layers, history, or editor overlays.
@@ -139,61 +134,77 @@ pub fn cel_pixels(
     state.paint_source = cel.source.clone();
     state.strokes = cel.strokes.clone();
     let document = Document::from_document_state(state)?;
-    let max_side = max_side.clamp(32, 1024) as f32;
-    let scale = (max_side / dimensions.0.max(dimensions.1) as f32).min(1.);
-    let width = (dimensions.0 as f32 * scale).round().max(1.) as u32;
-    let height = (dimensions.1 as f32 * scale).round().max(1.) as u32;
-    let pixels = render_sized_ink(&document, max_side, true, true, true, true)?
-        .channels
-        .remove(0);
-    Ok(crate::animation_cels::Raster {
-        width,
-        height,
-        pixels,
-    })
+    scene_pixels(&document, max_side)
 }
 /// Bounded, transparent scene reference; excludes paper and editor overlays.
 pub fn scene_pixels(
     document: &Document,
     max_side: u32,
 ) -> Result<crate::animation_cels::Raster, String> {
-    let (w, h) = document.dimensions();
-    let max_side = max_side.clamp(32, 1024) as f32;
-    let scale = (max_side / w.max(h) as f32).min(1.);
+    let size = PreviewSize::new(document.dimensions(), max_side.clamp(32, 1024));
     Ok(crate::animation_cels::Raster {
-        width: (w as f32 * scale).round().max(1.) as u32,
-        height: (h as f32 * scale).round().max(1.) as u32,
-        pixels: render_sized_ink(document, max_side, true, true, true, true)?
-            .channels
-            .remove(0),
+        width: size.width,
+        height: size.height,
+        pixels: render_pixels(document, size, Surface::TransparentReference)?,
     })
 }
-fn render_sized_inner(
-    document: &Document,
-    max_side: f32,
-    page_only: bool,
-    raw: bool,
-) -> Result<Thumbnails, String> {
-    render_sized_ink(document, max_side, page_only, raw, false, false)
+
+#[derive(Clone, Copy)]
+struct PreviewSize {
+    width: u32,
+    height: u32,
+    scale: f32,
 }
-fn render_sized_ink(
+
+impl PreviewSize {
+    fn new((width, height): (u32, u32), max_side: u32) -> Self {
+        let scale = (max_side as f32 / width.max(height) as f32).min(1.);
+        Self {
+            width: (width as f32 * scale).round().max(1.) as u32,
+            height: (height as f32 * scale).round().max(1.) as u32,
+            scale,
+        }
+    }
+
+    fn buffer(self) -> Vec<u8> {
+        vec![0; self.width as usize * self.height as usize * 4]
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Surface {
+    Page,
+    TransparentReference,
+}
+
+fn render_pixels(
     document: &Document,
-    max_side: f32,
-    page_only: bool,
-    raw: bool,
-    ink_only: bool,
-    reference: bool,
-) -> Result<Thumbnails, String> {
-    let rasterize = if reference {
-        rasterize_svg_reference
-    } else {
-        rasterize_svg
+    size: PreviewSize,
+    surface: Surface,
+) -> Result<Vec<u8>, String> {
+    let mut pixels = size.buffer();
+    render_artwork(document, size, surface, Some(&mut pixels), None)?;
+    Ok(pixels)
+}
+
+fn render_artwork(
+    document: &Document,
+    size: PreviewSize,
+    surface: Surface,
+    mut composite: Option<&mut [u8]>,
+    mut layers: Option<&mut Vec<(String, Vec<u8>)>>,
+) -> Result<(), String> {
+    let rasterize = match surface {
+        Surface::Page => rasterize_svg,
+        Surface::TransparentReference => rasterize_svg_reference,
     };
     let (doc_width, doc_height) = document.dimensions();
     let canvas_color = document.canvas_color();
-    let scale = (max_side / doc_width.max(doc_height) as f32).min(1.);
-    let width = (doc_width as f32 * scale).round().max(1.) as u32;
-    let height = (doc_height as f32 * scale).round().max(1.) as u32;
+    let PreviewSize {
+        width,
+        height,
+        scale,
+    } = size;
     let mut tiles = TiledRasterDocument::new(width, height)?;
     tiles.add_layer("thumb".into(), "Thumbnail".into())?;
     if let Some(source) = document.paint_source() {
@@ -264,7 +275,7 @@ fn render_sized_ink(
                 ],
                 &effects,
                 mask,
-                canvas_color == CanvasColor::White && !ink_only,
+                canvas_color == CanvasColor::White && matches!(surface, Surface::Page),
                 document.paper(),
                 [
                     doc_width as f32 / width as f32,
@@ -275,16 +286,15 @@ fn render_sized_ink(
             paint[index..index + 4].copy_from_slice(&pixel);
         }
     }
-    let background = paint.clone();
-    let mut composite = vec![0; paint.len()];
-    if document.background_visible() {
-        over(&mut composite, &background, document.paint_layer_opacity());
+    if let Some(dst) = composite
+        .as_deref_mut()
+        .filter(|_| document.background_visible())
+    {
+        over(dst, &paint, document.paint_layer_opacity());
     }
-    let mut layers = if page_only {
-        Vec::new()
-    } else {
-        vec![("layer-1".into(), clipboard_png(width, height, background)?)]
-    };
+    if let Some(layers) = layers.as_deref_mut() {
+        layers.push(("layer-1".into(), clipboard_png(width, height, paint)?));
+    }
     for layer in document.artwork_svg_layers() {
         let mut pixels = rasterize(&layer.source, width, height)?.pixels;
         crate::screentone::apply(
@@ -293,13 +303,16 @@ fn render_sized_ink(
             width,
             [0., 0., doc_width as f32, doc_height as f32],
         );
-        if layer.visible {
-            over(&mut composite, &pixels, layer.effective_opacity());
+        if let Some(dst) = composite.as_deref_mut().filter(|_| layer.visible) {
+            over(dst, &pixels, layer.effective_opacity());
         }
-        if !page_only {
+        if let Some(layers) = layers.as_deref_mut() {
             layers.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
         }
     }
+    let Some(composite) = composite else {
+        return Ok(());
+    };
     if let Some(source) = document.clipping_mask_svg() {
         let mask = rasterize(&source, width, height)?.pixels;
         for (p, m) in composite
@@ -314,17 +327,9 @@ fn render_sized_ink(
         }
     }
     if document.color_mode() == lumapaint_core::document::ColorMode::Grayscale {
-        crate::color_sampler::grayscale_pixels(&mut composite);
+        crate::color_sampler::grayscale_pixels(composite);
     }
-    Ok(Thumbnails {
-        layers,
-        masks: Vec::new(),
-        channels: if raw {
-            vec![composite]
-        } else {
-            vec![clipboard_png(width, height, composite)?]
-        },
-    })
+    Ok(())
 }
 fn channel_detail_pngs(width: u32, height: u32, composite: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let mut channels = Vec::with_capacity(8);
@@ -354,31 +359,46 @@ fn channel_detail_pngs(width: u32, height: u32, composite: &[u8]) -> Result<Vec<
 }
 
 pub fn render_tiled(document: &TiledRasterDocument) -> Result<Thumbnails, String> {
-    render_tiled_sized(document, 64., true)
+    render_tiled_panel(document, true)
 }
+
+pub fn render_tiled_panel(
+    document: &TiledRasterDocument,
+    include_channels: bool,
+) -> Result<Thumbnails, String> {
+    let output = if include_channels {
+        TiledPreview::Panel
+    } else {
+        TiledPreview::Layers
+    };
+    render_tiled_sized(document, 64, output)
+}
+
+enum TiledPreview {
+    Page,
+    Layers,
+    Panel,
+}
+
 pub fn tiled_page_preview(
     document: &TiledRasterDocument,
     max_side: u32,
 ) -> Result<Vec<u8>, String> {
     Ok(
-        render_tiled_sized(document, max_side.clamp(64, 1024) as f32, false)?
+        render_tiled_sized(document, max_side.clamp(64, 1024), TiledPreview::Page)?
             .channels
             .remove(0),
     )
 }
 fn render_tiled_sized<'doc>(
     document: &'doc TiledRasterDocument,
-    max_side: f32,
-    include_panel_thumbnails: bool,
+    max_side: u32,
+    output: TiledPreview,
 ) -> Result<Thumbnails, String> {
     use lumapaint_core::tiles::{TileCoord, TILE_SIZE};
     use std::{borrow::Cow, collections::BTreeSet};
     let (dw, dh) = document.dimensions();
-    let scale = (max_side / dw.max(dh) as f32).min(1.);
-    let (width, height) = (
-        (dw as f32 * scale).round().max(1.) as u32,
-        (dh as f32 * scale).round().max(1.) as u32,
-    );
+    let PreviewSize { width, height, .. } = PreviewSize::new((dw, dh), max_side);
     let sample = |coords: Vec<TileCoord>,
                   tile: &dyn Fn(TileCoord) -> Option<Cow<'doc, [u8]>>,
                   straight: bool| {
@@ -421,12 +441,14 @@ fn render_tiled_sized<'doc>(
     let mut masks = Vec::new();
     let mut coords = BTreeSet::new();
     for layer in document.layers() {
-        if !include_panel_thumbnails {
+        if matches!(output, TiledPreview::Page) {
             coords.extend(layer.tiles.allocated_coords());
             continue;
         }
         let allocated: Vec<_> = layer.tiles.allocated_coords().collect();
-        coords.extend(allocated.iter().copied());
+        if matches!(output, TiledPreview::Panel) {
+            coords.extend(allocated.iter().copied());
+        }
         let pixels = sample(
             allocated,
             &|coord| layer.tiles.tile(coord).map(Cow::Borrowed),
@@ -461,12 +483,19 @@ fn render_tiled_sized<'doc>(
             masks.push((layer.id.clone(), clipboard_png(width, height, pixels)?));
         }
     }
+    if matches!(output, TiledPreview::Layers) {
+        return Ok(Thumbnails {
+            layers,
+            masks,
+            channels: Vec::new(),
+        });
+    }
     let composite = sample(
         coords.into_iter().collect(),
         &|coord| document.composite_tile(coord).map(Cow::Owned),
         false,
     );
-    let channels = if include_panel_thumbnails {
+    let channels = if matches!(output, TiledPreview::Panel) {
         let details = channel_detail_pngs(width, height, &composite)?;
         let mut channels = vec![clipboard_png(width, height, composite)?];
         channels.extend(details);
@@ -837,6 +866,10 @@ mod tests {
             .unwrap();
         doc.set_layer_mask("a", true, false, 0.5).unwrap();
         let thumbs = render_tiled(&doc).unwrap();
+        let layers = render_tiled_panel(&doc, false).unwrap();
+        assert_eq!(layers.layers, thumbs.layers);
+        assert_eq!(layers.masks, thumbs.masks);
+        assert!(layers.channels.is_empty());
         let page = tiled_page_preview(&doc, 1024).unwrap();
         let image = resvg::tiny_skia::Pixmap::decode_png(&page).unwrap();
         assert_eq!((image.width(), image.height()), (128, 128));
